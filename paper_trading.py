@@ -5,6 +5,8 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+import pandas as pd
+
 from paper_trading_db import (
     create_or_update_position,
     create_session,
@@ -13,6 +15,7 @@ from paper_trading_db import (
     get_session_by_name,
     get_trades,
     init_db,
+    update_position_price,
     update_session_capital,
 )
 
@@ -249,3 +252,70 @@ class PaperTradingEngine:
             commission,
             total_revenue,
         )
+
+    def update_positions_from_market(self, data_dir: str) -> None:
+        """
+        从市场数据更新持仓的当前价格
+
+        Parameters
+        ----------
+        data_dir : str
+            市场数据目录，包含各股票的 CSV 文件
+        """
+        data_path = Path(data_dir)
+        if not data_path.exists():
+            logger.error("数据目录 %s 不存在", data_dir)
+            raise ValueError(f"数据目录 {data_dir} 不存在")
+
+        # 获取当前持仓
+        positions = (
+            get_positions(self.session_id, self.db_path)
+            if self.db_path
+            else get_positions(self.session_id)
+        )
+
+        if not positions:
+            logger.info("当前无持仓，无需更新")
+            return
+
+        updated_count = 0
+        for position in positions:
+            symbol = position.symbol
+            csv_file = data_path / f"{symbol}.csv"
+
+            if not csv_file.exists():
+                logger.warning("%s 的市场数据不存在，跳过", symbol)
+                continue
+
+            try:
+                # 读取市场数据
+                df = pd.read_csv(csv_file, parse_dates=["date"]).sort_values("date")
+                if df.empty:
+                    logger.warning("%s 市场数据为空，跳过", symbol)
+                    continue
+
+                # 获取最新收盘价
+                latest_close = df.iloc[-1]["close"]
+                if pd.isna(latest_close):
+                    logger.warning("%s 最新收盘价缺失，跳过", symbol)
+                    continue
+
+                # 更新持仓价格
+                if self.db_path:
+                    update_position_price(position.id, latest_close, self.db_path)
+                else:
+                    update_position_price(position.id, latest_close)
+
+                updated_count += 1
+                logger.info(
+                    "更新 %s 价格: %.2f -> %.2f",
+                    symbol,
+                    position.current_price,
+                    latest_close,
+                )
+
+            except Exception as e:
+                logger.error("更新 %s 价格失败: %s", symbol, e)
+                continue
+
+        logger.info("成功更新 %d 个持仓的价格", updated_count)
