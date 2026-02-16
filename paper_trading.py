@@ -502,6 +502,18 @@ def main():
     positions_parser.add_argument("--session", required=True, help="会话名称")
     positions_parser.add_argument("--db", type=Path, default=None, help="数据库路径（可选）")
 
+    # update 命令 - 更新持仓价格
+    update_parser = subparsers.add_parser("update", help="从市场数据更新持仓价格")
+    update_parser.add_argument("--session", required=True, help="会话名称")
+    update_parser.add_argument("--data-dir", required=True, help="市场数据目录")
+    update_parser.add_argument("--db", type=Path, default=None, help="数据库路径（可选）")
+
+    # report 命令 - 生成性能报告
+    report_parser = subparsers.add_parser("report", help="生成策略性能报告")
+    report_parser.add_argument("--session", required=True, help="会话名称")
+    report_parser.add_argument("--risk-free-rate", type=float, default=0.0, help="无风险利率（年化）")
+    report_parser.add_argument("--db", type=Path, default=None, help="数据库路径（可选）")
+
     # 解析参数
     args = parser.parse_args()
 
@@ -623,6 +635,44 @@ def main():
                     )
         except Exception as e:
             logger.error("查看持仓失败: %s", e)
+            sys.exit(1)
+
+    elif args.command == "update":
+        # 更新持仓价格
+        try:
+            engine = PaperTradingEngine(
+                session_name=args.session,
+                db_path=db_path
+            )
+            engine.update_positions_from_market(args.data_dir)
+            logger.info("持仓价格更新完成")
+        except Exception as e:
+            logger.error("更新持仓价格失败: %s", e)
+            sys.exit(1)
+
+    elif args.command == "report":
+        # 生成性能报告
+        try:
+            engine = PaperTradingEngine(
+                session_name=args.session,
+                db_path=db_path
+            )
+            metrics = engine.get_performance_metrics(risk_free_rate=args.risk_free_rate)
+
+            logger.info("")
+            logger.info("============== 性能报告 [%s] ==============", args.session)
+            logger.info("总收益率: %.2f%%", metrics['total_return'] * 100)
+            logger.info("夏普比率: %.4f", metrics['sharpe_ratio'])
+            logger.info("最大回撤: %.2f%%", metrics['max_drawdown'] * 100)
+            logger.info("胜率: %.2f%%", metrics['win_rate'] * 100)
+            logger.info("平均盈利: %.2f%%", metrics['avg_gain'] * 100)
+            logger.info("平均亏损: %.2f%%", metrics['avg_loss'] * 100)
+            logger.info("盈亏比: %.2f", metrics['profit_factor'])
+
+            # 打印 Sharpe Ratio 到标准输出（用于验证）
+            print(f"Sharpe Ratio: {metrics['sharpe_ratio']:.4f}")
+        except Exception as e:
+            logger.error("生成性能报告失败: %s", e)
             sys.exit(1)
 
 
