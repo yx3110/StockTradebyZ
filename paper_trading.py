@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import logging
 import sys
 from pathlib import Path
@@ -16,6 +17,7 @@ from paper_trading_db import (
     get_session_by_name,
     get_trades,
     init_db,
+    list_sessions,
     update_position_price,
     update_session_capital,
 )
@@ -460,3 +462,81 @@ class PaperTradingEngine:
         )
 
         return metrics
+
+
+# ---------- CLI 主函数 ----------
+
+def main():
+    """命令行接口主函数"""
+    parser = argparse.ArgumentParser(description="Paper Trading CLI - 纸上交易模拟系统")
+    subparsers = parser.add_subparsers(dest="command", help="可用命令")
+
+    # create 命令 - 创建新会话
+    create_parser = subparsers.add_parser("create", help="创建新的交易会话")
+    create_parser.add_argument("--name", required=True, help="会话名称")
+    create_parser.add_argument("--capital", type=float, required=True, help="初始资金")
+    create_parser.add_argument("--db", type=Path, default=None, help="数据库路径（可选）")
+
+    # list 命令 - 列出所有会话
+    list_parser = subparsers.add_parser("list", help="列出所有交易会话")
+    list_parser.add_argument("--db", type=Path, default=None, help="数据库路径（可选）")
+
+    # 解析参数
+    args = parser.parse_args()
+
+    # 如果没有提供命令，显示帮助信息
+    if not args.command:
+        parser.print_help()
+        sys.exit(1)
+
+    # 初始化数据库
+    db_path = args.db if hasattr(args, 'db') and args.db else None
+    if db_path:
+        init_db(db_path)
+    else:
+        init_db()
+
+    # 执行对应命令
+    if args.command == "create":
+        # 创建新会话
+        try:
+            if db_path:
+                session_id = create_session(args.name, args.capital, db_path)
+            else:
+                session_id = create_session(args.name, args.capital)
+            logger.info("创建会话成功: %s (ID: %d, 初始资金: %.2f)", args.name, session_id, args.capital)
+            print(args.name)
+        except Exception as e:
+            logger.error("创建会话失败: %s", e)
+            sys.exit(1)
+
+    elif args.command == "list":
+        # 列出所有会话
+        try:
+            if db_path:
+                sessions = list_sessions(db_path)
+            else:
+                sessions = list_sessions()
+
+            if not sessions:
+                logger.info("当前无交易会话")
+            else:
+                logger.info("")
+                logger.info("============== 交易会话列表 ==============")
+                for session in sessions:
+                    print(session.name)
+                    logger.info(
+                        "会话: %s | 初始资金: %.2f | 当前资金: %.2f | 状态: %s | 创建时间: %s",
+                        session.name,
+                        session.initial_capital,
+                        session.current_capital,
+                        session.status,
+                        session.created_at
+                    )
+        except Exception as e:
+            logger.error("列出会话失败: %s", e)
+            sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
