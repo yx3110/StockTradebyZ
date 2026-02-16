@@ -103,6 +103,70 @@ python select_stock.py \
 
 > `--date` 可省略，默认取数据中的最后交易日。
 
+### 纸上交易（Paper Trading）
+
+使用虚拟资金测试策略，避免真金白银的风险。
+
+#### 快速开始
+
+```bash
+# 创建交易会话（初始资金10万）
+python paper_trading.py create --name 我的策略 --capital 100000
+
+# 手动交易
+python paper_trading.py buy --session 我的策略 --symbol 600000 --quantity 100 --price 10.50
+python paper_trading.py sell --session 我的策略 --symbol 600000 --quantity 50 --price 11.00
+
+# 查看持仓
+python paper_trading.py positions --session 我的策略
+
+# 自动交易（结合选股器）
+python paper_trading.py auto-trade --session 我的策略 \
+  --selector BBIKDJSelector \
+  --data-dir ./data \
+  --config ./configs.json \
+  --date 2024-01-03 \
+  --position-size 0.2
+
+# 更新持仓价格
+python paper_trading.py update --session 我的策略 --data-dir ./data
+
+# 生成绩效报告
+python paper_trading.py report --session 我的策略
+```
+
+#### 功能特性
+
+- ✓ 虚拟资金管理（无真实风险）
+- ✓ 手续费模拟（默认0.03%）
+- ✓ 实时持仓跟踪
+- ✓ 性能指标分析（夏普比率、最大回撤、胜率等）
+- ✓ 与现有选股器无缝集成
+- ✓ 数据库持久化存储
+
+#### 命令说明
+
+| 命令 | 说明 | 示例 |
+|------|------|------|
+| `create` | 创建新会话 | `python paper_trading.py create --name test --capital 100000` |
+| `list` | 列出所有会话 | `python paper_trading.py list` |
+| `buy` | 买入股票 | `python paper_trading.py buy --session test --symbol 600000 --quantity 100 --price 10.5` |
+| `sell` | 卖出股票 | `python paper_trading.py sell --session test --symbol 600000 --quantity 50 --price 11.0` |
+| `positions` | 查看持仓 | `python paper_trading.py positions --session test` |
+| `update` | 更新价格 | `python paper_trading.py update --session test --data-dir ./data` |
+| `report` | 绩效报告 | `python paper_trading.py report --session test` |
+| `auto-trade` | 自动交易 | `python paper_trading.py auto-trade --session test --selector BBIKDJSelector ...` |
+
+#### 性能指标
+
+- **总收益率** (Total Return): 整体投资回报百分比
+- **夏普比率** (Sharpe Ratio): 风险调整后收益（年化）
+- **最大回撤** (Max Drawdown): 最大的峰谷跌幅
+- **胜率** (Win Rate): 盈利交易占比
+- **平均盈利** (Average Gain): 盈利交易的平均收益率
+- **平均亏损** (Average Loss): 亏损交易的平均损失率
+- **盈亏比** (Profit Factor): 总盈利与总亏损的比率
+
 ---
 
 ## 参数说明
