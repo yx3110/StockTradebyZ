@@ -1,0 +1,39 @@
+{
+  "sandbox": {
+    "enabled": true,
+    "autoAllowBashIfSandboxed": true
+  },
+  "permissions": {
+    "defaultMode": "acceptEdits",
+    "allow": [
+      "Read(./**)",
+      "Write(./**)",
+      "Edit(./**)",
+      "Glob(./**)",
+      "Grep(./**)",
+      "Read(/Users/yangxu/StockTradebyZ/.auto-claude/worktrees/tasks/004-paper-trading-mode/**)",
+      "Write(/Users/yangxu/StockTradebyZ/.auto-claude/worktrees/tasks/004-paper-trading-mode/**)",
+      "Edit(/Users/yangxu/StockTradebyZ/.auto-claude/worktrees/tasks/004-paper-trading-mode/**)",
+      "Glob(/Users/yangxu/StockTradebyZ/.auto-claude/worktrees/tasks/004-paper-trading-mode/**)",
+      "Grep(/Users/yangxu/StockTradebyZ/.auto-claude/worktrees/tasks/004-paper-trading-mode/**)",
+      "Read(/Users/yangxu/StockTradebyZ/.auto-claude/worktrees/tasks/004-paper-trading-mode/.auto-claude/specs/004-paper-trading-mode/**)",
+      "Write(/Users/yangxu/StockTradebyZ/.auto-claude/worktrees/tasks/004-paper-trading-mode/.auto-claude/specs/004-paper-trading-mode/**)",
+      "Edit(/Users/yangxu/StockTradebyZ/.auto-claude/worktrees/tasks/004-paper-trading-mode/.auto-claude/specs/004-paper-trading-mode/**)",
+      "Read(/Users/yangxu/StockTradebyZ/.auto-claude/**)",
+      "Write(/Users/yangxu/StockTradebyZ/.auto-claude/**)",
+      "Edit(/Users/yangxu/StockTradebyZ/.auto-claude/**)",
+      "Glob(/Users/yangxu/StockTradebyZ/.auto-claude/**)",
+      "Grep(/Users/yangxu/StockTradebyZ/.auto-claude/**)",
+      "Bash(*)",
+      "WebFetch(*)",
+      "WebSearch(*)",
+      "mcp__context7__resolve-library-id(*)",
+      "mcp__context7__get-library-docs(*)",
+      "mcp__graphiti-memory__search_nodes(*)",
+      "mcp__graphiti-memory__search_facts(*)",
+      "mcp__graphiti-memory__add_episode(*)",
+      "mcp__graphiti-memory__get_episodes(*)",
+      "mcp__graphiti-memory__get_entity_edge(*)"
+    ]
+  }
+}
