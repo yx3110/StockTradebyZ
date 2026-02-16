@@ -15,11 +15,3 @@ logs/security/
 paper_trading.db
 paper_trading.log
 test_*.db
-
-# Auto Claude generated files
-.auto-claude-security.json
-.auto-claude-status
-.claude_settings.json
-.worktrees/
-.security-key
-logs/security/
