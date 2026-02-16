@@ -12,12 +12,14 @@ from paper_trading_db import (
     create_session,
     create_trade,
     get_positions,
+    get_session,
     get_session_by_name,
     get_trades,
     init_db,
     update_position_price,
     update_session_capital,
 )
+from performance_metrics import calculate_all_metrics
 
 # ---------- 日志 ----------
 logging.basicConfig(
@@ -319,3 +321,142 @@ class PaperTradingEngine:
                 continue
 
         logger.info("成功更新 %d 个持仓的价格", updated_count)
+
+    def get_performance_metrics(self, risk_free_rate: float = 0.0) -> dict:
+        """
+        获取策略性能指标
+
+        Parameters
+        ----------
+        risk_free_rate : float, default 0.0
+            无风险利率（年化）
+
+        Returns
+        -------
+        dict
+            包含所有性能指标的字典：
+            - total_return: 总收益率
+            - sharpe_ratio: 年化夏普比率
+            - max_drawdown: 最大回撤
+            - win_rate: 胜率
+            - avg_gain: 平均盈利
+            - avg_loss: 平均亏损
+            - profit_factor: 盈亏比
+        """
+        # 获取会话信息
+        session = (
+            get_session(self.session_id, self.db_path)
+            if self.db_path
+            else get_session(self.session_id)
+        )
+        if not session:
+            raise ValueError(f"会话 ID {self.session_id} 不存在")
+
+        # 获取所有交易记录
+        trades = (
+            get_trades(self.session_id, self.db_path)
+            if self.db_path
+            else get_trades(self.session_id)
+        )
+
+        # 如果没有交易记录，返回零值指标
+        if not trades:
+            return {
+                'total_return': 0.0,
+                'sharpe_ratio': 0.0,
+                'max_drawdown': 0.0,
+                'win_rate': 0.0,
+                'avg_gain': 0.0,
+                'avg_loss': 0.0,
+                'profit_factor': 0.0,
+            }
+
+        # 构建权益曲线（账户净值序列）
+        equity_data = []
+        current_capital = session.initial_capital
+        equity_data.append({
+            'timestamp': session.created_at,
+            'equity': session.initial_capital
+        })
+
+        # 按时间顺序计算每笔交易后的账户净值
+        for trade in trades:
+            if trade.action == 'buy':
+                # 买入：扣除成本和手续费
+                current_capital -= (trade.price * trade.quantity + trade.commission)
+            else:  # sell
+                # 卖出：增加收入（已扣除手续费）
+                current_capital += (trade.price * trade.quantity - trade.commission)
+
+            equity_data.append({
+                'timestamp': trade.timestamp,
+                'equity': current_capital
+            })
+
+        # 转换为 pandas Series
+        equity_df = pd.DataFrame(equity_data)
+        equity_curve = pd.Series(
+            equity_df['equity'].values,
+            index=pd.to_datetime(equity_df['timestamp'])
+        )
+
+        # 计算交易收益率（配对买卖计算盈亏）
+        trade_returns_list = []
+        positions_tracker = {}  # {symbol: [(buy_price, quantity, commission), ...]}
+
+        for trade in trades:
+            symbol = trade.symbol
+
+            if trade.action == 'buy':
+                # 记录买入
+                if symbol not in positions_tracker:
+                    positions_tracker[symbol] = []
+                positions_tracker[symbol].append({
+                    'price': trade.price,
+                    'quantity': trade.quantity,
+                    'commission': trade.commission
+                })
+            else:  # sell
+                # 计算卖出收益
+                if symbol not in positions_tracker or not positions_tracker[symbol]:
+                    continue
+
+                sell_quantity = trade.quantity
+                sell_revenue = trade.price * trade.quantity - trade.commission
+                total_cost = 0.0
+
+                # FIFO（先进先出）匹配买入订单
+                while sell_quantity > 0 and positions_tracker[symbol]:
+                    buy_order = positions_tracker[symbol][0]
+                    match_quantity = min(sell_quantity, buy_order['quantity'])
+
+                    # 计算这部分的成本
+                    cost = buy_order['price'] * match_quantity
+                    commission_portion = buy_order['commission'] * (match_quantity / buy_order['quantity'])
+                    total_cost += (cost + commission_portion)
+
+                    # 更新买入订单数量
+                    buy_order['quantity'] -= match_quantity
+                    buy_order['commission'] -= commission_portion
+
+                    if buy_order['quantity'] <= 0:
+                        positions_tracker[symbol].pop(0)
+
+                    sell_quantity -= match_quantity
+
+                # 计算收益率（基于成本）
+                if total_cost > 0:
+                    trade_return = (sell_revenue - total_cost) / total_cost
+                    trade_returns_list.append(trade_return)
+
+        # 转换为 pandas Series
+        trade_returns = pd.Series(trade_returns_list) if trade_returns_list else None
+
+        # 使用 performance_metrics 模块计算所有指标
+        metrics = calculate_all_metrics(
+            equity_curve=equity_curve,
+            trade_returns=trade_returns,
+            risk_free_rate=risk_free_rate
+        )
+
+        return metrics
