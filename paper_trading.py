@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import importlib
+import json
 import logging
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 import pandas as pd
 
@@ -37,6 +39,60 @@ logger = logging.getLogger("paper_trading")
 
 # ---------- 常量 ----------
 DEFAULT_COMMISSION_RATE = 0.0003  # 0.03% 手续费
+
+
+# ---------- 工具函数 ----------
+
+def load_data(data_dir: Path, codes: Iterable[str]) -> Dict[str, pd.DataFrame]:
+    """加载股票市场数据"""
+    frames: Dict[str, pd.DataFrame] = {}
+    for code in codes:
+        fp = data_dir / f"{code}.csv"
+        if not fp.exists():
+            logger.warning("%s 不存在，跳过", fp.name)
+            continue
+        df = pd.read_csv(fp, parse_dates=["date"]).sort_values("date")
+        frames[code] = df
+    return frames
+
+
+def load_config(cfg_path: Path) -> List[Dict[str, Any]]:
+    """加载 Selector 配置"""
+    if not cfg_path.exists():
+        logger.error("配置文件 %s 不存在", cfg_path)
+        sys.exit(1)
+    with cfg_path.open(encoding="utf-8") as f:
+        cfg_raw = json.load(f)
+
+    # 兼容三种结构：单对象、对象数组、或带 selectors 键
+    if isinstance(cfg_raw, list):
+        cfgs = cfg_raw
+    elif isinstance(cfg_raw, dict) and "selectors" in cfg_raw:
+        cfgs = cfg_raw["selectors"]
+    else:
+        cfgs = [cfg_raw]
+
+    if not cfgs:
+        logger.error("configs.json 未定义任何 Selector")
+        sys.exit(1)
+
+    return cfgs
+
+
+def instantiate_selector(cfg: Dict[str, Any]):
+    """动态加载 Selector 类并实例化"""
+    cls_name: str = cfg.get("class")
+    if not cls_name:
+        raise ValueError("缺少 class 字段")
+
+    try:
+        module = importlib.import_module("Selector")
+        cls = getattr(module, cls_name)
+    except (ModuleNotFoundError, AttributeError) as e:
+        raise ImportError(f"无法加载 Selector.{cls_name}: {e}") from e
+
+    params = cfg.get("params", {})
+    return cfg.get("alias", cls_name), cls(**params)
 
 
 class PaperTradingEngine:
@@ -514,6 +570,17 @@ def main():
     report_parser.add_argument("--risk-free-rate", type=float, default=0.0, help="无风险利率（年化）")
     report_parser.add_argument("--db", type=Path, default=None, help="数据库路径（可选）")
 
+    # auto-trade 命令 - 自动选股并交易
+    auto_trade_parser = subparsers.add_parser("auto-trade", help="运行选股器并自动执行纸上交易")
+    auto_trade_parser.add_argument("--session", required=True, help="会话名称")
+    auto_trade_parser.add_argument("--selector", required=True, help="Selector 类名")
+    auto_trade_parser.add_argument("--data-dir", default="./data", help="CSV 行情目录")
+    auto_trade_parser.add_argument("--config", default="./configs.json", help="Selector 配置文件")
+    auto_trade_parser.add_argument("--date", help="交易日 YYYY-MM-DD；缺省=数据最新日期")
+    auto_trade_parser.add_argument("--initial-capital", type=float, default=100000.0, help="初始资金（如果会话不存在）")
+    auto_trade_parser.add_argument("--position-size", type=float, default=0.2, help="每只股票仓位比例（0-1）")
+    auto_trade_parser.add_argument("--db", type=Path, default=None, help="数据库路径（可选）")
+
     # 解析参数
     args = parser.parse_args()
 
@@ -673,6 +740,115 @@ def main():
             print(f"Sharpe Ratio: {metrics['sharpe_ratio']:.4f}")
         except Exception as e:
             logger.error("生成性能报告失败: %s", e)
+            sys.exit(1)
+
+    elif args.command == "auto-trade":
+        # 自动选股并交易
+        try:
+            # --- 加载行情 ---
+            data_dir = Path(args.data_dir)
+            if not data_dir.exists():
+                logger.error("数据目录 %s 不存在", data_dir)
+                sys.exit(1)
+
+            codes = [f.stem for f in data_dir.glob("*.csv")]
+            if not codes:
+                logger.error("股票池为空！")
+                sys.exit(1)
+
+            data = load_data(data_dir, codes)
+            if not data:
+                logger.error("未能加载任何行情数据")
+                sys.exit(1)
+
+            trade_date = (
+                pd.to_datetime(args.date)
+                if args.date
+                else max(df["date"].max() for df in data.values())
+            )
+            if not args.date:
+                logger.info("未指定 --date，使用最近日期 %s", trade_date.date())
+
+            # --- 加载 Selector 配置 ---
+            selector_cfgs = load_config(Path(args.config))
+
+            # --- 查找指定的 Selector ---
+            selector_cfg = None
+            for cfg in selector_cfgs:
+                if cfg.get("class") == args.selector or cfg.get("alias") == args.selector:
+                    selector_cfg = cfg
+                    break
+
+            if not selector_cfg:
+                logger.error("未找到 Selector: %s", args.selector)
+                sys.exit(1)
+
+            # --- 实例化 Selector ---
+            alias, selector = instantiate_selector(selector_cfg)
+            logger.info("使用选股器: %s", alias)
+
+            # --- 运行选股 ---
+            picks = selector.select(trade_date, data)
+            logger.info("选股结果: %d 只股票", len(picks))
+            logger.info("选中股票: %s", ", ".join(picks) if picks else "无")
+
+            if not picks:
+                logger.info("无符合条件股票，跳过交易")
+                print("Auto-trade completed")
+                sys.exit(0)
+
+            # --- 初始化交易引擎 ---
+            engine = PaperTradingEngine(
+                session_name=args.session,
+                initial_capital=args.initial_capital,
+                db_path=db_path
+            )
+
+            # --- 计算仓位大小 ---
+            current_capital = engine._get_current_capital()
+            position_value = current_capital * args.position_size
+            logger.info("可用资金: %.2f，单只股票仓位: %.2f (%.1f%%)",
+                       current_capital, position_value, args.position_size * 100)
+
+            # --- 执行买入交易 ---
+            executed_trades = 0
+            for symbol in picks:
+                if symbol not in data:
+                    logger.warning("跳过 %s：无行情数据", symbol)
+                    continue
+
+                # 获取交易日收盘价
+                symbol_data = data[symbol]
+                trade_row = symbol_data[symbol_data["date"] == trade_date]
+
+                if trade_row.empty:
+                    logger.warning("跳过 %s：%s 无行情数据", symbol, trade_date.date())
+                    continue
+
+                close_price = float(trade_row.iloc[0]["close"])
+                if pd.isna(close_price) or close_price <= 0:
+                    logger.warning("跳过 %s：收盘价无效", symbol)
+                    continue
+
+                # 计算买入数量（向下取整到100的倍数，A股最小交易单位）
+                quantity = int(position_value / close_price / 100) * 100
+                if quantity <= 0:
+                    logger.warning("跳过 %s：资金不足买入最小单位", symbol)
+                    continue
+
+                # 执行买入
+                try:
+                    engine.buy(symbol, quantity, close_price)
+                    executed_trades += 1
+                except Exception as e:
+                    logger.warning("买入 %s 失败: %s", symbol, e)
+                    continue
+
+            logger.info("自动交易完成：成功执行 %d 笔交易", executed_trades)
+            print("Auto-trade completed")
+
+        except Exception as e:
+            logger.error("自动交易失败: %s", e)
             sys.exit(1)
 
 
