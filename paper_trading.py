@@ -481,6 +481,27 @@ def main():
     list_parser = subparsers.add_parser("list", help="列出所有交易会话")
     list_parser.add_argument("--db", type=Path, default=None, help="数据库路径（可选）")
 
+    # buy 命令 - 买入股票
+    buy_parser = subparsers.add_parser("buy", help="买入股票")
+    buy_parser.add_argument("--session", required=True, help="会话名称")
+    buy_parser.add_argument("--symbol", required=True, help="股票代码")
+    buy_parser.add_argument("--quantity", type=float, required=True, help="买入数量")
+    buy_parser.add_argument("--price", type=float, required=True, help="买入价格")
+    buy_parser.add_argument("--db", type=Path, default=None, help="数据库路径（可选）")
+
+    # sell 命令 - 卖出股票
+    sell_parser = subparsers.add_parser("sell", help="卖出股票")
+    sell_parser.add_argument("--session", required=True, help="会话名称")
+    sell_parser.add_argument("--symbol", required=True, help="股票代码")
+    sell_parser.add_argument("--quantity", type=float, required=True, help="卖出数量")
+    sell_parser.add_argument("--price", type=float, required=True, help="卖出价格")
+    sell_parser.add_argument("--db", type=Path, default=None, help="数据库路径（可选）")
+
+    # positions 命令 - 查看持仓
+    positions_parser = subparsers.add_parser("positions", help="查看持仓")
+    positions_parser.add_argument("--session", required=True, help="会话名称")
+    positions_parser.add_argument("--db", type=Path, default=None, help="数据库路径（可选）")
+
     # 解析参数
     args = parser.parse_args()
 
@@ -535,6 +556,73 @@ def main():
                     )
         except Exception as e:
             logger.error("列出会话失败: %s", e)
+            sys.exit(1)
+
+    elif args.command == "buy":
+        # 买入股票
+        try:
+            # 创建或加载引擎（如果会话不存在则需要先创建）
+            engine = PaperTradingEngine(
+                session_name=args.session,
+                initial_capital=100000.0,  # 默认初始资金（如果会话已存在则忽略）
+                db_path=db_path
+            )
+            engine.buy(args.symbol, args.quantity, args.price)
+            logger.info("买入成功")
+        except Exception as e:
+            logger.error("买入失败: %s", e)
+            sys.exit(1)
+
+    elif args.command == "sell":
+        # 卖出股票
+        try:
+            engine = PaperTradingEngine(
+                session_name=args.session,
+                db_path=db_path
+            )
+            engine.sell(args.symbol, args.quantity, args.price)
+            logger.info("卖出成功")
+        except Exception as e:
+            logger.error("卖出失败: %s", e)
+            sys.exit(1)
+
+    elif args.command == "positions":
+        # 查看持仓
+        try:
+            # 获取会话
+            if db_path:
+                session = get_session_by_name(args.session, db_path)
+            else:
+                session = get_session_by_name(args.session)
+
+            if not session:
+                logger.error("会话 '%s' 不存在", args.session)
+                sys.exit(1)
+
+            # 获取持仓
+            if db_path:
+                positions = get_positions(session.id, db_path)
+            else:
+                positions = get_positions(session.id)
+
+            if not positions:
+                logger.info("当前无持仓")
+            else:
+                logger.info("")
+                logger.info("============== 持仓列表 [%s] ==============", args.session)
+                for position in positions:
+                    print(position.symbol)
+                    logger.info(
+                        "股票: %s | 数量: %.0f | 成本价: %.2f | 当前价: %.2f | 盈亏: %.2f (%.2f%%)",
+                        position.symbol,
+                        position.quantity,
+                        position.entry_price,
+                        position.current_price,
+                        (position.current_price - position.entry_price) * position.quantity,
+                        ((position.current_price - position.entry_price) / position.entry_price) * 100
+                    )
+        except Exception as e:
+            logger.error("查看持仓失败: %s", e)
             sys.exit(1)
 
 
