@@ -1,8 +1,49 @@
 """Shared pytest fixtures for generating synthetic stock OHLCV DataFrames."""
 
+import os
+import sys
+import types
+
 import numpy as np
 import pandas as pd
 import pytest
+
+
+def _preload_selector_compat() -> None:
+    """Pre-load Selector.py with `from __future__ import annotations` injected.
+
+    Selector.py uses ``int | None`` union syntax (PEP 604) which requires
+    Python 3.10+.  Running the test-suite under Python 3.9 (the system
+    interpreter) would raise a TypeError at import time.  To work around
+    this without modifying the source file we:
+    1. Read Selector.py as text.
+    2. Prepend ``from __future__ import annotations`` so that ALL annotations
+       are treated as lazy strings (PEP 563 back-port behaviour).
+    3. Compile + exec the modified source and register the resulting module
+       in ``sys.modules["Selector"]`` before any test file tries to import it.
+    """
+    module_name = "Selector"
+    if module_name in sys.modules:
+        return
+
+    # conftest.py lives in tests/; Selector.py is one level up
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    selector_path = os.path.join(base_dir, "Selector.py")
+
+    with open(selector_path, "r", encoding="utf-8") as fh:
+        source = fh.read()
+
+    # Inject future-annotations import to enable lazy annotation evaluation
+    patched_source = "from __future__ import annotations\n" + source
+
+    code = compile(patched_source, selector_path, "exec")
+    module = types.ModuleType(module_name)
+    module.__file__ = selector_path
+    exec(code, module.__dict__)  # noqa: S102
+    sys.modules[module_name] = module
+
+
+_preload_selector_compat()
 
 
 def _make_ohlcv(
