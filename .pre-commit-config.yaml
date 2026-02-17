@@ -1,0 +1,45 @@
+# .pre-commit-config.yaml
+#
+# Automated code-quality checks that run on every `git commit`.
+#
+# Quick-start:
+#   pip install pre-commit
+#   pre-commit install          # install git hook
+#   pre-commit run --all-files  # run once over entire repo
+#
+# Intentionally minimal:
+#   - mypy is excluded (slow; needs all packages installed)
+#   - ruff handles linting + import sorting + style enforcement
+#   - ruff-format handles formatting (replaces black in the hook pipeline)
+
+default_language_version:
+  python: python3
+
+repos:
+  # ---------------------------------------------------------------------------
+  # Standard hygiene hooks
+  # ---------------------------------------------------------------------------
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: trailing-whitespace
+        args: [--markdown-linebreak-ext=md]
+      - id: end-of-file-fixer
+      - id: check-yaml
+        args: [--unsafe]   # allow YAML with custom tags (e.g. !!python)
+      - id: check-toml
+      - id: check-added-large-files
+        args: [--maxkb=1024]
+      - id: check-merge-conflict
+
+  # ---------------------------------------------------------------------------
+  # Ruff – linting with auto-fix + import sorting
+  # ---------------------------------------------------------------------------
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.8.0
+    hooks:
+      # Lint and apply safe auto-fixes (unused imports, import order, etc.)
+      - id: ruff
+        args: [--fix, --exit-non-zero-on-fix]
+      # Format code (replaces black)
+      - id: ruff-format
