@@ -1,0 +1,35 @@
+{
+  "project_type": "single",
+  "services": {
+    "backend": {
+      "path": ".",
+      "tech_stack": ["python", "pandas", "tushare"],
+      "port": null,
+      "dev_command": "python find_stock_by_price_concurrent.py",
+      "test_command": "python -c \"import find_stock_by_price_concurrent; print('OK')\""
+    }
+  },
+  "infrastructure": {
+    "docker": false,
+    "database": "csv-files"
+  },
+  "conventions": {
+    "linter": null,
+    "formatter": null,
+    "testing": "manual"
+  },
+  "main_files": [
+    "find_stock_by_price_concurrent.py",
+    "Selector.py",
+    "SectorShift.py",
+    "fetch_kline.py",
+    "select_stock.py"
+  ],
+  "dependencies_file": "requirements.txt",
+  "dependencies": {
+    "pandas": "2.3.0",
+    "tqdm": "4.66.4",
+    "tushare": "1.4.21",
+    "scipy": "1.14.1"
+  }
+}
