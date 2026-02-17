@@ -6,7 +6,7 @@ import json
 import logging
 import sys
 from pathlib import Path
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict, Iterable, List, Optional
 
 import pandas as pd
 
@@ -34,6 +34,38 @@ def load_data(data_dir: Path, codes: Iterable[str]) -> Dict[str, pd.DataFrame]:
             continue
         df = pd.read_csv(fp, parse_dates=["date"]).sort_values("date")
         frames[code] = df
+    return frames
+
+
+def load_data_from_db(db_path: Path, codes: Optional[List[str]] = None) -> Dict[str, pd.DataFrame]:
+    """从 SQLite 数据库加载行情数据。
+
+    Parameters
+    ----------
+    db_path:
+        SQLite 数据库文件路径。
+    codes:
+        需要加载的股票代码列表。若为 ``None`` 则加载数据库中所有股票。
+
+    Returns
+    -------
+    dict[str, pd.DataFrame]
+        股票代码 → OHLCV DataFrame 的映射。
+    """
+    try:
+        from db_manager import DatabaseManager
+    except ImportError as e:
+        logger.error("无法导入 db_manager：%s", e)
+        sys.exit(1)
+
+    if not db_path.exists():
+        logger.error("数据库文件 %s 不存在", db_path)
+        sys.exit(1)
+
+    db = DatabaseManager(db_path)
+    frames = db.load_all_stocks_data(codes)
+    db.close_all()
+    logger.info("从数据库加载了 %d 只股票的行情数据", len(frames))
     return frames
 
 
@@ -79,28 +111,42 @@ def instantiate_selector(cfg: Dict[str, Any]):
 
 def main():
     p = argparse.ArgumentParser(description="Run selectors defined in configs.json")
-    p.add_argument("--data-dir", default="./data", help="CSV 行情目录")
+    p.add_argument("--data-dir", default="./data", help="CSV 行情目录（与 --db 互斥）")
+    p.add_argument("--db", default=None, help="SQLite 数据库路径；指定后从数据库读取行情，忽略 --data-dir")
     p.add_argument("--config", default="./configs.json", help="Selector 配置文件")
     p.add_argument("--date", help="交易日 YYYY-MM-DD；缺省=数据最新日期")
     p.add_argument("--tickers", default="all", help="'all' 或逗号分隔股票代码列表")
     args = p.parse_args()
 
-    # --- 加载行情 ---
-    data_dir = Path(args.data_dir)
-    if not data_dir.exists():
-        logger.error("数据目录 %s 不存在", data_dir)
-        sys.exit(1)
+    # 解析股票代码列表（None 表示加载全部）
+    if args.tickers.lower() == "all":
+        explicit_codes: Optional[List[str]] = None
+    else:
+        explicit_codes = [c.strip() for c in args.tickers.split(",") if c.strip()]
+        if not explicit_codes:
+            logger.error("股票池为空！")
+            sys.exit(1)
 
-    codes = (
-        [f.stem for f in data_dir.glob("*.csv")]
-        if args.tickers.lower() == "all"
-        else [c.strip() for c in args.tickers.split(",") if c.strip()]
-    )
-    if not codes:
-        logger.error("股票池为空！")
-        sys.exit(1)
+    # --- 加载行情（DB 或 CSV）---
+    if args.db is not None:
+        data = load_data_from_db(Path(args.db), explicit_codes)
+    else:
+        data_dir = Path(args.data_dir)
+        if not data_dir.exists():
+            logger.error("数据目录 %s 不存在", data_dir)
+            sys.exit(1)
 
-    data = load_data(data_dir, codes)
+        codes: List[str] = (
+            [f.stem for f in data_dir.glob("*.csv")]
+            if explicit_codes is None
+            else explicit_codes
+        )
+        if not codes:
+            logger.error("股票池为空！")
+            sys.exit(1)
+
+        data = load_data(data_dir, codes)
+
     if not data:
         logger.error("未能加载任何行情数据")
         sys.exit(1)
