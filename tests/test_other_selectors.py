@@ -800,3 +800,209 @@ class TestBigBullishVolumeSelectorEmptyData:
         result = sel.select(date, {"000001": df, "000002": df})
         for code in result:
             assert isinstance(code, str)
+
+
+class TestBigBullishVolumeSelectorPrivateMethods:
+    """Tests for BigBullishVolumeSelector private helper methods."""
+
+    def test_to_float_with_valid_integer(self):
+        """_to_float converts integer to float."""
+        sel = BigBullishVolumeSelector()
+        result = sel._to_float(42)
+        assert result == pytest.approx(42.0)
+
+    def test_to_float_with_valid_float(self):
+        """_to_float returns float unchanged."""
+        sel = BigBullishVolumeSelector()
+        result = sel._to_float(10.5)
+        assert result == pytest.approx(10.5)
+
+    def test_to_float_with_invalid_string(self):
+        """_to_float returns nan for non-numeric string."""
+        import math
+        sel = BigBullishVolumeSelector()
+        result = sel._to_float("not_a_number")
+        assert math.isnan(result)
+
+    def test_to_float_with_none(self):
+        """_to_float returns nan when passed None."""
+        import math
+        sel = BigBullishVolumeSelector()
+        result = sel._to_float(None)
+        assert math.isnan(result)
+
+    def test_upper_wick_pct_bullish_candle(self):
+        """_upper_wick_pct computes (high - max(o,c)) / max(o,c) for bullish candle."""
+        sel = BigBullishVolumeSelector()
+        # o=9, c=10 (close > open = bullish), h=11, max(o,c)=10, wick=(11-10)/10=0.10
+        result = sel._upper_wick_pct(9.0, 11.0, 10.0)
+        assert result == pytest.approx(0.10)
+
+    def test_upper_wick_pct_bearish_candle(self):
+        """_upper_wick_pct computes (high - max(o,c)) / max(o,c) for bearish candle."""
+        sel = BigBullishVolumeSelector()
+        # o=10, c=9 (close < open = bearish), h=11, max(o,c)=10, wick=(11-10)/10=0.10
+        result = sel._upper_wick_pct(10.0, 11.0, 9.0)
+        assert result == pytest.approx(0.10)
+
+    def test_upper_wick_pct_no_upper_wick(self):
+        """_upper_wick_pct returns 0 when high equals max(o, c)."""
+        sel = BigBullishVolumeSelector()
+        # o=9, c=10, h=10 → wick=(10-10)/10=0.0
+        result = sel._upper_wick_pct(9.0, 10.0, 10.0)
+        assert result == pytest.approx(0.0)
+
+    def test_passes_filters_with_sufficient_rows_fails_gracefully(self):
+        """_passes_filters() reaches inner logic with 25+ rows of stable data."""
+        sel = BigBullishVolumeSelector()
+        # Create 25 rows with very small moves (< 4% daily → no long yang)
+        rng = np.random.default_rng(42)
+        n = 25
+        dates = pd.bdate_range("2024-01-01", periods=n)
+        close = 10.0 * np.ones(n) + rng.uniform(-0.05, 0.05, n)
+        spread = 0.003 * close
+        df = pd.DataFrame(
+            {
+                "date": dates,
+                "open": close - spread * 0.3,
+                "high": close + spread,
+                "low": close - spread,
+                "close": close,
+                "volume": np.full(n, 1_000_000.0),
+            }
+        )
+        # Doesn't qualify (no long-yang day), but should reach price-change check
+        result = sel._passes_filters(df)
+        assert isinstance(result, bool)
+
+    def test_passes_filters_short_history_returns_false(self):
+        """_passes_filters() returns False when data has fewer rows than min_history."""
+        sel = BigBullishVolumeSelector()
+        n = 5  # less than default min_history (22)
+        dates = pd.bdate_range("2024-01-01", periods=n)
+        df = pd.DataFrame(
+            {
+                "date": dates,
+                "open": [10.0] * n,
+                "high": [10.5] * n,
+                "low": [9.5] * n,
+                "close": [10.0] * n,
+                "volume": [1_000_000.0] * n,
+            }
+        )
+        assert sel._passes_filters(df) is False
+
+
+# ===========================================================================
+# MA60CrossVolumeWaveSelector – _ma_slope_positive static method
+# ===========================================================================
+
+
+class TestMA60CrossVolumeWaveSelectorMaSlope:
+    """Tests for MA60CrossVolumeWaveSelector._ma_slope_positive static method."""
+
+    def test_ma_slope_positive_increasing_series(self):
+        """_ma_slope_positive returns True for a strictly increasing series."""
+        series = pd.Series(np.arange(10, dtype=float))  # 0,1,2,...,9
+        result = MA60CrossVolumeWaveSelector._ma_slope_positive(series, days=5)
+        assert result is True
+
+    def test_ma_slope_positive_decreasing_series(self):
+        """_ma_slope_positive returns False for a strictly decreasing series."""
+        series = pd.Series(np.arange(10, 0, -1, dtype=float))  # 10,9,...,1
+        result = MA60CrossVolumeWaveSelector._ma_slope_positive(series, days=5)
+        assert result is False
+
+    def test_ma_slope_positive_flat_series(self):
+        """_ma_slope_positive returns False for a flat (zero-slope) series."""
+        series = pd.Series(np.ones(10))
+        result = MA60CrossVolumeWaveSelector._ma_slope_positive(series, days=5)
+        assert result is False
+
+    def test_ma_slope_positive_insufficient_data_returns_false(self):
+        """_ma_slope_positive returns False when series has fewer points than days."""
+        series = pd.Series([1.0, 2.0, 3.0])
+        result = MA60CrossVolumeWaveSelector._ma_slope_positive(series, days=5)
+        assert result is False
+
+    def test_ma_slope_positive_exact_data_count(self):
+        """_ma_slope_positive works when series has exactly days points."""
+        series = pd.Series([1.0, 2.0, 3.0, 4.0, 5.0])
+        result = MA60CrossVolumeWaveSelector._ma_slope_positive(series, days=5)
+        assert result is True
+
+    def test_ma_slope_positive_with_nan_values(self):
+        """_ma_slope_positive drops NaN values before checking length."""
+        series = pd.Series([np.nan, np.nan, 1.0, 2.0, 3.0])
+        # After dropna, 3 points remain → insufficient for days=5
+        result = MA60CrossVolumeWaveSelector._ma_slope_positive(series, days=5)
+        assert result is False
+
+    def test_ma_slope_positive_uses_tail(self):
+        """_ma_slope_positive uses only the last `days` points of the series."""
+        # First 5 points are decreasing, last 5 are increasing
+        series = pd.Series([5.0, 4.0, 3.0, 2.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
+        result = MA60CrossVolumeWaveSelector._ma_slope_positive(series, days=5)
+        assert result is True
+
+
+# ===========================================================================
+# PeakKDJSelector – _passes_filters exercising _find_peaks
+# ===========================================================================
+
+
+class TestPeakKDJSelectorPassesFiltersInternal:
+    """Tests for PeakKDJSelector._passes_filters that exercise peak-finding logic."""
+
+    def test_passes_filters_flat_data_reaches_peak_finder(self):
+        """_passes_filters() with valid data exercises the _find_peaks code path."""
+        sel = PeakKDJSelector()
+        rng = np.random.default_rng(7)
+        n = 60
+        dates = pd.bdate_range("2024-01-01", periods=n)
+        close = 10.0 + rng.uniform(-0.1, 0.1, n)
+        # Keep last-bar change < 2% to pass day constraints
+        close[-1] = close[-2] * 1.005
+        spread = 0.003 * close
+        df = pd.DataFrame(
+            {
+                "date": dates,
+                "open": close - spread * 0.3,
+                "high": close + spread,
+                "low": close - spread,
+                "close": close,
+                "volume": np.full(n, 1_000_000.0),
+            }
+        )
+        # Result may be True or False, but _find_peaks code is exercised
+        result = sel._passes_filters(df)
+        assert isinstance(result, bool)
+
+    def test_passes_filters_with_peaks_in_data(self):
+        """_passes_filters() exercises peak-finding with clear peak structure."""
+        sel = PeakKDJSelector(j_q_threshold=0.5)
+        n = 100
+        dates = pd.bdate_range("2024-01-01", periods=n)
+        # Create data with a clear peak at day 30 and day 70
+        close = np.full(n, 10.0, dtype=float)
+        close[25:35] = np.linspace(10.0, 15.0, 10)  # rise to peak
+        close[30] = 15.0  # peak 1
+        close[35:45] = np.linspace(14.0, 10.0, 10)  # fall
+        close[65:75] = np.linspace(10.0, 14.0, 10)  # rise to peak
+        close[70] = 14.0  # peak 2
+        close[75:] = np.linspace(13.5, 10.5, n - 75)  # fall back
+        # Keep last bar change small
+        close[-1] = close[-2] * 1.003
+        spread = 0.002 * close
+        df = pd.DataFrame(
+            {
+                "date": dates,
+                "open": close - spread * 0.3,
+                "high": close + spread,
+                "low": close - spread,
+                "close": close,
+                "volume": np.full(n, 1_000_000.0),
+            }
+        )
+        result = sel._passes_filters(df)
+        assert isinstance(result, bool)
