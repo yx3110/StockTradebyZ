@@ -1,0 +1,167 @@
+# StockTradebyZ x Qlib 中国A股回测配置文件
+
+# Qlib初始化配置
+qlib_init:
+  provider_uri: "sqlite:///stock_data.db"  # 使用本地SQLite数据库
+  region: cn
+  mount_path: ~  # 不挂载外部数据
+
+# 回测基础配置
+backtest:
+  start_time: "2023-01-01"
+  end_time: "2024-12-31"
+  benchmark: "000300.SH"      # 沪深300指数
+  account: 1000000            # 初始资金100万
+  freq: "day"                 # 交易频率：日频
+  
+# 策略配置
+strategy:
+  # 启用的策略列表 ['bbikdj', 'bbilongshort', 'breakout', 'peak']
+  strategies: 
+    - "bbikdj"          # 少妇战法 (BBI+KDJ)
+    - "bbilongshort"    # 补票战法 (BBI长短期)
+    - "breakout"        # TePu战法 (突破+成交量)
+    - "peak"            # 填坑战法 (低点反弹)
+  
+  # 策略权重 (基于V3.0量化系统优化)
+  strategy_weights:
+    technical: 0.35       # 技术指标权重
+    momentum: 0.25        # 动量指标权重
+    volume: 0.20          # 成交量指标权重
+    fundamental: 0.15     # 基本面指标权重
+    sentiment: 0.05       # 市场情绪权重
+  
+  # 仓位管理
+  max_positions: 10       # 最大持仓数量
+  position_size: 0.10     # 单个持仓占比 10%
+  
+  # 风险控制
+  stop_loss: 0.08         # 止损线 8%
+  take_profit: 0.15       # 止盈线 15%
+  max_position_time: 30   # 最大持仓天数
+  
+  # 选股标准
+  min_score: 70.0         # 最低选股评分
+  rebalance_freq: 5       # 调仓频率（交易日）
+
+# 中国A股交易所配置
+exchange:
+  # 涨跌停配置
+  limit_threshold: 0.095  # 默认涨跌停阈值 9.5%（留有余量）
+  
+  # 成交价格设置
+  deal_price: "close"     # 使用收盘价成交
+  
+  # 交易单位和限制
+  trade_unit: 100         # 交易单位：100股（1手）
+  min_trade_value: 1000   # 最小交易金额
+  
+  # 交易成本配置（符合中国A股实际情况）
+  open_cost: 0.0003       # 买入佣金 0.03%
+  close_cost: 0.0013      # 卖出成本 0.13% (佣金0.03% + 印花税0.1%)
+  min_cost: 5.0           # 最低手续费
+  
+  # 特殊规则
+  t_plus_1: true          # T+1交易制度
+  limit_orders: true      # 支持涨跌停限制
+  
+  # 市场特定配置
+  market_rules:
+    normal_limit: 0.10    # 普通股票涨跌停 ±10%
+    st_limit: 0.05        # ST股票涨跌停 ±5%
+    kcb_limit: 0.20       # 科创板涨跌停 ±20%
+    cyb_limit: 0.20       # 创业板注册制涨跌停 ±20%
+
+# 股票池配置
+universe:
+  # 基础筛选条件
+  min_trading_days: 100   # 最少交易天数
+  min_market_cap: 50      # 最小市值（亿元）
+  max_stocks: 2000        # 股票池最大规模
+  
+  # 排除条件
+  exclude_st: true        # 排除ST股票
+  exclude_new: true       # 排除新股（上市不足1年）
+  exclude_suspended: true # 排除停牌股票
+  
+  # 行业分布限制
+  max_sector_weight: 0.3  # 单行业最大权重
+  preferred_sectors:      # 偏好行业（可选）
+    - "制造业"
+    - "信息技术"
+    - "医疗健康"
+
+# 风险管理配置  
+risk_management:
+  # 组合层面风险控制
+  max_portfolio_volatility: 0.25  # 最大组合波动率
+  max_tracking_error: 0.08        # 最大跟踪误差
+  
+  # 个股层面风险控制
+  max_single_weight: 0.15         # 单股最大权重
+  max_turnover: 2.0               # 最大换手率
+  
+  # 行业集中度风险
+  max_industry_exposure: 0.4      # 单行业最大暴露
+  
+# 性能优化配置
+performance:
+  # 数据缓存
+  enable_cache: true
+  cache_size: 1000
+  
+  # 并行计算
+  parallel_workers: 4
+  batch_size: 100
+  
+  # 内存管理
+  memory_limit: "4GB"
+  
+# 报告生成配置
+reporting:
+  # 输出目录
+  output_dir: "reports/qlib_backtest"
+  
+  # 报告格式
+  formats: ["json", "markdown", "html"]
+  
+  # 图表配置
+  generate_charts: true
+  chart_formats: ["png", "pdf"]
+  
+  # 基准对比
+  benchmark_comparison: true
+  
+  # 详细程度
+  detail_level: "full"    # minimal, standard, full
+
+# 高级配置
+advanced:
+  # 自定义因子
+  custom_factors: []
+  
+  # 风格暴露分析
+  style_analysis: true
+  
+  # 归因分析
+  attribution_analysis: true
+  
+  # 实时监控
+  real_time_monitoring: false
+
+# 调试和日志配置
+debug:
+  log_level: "INFO"       # DEBUG, INFO, WARNING, ERROR
+  save_intermediate: false
+  verbose_trading: false
+  
+# 兼容性配置
+compatibility:
+  qlib_version: "0.9.0"
+  python_version: "3.8+"
+  
+# 环境变量（可选）
+environment:
+  data_cache_dir: "cache/"
+  temp_dir: "temp/"
+  log_dir: "logs/"

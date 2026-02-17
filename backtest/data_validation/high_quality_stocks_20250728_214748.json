@@ -1,0 +1,6 @@
+{
+  "stocks": [],
+  "count": 0,
+  "generated_at": "2025-07-28T21:47:48.026045",
+  "criteria": "coverage_ratio > 0.9, has_early_data, is_recent"
+}

@@ -1,0 +1,85 @@
+{
+  "version": "v3.1_optimized",
+  "description": "基于214万条历史数据优化的V3.1权重配置",
+  "optimization_date": "2025-08-25",
+  "optimization_basis": {
+    "data_records": 2147796,
+    "time_range": "2024-01-02 to 2025-08-22",
+    "optimization_algorithm": "差分进化算法",
+    "target_metric": "综合评分(相关性60% + 收益率40%)"
+  },
+  "weights": {
+    "technical": {
+      "value": 0.0088,
+      "percentage": "0.9%",
+      "change_from_v3": "-15.8%",
+      "description": "技术指标因子，权重极低"
+    },
+    "fundamental": {
+      "value": 0.2511,
+      "percentage": "25.1%", 
+      "change_from_v3": "+8.4%",
+      "description": "基本面因子，适中权重"
+    },
+    "performance": {
+      "value": 0.3823,
+      "percentage": "38.2%",
+      "change_from_v3": "+21.5%",
+      "description": "表现因子，最重要权重"
+    },
+    "sentiment": {
+      "value": 0.0055,
+      "percentage": "0.6%",
+      "change_from_v3": "-16.1%", 
+      "description": "情绪因子，权重极低"
+    },
+    "risk_control": {
+      "value": 0.3522,
+      "percentage": "35.2%",
+      "change_from_v3": "+18.5%",
+      "description": "风险控制因子，次重要权重"
+    }
+  },
+  "market_regime": {
+    "role": "multiplier",
+    "change_from_v3": "从加法项(16.67%)变为乘数因子",
+    "min_score": 0.3472,
+    "max_score": 0.8905,
+    "min_multiplier": 0.360,
+    "max_multiplier": 1.296,
+    "dynamic_range": "3.6倍",
+    "description": "市场环境作为乘数，熊市压缩64%，牛市放大30%"
+  },
+  "performance_vs_v3": {
+    "improvement_rate": "100%",
+    "best_scenarios": [
+      {
+        "holding_period": "5天",
+        "correlation_improvement": "+0.0412",
+        "return_improvement": "+33.78%"
+      },
+      {
+        "holding_period": "10天", 
+        "correlation_improvement": "+0.1865",
+        "return_improvement": "+75.72%"
+      },
+      {
+        "holding_period": "20天",
+        "correlation_improvement": "+0.2277", 
+        "return_improvement": "+127.55%"
+      }
+    ],
+    "overall_conclusion": "V3.1在所有5个持有期都优于V3等权重配置"
+  },
+  "formula": {
+    "final_score": "market_regime_multiplier × quality_score",
+    "market_regime_multiplier": "0.360 + (market_regime - 0.3472) / (0.8905 - 0.3472) * (1.296 - 0.360)",
+    "quality_score": "performance×0.382 + risk_control×0.352 + fundamental×0.251 + technical×0.009 + sentiment×0.006"
+  },
+  "usage_recommendations": {
+    "optimal_holding_period": "5-10天",
+    "stock_selection": "重点关注Top10%评分股票",
+    "market_adaptation": "根据市场环境乘数动态调整预期",
+    "implementation": "建议从V3逐步迁移到V3.1"
+  }
+}

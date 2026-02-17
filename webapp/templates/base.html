@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}StockTradebyZ Web{% endblock %}</title>
+
+    <!-- Bootstrap 5 CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+
+    <!-- Bootstrap Icons -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css">
+
+    <!-- DataTables CSS -->
+    <link rel="stylesheet" href="https://cdn.datatables.net/1.13.6/css/dataTables.bootstrap5.min.css">
+
+    <!-- 自定义CSS -->
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/main.css') }}">
+
+    {% block extra_css %}{% endblock %}
+</head>
+<body>
+    <!-- 导航栏 -->
+    <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
+        <div class="container-fluid">
+            <a class="navbar-brand" href="{{ url_for('index') }}">
+                <i class="bi bi-graph-up"></i> StockTradebyZ
+            </a>
+
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+
+            <div class="collapse navbar-collapse" id="navbarNav">
+                <ul class="navbar-nav me-auto">
+                    <li class="nav-item">
+                        <a class="nav-link {% if request.endpoint == 'index' %}active{% endif %}"
+                           href="{{ url_for('index') }}">
+                            <i class="bi bi-house"></i> 首页
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link {% if request.endpoint == 'daily_tasks' %}active{% endif %}"
+                           href="{{ url_for('daily_tasks') }}">
+                            <i class="bi bi-calendar-check"></i> 日常任务
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link {% if request.endpoint == 'model_training' %}active{% endif %}"
+                           href="{{ url_for('model_training') }}">
+                            <i class="bi bi-cpu"></i> 模型训练
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link {% if request.endpoint == 'backtest' %}active{% endif %}"
+                           href="{{ url_for('backtest') }}">
+                            <i class="bi bi-graph-up-arrow"></i> 回测
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link {% if request.endpoint == 'portfolio' %}active{% endif %}"
+                           href="{{ url_for('portfolio') }}">
+                            <i class="bi bi-briefcase"></i> 持仓管理
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link {% if request.endpoint == 'data_management' %}active{% endif %}"
+                           href="{{ url_for('data_management') }}">
+                            <i class="bi bi-database"></i> 数据管理
+                        </a>
+                    </li>
+                </ul>
+
+                <div class="d-flex align-items-center text-white">
+                    <span class="me-3">
+                        <i class="bi bi-clock"></i>
+                        <span id="current-time">{{ now.strftime('%H:%M:%S') }}</span>
+                    </span>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Toast 通知容器 -->
+    <div class="toast-container position-fixed top-0 end-0 p-3" style="z-index: 1100;">
+        <div id="globalToast" class="toast" role="alert" aria-live="assertive" aria-atomic="true">
+            <div class="toast-header">
+                <i class="bi bi-info-circle me-2" id="toastIcon"></i>
+                <strong class="me-auto" id="toastTitle">通知</strong>
+                <small id="toastTime">刚刚</small>
+                <button type="button" class="btn-close" data-bs-dismiss="toast" aria-label="Close"></button>
+            </div>
+            <div class="toast-body" id="toastMessage"></div>
+        </div>
+    </div>
+
+    <!-- 全局加载遮罩 -->
+    <div id="globalLoading" class="d-none position-fixed top-0 start-0 w-100 h-100"
+         style="z-index: 1090; background: rgba(255,255,255,0.8);">
+        <div class="d-flex justify-content-center align-items-center h-100">
+            <div class="text-center">
+                <div class="spinner-border text-primary mb-2" style="width: 3rem; height: 3rem;" role="status">
+                    <span class="visually-hidden">Loading...</span>
+                </div>
+                <p class="text-muted" id="loadingMessage">加载中...</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- 主内容区 -->
+    <main class="container-fluid py-4">
+        {% block content %}{% endblock %}
+    </main>
+
+    <!-- 页脚 -->
+    <footer class="bg-light text-center text-muted py-3 mt-5">
+        <div class="container">
+            <p class="mb-0">
+                {{ app_name }} v{{ app_version }} |
+                Powered by Flask + Bootstrap + ApexCharts
+            </p>
+        </div>
+    </footer>
+
+    <!-- jQuery -->
+    <script src="https://code.jquery.com/jquery-3.7.0.min.js"></script>
+
+    <!-- Bootstrap 5 JS -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+
+    <!-- DataTables JS -->
+    <script src="https://cdn.datatables.net/1.13.6/js/jquery.dataTables.min.js"></script>
+    <script src="https://cdn.datatables.net/1.13.6/js/dataTables.bootstrap5.min.js"></script>
+
+    <!-- ApexCharts -->
+    <script src="https://cdn.jsdelivr.net/npm/apexcharts"></script>
+
+    <!-- 自定义JS -->
+    <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+
+    {% block extra_js %}{% endblock %}
+
+    <script>
+        // 更新当前时间
+        setInterval(() => {
+            const now = new Date();
+            const timeStr = now.toLocaleTimeString('zh-CN', { hour12: false });
+            document.getElementById('current-time').textContent = timeStr;
+        }, 1000);
+
+        // 全局Toast通知函数
+        window.showToast = function(message, type = 'info', title = null) {
+            const toast = document.getElementById('globalToast');
+            const toastIcon = document.getElementById('toastIcon');
+            const toastTitle = document.getElementById('toastTitle');
+            const toastMessage = document.getElementById('toastMessage');
+            const toastTime = document.getElementById('toastTime');
+
+            // 设置图标和样式
+            const config = {
+                'success': { icon: 'bi-check-circle-fill', color: 'text-success', defaultTitle: '成功' },
+                'error': { icon: 'bi-exclamation-triangle-fill', color: 'text-danger', defaultTitle: '错误' },
+                'warning': { icon: 'bi-exclamation-circle-fill', color: 'text-warning', defaultTitle: '警告' },
+                'info': { icon: 'bi-info-circle-fill', color: 'text-primary', defaultTitle: '提示' }
+            };
+
+            const cfg = config[type] || config.info;
+            toastIcon.className = `bi ${cfg.icon} me-2 ${cfg.color}`;
+            toastTitle.textContent = title || cfg.defaultTitle;
+            toastMessage.textContent = message;
+            toastTime.textContent = new Date().toLocaleTimeString('zh-CN', { hour12: false });
+
+            const bsToast = new bootstrap.Toast(toast, { delay: type === 'error' ? 8000 : 5000 });
+            bsToast.show();
+        };
+
+        // 全局加载遮罩函数
+        window.showLoading = function(message = '加载中...') {
+            document.getElementById('loadingMessage').textContent = message;
+            document.getElementById('globalLoading').classList.remove('d-none');
+        };
+
+        window.hideLoading = function() {
+            document.getElementById('globalLoading').classList.add('d-none');
+        };
+
+        // 全局AJAX错误处理
+        $(document).ajaxError(function(event, jqxhr, settings, thrownError) {
+            let errorMsg = '请求失败';
+            if (jqxhr.status === 0) {
+                errorMsg = '网络连接失败，请检查网络';
+            } else if (jqxhr.status === 404) {
+                errorMsg = '请求的资源不存在';
+            } else if (jqxhr.status === 500) {
+                errorMsg = '服务器内部错误';
+            } else if (jqxhr.responseJSON && jqxhr.responseJSON.error) {
+                errorMsg = jqxhr.responseJSON.error;
+            } else if (thrownError) {
+                errorMsg = thrownError;
+            }
+            window.showToast(errorMsg, 'error');
+            console.error('AJAX Error:', settings.url, jqxhr.status, thrownError);
+        });
+
+        // 全局AJAX请求开始/结束钩子（可选使用）
+        window.ajaxWithLoading = function(options) {
+            const loadingMsg = options.loadingMessage || '处理中...';
+            return $.ajax({
+                ...options,
+                beforeSend: function(xhr) {
+                    window.showLoading(loadingMsg);
+                    if (options.beforeSend) options.beforeSend(xhr);
+                },
+                complete: function(xhr, status) {
+                    window.hideLoading();
+                    if (options.complete) options.complete(xhr, status);
+                }
+            });
+        };
+
+        // API请求封装
+        window.api = {
+            get: function(url, data = {}) {
+                return $.ajax({ url: url, method: 'GET', data: data });
+            },
+            post: function(url, data = {}) {
+                return $.ajax({
+                    url: url,
+                    method: 'POST',
+                    contentType: 'application/json',
+                    data: JSON.stringify(data)
+                });
+            }
+        };
+
+        // 格式化数字
+        window.formatNumber = function(num, decimals = 2) {
+            if (num === null || num === undefined) return '-';
+            if (Math.abs(num) >= 1000000) {
+                return (num / 1000000).toFixed(decimals) + 'M';
+            } else if (Math.abs(num) >= 1000) {
+                return (num / 1000).toFixed(decimals) + 'K';
+            }
+            return num.toFixed ? num.toFixed(decimals) : num;
+        };
+
+        // 格式化百分比
+        window.formatPercent = function(num, decimals = 2) {
+            if (num === null || num === undefined) return '-';
+            return (num * 100).toFixed(decimals) + '%';
+        };
+
+        // 格式化日期
+        window.formatDate = function(dateStr) {
+            if (!dateStr) return '-';
+            const d = new Date(dateStr);
+            return d.toLocaleDateString('zh-CN');
+        };
+    </script>
+</body>
+</html>

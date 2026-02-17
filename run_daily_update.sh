@@ -1,0 +1,334 @@
+#!/bin/bash
+# 每日股票数据更新和选股分析启动脚本
+
+# 配置变量（请根据实际情况修改）
+TUSHARE_TOKEN="YOUR_TUSHARE_TOKEN_HERE"  # 替换为你的Tushare Token
+DATA_DIR="full_securities_data"
+WORKERS=5
+MODE="both"  # 可选: update, report, both, check, ai-enhance
+USE_DATABASE=true  # 使用数据库模式
+ENABLE_AI=true  # 启用AI增强报告
+AI_TOP_N=10  # AI增强分析的股票数量
+
+# 脚本配置
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PYTHON_CMD="python3"
+LOG_FILE="$SCRIPT_DIR/logs/daily_update.log"
+
+# 颜色输出函数
+print_info() {
+    echo -e "\033[32m[INFO]\033[0m $1"
+}
+
+print_warning() {
+    echo -e "\033[33m[WARNING]\033[0m $1"
+}
+
+print_error() {
+    echo -e "\033[31m[ERROR]\033[0m $1"
+}
+
+# 环境检查
+check_environment() {
+    print_info "检查运行环境..."
+    
+    # 检查Python
+    if ! command -v $PYTHON_CMD &> /dev/null; then
+        print_error "Python3 未找到，请安装Python 3.7+"
+        exit 1
+    fi
+    
+    # 检查必要的Python包
+    $PYTHON_CMD -c "import tushare, pandas, numpy" 2>/dev/null
+    if [ $? -ne 0 ]; then
+        print_error "缺少必要的Python包，请运行: pip install tushare pandas numpy scipy"
+        exit 1
+    fi
+    
+    # 检查Token配置
+    if [ "$TUSHARE_TOKEN" = "YOUR_TUSHARE_TOKEN_HERE" ]; then
+        print_warning "请在脚本中配置你的Tushare Token"
+        read -p "请输入你的Tushare Token: " TUSHARE_TOKEN
+        if [ -z "$TUSHARE_TOKEN" ]; then
+            print_error "Token不能为空"
+            exit 1
+        fi
+    fi
+    
+    print_info "环境检查通过"
+}
+
+# 创建必要目录
+setup_directories() {
+    mkdir -p "$SCRIPT_DIR/$DATA_DIR"
+    mkdir -p "$SCRIPT_DIR/logs"
+    mkdir -p "$SCRIPT_DIR/backups"
+    
+    # 确保logs目录存在（用于日志文件）
+    if [ ! -f "$LOG_FILE" ]; then
+        touch "$LOG_FILE"
+    fi
+}
+
+# 备份旧报告
+backup_reports() {
+    local backup_dir="$SCRIPT_DIR/backups/$(date +%Y%m)"
+    mkdir -p "$backup_dir"
+    
+    # 备份旧的选股报告
+    if [ -f "$SCRIPT_DIR/明日选股分析报告.md" ]; then
+        cp "$SCRIPT_DIR/明日选股分析报告.md" "$backup_dir/选股分析报告_$(date +%Y%m%d_%H%M%S).md"
+    fi
+    
+    # 清理超过30天的备份
+    find "$SCRIPT_DIR/backups" -name "*.md" -mtime +30 -delete 2>/dev/null
+}
+
+# 运行主程序
+run_main_program() {
+    print_info "开始执行每日更新任务..."
+    print_info "模式: $MODE"
+    print_info "数据目录: $DATA_DIR"
+    print_info "并发数: $WORKERS"
+    print_info "数据库模式: $USE_DATABASE"
+    print_info "AI增强功能: $ENABLE_AI"
+    if [ "$ENABLE_AI" = "true" ]; then
+        print_info "AI分析股票数: $AI_TOP_N"
+    fi
+    
+    if [ "$USE_DATABASE" = "true" ]; then
+        # 数据库模式：使用快速更新和数据库报告生成
+        print_info "使用数据库模式..."
+        
+        if [ "$MODE" = "update" ]; then
+            # 仅数据更新（包含市场行情、基本面、财务和技术指标）
+            CMD="$PYTHON_CMD $SCRIPT_DIR/fetch_data/quick_daily_update.py"
+        elif [ "$MODE" = "report" ]; then
+            # 仅报告生成
+            CMD="$PYTHON_CMD $SCRIPT_DIR/tomorrow_stock_selector.py"
+        elif [ "$MODE" = "ai-enhance" ]; then
+            # 仅AI增强报告生成
+            CMD="$PYTHON_CMD $SCRIPT_DIR/ai_enhanced_daily_report.py"
+        else
+            # 完整流程：数据更新 + 报告生成
+            print_info "执行完整流程: 数据更新 → 选股报告 → AI增强分析"
+            
+            # 步骤1: 完整数据更新（市场行情、基本面、财务、技术指标）
+            print_info "步骤1: 完整数据更新（市场行情、基本面、财务、技术指标）"
+            $PYTHON_CMD $SCRIPT_DIR/fetch_data/quick_daily_update.py
+            
+            if [ $? -ne 0 ]; then
+                print_error "数据更新失败"
+                exit 1
+            fi
+            
+            # 步骤1.5: 更新基础数据（每周执行）
+            WEEKDAY=$(date +%u)  # 1=Monday, 7=Sunday
+            if [ "$WEEKDAY" -eq 1 ]; then  # 每周一更新
+                print_info "步骤1.5: 更新基础数据（行业、地区信息）"
+                $PYTHON_CMD $SCRIPT_DIR/update_fundamental_data.py
+                
+                if [ $? -ne 0 ]; then
+                    print_warning "基础数据更新失败，但不影响主流程"
+                fi
+            fi
+            
+            # 步骤2: 生成选股报告
+            print_info "步骤2: 生成量化选股报告"
+            $PYTHON_CMD $SCRIPT_DIR/tomorrow_stock_selector.py
+            
+            if [ $? -ne 0 ]; then
+                print_error "选股报告生成失败"
+                exit 1
+            fi
+            
+            # 步骤3: AI增强分析（可选）
+            if [ "$ENABLE_AI" = "true" ]; then
+                print_info "步骤3: 生成AI增强分析报告"
+                $PYTHON_CMD $SCRIPT_DIR/ai_enhanced_daily_report.py
+                
+                if [ $? -ne 0 ]; then
+                    print_warning "AI增强分析失败，但基础报告已生成"
+                fi
+            fi
+            
+            print_info "✅ 每日更新流程完成"
+            return 0
+        fi
+    else
+        # 传统CSV模式
+        print_info "使用传统CSV模式..."
+        CMD="$PYTHON_CMD $SCRIPT_DIR/daily_update_system.py"
+        CMD="$CMD --token $TUSHARE_TOKEN"
+        CMD="$CMD --data-dir $DATA_DIR"
+        CMD="$CMD --workers $WORKERS"
+        CMD="$CMD --mode $MODE"
+        if [ "$ENABLE_AI" = "false" ]; then
+            CMD="$CMD --disable-ai"
+        else
+            CMD="$CMD --ai-top-n $AI_TOP_N"
+        fi
+    fi
+    
+    # 执行命令
+    echo "$(date): 开始执行命令: $CMD" >> "$LOG_FILE"
+    
+    $CMD
+    local exit_code=$?
+    
+    echo "$(date): 命令执行完成，退出码: $exit_code" >> "$LOG_FILE"
+    
+    if [ $exit_code -eq 0 ]; then
+        print_info "任务执行成功！"
+        
+        # 显示结果摘要
+        if [ -f "$SCRIPT_DIR/reports/daily_selection/选股分析报告_最新.md" ]; then
+            print_info "已生成最新选股报告: reports/daily_selection/选股分析报告_最新.md"
+        fi
+        
+        if [ -f "$SCRIPT_DIR/reports/ai_enhanced/AI增强选股报告_最新.md" ]; then
+            print_info "已生成AI增强选股报告: reports/ai_enhanced/AI增强选股报告_最新.md"
+        fi
+        
+        # 显示数据库统计信息（如果使用数据库模式）
+        if [ "$USE_DATABASE" = "true" ]; then
+            print_info "数据库统计信息:"
+            $PYTHON_CMD -c "
+from data_adapter.database_manager import DatabaseManager
+db = DatabaseManager()
+stats = db.get_database_stats()
+print(f'  证券总数: {stats[\"total_securities\"]}')
+print(f'  数据记录数: {stats[\"total_quotes\"]:,}')
+print(f'  数据库大小: {stats[\"db_size_mb\"]:.2f} MB')
+            "
+        fi
+        
+    else
+        print_error "任务执行失败，请检查日志文件: $LOG_FILE"
+        exit $exit_code
+    fi
+}
+
+# 显示使用帮助
+show_help() {
+    echo "用法: $0 [选项]"
+    echo ""
+    echo "选项:"
+    echo "  -m, --mode MODE     运行模式 (update|report|both|check|ai-enhance) [默认: both]"
+    echo "  -w, --workers NUM   并发线程数 [默认: 5]"
+    echo "  -t, --token TOKEN   Tushare API Token"
+    echo "  -d, --data-dir DIR  数据目录 [默认: full_securities_data]"
+    echo "  --database          启用数据库模式 (快速更新)"
+    echo "  --csv               使用传统CSV模式"
+    echo "  --enable-ai         启用AI增强报告 [默认启用]"
+    echo "  --disable-ai        禁用AI增强报告"
+    echo "  --ai-top-n NUM      AI增强分析的股票数量 [默认: 10]"
+    echo "  -h, --help          显示此帮助信息"
+    echo ""
+    echo "数据库模式优势:"
+    echo "  • 快速数据更新：18秒 vs 60分钟+"
+    echo "  • 高效查询和分析"
+    echo "  • 自动数据质量检查"
+    echo "  • 支持历史数据分析"
+    echo ""
+    echo "AI增强功能:"
+    echo "  • 自动生成AI增强选股报告"
+    echo "  • Claude多智能体分析（技术、基本面、情绪、新闻）"
+    echo "  • Bull/Bear辩论机制"
+    echo "  • AI买入/卖出决策建议"
+    echo "  • 需要设置ANTHROPIC_API_KEY环境变量"
+    echo ""
+    echo "示例:"
+    echo "  $0                          # 使用默认配置（数据库模式+AI增强）"
+    echo "  $0 -m update                # 仅快速更新数据"
+    echo "  $0 -m report                # 生成基础报告+AI增强报告"
+    echo "  $0 -m ai-enhance            # 仅生成AI增强报告"
+    echo "  $0 --disable-ai             # 禁用AI增强功能"
+    echo "  $0 --ai-top-n 5             # AI分析前5只股票"
+    echo "  $0 --csv -m both            # 使用CSV模式运行"
+    echo "  $0 -t your_token --database # 指定token使用数据库模式"
+}
+
+# 解析命令行参数
+parse_arguments() {
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            -m|--mode)
+                MODE="$2"
+                shift 2
+                ;;
+            -w|--workers)
+                WORKERS="$2"
+                shift 2
+                ;;
+            -t|--token)
+                TUSHARE_TOKEN="$2"
+                shift 2
+                ;;
+            -d|--data-dir)
+                DATA_DIR="$2"
+                shift 2
+                ;;
+            --database)
+                USE_DATABASE=true
+                shift
+                ;;
+            --csv)
+                USE_DATABASE=false
+                shift
+                ;;
+            --enable-ai)
+                ENABLE_AI=true
+                shift
+                ;;
+            --disable-ai)
+                ENABLE_AI=false
+                shift
+                ;;
+            --ai-top-n)
+                AI_TOP_N="$2"
+                shift 2
+                ;;
+            -h|--help)
+                show_help
+                exit 0
+                ;;
+            *)
+                print_error "未知选项: $1"
+                show_help
+                exit 1
+                ;;
+        esac
+    done
+}
+
+# 主函数
+main() {
+    echo "=================================================="
+    echo "     每日股票数据更新和选股分析系统"
+    echo "=================================================="
+    echo ""
+    
+    # 解析参数
+    parse_arguments "$@"
+    
+    # 环境检查
+    check_environment
+    
+    # 设置目录
+    setup_directories
+    
+    # 备份报告
+    backup_reports
+    
+    # 运行主程序
+    run_main_program
+    
+    echo ""
+    echo "=================================================="
+    echo "任务完成时间: $(date)"
+    echo "=================================================="
+}
+
+# 运行主函数
+main "$@"

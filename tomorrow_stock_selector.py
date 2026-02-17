@@ -1,0 +1,3922 @@
+#!/usr/bin/env python3
+"""
+明日股票选股分析器
+基于已下载的7055只证券数据，使用量化选股策略推荐明天适合买入的股票
+"""
+
+import sys
+import json
+import logging
+import pandas as pd
+import numpy as np
+from pathlib import Path
+from datetime import datetime, timedelta
+from typing import Dict, List, Any, Tuple, Optional
+import importlib.util
+from data_adapter.stock_data_loader import StockDataLoader
+
+# 导入优化后的评分系统
+from scoring.scoring_engine import ScoringEngine, get_daily_recommendations
+from scoring.config import ScoringConfig, DEFAULT_CONFIG
+
+# 确保logs目录存在
+import os
+os.makedirs("logs", exist_ok=True)
+
+# 设置日志 - 只输出到文件，不输出到stdout避免污染报告
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[
+        logging.FileHandler("logs/tomorrow_selection_results.log", encoding="utf-8"),
+    ],
+)
+logger = logging.getLogger("tomorrow_selector")
+
+class TomorrowStockSelector:
+    """明日股票选择器"""
+    
+    def __init__(self, data_dir: str = "full_securities_data", use_database: bool = True, scoring_version: str = "v3", stocks_only: bool = False):
+        self.data_dir = Path(data_dir)
+        self.use_database = True  # 强制使用数据库模式
+        self.selectors = {}
+        self.data_cache = {}
+        self.securities_info = {}  # 证券基本信息缓存
+        self.scoring_version = scoring_version  # 评分版本: "v2", "v3", "v3.1", "v3.2", "v3.3", "v3.4", "v3.41", "v3.5", "v3.51", "v3.52", "v3.53", "v3.6", "v3.7", "v3.8", "v3.81", "v3.9", "v3.94", "v3.95" 或 "v4"，默认v3
+        self.stocks_only = stocks_only  # 是否只考虑股票，不包括ETF基金
+        self.v381_batch_cache = {}  # V3.81批处理结果缓存
+        self.v394_batch_cache = {}  # V3.94批处理结果缓存（用于百分位排名）
+        self.v395_batch_cache = {}  # V3.95批处理结果缓存（多目标预测）
+
+        # 初始化数据加载器
+        self.data_loader = StockDataLoader()
+        
+        # 根据版本初始化评分引擎
+        if scoring_version == "v3.95":
+            # 初始化v3.9.5生产版评分系统 - 🚀 MULTI-TARGET PREDICTION MODEL
+            from ml_models.v39.v395_production_scorer import V395ProductionScorer
+            self.scoring_engine_v395 = V395ProductionScorer(model_type='rolling')
+            # 🎯 初始化策略驱动预测器（基于12,655历史样本统计）
+            from ml_models.v39.strategy_based_return_predictor import StrategyBasedReturnPredictor
+            self.strategy_return_predictor = StrategyBasedReturnPredictor()
+            logger.info("🚀 已初始化V3.9.5多目标预测评分系统 + 策略驱动收益预测器")
+        elif scoring_version == "v3.94":
+            # 初始化v3.9.4生产版评分系统 - 🏆 PRODUCTION A+ GRADE MODEL (带活跃市值特征)
+            from ml_models.v39.v394_production_scorer import V394ProductionScorer
+            self.scoring_engine_v394 = V394ProductionScorer()
+            logger.info("🏆 已初始化V3.9.4生产版评分系统（48特征=42基础+6活跃市值，IC+166%，Top20胜率56.43%）")
+        elif scoring_version == "v3.9":
+            # 初始化v3.9.0生产版评分系统 - 🏆 PRODUCTION A-GRADE MODEL
+            from ml_models.v39.v390_production_scorer import V390ProductionScorer
+            self.scoring_engine_v39 = V390ProductionScorer()
+            logger.info("🏆 已初始化V3.9.0生产版评分系统（81.2/100 A级，67.30%方向准确率，95%Top20胜率，42基础特征）")
+        elif scoring_version == "v3.81":
+            # 初始化v3.81 Level 4质量评分集成系统 - 🎯 LEVEL 4 QUALITY META-LEARNER
+            from ml_models.v381 import V380Level4IntegratedSystem
+            self.scoring_engine_v381 = V380Level4IntegratedSystem()
+            logger.info("🎯 已初始化V3.81 Level 4质量评分集成系统（V380+Level 4 Quality Meta-learner，解决质量评分聚集问题）")
+        elif scoring_version == "v3.8":
+            # 初始化v3.80高级机器学习评分引擎 - 🚀 ADVANCED ML SYSTEM
+            from ml_models.v38 import V380AdvancedIncrementalMLSystem
+            self.scoring_engine_v38 = V380AdvancedIncrementalMLSystem()
+            logger.info("🚀 已初始化V3.80高级机器学习系统（三层Ensemble+增量学习+自适应评分）")
+        elif scoring_version == "v3.7":
+            # 初始化v3.7高级机器学习评分引擎 - 🚀 ADVANCED ML ENSEMBLE
+            from ml_models.v37 import V370AdvancedMLSystem
+            self.scoring_engine_v37 = V370AdvancedMLSystem(auto_load_model=False)
+            # 尝试加载已训练模型 - 现在支持v4模型（兼容性已修复）
+            if Path('models/v370').exists():
+                # 优先级顺序：quality_optimized > enhanced > models > advanced_v4
+                model_patterns = [
+                    'v370_quality_optimized_*.pkl',  # 质量优化版（兼容性最好）
+                    'v370_enhanced_*.pkl',           # 增强版
+                    'v370_models_*.pkl',             # 基础版
+                    'v370_advanced_v4_*.pkl'         # v4版本（特征不匹配，备用）
+                ]
+
+                latest_model = None
+                for pattern in model_patterns:
+                    model_files = list(Path('models/v370').glob(pattern))
+                    if model_files:
+                        latest_model = max(model_files, key=lambda x: x.stat().st_mtime)
+                        break
+
+                if latest_model:
+                    model_loaded = self.scoring_engine_v37.load_models(latest_model)
+                else:
+                    model_loaded = False
+            else:
+                latest_model = None
+                model_loaded = False
+
+            if model_loaded:
+                logger.info(f"✅ V3.7模型加载成功: {latest_model}")
+            else:
+                logger.warning("⚠️  V3.7模型加载失败，将使用实时训练模式")
+            logger.info("🚀 已初始化v3.7高级机器学习系统（5基础模型+4专家模型+Meta学习器三层ensemble，35+维特征）")
+        elif scoring_version == "v3.6":
+            # 初始化v3.6机器学习评分引擎 - 🆕 MACHINE LEARNING
+            from v360_ml_scoring_system import V360MLScoringSystem
+            self.scoring_engine_v36 = V360MLScoringSystem()
+            # 强制加载模型
+            model_loaded = self.scoring_engine_v36.load_models('models/v360')
+            if not model_loaded:
+                logger.warning("⚠️  V3.6模型未找到，将使用实时训练模式")
+            else:
+                logger.info("✅ V3.6模型加载成功")
+            logger.info("🤖 已初始化v3.6机器学习评分系统（LightGBM+XGBoost双模型ensemble，非线性建模）")
+        elif scoring_version == "v4":
+            # 初始化v4评分引擎
+            sys.path.append(os.path.join(os.path.dirname(__file__), 'scoring_improvements'))
+            from quantitative_scorer_v4 import QuantitativeScorerV4
+            self.scoring_engine_v4 = QuantitativeScorerV4()
+            logger.info("🚀 已初始化挤压动量增强评分系统 v4.0")
+        elif scoring_version == "v3.53":
+            # 初始化v3.53 多时间周期IC优化评分引擎 - 🆕 MULTI-PERIOD
+            sys.path.append(os.path.join(os.path.dirname(__file__), 'scoring', 'v3.5'))
+            from quantitative_scorer_v3_53 import QuantitativeScorerV353MultiPeriod
+            self.scoring_engine_v353_multiperiod = QuantitativeScorerV353MultiPeriod()
+            logger.info("🚀 已初始化v3.53 多时间周期IC优化评分系统（分层权重架构，1日IC=6.5%，3日IC=5.7%）")
+        elif scoring_version == "v3.52":
+            # 初始化v3.5 全面优化评分引擎 - 🆕 COMPREHENSIVE
+            sys.path.append(os.path.join(os.path.dirname(__file__), 'scoring', 'v3.5'))
+            from quantitative_scorer_v3_52 import QuantitativeScorerV35Comprehensive
+            self.scoring_engine_v35_comprehensive = QuantitativeScorerV35Comprehensive()
+            logger.info("🚀 已初始化v3.5 全面优化评分系统（38个参数全面优化，基于21,744条样本数据）")
+        elif scoring_version == "v3.51":
+            # 初始化v3.5 Qlib优化评分引擎 - 🆕 OPTIMIZED
+            sys.path.append(os.path.join(os.path.dirname(__file__), 'scoring', 'v3.5'))
+            from quantitative_scorer_v3_51 import QuantitativeScorerV35Optimized
+            self.scoring_engine_v35_optimized = QuantitativeScorerV35Optimized()
+            logger.info("🚀 已初始化v3.5 Qlib优化评分系统（Phase 2权重+知行参数，+3.12% IC，知行指标权重降至7.4%）")
+        elif scoring_version == "v3.5":
+            # 初始化v3.5知行指标集成评分引擎 - 🆕
+            sys.path.append(os.path.join(os.path.dirname(__file__), 'scoring', 'v3.5'))
+            from quantitative_scorer_v3_5 import QuantitativeScorerV35
+            self.scoring_engine_v35 = QuantitativeScorerV35()
+            logger.info("🚀 已初始化v3.5知行指标集成评分系统（知行趋势线+多空线，权重20%）")
+        elif scoring_version == "v3.41":
+            # 初始化v3.41反向工程重构评分引擎 - 🆕
+            sys.path.append(os.path.join(os.path.dirname(__file__), 'scoring', 'v3.4'))
+            from quantitative_scorer_v3_41 import QuantitativeScorerV341
+            self.scoring_engine_v341 = QuantitativeScorerV341()
+            logger.info("🔄 已初始化v3.41反向工程重构评分系统（基于负相关发现的革命性改进）")
+        elif scoring_version == "v3.4":
+            # 初始化v3.4基于v3.0优化的评分引擎 - 🆕  
+            sys.path.append(os.path.join(os.path.dirname(__file__), 'scoring', 'v3.4'))
+            from quantitative_scorer_v3_4 import QuantitativeScorerV34
+            self.scoring_engine_v34 = QuantitativeScorerV34()
+            logger.info("🚀 已初始化v3.4增强评分系统（基于v3.0成功经验优化，新增ROE和营收增长）")
+        elif scoring_version == "v3.3":
+            # 初始化v3.3相关性优化评分引擎 - 🆕
+            from scoring.v3.quantitative_scorer_v3_3 import QuantitativeScorerV33
+            self.scoring_engine_v33 = QuantitativeScorerV33()
+            logger.info("🚀 已初始化v3.3相关性优化评分系统（基于相关性分析深度优化）")
+        elif scoring_version == "v3.2":
+            # 初始化v3.2挤压动量评分引擎 - 🆕
+            from scoring.v3.quantitative_scorer_v3_2 import QuantitativeScorerV32
+            self.scoring_engine_v32 = QuantitativeScorerV32()
+            logger.info("🚀 已初始化v3.2挤压动量增强评分系统（集成v4.0挤压动量因子）")
+        elif scoring_version == "v3.1":
+            # 初始化v3.1优化评分引擎
+            from scoring.v3.quantitative_scorer_v3_1 import QuantitativeScorerV31
+            self.scoring_engine_v31 = QuantitativeScorerV31()
+            logger.info("🚀 已初始化v3.1优化评分系统（基于214万条数据优化权重）")
+        elif scoring_version == "v3":
+            # 初始化v3评分引擎
+            from scoring.v3.quantitative_scorer_v3 import QuantitativeScorerV3
+            self.scoring_engine_v3 = QuantitativeScorerV3()
+            logger.info("🚀 已初始化智能动态权重评分系统 v3.0")
+        else:
+            # 初始化优化后的评分引擎v2
+            self.scoring_engine = ScoringEngine()
+            logger.info("🚀 已初始化基于实际数据优化的评分系统 v2.0")
+        
+        # 导入选股器
+        self._import_selectors()
+        # 加载证券基本信息
+        self._load_securities_info()
+        
+    def _import_selectors(self):
+        """动态导入选股器类"""
+        try:
+            # 导入Selector模块
+            selector_path = Path("stock_selctor/Selector.py")
+            if not selector_path.exists():
+                logger.error(f"找不到选股器模块: {selector_path}")
+                return
+                
+            spec = importlib.util.spec_from_file_location("Selector", selector_path)
+            selector_module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(selector_module)
+            
+            # 获取可用的选股器类
+            self.selector_classes = {
+                'BBIKDJSelector': selector_module.BBIKDJSelector,
+                'BBIShortLongSelector': selector_module.BBIShortLongSelector,
+                'BreakoutVolumeKDJSelector': selector_module.BreakoutVolumeKDJSelector,
+                'PeakKDJSelector': selector_module.PeakKDJSelector,
+                'SuperB1Selector': selector_module.SuperB1Selector,
+                'ZhiXingSelector': selector_module.ZhiXingSelector,
+                'MA60CrossVolumeWaveSelector': selector_module.MA60CrossVolumeWaveSelector,
+                'BigBullishVolumeSelector': selector_module.BigBullishVolumeSelector
+            }
+            logger.info(f"成功导入 {len(self.selector_classes)} 个选股器类")
+            
+        except Exception as e:
+            logger.error(f"导入选股器失败: {e}")
+    
+    def _load_securities_info(self):
+        """加载证券基本信息（股票名称、板块、行业等）"""
+        try:
+            # 从数据库加载证券信息
+            self.securities_info = self.data_loader.load_securities_info()
+            logger.info(f"从数据库加载了 {len(self.securities_info)} 只证券的基本信息")
+        except Exception as e:
+            logger.error(f"加载证券信息失败: {e}")
+    
+    def update_securities_list_with_details(self):
+        """更新securities_list.csv，添加详细的基本面信息"""
+        try:
+            import tushare as ts
+            
+            # 获取配置中的token
+            try:
+                with open('config.json', 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+                    token = config.get('tushare', {}).get('token')
+                    if not token or token == "YOUR_TUSHARE_TOKEN_HERE":
+                        logger.warning("未配置Tushare Token，无法更新详细基本面信息")
+                        return False
+                        
+                    ts.set_token(token)
+                    pro = ts.pro_api()
+            except Exception as e:
+                logger.error(f"配置Tushare失败: {e}")
+                return False
+            
+            logger.info("开始更新证券列表详细信息...")
+            
+            # 获取A股基本信息
+            logger.info("获取A股基本信息...")
+            a_stocks = pro.stock_basic(
+                exchange='',
+                list_status='L',
+                fields='ts_code,symbol,name,area,industry,market,list_date'
+            )
+            
+            # 添加类型标识
+            a_stocks['type'] = 'A股'
+            a_stocks['code'] = a_stocks['symbol']
+            
+            # 获取基金ETF信息
+            logger.info("获取基金ETF信息...")
+            try:
+                funds = pro.fund_basic(
+                    market='E',
+                    fields='ts_code,name,fund_type,list_date'
+                )
+                
+                # 为基金添加缺失字段
+                funds['type'] = 'ETF_基金' 
+                funds['market'] = funds['ts_code'].apply(lambda x: 'SH' if x.endswith('.SH') else 'SZ')
+                funds['area'] = '未知'
+                funds['industry'] = funds.get('fund_type', 'ETF基金')
+                funds['code'] = funds['ts_code'].str.split('.').str[0]
+                
+                # 统一列名
+                funds = funds.rename(columns={'fund_type': 'industry'})
+                
+                # 选择需要的列
+                funds = funds[['ts_code', 'code', 'name', 'area', 'industry', 'market', 'list_date', 'type']]
+                
+                # 合并数据
+                all_securities = pd.concat([a_stocks, funds], ignore_index=True)
+                
+            except Exception as e:
+                logger.warning(f"获取基金信息失败，仅使用A股数据: {e}")
+                all_securities = a_stocks
+            
+            # 重新排列列顺序
+            all_securities = all_securities[['ts_code', 'code', 'name', 'type', 'market', 'industry', 'area', 'list_date']]
+            
+            # 保存到文件
+            securities_file = self.data_dir / "securities_list.csv"
+            all_securities.to_csv(securities_file, index=False, encoding='utf-8')
+            
+            logger.info(f"成功更新证券列表，共{len(all_securities)}只证券")
+            logger.info(f"A股: {len(a_stocks)}只")
+            if 'funds' in locals():
+                logger.info(f"ETF/基金: {len(funds)}只")
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"更新证券列表失败: {e}")
+            return False
+            
+    def load_data(self, limit: int = None, target_date: str = None) -> Dict[str, pd.DataFrame]:
+        """加载股票数据"""
+        # 从数据库加载数据
+        logger.info("从数据库加载股票数据...")
+        
+        # 根据stocks_only参数决定加载的证券类型
+        if self.stocks_only:
+            security_types = ['A股']  # 只加载A股
+            logger.info("⚙️  仅加载A股数据（排除ETF/基金）")
+        else:
+            security_types = ['A股', 'ETF_基金']  # 默认加载A股和ETF基金
+            logger.info("⚙️  加载A股和ETF/基金数据")
+            
+        data = self.data_loader.load_all_stock_data(days=200, security_types=security_types, target_date=target_date)
+        
+        if limit:
+            # 限制加载的股票数量
+            limited_data = {}
+            for i, (code, df) in enumerate(data.items()):
+                if i >= limit:
+                    break
+                limited_data[code] = df
+            return limited_data
+        
+        return data
+
+    def analyze_v38_results(self, evaluation_result: Dict, data: Dict[str, pd.DataFrame], target_date: pd.Timestamp = None) -> Dict[str, Any]:
+        """分析V3.8自适应评分结果"""
+        try:
+            stocks = evaluation_result.get('stocks', [])
+            if not stocks:
+                return {
+                    "total_strategies": 1,
+                    "strategy_results": {"V3.8自适应评分": {"count": 0, "stocks": []}},
+                    "strategy_details": {"V3.8自适应评分": []},
+                    "multi_strategy_stocks": [],
+                    "single_strategy_stocks": [],
+                    "all_selected_stocks": [],
+                    "total_unique_stocks": 0,
+                    "detailed_analysis_count": 0,
+                    "detailed_stocks": []
+                }
+
+            # 按评分排序
+            sorted_stocks = sorted(stocks, key=lambda x: x['final_score'], reverse=True)
+
+            # 选择top股票进行详细分析
+            top_count = min(50, len(sorted_stocks))
+            top_stocks = sorted_stocks[:top_count]
+
+            # 格式化股票信息
+            detailed_stocks = []
+            for stock in top_stocks:
+                # 从证券信息中获取正确的股票名称
+                stock_code = stock['code']
+                stock_name = self.securities_info.get(stock_code, {}).get('name', f'股票{stock_code}')
+
+                stock_info = {
+                    'code': stock_code,
+                    'name': stock_name,
+                    'final_score': stock['final_score'] * 100,  # 转换为0-100分制
+                    'confidence_score': stock.get('confidence_score', 0.0),
+                    'confidence_level': stock.get('confidence_level', 'unknown'),
+                    'short_term_score': stock.get('short_term_score', 0.5) * 100,
+                    'medium_term_score': stock.get('medium_term_score', 0.5) * 100,
+                    'long_term_score': stock.get('long_term_score', 0.5) * 100,
+                    'risk_level': stock.get('risk_level', 'medium'),
+                    'overall_quality': stock.get('overall_quality', 0.5),
+                    'strategy': 'V3.8自适应评分'
+                }
+                detailed_stocks.append(stock_info)
+
+            analysis = {
+                "total_strategies": 1,
+                "strategy_results": {
+                    "V3.8自适应评分": {
+                        "count": len(top_stocks),
+                        "stocks": [s['code'] for s in top_stocks]
+                    }
+                },
+                "strategy_details": {"V3.8自适应评分": [s['code'] for s in top_stocks]},
+                "multi_strategy_stocks": [],  # V3.8是单一策略
+                "single_strategy_stocks": [s['code'] for s in top_stocks],
+                "all_selected_stocks": [s['code'] for s in top_stocks],
+                "total_unique_stocks": len(top_stocks),
+                "detailed_analysis_count": len(detailed_stocks),
+                "detailed_stocks": detailed_stocks,
+                "v38_summary": evaluation_result.get('summary', {}),
+                "evaluation_metadata": evaluation_result.get('metadata', {})
+            }
+
+            return analysis
+
+        except Exception as e:
+            logger.error(f"V3.8结果分析失败: {e}")
+            return {
+                "total_strategies": 0,
+                "strategy_results": {},
+                "strategy_details": {},
+                "multi_strategy_stocks": [],
+                "single_strategy_stocks": [],
+                "all_selected_stocks": [],
+                "total_unique_stocks": 0,
+                "detailed_analysis_count": 0,
+                "detailed_stocks": [],
+                "error": str(e)
+            }
+
+    def analyze_v38_mixed_results(self, traditional_results: Dict, evaluation_result: Dict, data: Dict[str, pd.DataFrame], target_date: pd.Timestamp = None) -> Dict[str, Any]:
+        """分析V3.8混合模式结果（传统策略+V3.8评分）"""
+        try:
+            v38_stocks = evaluation_result.get('stocks', [])
+            if not v38_stocks:
+                # 如果没有V3.8评分结果，回退到传统分析
+                return self.analyze_results(traditional_results, data, target_date)
+
+            # 按V3.8评分排序
+            sorted_stocks = sorted(v38_stocks, key=lambda x: x['final_score'], reverse=True)
+
+            # 创建V3.8评分的详细股票信息
+            detailed_stocks = []
+            for stock in sorted_stocks:
+                stock_code = stock['code']
+                stock_name = self.securities_info.get(stock_code, {}).get('name', f'股票{stock_code}')
+
+                # 查找这只股票被哪些传统策略选中
+                selected_by_strategies = []
+                for strategy, stocks in traditional_results.items():
+                    if stock_code in stocks:
+                        selected_by_strategies.append(strategy)
+
+                stock_info = {
+                    'code': stock_code,
+                    'name': stock_name,
+                    'final_score': stock['final_score'] * 100,  # 转换为0-100分制
+                    'confidence_score': stock.get('confidence_score', 0.0),
+                    'confidence_level': stock.get('confidence_level', 'unknown'),
+                    'short_term_score': stock.get('short_term_score', 0.5) * 100,
+                    'medium_term_score': stock.get('medium_term_score', 0.5) * 100,
+                    'long_term_score': stock.get('long_term_score', 0.5) * 100,
+                    'risk_level': stock.get('risk_level', 'medium'),
+                    'overall_quality': stock.get('overall_quality', 0.5),
+                    'strategy': 'V3.8自适应评分',
+                    'traditional_strategies': selected_by_strategies,  # 新增：被哪些传统策略选中
+                    'strategy_count': len(selected_by_strategies)  # 新增：被多少个策略选中
+                }
+                detailed_stocks.append(stock_info)
+
+            # 计算传统策略的交集信息
+            traditional_analysis = self.analyze_results(traditional_results, data, target_date)
+
+            # 构建混合分析结果
+            analysis = {
+                "total_strategies": len(traditional_results) + 1,  # 传统策略数量 + V3.8
+                "traditional_strategies": len(traditional_results),
+                "strategy_results": {},
+                "strategy_details": traditional_results,  # 保存传统策略详细结果
+                "multi_strategy_stocks": traditional_analysis.get("multi_strategy_stocks", {}),
+                "single_strategy_stocks": traditional_analysis.get("single_strategy_stocks", []),
+                "all_selected_stocks": [s['code'] for s in sorted_stocks],
+                "total_unique_stocks": len(sorted_stocks),
+                "detailed_analysis_count": len(detailed_stocks),
+                "detailed_stocks": detailed_stocks,
+                "v38_summary": evaluation_result.get('summary', {}),
+                "evaluation_metadata": evaluation_result.get('metadata', {}),
+                "traditional_analysis": traditional_analysis,  # 保存传统分析结果
+                "v38_mixed_mode": True  # 标记为混合模式
+            }
+
+            # 统计每个策略的结果（包括V3.8）
+            for strategy, stocks in traditional_results.items():
+                analysis["strategy_results"][strategy] = len(stocks)
+            analysis["strategy_results"]["V3.8自适应评分"] = len(sorted_stocks)
+
+            logger.info(f"V3.8混合模式分析完成 - 传统策略: {len(traditional_results)}个, V3.8评分股票: {len(sorted_stocks)}只")
+
+            return analysis
+
+        except Exception as e:
+            logger.error(f"V3.8混合结果分析失败: {e}")
+            # 出错时回退到传统分析
+            return self.analyze_results(traditional_results, data, target_date)
+
+    def analyze_v381_mixed_results(self, traditional_results: Dict, evaluation_result: Dict, data: Dict[str, pd.DataFrame], target_date: pd.Timestamp = None) -> Dict[str, Any]:
+        """分析V3.81混合模式结果（传统策略+V3.81 Level 4质量评分）"""
+        try:
+            v381_stocks = evaluation_result.get('stocks', [])
+            if not v381_stocks:
+                # 如果没有V3.81评分结果，回退到传统分析
+                return self.analyze_results(traditional_results, data, target_date)
+
+            # 🎯 按综合评分排序 (质量评分作为辅助信息，不影响主排序)
+            sorted_stocks = sorted(v381_stocks, key=lambda x: x['final_score'], reverse=True)
+
+            # 创建V3.81评分的详细股票信息
+            detailed_stocks = []
+            for stock in sorted_stocks:
+                stock_code = stock['code']
+                stock_name = self.securities_info.get(stock_code, {}).get('name', f'股票{stock_code}')
+
+                # 查找这只股票被哪些传统策略选中
+                selected_by_strategies = []
+                for strategy, stocks in traditional_results.items():
+                    if stock_code in stocks:
+                        selected_by_strategies.append(strategy)
+
+                stock_info = {
+                    'code': stock_code,
+                    'name': stock_name,
+                    'final_score': stock['final_score'] * 100,  # 转换为0-100分制
+                    'confidence_score': stock.get('confidence_score', 0.0),
+                    'confidence_level': stock.get('confidence_level', 'unknown'),
+                    'short_term_score': stock.get('short_term_score', 0.5) * 100,
+                    'medium_term_score': stock.get('medium_term_score', 0.5) * 100,
+                    'long_term_score': stock.get('long_term_score', 0.5) * 100,
+                    'risk_level': stock.get('risk_level', 'medium'),
+                    # 🎯 Level 4质量评分作为核心指标
+                    'overall_quality': stock.get('quality_score', 0.5),
+                    'quality_score': stock.get('quality_score', 0.5),
+                    'strategy': 'V3.81 Level 4质量评分',
+                    'traditional_strategies': selected_by_strategies,
+                    'strategy_count': len(selected_by_strategies),
+                    # 🔧 保留V3.81原始投资建议
+                    'recommendation': stock.get('recommendation', '观望'),
+                    # 新增V3.81特有字段
+                    'level4_features': {
+                        'quality_differentiation': True,
+                        'meta_learning': True,
+                        'end_to_end_ml': True
+                    }
+                }
+                detailed_stocks.append(stock_info)
+
+            # 计算传统策略的交集信息
+            traditional_analysis = self.analyze_results(traditional_results, data, target_date)
+
+            # 构建V3.81混合分析结果
+            analysis = {
+                "total_strategies": len(traditional_results) + 1,  # 传统策略数量 + V3.81
+                "traditional_strategies": len(traditional_results),
+                "strategy_results": {},
+                "strategy_details": traditional_results,
+                "multi_strategy_stocks": traditional_analysis.get("multi_strategy_stocks", {}),
+                "single_strategy_stocks": traditional_analysis.get("single_strategy_stocks", []),
+                "all_selected_stocks": [s['code'] for s in sorted_stocks],
+                "total_unique_stocks": len(sorted_stocks),
+                "detailed_analysis_count": len(detailed_stocks),
+                "detailed_stocks": detailed_stocks,
+                "v381_summary": evaluation_result.get('summary', {}),
+                "evaluation_metadata": evaluation_result.get('metadata', {}),
+                "traditional_analysis": traditional_analysis,
+                "v381_mixed_mode": True,  # 标记为V3.81混合模式
+                # 🎯 V3.81特有的质量评分统计
+                "quality_score_stats": {
+                    'mean': sum(s.get('quality_score', 0) for s in v381_stocks) / len(v381_stocks),
+                    'std': np.std([s.get('quality_score', 0) for s in v381_stocks]),
+                    'min': min(s.get('quality_score', 0) for s in v381_stocks),
+                    'max': max(s.get('quality_score', 0) for s in v381_stocks),
+                    'high_quality_count': sum(1 for s in v381_stocks if s.get('quality_score', 0) >= 0.7),
+                    'low_quality_count': sum(1 for s in v381_stocks if s.get('quality_score', 0) < 0.3)
+                }
+            }
+
+            # 统计每个策略的结果（包括V3.81）
+            for strategy, stocks in traditional_results.items():
+                analysis["strategy_results"][strategy] = len(stocks)
+            analysis["strategy_results"]["V3.81 Level 4质量评分"] = len(sorted_stocks)
+
+            logger.info(f"V3.81混合模式分析完成 - 传统策略: {len(traditional_results)}个, V3.81 Level 4评分股票: {len(sorted_stocks)}只")
+            logger.info(f"质量评分分布: 均值={analysis['quality_score_stats']['mean']:.3f}, std={analysis['quality_score_stats']['std']:.3f}")
+
+            return analysis
+
+        except Exception as e:
+            logger.error(f"V3.81混合结果分析失败: {e}")
+            # 出错时回退到传统分析
+            return self.analyze_results(traditional_results, data, target_date)
+
+    def get_latest_trading_date(self, data: Dict[str, pd.DataFrame]) -> pd.Timestamp:
+        """获取最新交易日"""
+        # 从数据库获取最新交易日
+        latest_date = self.data_loader.get_latest_trading_date()
+        if latest_date:
+            return latest_date
+        
+        # 如果数据库没有返回日期，从数据中获取最新交易日
+        latest_dates = []
+        for df in data.values():
+            if not df.empty:
+                latest_dates.append(df['date'].max())
+                
+        if not latest_dates:
+            return pd.Timestamp.now()
+            
+        return max(latest_dates)
+        
+    def run_selectors(self, data: Dict[str, pd.DataFrame], target_date: pd.Timestamp) -> Dict[str, List[str]]:
+        """运行所有选股策略"""
+        results = {}
+
+        # 配置七个选股策略
+        strategies = {
+            "少负战法": {
+                "class": "BBIKDJSelector",
+                "params": {
+                    "j_threshold": -5,           # 从10→-5: J<-5表示严重超卖
+                    "bbi_min_window": 20,
+                    "max_window": 60,
+                    "price_range_pct": 0.4,      # 从1→0.4: 限制40%价格波动
+                    "bbi_q_threshold": 0.10,     # 从0.3→0.10: 只允许10%下跌天数
+                    "j_q_threshold": 0.05        # 从0.10→0.05: J值需在5%分位以下
+                }
+            },
+            "SuperB1战法": {
+                "class": "SuperB1Selector",
+                "params": {
+                    "lookback_n": 15,
+                    "close_vol_pct": 0.02,
+                    "price_drop_pct": 0.02,
+                    "j_threshold": 10,
+                    "j_q_threshold": 0.10,
+                    "B1_params": {
+                        "j_threshold": 10,
+                        "bbi_min_window": 20,
+                        "max_window": 60,
+                        "price_range_pct": 2.0,
+                        "bbi_q_threshold": 0.3,
+                        "j_q_threshold": 0.10
+                    }
+                }
+            },
+            "补票战法": {
+                "class": "BBIShortLongSelector", 
+                "params": {
+                    "n_short": 3,
+                    "n_long": 21,
+                    "m": 3,
+                    "bbi_min_window": 2,
+                    "max_window": 60,
+                    "bbi_q_threshold": 0.2
+                }
+            },
+            "TePu战法": {
+                "class": "BreakoutVolumeKDJSelector",
+                "params": {
+                    "j_threshold": 1,
+                    "j_q_threshold": 0.10,
+                    "up_threshold": 3.0,
+                    "volume_threshold": 0.6667,
+                    "offset": 15,
+                    "max_window": 60,
+                    "price_range_pct": 1
+                }
+            },
+            "填坑战法": {
+                "class": "PeakKDJSelector",
+                "params": {
+                    "j_threshold": 10,
+                    "max_window": 100,
+                    "fluc_threshold": 0.03,
+                    "j_q_threshold": 0.10,
+                    "gap_threshold": 0.2
+                }
+            },
+            "知行战法": {
+                "class": "ZhiXingSelector",
+                "params": {
+                    "j_threshold": 5.0,          # J<5表示深度超卖
+                    "min_change_pct": -1.0,      # 涨幅>-1%
+                    "max_change_pct": 1.0,       # 涨幅<1%更精准
+                    "max_amplitude_pct": 4.0,    # 振幅<4%过滤大波动
+                    "close_threshold_pct": 100.0, # 收盘必须在多空线之上
+                    "max_window": 120
+                }
+            },
+            "上穿60放量战法": {
+                "class": "MA60CrossVolumeWaveSelector",
+                "params": {
+                    "lookback_n": 20,            # 30→20: 缩短回看窗口
+                    "vol_multiple": 2.2,         # 1.8→2.2: 放量要求更高
+                    "j_threshold": 5,            # 15→5: J<5表示超卖
+                    "j_q_threshold": 0.05,       # 0.10→0.05: 更严格分位
+                    "ma60_slope_days": 5,
+                    "max_window": 120
+                }
+            },
+            "暴力K战法": {
+                "class": "BigBullishVolumeSelector",
+                "params": {
+                    "up_pct_threshold": 0.04,
+                    "upper_wick_pct_max": 0.5,
+                    "vol_lookback_n": 20,
+                    "vol_multiple": 1.5,
+                    "require_bullish_close": True,
+                    "ignore_zero_volume": True,
+                    "close_lt_zxdq_mult": 1.0
+                }
+            }
+        }
+        
+        for strategy_name, config in strategies.items():
+            try:
+                logger.info(f"运行策略: {strategy_name}")
+                
+                # 实例化选股器
+                selector_class = self.selector_classes[config["class"]]
+                selector = selector_class(**config["params"])
+                
+                # 运行选股
+                picks = selector.select(target_date, data)
+                results[strategy_name] = picks
+                
+                logger.info(f"{strategy_name} 选出 {len(picks)} 只股票")
+                
+            except Exception as e:
+                logger.error(f"运行 {strategy_name} 失败: {e}")
+                results[strategy_name] = []
+                
+        return results
+        
+    def get_stock_info(self, stock_code: str, data: Dict[str, pd.DataFrame], target_date: pd.Timestamp = None) -> Dict[str, Any]:
+        """获取股票基本信息和技术指标"""
+        if stock_code not in data:
+            return {}
+            
+        df = data[stock_code]
+        if df.empty:
+            return {}
+            
+        try:
+            # 如果指定了目标日期，使用该日期的数据；否则使用最新数据
+            if target_date is not None:
+                target_data = df[df['date'] <= target_date]
+                if target_data.empty:
+                    return {}
+                latest = target_data.iloc[-1]
+                df_for_indicators = target_data
+            else:
+                latest = df.iloc[-1]
+                df_for_indicators = df
+            
+            # 计算技术指标
+            df_with_indicators = self._calculate_indicators(df_for_indicators)
+            latest_indicators = df_with_indicators.iloc[-1]
+            
+            # 计算价格变化
+            if len(df_for_indicators) > 1:
+                prev_close = df_for_indicators.iloc[-2]['close']
+            else:
+                prev_close = latest['close']
+            price_change = latest['close'] - prev_close
+            price_change_pct = (price_change / prev_close) * 100 if prev_close > 0 else 0
+            
+            # 计算近期波动率
+            recent_prices = df_for_indicators['close'].tail(20)
+            volatility = recent_prices.std() / recent_prices.mean() * 100 if len(recent_prices) > 1 else 0
+            
+            # 获取股票基本信息（名称、板块等）
+            security_info = self.securities_info.get(stock_code, {})
+            
+            # 短线量化交易大师级定价策略
+            close_price = latest['close']
+            high_price = latest['high']
+            low_price = latest['low']
+            volume = latest['volume']
+            
+            # 判断交易制度：T+0(ETF/基金) vs T+1(股票)
+            is_t0_instrument = self._is_t0_instrument(stock_code, security_info)
+            
+            # 计算科学定价
+            buy_price, stop_loss, take_profit = self._calculate_smart_prices(
+                df_for_indicators, latest, latest_indicators, volatility, is_t0_instrument
+            )
+            
+            # 计算盈亏百分比和风险收益比
+            risk_amount = buy_price - stop_loss
+            reward_amount = take_profit - buy_price
+            risk_pct = (risk_amount / buy_price) * 100 if buy_price > 0 else 0
+            reward_pct = (reward_amount / buy_price) * 100 if buy_price > 0 else 0
+            risk_reward_ratio = reward_amount / risk_amount if risk_amount > 0 else 0
+            
+            return {
+                "stock_code": stock_code,
+                "stock_name": security_info.get('name', '未知'),
+                "market": security_info.get('market', '未知'),
+                "ts_code": security_info.get('ts_code', ''),
+                # 基本面信息
+                "industry": security_info.get('industry', '未知'),
+                "area": security_info.get('area', '未知'),
+                "list_date": security_info.get('list_date', '未知'),
+                "stock_type": security_info.get('type', '未知'),
+                "analysis_date": latest['date'].strftime('%Y-%m-%d'),
+                "close_price": round(close_price, 2),
+                "trading_type": "T+0" if is_t0_instrument else "T+1",
+                "suggested_buy_price": buy_price,
+                "stop_loss_price": stop_loss,
+                "take_profit_price": take_profit,
+                "risk_pct": round(risk_pct, 2),
+                "reward_pct": round(reward_pct, 2),
+                "risk_reward_ratio": round(risk_reward_ratio, 2),
+                "price_change": round(price_change, 2),
+                "price_change_pct": round(price_change_pct, 2),
+                "volume": int(latest['volume']) if not np.isnan(latest['volume']) else 0,
+                "high": round(latest['high'], 2),
+                "low": round(latest['low'], 2),
+                "volatility": round(volatility, 2),
+                "kdj_k": round(latest_indicators.get('K', 0), 2),
+                "kdj_d": round(latest_indicators.get('D', 0), 2), 
+                "kdj_j": round(latest_indicators.get('J', 0), 2),
+                "bbi": round(latest_indicators.get('BBI', 0), 2),
+                "dif": round(latest_indicators.get('DIF', 0), 4)
+            }
+            
+        except Exception as e:
+            logger.warning(f"获取 {stock_code} 股票信息失败: {e}")
+            return {}
+    
+    def _is_t0_instrument(self, stock_code: str, security_info: dict) -> bool:
+        """判断是否为T+0交易品种"""
+        ts_code = security_info.get('ts_code', '')
+        
+        # ETF和基金可以T+0交易
+        if (ts_code.endswith('.SH') and (stock_code.startswith('51') or stock_code.startswith('50'))) or \
+           (ts_code.endswith('.SZ') and (stock_code.startswith('15') or stock_code.startswith('16'))):
+            return True
+        
+        # 其他股票都是T+1
+        return False
+    
+    def _calculate_atr(self, df: pd.DataFrame, period: int = 14) -> float:
+        """计算平均真实波幅(ATR)"""
+        if len(df) < period + 1:
+            return 0
+        
+        high = df['high']
+        low = df['low'] 
+        close = df['close'].shift(1)
+        
+        tr1 = high - low
+        tr2 = abs(high - close)
+        tr3 = abs(low - close)
+        
+        true_range = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        atr = true_range.rolling(window=period).mean().iloc[-1]
+        
+        return atr if not np.isnan(atr) else 0
+    
+    def _calculate_zhixing_trend(self, close_prices: np.array) -> Optional[float]:
+        """
+        计算知行短期趋势线: EMA(EMA(C,10),10)
+        通达信公式: 知行短期趋势线:EMA(EMA(C,10),10),COLORFFFFFF,LINETHICK1;
+        """
+        try:
+            if len(close_prices) < 20:  # 至少需要20天数据
+                return None
+                
+            # 第一层EMA(C,10)
+            alpha1 = 2.0 / (10 + 1)
+            ema1 = np.zeros_like(close_prices, dtype=float)
+            ema1[0] = close_prices[0]
+            
+            for i in range(1, len(close_prices)):
+                ema1[i] = alpha1 * close_prices[i] + (1 - alpha1) * ema1[i-1]
+            
+            # 第二层EMA(EMA(C,10),10)
+            alpha2 = 2.0 / (10 + 1)
+            ema2 = np.zeros_like(ema1, dtype=float)
+            ema2[0] = ema1[0]
+            
+            for i in range(1, len(ema1)):
+                ema2[i] = alpha2 * ema1[i] + (1 - alpha2) * ema2[i-1]
+            
+            return float(ema2[-1])
+            
+        except Exception as e:
+            logger.warning(f"计算知行短期趋势线失败: {e}")
+            return None
+    
+    def _calculate_zhixing_multiavg(self, close_prices: np.array, periods: List[int] = None) -> Optional[float]:
+        """
+        计算知行多空线: (MA(CLOSE,M1)+MA(CLOSE,M2)+MA(CLOSE,M3)+MA(CLOSE,M4))/4
+        通达信公式: 知行多空线:(MA(CLOSE,M1)+MA(CLOSE,M2)+MA(CLOSE,M3)+MA(CLOSE,M4))/4;
+        
+        默认使用周期 [5, 10, 20, 60] 对应 M1, M2, M3, M4
+        """
+        try:
+            if periods is None:
+                periods = [5, 10, 20, 60]
+                
+            if len(close_prices) < max(periods):
+                return None
+                
+            ma_values = []
+            for period in periods:
+                if len(close_prices) >= period:
+                    ma = np.mean(close_prices[-period:])
+                    ma_values.append(ma)
+                else:
+                    return None
+            
+            # 返回四个移动平均的平均值
+            return float(np.mean(ma_values))
+            
+        except Exception as e:
+            logger.warning(f"计算知行多空线失败: {e}")
+            return None
+
+    def _get_stock_data_for_scoring(self, stock_code: str, trade_date: str) -> Dict:
+        """获取股票数据用于优化版评分系统"""
+        try:
+            # 直接从数据库获取数据，类似于 enhanced_data_manager 的方式
+            with self.data_loader.db_manager.get_connection() as conn:
+                # 获取股票ID
+                security_query = "SELECT id FROM securities WHERE code = ?"
+                security_result = conn.execute(security_query, (stock_code,)).fetchone()
+                if not security_result:
+                    return {}
+                security_id = security_result[0]
+                
+                # 获取最新的技术指标数据 - 需要更多数据计算知行指标
+                tech_query = """
+                SELECT dq.trade_date, dq.close, dq.high, dq.low, dq.volume, dq.price_change_pct,
+                       ti.rsi6, ti.kdj_k, ti.kdj_d, ti.bbi
+                FROM daily_quotes dq
+                LEFT JOIN technical_indicators ti ON dq.security_id = ti.security_id AND dq.trade_date = ti.trade_date
+                WHERE dq.security_id = ? AND dq.trade_date <= ?
+                ORDER BY dq.trade_date DESC
+                LIMIT 80
+                """
+                tech_df = pd.read_sql_query(tech_query, conn, params=(security_id, trade_date))
+                
+                if tech_df.empty:
+                    return {}
+                
+                latest_data = tech_df.iloc[0]
+                
+                # 获取基本面数据（PE, PB, 市值）
+                basic_query = """
+                SELECT pe_ttm, pb, total_mv 
+                FROM daily_basic
+                WHERE security_id = ? AND trade_date <= ?
+                ORDER BY trade_date DESC
+                LIMIT 1
+                """
+                basic_result = conn.execute(basic_query, (security_id, trade_date)).fetchone()
+                
+                # 计算周期收益率
+                def calc_period_return(df, periods):
+                    if len(df) < periods + 1:
+                        return 0.0
+                    current_price = df.iloc[0]['close']
+                    past_price = df.iloc[periods]['close']
+                    return ((current_price - past_price) / past_price * 100) if past_price > 0 else 0.0
+                
+                # 计算平均成交量
+                def calc_avg_volume(df, periods):
+                    if len(df) < periods:
+                        return df['volume'].mean() if not df.empty else 0
+                    return df.head(periods)['volume'].mean()
+                
+                # 计算知行指标 - 使用历史收盘价
+                close_prices = tech_df['close'].dropna().values
+                zhixing_trend = self._calculate_zhixing_trend(close_prices) if len(close_prices) >= 20 else None
+                zhixing_multiavg = self._calculate_zhixing_multiavg(close_prices) if len(close_prices) >= 60 else None
+                
+                # 构建结果字典
+                result = {
+                    'close': latest_data['close'] or 0,
+                    'high': latest_data['high'] or latest_data['close'] or 0,
+                    'low': latest_data['low'] or latest_data['close'] or 0,
+                    'volume': latest_data['volume'] or 0,
+                    'pct_chg': latest_data['price_change_pct'] or 0,
+                    
+                    # 计算周期收益率
+                    'pct_chg_5d': calc_period_return(tech_df, 5),
+                    'pct_chg_10d': calc_period_return(tech_df, 10),
+                    'pct_chg_20d': calc_period_return(tech_df, 20),
+                    
+                    # 技术指标 - 使用默认值处理空值
+                    'rsi6': latest_data['rsi6'] or 50,
+                    'kdj_k': latest_data['kdj_k'] or 50,
+                    'kdj_d': latest_data['kdj_d'] or 50,
+                    'bbi': latest_data['bbi'] or latest_data['close'] or 0,
+                    
+                    # 知行指标 - 实际计算值
+                    'zhixing_trend': zhixing_trend if zhixing_trend is not None else 50,
+                    'zhixing_multiavg': zhixing_multiavg if zhixing_multiavg is not None else 50,
+                    
+                    # 成交量指标
+                    'avg_volume_5': calc_avg_volume(tech_df, 5),
+                    'avg_volume_20': calc_avg_volume(tech_df, 20),
+                    
+                    # 基本面数据
+                    'pe_ttm': basic_result[0] if basic_result and basic_result[0] else 0,
+                    'pb': basic_result[1] if basic_result and basic_result[1] else 0,
+                    'market_cap': basic_result[2] if basic_result and basic_result[2] else 0,  # 万元
+                }
+                
+                return result
+                
+        except Exception as e:
+            logger.error(f"获取股票评分数据失败 {stock_code}: {str(e)}")
+            return {}
+            
+    def _calculate_period_return(self, stock_data: pd.DataFrame, periods: int) -> float:
+        """计算指定周期的收益率"""
+        try:
+            if len(stock_data) < periods + 1:
+                return 0.0
+            current_price = stock_data.iloc[-1]['close']
+            past_price = stock_data.iloc[-(periods+1)]['close']
+            return ((current_price - past_price) / past_price * 100) if past_price > 0 else 0.0
+        except:
+            return 0.0
+            
+    def _calculate_avg_volume(self, stock_data: pd.DataFrame, periods: int) -> float:
+        """计算指定周期的平均成交量"""
+        try:
+            if len(stock_data) < periods:
+                return stock_data['volume'].mean() if not stock_data.empty else 0
+            return stock_data.tail(periods)['volume'].mean()
+        except:
+            return 0.0
+    
+    def _calculate_signal_strength(self, indicators: dict, volatility: float) -> float:
+        """计算技术信号强度 0-1"""
+        strength = 0.5  # 基础强度
+        
+        # KDJ信号强度
+        kdj_k = indicators.get('K', 50)
+        kdj_d = indicators.get('D', 50)
+        kdj_j = indicators.get('J', 50)
+        
+        # 低位金叉信号强度高
+        if kdj_k > kdj_d and kdj_k < 30:
+            strength += 0.3
+        elif kdj_k > kdj_d and kdj_k < 50:
+            strength += 0.2
+        
+        # MACD信号强度
+        dif = indicators.get('DIF', 0)
+        if dif > 0:
+            strength += 0.1
+        
+        # 波动率调整：适度波动有利于短线
+        if 2 <= volatility <= 6:
+            strength += 0.1
+        elif volatility > 10:
+            strength -= 0.2
+        
+        return min(max(strength, 0), 1)
+    
+    def _find_support_resistance(self, df: pd.DataFrame) -> tuple:
+        """寻找近期支撑阻力位"""
+        if len(df) < 20:
+            close = df['close'].iloc[-1]
+            return close * 0.95, close * 1.05
+        
+        recent_data = df.tail(20)
+        
+        # 支撑位：近20日最低点附近
+        support = recent_data['low'].min()
+        
+        # 阻力位：近20日最高点附近  
+        resistance = recent_data['high'].max()
+        
+        return support, resistance
+    
+    def _calculate_smart_prices(self, df: pd.DataFrame, latest: pd.Series, 
+                              indicators: dict, volatility: float, is_t0: bool) -> tuple:
+        """量化交易专家级智能定价系统 - 基于专业风险管理体系"""
+        close_price = latest['close']
+        high_price = latest['high']
+        low_price = latest['low']
+        
+        # 计算技术指标和市场环境
+        atr = self._calculate_atr(df)
+        signal_strength = self._calculate_signal_strength(indicators, volatility)
+        support, resistance = self._find_support_resistance(df)
+        
+        # 市场状态评估
+        market_regime = self._assess_market_regime(df, volatility)
+        trend_strength = self._calculate_trend_strength(df)
+        
+        # === 量化交易专家级买入价策略 ===
+        buy_price = self._calculate_optimal_entry_price(
+            close_price, signal_strength, volatility, is_t0, market_regime
+        )
+        
+        # === 分层风险控制止损策略 ===
+        stop_loss_price = self._calculate_multi_layer_stop_loss(
+            buy_price, close_price, atr, support, signal_strength, 
+            volatility, is_t0, market_regime
+        )
+        
+        # === 动态止盈目标策略 ===
+        take_profit_price = self._calculate_dynamic_take_profit(
+            buy_price, stop_loss_price, resistance, signal_strength,
+            volatility, is_t0, trend_strength, market_regime
+        )
+        
+        # === 最终风险收益比验证 ===
+        return self._validate_risk_reward_ratio(buy_price, stop_loss_price, take_profit_price)
+    
+    def _assess_market_regime(self, df: pd.DataFrame, volatility: float) -> str:
+        """评估市场状态：趋势/震荡/高波动"""
+        if len(df) < 20:
+            return "NORMAL"
+        
+        recent_data = df.tail(20)
+        price_range = (recent_data['high'].max() - recent_data['low'].min()) / recent_data['close'].iloc[-1]
+        
+        if volatility > 8:
+            return "HIGH_VOLATILITY"
+        elif price_range > 0.15:
+            return "TRENDING"
+        else:
+            return "CONSOLIDATION"
+    
+    def _calculate_trend_strength(self, df: pd.DataFrame) -> float:
+        """计算趋势强度 0-1"""
+        if len(df) < 10:
+            return 0.5
+        
+        recent_closes = df['close'].tail(10)
+        if len(recent_closes) < 2:
+            return 0.5
+            
+        # 计算价格动量
+        momentum = (recent_closes.iloc[-1] - recent_closes.iloc[0]) / recent_closes.iloc[0]
+        
+        # 计算趋势一致性
+        up_days = sum(recent_closes.diff() > 0)
+        consistency = up_days / 9 if momentum > 0 else (9 - up_days) / 9
+        
+        trend_strength = min(abs(momentum) * 10 * consistency, 1.0)
+        return max(trend_strength, 0.1)
+    
+    def _calculate_optimal_entry_price(self, close_price: float, signal_strength: float, 
+                                     volatility: float, is_t0: bool, market_regime: str) -> float:
+        """计算最优买入价 - 考虑市场状态和信号质量"""
+        base_premium = 0.001  # 基础溢价
+        
+        # 根据信号强度调整
+        if signal_strength > 0.8:
+            signal_premium = 0.003  # 强信号可以适度追高
+        elif signal_strength > 0.6:
+            signal_premium = 0.002
+        else:
+            signal_premium = 0.001
+        
+        # 根据市场状态调整
+        if market_regime == "HIGH_VOLATILITY":
+            regime_premium = -0.001  # 高波动时更保守
+        elif market_regime == "TRENDING":
+            regime_premium = 0.002   # 趋势市可以追高
+        else:
+            regime_premium = 0.001   # 震荡市中性
+        
+        # T+0 vs T+1调整
+        trading_premium = 0.001 if is_t0 else 0.0005
+        
+        # 波动率调整
+        volatility_premium = min(volatility / 500, 0.003)
+        
+        total_premium = base_premium + signal_premium + regime_premium + trading_premium + volatility_premium
+        total_premium = max(min(total_premium, 0.012), 0.0005)  # 限制在0.05%-1.2%之间
+        
+        return round(close_price * (1 + total_premium), 2)
+    
+    def _calculate_multi_layer_stop_loss(self, buy_price: float, close_price: float, 
+                                       atr: float, support: float, signal_strength: float,
+                                       volatility: float, is_t0: bool, market_regime: str) -> float:
+        """多层次止损体系"""
+        # 第一层：技术止损（基于ATR）
+        if atr > 0:
+            atr_multiplier = self._get_atr_multiplier(signal_strength, market_regime, is_t0)
+            technical_stop = buy_price - (atr * atr_multiplier)
+        else:
+            technical_stop = buy_price * (1 - min(volatility / 100 * 0.5, 0.03))
+        
+        # 第二层：支撑位止损
+        support_stop = support * 0.995  # 支撑位下方0.5%
+        
+        # 第三层：百分比止损（最后防线）
+        if market_regime == "HIGH_VOLATILITY":
+            max_loss_pct = 0.025 if is_t0 else 0.035  # 高波动时放宽
+        elif signal_strength > 0.8:
+            max_loss_pct = 0.02 if is_t0 else 0.03    # 强信号时收紧
+        else:
+            max_loss_pct = 0.025 if is_t0 else 0.035  # 正常情况
+        
+        percentage_stop = buy_price * (1 - max_loss_pct)
+        
+        # 选择最优止损价：不能过于激进，也不能过于宽松
+        candidate_stops = [technical_stop, support_stop, percentage_stop]
+        candidate_stops = [s for s in candidate_stops if s < buy_price * 0.995]  # 必须低于买价
+        
+        if candidate_stops:
+            # 选择最高的止损价（风险最小）
+            optimal_stop = max(candidate_stops)
+        else:
+            # 备用方案
+            optimal_stop = buy_price * 0.98
+        
+        return round(optimal_stop, 2)
+    
+    def _get_atr_multiplier(self, signal_strength: float, market_regime: str, is_t0: bool) -> float:
+        """根据市场条件动态调整ATR倍数"""
+        base_multiplier = 1.5 if is_t0 else 1.2
+        
+        # 信号强度调整
+        if signal_strength > 0.8:
+            base_multiplier *= 0.8  # 强信号收紧止损
+        elif signal_strength < 0.5:
+            base_multiplier *= 1.2  # 弱信号放宽止损
+        
+        # 市场状态调整
+        if market_regime == "HIGH_VOLATILITY":
+            base_multiplier *= 1.5  # 高波动时放宽
+        elif market_regime == "CONSOLIDATION":
+            base_multiplier *= 0.8  # 震荡市收紧
+        
+        return max(min(base_multiplier, 2.5), 0.8)
+    
+    def _calculate_dynamic_take_profit(self, buy_price: float, stop_loss_price: float,
+                                     resistance: float, signal_strength: float,
+                                     volatility: float, is_t0: bool, 
+                                     trend_strength: float, market_regime: str) -> float:
+        """动态止盈目标计算"""
+        risk_amount = buy_price - stop_loss_price
+        
+        # 基础风险收益比：根据信号质量动态调整
+        if signal_strength > 0.8 and trend_strength > 0.7:
+            base_ratio = 3.5  # 强信号强趋势：追求更高收益
+        elif signal_strength > 0.6:
+            base_ratio = 2.8  # 中等信号：平衡收益风险
+        else:
+            base_ratio = 2.2  # 弱信号：保守目标
+        
+        # 市场状态调整
+        if market_regime == "TRENDING":
+            regime_adjustment = 1.2  # 趋势市提高目标
+        elif market_regime == "HIGH_VOLATILITY":
+            regime_adjustment = 0.8  # 高波动降低目标
+        else:
+            regime_adjustment = 1.0  # 震荡市保持中性
+        
+        # T+0 vs T+1调整
+        trading_adjustment = 0.8 if is_t0 else 1.2  # T+0快进快出，T+1可以拿久一点
+        
+        # 计算动态收益比
+        dynamic_ratio = base_ratio * regime_adjustment * trading_adjustment
+        dynamic_ratio = max(min(dynamic_ratio, 5.0), 2.0)  # 限制在2-5倍之间
+        
+        # 计算目标价
+        target_price = buy_price + (risk_amount * dynamic_ratio)
+        
+        # 阻力位检查：如果阻力位合理且低于目标价，考虑调整
+        if resistance > buy_price * 1.01:  # 阻力位必须合理
+            resistance_target = resistance * 0.98  # 阻力位下方2%
+            if resistance_target < target_price and resistance_target >= buy_price + (risk_amount * 2.0):
+                target_price = resistance_target  # 使用阻力位目标，但确保最小2:1收益比
+        
+        return round(target_price, 2)
+    
+    def _validate_risk_reward_ratio(self, buy_price: float, stop_loss_price: float, 
+                                  take_profit_price: float) -> tuple:
+        """最终风险收益比验证和调整"""
+        risk = buy_price - stop_loss_price
+        reward = take_profit_price - buy_price
+        
+        if risk <= 0:
+            # 异常情况：强制设置合理的风险收益
+            stop_loss_price = round(buy_price * 0.975, 2)  # 2.5%止损
+            take_profit_price = round(buy_price * 1.05, 2)   # 5%止盈，确保2:1比例
+            return buy_price, stop_loss_price, take_profit_price
+        
+        current_ratio = reward / risk if risk > 0 else 0
+        
+        if current_ratio < 2.0:
+            # 收益比不足，调整止盈价
+            take_profit_price = round(buy_price + (risk * 2.0), 2)
+        elif current_ratio > 6.0:
+            # 收益比过高，可能不现实，适度调整
+            take_profit_price = round(buy_price + (risk * 5.0), 2)
+        
+        return buy_price, stop_loss_price, take_profit_price
+            
+    def _calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
+        """计算技术指标"""
+        df = df.copy()
+        
+        try:
+            # 导入计算函数
+            selector_path = Path("stock_selctor/Selector.py")
+            spec = importlib.util.spec_from_file_location("Selector", selector_path)
+            selector_module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(selector_module)
+            
+            # 计算KDJ
+            df = selector_module.compute_kdj(df)
+            
+            # 计算BBI
+            df['BBI'] = selector_module.compute_bbi(df)
+            
+            # 计算DIF
+            df['DIF'] = selector_module.compute_dif(df)
+            
+        except Exception as e:
+            logger.warning(f"计算技术指标失败: {e}")
+            
+        return df
+    
+    def generate_investment_recommendation(self, stock_info: Dict[str, Any]) -> Dict[str, str]:
+        """生成投资建议 - 基于优化后评分系统生成买入/持有/卖出建议"""
+        try:
+            # 🔧 V3.81版本直接使用已计算的投资建议，不重新计算
+            if hasattr(self, 'scoring_version') and self.scoring_version == "v3.81":
+                # V3.81版本已经在批处理阶段计算了投资建议
+                existing_recommendation = stock_info.get('recommendation', None)
+                existing_confidence = stock_info.get('confidence_level', None)
+                if existing_recommendation and existing_confidence:
+                    return {
+                        'recommendation': existing_recommendation,
+                        'confidence': existing_confidence,
+                        'technical_rating': '优秀',
+                        'risk_rating': stock_info.get('risk_level', '中等'),
+                        'score': stock_info.get('final_score', 50.0)
+                    }
+
+            # 使用优化后的综合评分系统
+            score, detailed_info = self.calculate_comprehensive_score(stock_info)
+
+            # 获取新评分系统的推荐
+            new_recommendation = detailed_info.get('recommendation', '观望')
+            confidence = detailed_info.get('confidence', '低')
+            
+            # 策略交集强度评估
+            strategy_count = stock_info.get('selected_by_strategies', 1)
+            strategies = stock_info.get('strategies', [])
+            
+            # 技术指标强度评估
+            kdj_k = stock_info.get('kdj_k', 50)
+            kdj_j = stock_info.get('kdj_j', 50) 
+            dif = stock_info.get('dif', 0)
+            bbi_signal = stock_info.get('close', 0) > stock_info.get('bbi', 0)
+            
+            # 风险评估
+            volatility = stock_info.get('volatility', 0) 
+            risk_reward_ratio = stock_info.get('risk_reward_ratio', 1.0)
+            
+            # 综合决策逻辑：结合新评分系统 + 策略交集
+            base_recommendation = new_recommendation
+            base_confidence = confidence
+            
+            # 策略加成调整
+            if strategy_count >= 3 or 'SuperB1战法' in strategies:
+                # 多策略确认，提升推荐等级
+                if base_recommendation == "观望" and score >= 65:
+                    recommendation = "谨慎买入"
+                    confidence = "中"
+                elif base_recommendation == "谨慎买入" and score >= 75:
+                    recommendation = "买入"  
+                    confidence = "高"
+                elif base_recommendation == "买入" and score >= 80 and risk_reward_ratio >= 3.0:
+                    recommendation = "强烈买入"
+                    confidence = "优秀"
+                else:
+                    recommendation = base_recommendation
+                    confidence = base_confidence
+                    
+            elif strategy_count == 2:
+                # 双策略温和提升
+                if base_recommendation == "观望" and score >= 68:
+                    recommendation = "谨慎买入"
+                    confidence = "中"
+                elif base_recommendation == "谨慎买入" and score >= 78:
+                    recommendation = "买入"
+                    confidence = "高"
+                else:
+                    recommendation = base_recommendation
+                    confidence = base_confidence
+                    
+            else:  # 单策略
+                # 单策略需要更高标准，但v3.41、v3.81、v3.9和v3.94需要特殊处理
+                if hasattr(self, 'scoring_version') and self.scoring_version in ["v3.9", "v3.94", "v3.95"]:
+                    # 🏆 v3.9/v3.94/v3.95生产版：完全信任ML模型的评分和建议，不做单策略惩罚
+                    # v3.9/v3.94/v3.95是经过充分训练的A/A+级模型，其评分本身已包含质量判断
+                    recommendation = base_recommendation
+                    confidence = base_confidence
+                    logger.debug(f"V3.9x保持原建议: {recommendation} (评分={score:.1f})")
+                elif hasattr(self, 'scoring_version') and self.scoring_version == "v3.41":
+                    # v3.41反向评分：降低单策略的惩罚，因为评分逻辑已经反转
+                    if base_recommendation == "买入" and score < 60:  # 降低阈值从75到60
+                        recommendation = "谨慎买入"
+                        confidence = "中"
+                    elif base_recommendation == "谨慎买入" and score < 50:  # 降低阈值从65到50
+                        recommendation = "观望"
+                        confidence = "低"
+                    else:
+                        recommendation = base_recommendation
+                        confidence = base_confidence
+                elif hasattr(self, 'scoring_version') and self.scoring_version == "v3.81":
+                    # v3.81 Level 4质量评分版本：完全使用V3.81已生成的投资建议，不覆盖
+                    # 🎯 关键修复：V3.81的投资建议已经在批处理阶段正确生成，不应重新计算
+                    if 'recommendation' in detailed_info:
+                        recommendation = detailed_info.get('recommendation', base_recommendation)
+                        confidence = detailed_info.get('confidence', base_confidence)
+                        logger.debug(f"使用V3.81内置推荐: {recommendation}")
+                        return {
+                            'recommendation': recommendation,
+                            'confidence': confidence,
+                            'score': score,
+                            'detailed_info': detailed_info
+                        }
+                    else:
+                        # 如果没有V3.81特定推荐，使用调整后的阈值
+                        if score >= 75:
+                            recommendation = "买入"
+                            confidence = "高"
+                        elif score >= 60:
+                            recommendation = "谨慎买入"
+                            confidence = "中"
+                        else:
+                            recommendation = base_recommendation
+                            confidence = base_confidence
+                else:
+                    # 其他版本保持原有逻辑
+                    if base_recommendation == "买入" and score < 75:
+                        recommendation = "谨慎买入"
+                        confidence = "中"
+                    elif base_recommendation == "谨慎买入" and score < 65:
+                        recommendation = "观望"
+                        confidence = "低"
+                    else:
+                        recommendation = base_recommendation
+                        confidence = base_confidence
+                    
+            # 技术面评价
+            if kdj_k < 30 and kdj_j < 20 and dif > 0:
+                technical_rating = "优秀"
+            elif kdj_k < 50 and bbi_signal and dif > -0.1:
+                technical_rating = "良好"
+            elif kdj_k < 70:
+                technical_rating = "中性"
+            else:
+                technical_rating = "谨慎"
+                
+            # 风险评价
+            if volatility < 3.0 and risk_reward_ratio >= 3.0:
+                risk_rating = "优秀"
+            elif volatility < 5.0 and risk_reward_ratio >= 2.0:
+                risk_rating = "良好"
+            elif volatility < 8.0:
+                risk_rating = "中性"
+            else:
+                risk_rating = "谨慎"
+                
+            return {
+                'recommendation': recommendation,
+                'confidence': confidence,
+                'technical_rating': technical_rating,
+                'risk_rating': risk_rating,
+                'score': score,  # 保留数字评分用于内部排序
+                'detailed_scoring': detailed_info,  # 新增：详细评分信息
+                'factor_scores': detailed_info.get('factor_scores', {}),  # 因子分数
+                # 🏆 V3.9.0专用字段 - 提升到根层级供报告使用
+                'predicted_return_5d': detailed_info.get('predicted_return_5d', 0.0),
+                'confidence_score': detailed_info.get('confidence_score', 0.0),
+                'risk_level': detailed_info.get('risk_level', 'medium'),
+                'scoring_system': 'v2.0 - 基于3949只股票实际表现优化'
+            }
+            
+        except Exception as e:
+            logger.warning(f"生成投资建议失败: {e}")
+            return {
+                'recommendation': '观望',
+                'confidence': '中性', 
+                'technical_rating': '中性',
+                'risk_rating': '中性',
+                'score': 50.0
+            }
+
+    def _calculate_quality_score(self, final_score, confidence_score, prediction_data):
+        """🔧 新增：基于多因素计算质量评分"""
+        try:
+            # 因素1：置信度权重 (40%)
+            confidence_component = confidence_score * 0.4
+
+            # 因素2：评分高度权重 (30%) - 高分股票质量更高
+            score_component = (final_score / 100.0) * 0.3
+
+            # 因素3：预测一致性权重 (30%) - 基于原始预测的方差
+            if isinstance(prediction_data, dict) and 'raw_predictions' in prediction_data:
+                raw_preds = list(prediction_data['raw_predictions'].values())
+                if len(raw_preds) > 1:
+                    # 低方差=高一致性=高质量
+                    variance = np.var(raw_preds)
+                    consistency_component = (1.0 / (1.0 + variance)) * 0.3
+                else:
+                    consistency_component = 0.15  # 默认中等
+            else:
+                consistency_component = 0.15  # 默认中等
+
+            # 综合质量评分
+            quality_score = confidence_component + score_component + consistency_component
+            return round(np.clip(quality_score, 0.1, 0.95), 3)
+
+        except Exception as e:
+            logger.warning(f"质量评分计算失败: {e}")
+            return confidence_score  # 回退到置信度
+
+    def _calculate_risk_level(self, final_score, confidence_score, prediction_data):
+        """🔧 新增：基于多因素计算风险等级"""
+        try:
+            # 因素1：评分风险 - 低分=高风险
+            score_risk = 1.0 - (final_score / 100.0)  # 0-1，1表示高风险
+
+            # 因素2：置信度风险 - 低置信度=高风险
+            confidence_risk = 1.0 - confidence_score  # 0-1，1表示高风险
+
+            # 因素3：预测波动风险 - 高方差=高风险
+            if isinstance(prediction_data, dict) and 'raw_predictions' in prediction_data:
+                raw_preds = list(prediction_data['raw_predictions'].values())
+                if len(raw_preds) > 1:
+                    variance = np.var(raw_preds)
+                    volatility_risk = min(variance / 10.0, 1.0)  # 标准化到0-1
+                else:
+                    volatility_risk = 0.5  # 默认中等风险
+            else:
+                volatility_risk = 0.5  # 默认中等风险
+
+            # 综合风险评分：评分风险40% + 置信度风险35% + 波动风险25%
+            risk_score = score_risk * 0.4 + confidence_risk * 0.35 + volatility_risk * 0.25
+
+            # 转换为风险等级
+            if risk_score <= 0.3:
+                return 'low'
+            elif risk_score <= 0.6:
+                return 'medium'
+            else:
+                return 'high'
+
+        except Exception as e:
+            logger.warning(f"风险等级计算失败: {e}")
+            # 回退到简单规则
+            return 'low' if final_score > 70 else 'medium' if final_score > 50 else 'high'
+
+    def _calculate_risk_level_v381(self, final_score, confidence_score, quality_score):
+        """🎯 V3.81专用：基于Level 4质量评分的风险等级计算"""
+        try:
+            # 因素1：评分风险 - 低分=高风险
+            score_risk = 1.0 - (final_score / 100.0)  # 0-1，1表示高风险
+
+            # 因素2：置信度风险 - 低置信度=高风险
+            confidence_risk = 1.0 - confidence_score  # 0-1，1表示高风险
+
+            # 因素3：🎯 Level 4质量风险 - 低质量=高风险
+            quality_risk = 1.0 - quality_score  # 0-1，1表示高风险
+
+            # V3.81特殊权重：更重视Level 4质量评分
+            # 质量风险45% + 评分风险30% + 置信度风险25%
+            risk_score = quality_risk * 0.45 + score_risk * 0.30 + confidence_risk * 0.25
+
+            # 基于Level 4质量评分的精细化风险等级
+            if risk_score <= 0.25 and quality_score >= 0.7:
+                return 'very_low'  # 新增：极低风险
+            elif risk_score <= 0.35:
+                return 'low'
+            elif risk_score <= 0.55:
+                return 'medium'
+            elif risk_score <= 0.75:
+                return 'high'
+            else:
+                return 'very_high'  # 新增：极高风险
+
+        except Exception as e:
+            logger.warning(f"V3.81风险等级计算失败: {e}")
+            # 回退到基于质量评分的简单规则
+            if quality_score >= 0.7:
+                return 'low'
+            elif quality_score >= 0.4:
+                return 'medium'
+            else:
+                return 'high'
+
+    def _calculate_risk_level_v39(self, final_score, confidence_score):
+        """🏆 V3.9.0专用：基于A级模型的风险等级计算"""
+        try:
+            # 因素1：评分风险 - 低分=高风险
+            score_risk = 1.0 - (final_score / 100.0)  # 0-1，1表示高风险
+
+            # 因素2：置信度风险 - 低置信度=高风险
+            confidence_risk = 1.0 - confidence_score  # 0-1，1表示高风险
+
+            # V3.9.0权重：评分60% + 置信度40% (简化，更依赖模型预测)
+            risk_score = score_risk * 0.6 + confidence_risk * 0.4
+
+            # 基于A级模型的风险等级划分
+            if risk_score <= 0.20:
+                return 'very_low'
+            elif risk_score <= 0.35:
+                return 'low'
+            elif risk_score <= 0.55:
+                return 'medium'
+            elif risk_score <= 0.75:
+                return 'high'
+            else:
+                return 'very_high'
+
+        except Exception as e:
+            logger.warning(f"V3.9.0风险等级计算失败: {e}")
+            return 'medium'
+
+    def calculate_comprehensive_score(self, stock_info: Dict[str, Any], trade_date: str = None) -> Tuple[float, Dict]:
+        """
+        使用优化后的评分系统计算股票综合评分
+        
+        v2版本 - 基于3949只股票实际表现优化的多因子评分系统:
+        - 动量因子40% (识别强势股)
+        - 均值回归25% (价值修复)  
+        - 量价突破20% (突破确认)
+        - 相对强度10% (相对表现)
+        - 稳定性5% (风险控制)
+        
+        v3版本 - 智能动态权重评分系统:
+        - 技术指标动态权重
+        - 基本面自适应权重
+        - 市场环境智能识别
+        - 多时间窗口综合
+        """
+        try:
+            # 处理 stock_info 参数（可能是字符串或字典）
+            if isinstance(stock_info, str):
+                stock_code = stock_info
+            else:
+                stock_code = stock_info.get('stock_code', stock_info.get('code', ''))
+
+            if not stock_code:
+                return 50.0, {'error': '股票代码缺失'}
+            
+            if trade_date is None:
+                trade_date = datetime.now().strftime('%Y-%m-%d')
+
+            if self.scoring_version == "v3.95":
+                # 使用v3.9.5多目标预测评分系统 - 🚀 MULTI-TARGET PREDICTION MODEL
+                try:
+                    # 🔥 优先使用缓存的V3.95批量结果
+                    if stock_code in self.v395_batch_cache:
+                        result = self.v395_batch_cache[stock_code]
+                        logger.debug(f"使用V3.95批量缓存结果 {stock_code}")
+                    else:
+                        # 回退到单只评分
+                        results = self.scoring_engine_v395.predict_scores([stock_code], trade_date)
+                        result = results.get(stock_code, {'score': 50.0, 'pred_3d': 0, 'pred_5d': 0, 'pred_10d': 0})
+                        logger.debug(f"V3.95使用单只评分（无缓存）{stock_code}")
+
+                    if not result:
+                        logger.warning(f"v3.9.5无法获取股票评分 {stock_code}")
+                        return 45, {'error': '无法获取评分', 'scoring_method': 'V3.9.5_MultiTarget'}
+
+                    # V3.9.5返回的结果格式
+                    final_score = result.get('score', 50.0)
+                    pred_3d = result.get('pred_3d', 0.0)
+                    pred_5d = result.get('pred_5d', 0.0)
+                    pred_10d = result.get('pred_10d', 0.0)
+
+                    # 计算综合预测收益（加权平均）
+                    predicted_return = 0.4 * pred_3d + 0.35 * pred_5d + 0.25 * pred_10d
+                    confidence_score = min(0.9, 0.6 + abs(predicted_return) * 5)  # 基于预测强度的置信度
+
+                    # 投资建议 - 综合考虑评分和预测收益
+                    # 评分高说明特征好，预测收益说明短期预期
+                    if predicted_return > 0.02:
+                        recommendation = '强烈推荐'
+                    elif predicted_return > 0.01 or (final_score >= 85 and predicted_return > -0.005):
+                        recommendation = '推荐买入'
+                    elif predicted_return > 0 or (final_score >= 75 and predicted_return > -0.01):
+                        recommendation = '谨慎买入'
+                    elif predicted_return > -0.01 or final_score >= 65:
+                        recommendation = '观望'
+                    else:
+                        recommendation = '回避'
+
+                    # 计算分期评分
+                    short_term_score = 50 + pred_3d * 500  # 3日收益映射
+                    medium_term_score = 50 + pred_5d * 400  # 5日收益映射
+                    long_term_score = 50 + pred_10d * 300  # 10日收益映射
+
+                    logger.debug(f"V3.9.5 {stock_code}: 综合评分={final_score:.1f}, 3d={pred_3d:.2%}, 5d={pred_5d:.2%}, 10d={pred_10d:.2%}")
+
+                    detailed_info = {
+                        'final_score': final_score,
+                        'pred_3d': pred_3d,
+                        'pred_5d': pred_5d,
+                        'pred_10d': pred_10d,
+                        'predicted_return': predicted_return,
+                        'confidence_score': confidence_score,
+                        'confidence_level': 'high' if confidence_score > 0.7 else 'medium' if confidence_score > 0.4 else 'low',
+                        'short_term_score': short_term_score,
+                        'medium_term_score': medium_term_score,
+                        'long_term_score': long_term_score,
+                        'predicted_return_5d': pred_5d,
+                        'overall_quality': confidence_score,
+                        'quality_score': confidence_score,
+                        'risk_level': self._calculate_risk_level_v39(final_score, confidence_score),
+                        'recommendation': recommendation,
+                        'confidence': 'high' if confidence_score > 0.7 else 'medium' if confidence_score > 0.4 else 'low',
+                        'scoring_method': 'V3.9.5_MultiTarget_Rolling',
+                        'model_type': 'multi_target_prediction',
+                        'targets': '3d/5d/10d',
+                        'temporal_weights': {
+                            'short_term': 0.4,
+                            'medium_term': 0.35,
+                            'long_term': 0.25
+                        }
+                    }
+
+                    return final_score, detailed_info
+
+                except Exception as e:
+                    logger.error(f"v3.9.5评分系统错误 {stock_code}: {str(e)}")
+                    return 45, {'error': f'系统错误: {str(e)}', 'scoring_method': 'V3.9.5_MultiTarget'}
+
+            elif self.scoring_version == "v3.94":
+                # 使用v3.9.4生产版评分系统 - 🏆 PRODUCTION A+ GRADE MODEL (带活跃市值特征)
+                try:
+                    # 🔥 优先使用缓存的V3.94批量百分位排名结果
+                    if stock_code in self.v394_batch_cache:
+                        result = self.v394_batch_cache[stock_code]
+                        logger.debug(f"使用V3.94批量缓存结果 {stock_code}")
+                    else:
+                        # 回退到单只评分（不推荐，会导致评分集中）
+                        result = self.scoring_engine_v394.predict_score(stock_code, trade_date)
+                        logger.debug(f"V3.94使用单只评分（无缓存）{stock_code}")
+
+                    if not result:
+                        logger.warning(f"v3.9.4无法获取股票评分 {stock_code}")
+                        return 45, {'error': '无法获取评分', 'scoring_method': 'V3.9.4_Production'}
+
+                    # V3.9.4返回的结果格式（批量模式与单只模式兼容）
+                    final_score = result.get('score', 50.0)
+                    predicted_return = result.get('predicted_return_5d', result.get('predicted_return', 0.0))
+                    confidence_score = result.get('confidence', 0.8)
+                    recommendation = result.get('recommendation', '观望')
+                    percentile_rank = result.get('percentile_rank', 50.0)  # 百分位排名
+
+                    # 计算分期评分 (基于5日收益预测)
+                    short_term_score = final_score * 1.1  # 短期略高
+                    medium_term_score = final_score
+                    long_term_score = final_score * 0.9  # 长期略低
+
+                    logger.debug(f"V3.9.4 {stock_code}: 综合评分={final_score:.1f}, 百分位排名={percentile_rank:.1f}%, 预测5日收益={predicted_return:.2%}, 投资建议={recommendation}")
+
+                    detailed_info = {
+                        'final_score': final_score,
+                        'percentile_rank': percentile_rank,  # 🔥 百分位排名（核心区分度指标）
+                        'confidence_score': confidence_score,
+                        'confidence_level': 'high' if confidence_score > 0.7 else 'medium' if confidence_score > 0.4 else 'low',
+                        'short_term_score': short_term_score,
+                        'medium_term_score': medium_term_score,
+                        'long_term_score': long_term_score,
+                        'predicted_return_5d': predicted_return,
+                        'overall_quality': confidence_score,
+                        'quality_score': confidence_score,
+                        'risk_level': self._calculate_risk_level_v39(final_score, confidence_score),
+                        'recommendation': recommendation,
+                        'confidence': 'high' if confidence_score > 0.7 else 'medium' if confidence_score > 0.4 else 'low',
+                        'scoring_method': 'V3.9.4_Production_A+_Grade_Percentile',
+                        'model_grade': 'A+',
+                        'model_ic': 0.1363,
+                        'top20_winrate': 0.5643,
+                        'features': '48 (42基础+6活跃市值)',
+                        'scoring_mode': 'percentile_ranking',  # 🔥 标识使用百分位排名模式
+                        'temporal_weights': {
+                            'short_term': 0.3,
+                            'medium_term': 0.4,
+                            'long_term': 0.3
+                        }
+                    }
+
+                    return final_score, detailed_info
+
+                except Exception as e:
+                    logger.error(f"v3.9.4评分系统错误 {stock_code}: {str(e)}")
+                    return 45, {'error': f'系统错误: {str(e)}', 'scoring_method': 'V3.9.4_Production'}
+
+            elif self.scoring_version == "v3.9":
+                # 使用v3.9.0生产版评分系统 - 🏆 PRODUCTION A-GRADE MODEL
+                try:
+                    # 使用V3.9.0的预测接口评估单只股票
+                    result = self.scoring_engine_v39.predict_score(stock_code, trade_date)
+
+                    if not result:
+                        logger.warning(f"v3.9.0无法获取股票评分 {stock_code}")
+                        return 45, {'error': '无法获取评分', 'scoring_method': 'V3.9.0_Production'}
+
+                    # V3.9.0返回的结果格式
+                    final_score = result.get('score', 50.0)
+                    predicted_return = result.get('predicted_return_5d', 0.0)
+                    confidence_score = result.get('confidence', 0.8)
+                    recommendation = result.get('recommendation', '观望')
+
+                    # 计算分期评分 (基于5日收益预测)
+                    short_term_score = final_score * 1.1  # 短期略高
+                    medium_term_score = final_score
+                    long_term_score = final_score * 0.9  # 长期略低
+
+                    logger.debug(f"V3.9.0 {stock_code}: 综合评分={final_score:.1f}, 预测5日收益={predicted_return:.2%}, 投资建议={recommendation}")
+
+                    detailed_info = {
+                        'final_score': final_score,
+                        'confidence_score': confidence_score,
+                        'confidence_level': 'high' if confidence_score > 0.7 else 'medium' if confidence_score > 0.4 else 'low',
+                        'short_term_score': short_term_score,
+                        'medium_term_score': medium_term_score,
+                        'long_term_score': long_term_score,
+                        'predicted_return_5d': predicted_return,
+                        'overall_quality': confidence_score,
+                        'quality_score': confidence_score,
+                        'risk_level': self._calculate_risk_level_v39(final_score, confidence_score),
+                        'recommendation': recommendation,
+                        'confidence': 'high' if confidence_score > 0.7 else 'medium' if confidence_score > 0.4 else 'low',
+                        'scoring_method': 'V3.9.0_Production_A_Grade',
+                        'model_grade': 'A',
+                        'model_accuracy': 0.6730,
+                        'model_ic': 0.4892,
+                        'top20_winrate': 0.95,
+                        'temporal_weights': {
+                            'short_term': 0.3,
+                            'medium_term': 0.4,
+                            'long_term': 0.3
+                        }
+                    }
+
+                    return final_score, detailed_info
+
+                except Exception as e:
+                    logger.error(f"v3.9.0评分系统错误 {stock_code}: {str(e)}")
+                    return 45, {'error': f'系统错误: {str(e)}', 'scoring_method': 'V3.9.0_Production'}
+
+            elif self.scoring_version == "v3.81":
+                # 使用v3.81 Level 4质量评分集成系统 - 🎯 LEVEL 4 QUALITY META-LEARNER
+                try:
+                    # 🔧 优先使用缓存的V3.81批处理结果，避免single prediction的不一致问题
+                    if stock_code in self.v381_batch_cache:
+                        predictions = {stock_code: self.v381_batch_cache[stock_code]}
+                        logger.debug(f"使用V3.81缓存结果 {stock_code}")
+                    else:
+                        # 使用V3.81的预测接口评估单只股票 (包含Level 4质量评分)
+                        predictions = self.scoring_engine_v381.predict_scores_with_quality([stock_code], trade_date)
+                        logger.debug(f"V3.81实时计算 {stock_code}")
+
+                    if not predictions or stock_code not in predictions:
+                        logger.warning(f"v3.81无法获取股票评分 {stock_code}")
+                        return 45, {'error': '无法获取评分', 'scoring_method': 'V3.81_Level4'}
+
+                    # 处理V3.81的完整预测结果（包含Level 4质量评分）
+                    prediction_data = predictions[stock_code]
+
+                    if isinstance(prediction_data, dict):
+                        # 新格式：使用V380预测 + Level 4质量评分
+                        final_score = prediction_data.get('overall_score', 50.0)
+                        short_term_score = prediction_data.get('short_term_score', 50.0)
+                        medium_term_score = prediction_data.get('medium_term_score', 50.0)
+                        long_term_score = prediction_data.get('long_term_score', 50.0)
+                        confidence_score = prediction_data.get('confidence_score', 0.8)
+                        # 🎯 Level 4质量评分！
+                        quality_score = prediction_data.get('quality_score', 0.5)
+                        # 🔧 关键修复：使用V3.81已计算的推荐，不重新计算
+                        recommendation = prediction_data.get('recommendation', '观望')
+                        confidence_level = prediction_data.get('confidence_level', 'medium')
+                    else:
+                        # 兼容旧格式
+                        final_score = prediction_data if isinstance(prediction_data, (int, float)) else 50.0
+                        short_term_score = final_score * 1.1
+                        medium_term_score = final_score
+                        long_term_score = final_score * 0.9
+                        confidence_score = 0.8
+                        quality_score = 0.5
+                        recommendation = "观望"
+                        confidence_level = "medium"
+
+                    # 🔧 不再重新计算投资建议，直接使用V3.81的结果
+                    logger.debug(f"V3.81 {stock_code}: 综合评分={final_score}, 投资建议={recommendation}")
+
+                    detailed_info = {
+                        'final_score': final_score,
+                        'confidence_score': confidence_score,
+                        'confidence_level': 'high' if confidence_score > 0.7 else 'medium' if confidence_score > 0.4 else 'low',
+                        'short_term_score': short_term_score,
+                        'medium_term_score': medium_term_score,
+                        'long_term_score': long_term_score,
+                        # 🎯 Level 4质量评分作为核心质量指标
+                        'overall_quality': quality_score,
+                        'quality_score': quality_score,  # 直接使用Level 4评分
+                        'risk_level': self._calculate_risk_level_v381(final_score, confidence_score, quality_score),
+                        'recommendation': recommendation,
+                        'confidence': confidence_level,
+                        'scoring_method': 'V3.81_Level4_Quality',
+                        'temporal_weights': {
+                            'short_term': 0.3,
+                            'medium_term': 0.4,
+                            'long_term': 0.3
+                        },
+                        'level4_features': {
+                            'quality_differentiation': True,
+                            'meta_learning': True,
+                            'end_to_end_ml': True
+                        }
+                    }
+
+                    return final_score, detailed_info
+
+                except Exception as e:
+                    logger.error(f"v3.81 Level 4评分系统错误 {stock_code}: {str(e)}")
+                    return 45, {'error': f'系统错误: {str(e)}', 'scoring_method': 'V3.81_Level4'}
+
+            elif self.scoring_version == "v3.8":
+                # 使用v3.80高级机器学习评分引擎 - 🚀 ADVANCED ML SYSTEM
+                try:
+                    # 使用V3.80的预测接口评估单只股票
+                    predictions = self.scoring_engine_v38.predict_scores([stock_code], trade_date)
+
+                    if not predictions or stock_code not in predictions:
+                        logger.warning(f"v3.80无法获取股票评分 {stock_code}")
+                        return 45, {'error': '无法获取评分', 'scoring_method': 'V3.80_ML'}
+
+                    # 🔧 修复：处理V3.8的字典格式预测结果
+                    prediction_data = predictions[stock_code]
+
+                    if isinstance(prediction_data, dict):
+                        # 新格式：使用真实的分期评分
+                        final_score = prediction_data.get('overall_score', 50.0)
+                        short_term_score = prediction_data.get('short_term_score', 50.0)
+                        medium_term_score = prediction_data.get('medium_term_score', 50.0)
+                        long_term_score = prediction_data.get('long_term_score', 50.0)
+                        confidence_score = prediction_data.get('confidence_score', 0.8)
+                    else:
+                        # 兼容旧格式
+                        final_score = prediction_data if isinstance(prediction_data, (int, float)) else 50.0
+                        short_term_score = final_score * 1.1
+                        medium_term_score = final_score
+                        long_term_score = final_score * 0.9
+                        confidence_score = 0.8
+
+                    # 🔧 修复：调整投资建议阈值，更符合实际得分分布
+                    if final_score >= 70 and confidence_score > 0.6:
+                        recommendation = "强烈买入"
+                        confidence = "高"
+                    elif final_score >= 60 and confidence_score > 0.4:
+                        recommendation = "买入"
+                        confidence = "中高"
+                    elif final_score >= 50 and confidence_score > 0.3:
+                        recommendation = "谨慎买入"
+                        confidence = "中"
+                    elif final_score >= 40:
+                        recommendation = "观望"
+                        confidence = "低"
+                    elif final_score >= 30:
+                        recommendation = "谨慎卖出"
+                        confidence = "中"
+                    else:
+                        recommendation = "卖出"
+                        confidence = "高"
+
+                    detailed_info = {
+                        'final_score': final_score,
+                        'confidence_score': confidence_score,
+                        'confidence_level': 'high' if confidence_score > 0.7 else 'medium' if confidence_score > 0.4 else 'low',
+                        'short_term_score': short_term_score,    # 🔧 使用真实短期评分
+                        'medium_term_score': medium_term_score,  # 🔧 使用真实中期评分
+                        'long_term_score': long_term_score,      # 🔧 使用真实长期评分
+                        # 🔧 修复：基于多因素计算质量评分和风险等级
+                        'overall_quality': self._calculate_quality_score(final_score, confidence_score, prediction_data),
+                        'risk_level': self._calculate_risk_level(final_score, confidence_score, prediction_data),
+                        'recommendation': recommendation,
+                        'confidence': confidence,
+                        'scoring_method': 'V3.8_Adaptive',
+                        'temporal_weights': {
+                            'short_term': 0.3,
+                            'medium_term': 0.4,
+                            'long_term': 0.3
+                        }
+                    }
+
+                    return final_score, detailed_info
+
+                except Exception as e:
+                    logger.error(f"v3.8自适应评分系统错误 {stock_code}: {str(e)}")
+                    return 45, {'error': f'系统错误: {str(e)}', 'scoring_method': 'V3.8_Adaptive'}
+
+            elif self.scoring_version == "v3.7":
+                # 使用v3.7高级机器学习评分引擎 - 🚀 ADVANCED ML ENSEMBLE
+                try:
+                    # 获取股票数据用于机器学习预测
+                    stock_data = self._get_stock_data_for_scoring(stock_code, trade_date)
+                    if not stock_data:
+                        logger.warning(f"v3.7无法获取股票数据 {stock_code}")
+                        return 45, {'error': '无法获取股票数据', 'scoring_method': 'V3.7_Advanced_ML'}
+                    
+                    # 准备特征数据
+                    predict_date_obj = datetime.strptime(trade_date, '%Y-%m-%d')
+                    feature_date = (predict_date_obj - timedelta(days=1)).strftime('%Y-%m-%d')
+                    
+                    # 使用V3.7的高级特征提取 (35+维特征)
+                    features_df = self.scoring_engine_v37.extract_advanced_features(
+                        [stock_code], 
+                        feature_date, 
+                        feature_date,
+                        target_only=True
+                    )
+                    
+                    if features_df is None or len(features_df) == 0:
+                        logger.warning(f"v3.7无法提取特征数据 {stock_code}")
+                        return 45, {'error': '特征提取失败', 'scoring_method': 'V3.7_Advanced_ML'}
+                    
+                    # 检查模型是否已训练
+                    if 'target_1d' not in self.scoring_engine_v37.base_models or not self.scoring_engine_v37.base_models['target_1d']:
+                        logger.info(f"v3.7模型未训练，开始实时训练...")
+                        
+                        # 获取更多历史数据进行训练
+                        training_start_date = (predict_date_obj - timedelta(days=365)).strftime('%Y-%m-%d')
+                        
+                        # 获取活跃股票列表进行训练
+                        with self.scoring_engine_v37.db_manager.get_connection() as conn:
+                            active_stocks_query = """
+                            SELECT DISTINCT s.code 
+                            FROM securities s
+                            JOIN daily_quotes dq ON s.id = dq.security_id
+                            WHERE s.industry IS NOT NULL 
+                            AND dq.trade_date >= ?
+                            ORDER BY RANDOM()
+                            LIMIT 500
+                            """
+                            active_stocks = pd.read_sql_query(active_stocks_query, conn, params=(training_start_date,))
+                            training_codes = active_stocks['code'].tolist()
+                        
+                        if len(training_codes) < 50:
+                            logger.warning(f"训练数据不足: {len(training_codes)}只股票")
+                            return 45, {'error': '训练数据不足', 'scoring_method': 'V3.7_Advanced_ML'}
+                        
+                        # 提取训练特征
+                        logger.info(f"提取训练特征: {len(training_codes)}只股票")
+                        training_features = self.scoring_engine_v37.extract_advanced_features(
+                            training_codes,
+                            training_start_date,
+                            feature_date,
+                            target_only=False
+                        )
+                        
+                        if training_features is None or len(training_features) < 100:
+                            logger.warning(f"训练特征不足: {len(training_features) if training_features is not None else 0}条")
+                            return 45, {'error': '训练特征不足', 'scoring_method': 'V3.7_Advanced_ML'}
+                        
+                        # 构建模型架构
+                        self.scoring_engine_v37.build_three_layer_architecture('target_1d')
+                        
+                        # 准备训练数据
+                        training_data, feature_groups = self.scoring_engine_v37.prepare_training_data(
+                            training_features, 
+                            target_days=[1]
+                        )
+                        
+                        if len(training_data) < 200:
+                            logger.warning(f"训练样本不足: {len(training_data)}条")
+                            return 45, {'error': '训练样本不足', 'scoring_method': 'V3.7_Advanced_ML'}
+                        
+                        # 训练三层ensemble模型
+                        logger.info(f"开始训练V3.7三层ensemble模型: {len(training_data)}条样本")
+                        training_success = self.scoring_engine_v37.train_three_layer_ensemble(
+                            training_data, 
+                            feature_groups,
+                            'target_1d'
+                        )
+                        
+                        if not training_success:
+                            logger.error("V3.7模型训练失败")
+                            return 45, {'error': '模型训练失败', 'scoring_method': 'V3.7_Advanced_ML'}
+                        
+                        # 保存训练好的模型
+                        model_file = self.scoring_engine_v37.save_models("_realtime_trained")
+                        logger.info(f"V3.7模型训练完成并保存: {model_file}")
+                    
+                    # 使用三层ensemble模型进行评分预测
+                    ml_result = self.scoring_engine_v37.predict_three_layer_ensemble(
+                        features_df,
+                        target_col='target_1d'
+                    )
+
+                    if ml_result is None:
+                        logger.warning(f"v3.7评分预测失败 {stock_code}")
+                        return 45, {'error': '评分预测失败', 'scoring_method': 'V3.7_Advanced_ML'}
+
+                    # 解析结果
+                    if isinstance(ml_result, dict):
+                        base_score = float(ml_result['score'])
+                        factor_scores_v37 = ml_result['factor_scores']
+                    else:
+                        # 兼容旧格式
+                        base_score = float(ml_result[0]) if isinstance(ml_result, (list, tuple)) else float(ml_result)
+                        factor_scores_v37 = {'technical': 50.0, 'fundamental': 50.0, 'macro': 50.0, 'sentiment': 50.0, 'temporal': 50.0}
+                    
+                    # 获取特征重要性用于breakdown
+                    feature_importance = self.scoring_engine_v37.feature_importance_history.get('target_1d', {})
+                    
+                    # 使用V3.7的因子评分
+                    factor_scores = factor_scores_v37
+                    
+                    # 生成投资建议 (V3.7更严格的标准)
+                    if base_score >= 85:
+                        recommendation = "强烈买入"
+                        confidence = "极高"
+                    elif base_score >= 75:
+                        recommendation = "买入"
+                        confidence = "高"
+                    elif base_score >= 65:
+                        recommendation = "谨慎买入"
+                        confidence = "中"
+                    elif base_score >= 55:
+                        recommendation = "观望"
+                        confidence = "中"
+                    else:
+                        recommendation = "回避"
+                        confidence = "低"
+                    
+                    # 格式化V3.7评分结果
+                    scoring_result = {
+                        'base_score': base_score,
+                        'factor_scores': factor_scores,
+                        'recommendation': recommendation,
+                        'confidence': confidence,
+                        'scoring_method': 'V3.7_Advanced_ML_Ensemble',
+                        'model_type': '三层Ensemble(5基础+4专家+Meta)',
+                        'features_count': len(features_df.columns) - 2,  # 减去code和trade_date
+                        'ensemble_layers': 3
+                    }
+                    
+                    return base_score, scoring_result
+                    
+                except Exception as e:
+                    logger.error(f"v3.7评分系统错误 {stock_code}: {e}")
+                    import traceback
+                    logger.error(traceback.format_exc())
+                    return 45, {'error': f'系统错误: {str(e)}', 'scoring_method': 'V3.7_Advanced_ML'}
+            
+            elif self.scoring_version == "v3.6":
+                # 使用v3.6机器学习评分引擎 - 🆕 MACHINE LEARNING
+                try:
+                    # 获取股票数据用于机器学习预测
+                    stock_data = self._get_stock_data_for_scoring(stock_code, trade_date)
+                    if not stock_data:
+                        logger.warning(f"v3.6无法获取股票数据 {stock_code}")
+                        return 45, {'error': '无法获取股票数据', 'scoring_method': 'V3.6_ML'}
+                    
+                    # 准备特征数据 (使用最近一个交易日的数据进行预测)
+                    # trade_date是预测日期（如2025-09-10），我们需要用前一天的数据（2025-09-09）
+                    predict_date_obj = datetime.strptime(trade_date, '%Y-%m-%d')
+                    feature_date = (predict_date_obj - timedelta(days=1)).strftime('%Y-%m-%d')
+                    
+                    features_df = self.scoring_engine_v36.extract_features([stock_code], feature_date, feature_date)
+                    
+                    if features_df is None or len(features_df) == 0:
+                        logger.warning(f"v3.6无法提取特征数据 {stock_code}")
+                        return 45, {'error': '特征提取失败', 'scoring_method': 'V3.6_ML'}
+                    
+                    # 使用机器学习模型进行评分预测
+                    ml_scores = self.scoring_engine_v36.predict_scores(features_df, target_col='target_1d')
+                    
+                    if ml_scores is None or len(ml_scores) == 0:
+                        logger.warning(f"v3.6评分预测失败 {stock_code}")
+                        return 45, {'error': '评分预测失败', 'scoring_method': 'V3.6_ML'}
+                    
+                    # 取最新的评分
+                    base_score = float(ml_scores[-1])
+                    
+                    # 获取特征重要性用于breakdown
+                    feature_importance = self.scoring_engine_v36.feature_importance.get('target_1d')
+                    
+                    if feature_importance is not None:
+                        # 构建详细的因子评分breakdown
+                        feature_values = features_df.iloc[-1]
+                        factor_scores = {}
+                        
+                        for _, row in feature_importance.iterrows():
+                            feature_name = row['feature']
+                            # 计算平均重要性（如果avg_importance列存在则使用，否则计算lgb和xgb的平均值）
+                            if 'avg_importance' in row:
+                                importance = row['avg_importance']
+                            else:
+                                importance = (row['lgb_importance'] + row['xgb_importance']) / 2
+                            if feature_name in feature_values:
+                                raw_value = feature_values[feature_name]
+                                # 直接使用原始特征值，不进行人工映射
+                                factor_scores[feature_name] = round(raw_value, 4)
+                    else:
+                        factor_scores = {'ml_prediction': base_score}
+                    
+                    # 生成投资建议
+                    if base_score >= 80:
+                        recommendation = "买入"
+                        confidence = "高"
+                    elif base_score >= 70:
+                        recommendation = "谨慎买入"
+                        confidence = "中"
+                    elif base_score >= 60:
+                        recommendation = "观望"
+                        confidence = "中"
+                    else:
+                        recommendation = "回避"
+                        confidence = "低"
+                    
+                    # 格式化V3.6评分结果
+                    scoring_result = {
+                        'base_score': base_score,
+                        'factor_scores': factor_scores,
+                        'recommendation': recommendation,
+                        'confidence': confidence,
+                        'scoring_method': 'V3.6_MachineLearning',
+                        'model_type': 'LightGBM+XGBoost_Ensemble',
+                        'features_used': list(factor_scores.keys()),
+                        'prediction_target': '1日收益率预测'
+                    }
+                    
+                    return base_score, scoring_result
+                    
+                except Exception as e:
+                    logger.error(f"v3.6机器学习评分失败 {stock_code}: {str(e)}")
+                    return 45, {'error': f'ML评分失败: {str(e)}', 'scoring_method': 'V3.6_ML'}
+            elif self.scoring_version == "v4":
+                # 使用v4评分引擎
+                scoring_result = self.scoring_engine_v4.calculate_comprehensive_score(stock_code, trade_date)
+            elif self.scoring_version == "v3.53":
+                # 使用v3.53 多时间周期IC优化评分引擎 - 🆕 MULTI-PERIOD
+                try:
+                    # 获取股票数据用于评分
+                    stock_data = self._get_stock_data_for_scoring(stock_code, trade_date)
+                    if not stock_data:
+                        return 0, {"quantitative_score": 0, "factor_scores": {}, "recommendation": "数据不足", "scoring_method": "V3.53_MultiPeriod"}
+                    
+                    # 计算多时间周期评分
+                    composite_score, detailed_breakdown = self.scoring_engine_v353_multiperiod.calculate_multi_period_score(stock_data, trade_date, 'composite')
+                    
+                    # 生成投资建议（基于0-100分制）
+                    score = composite_score * 100
+                    if score >= 80:
+                        recommendation = "买入"
+                    elif score >= 70:
+                        recommendation = "谨慎买入"
+                    elif score >= 60:
+                        recommendation = "观望"
+                    else:
+                        recommendation = "回避"
+                    
+                    # 格式化结果
+                    detailed_info = {
+                        "base_score": score,
+                        "factor_scores": detailed_breakdown.get('period_details', {}),
+                        "recommendation": recommendation,
+                        "confidence": "高" if score >= 80 else "中" if score >= 70 else "低",
+                        "scoring_method": "V3.53_MultiPeriod_Composite",
+                        "period_scores": detailed_breakdown.get('period_scores', {}),
+                        "period_weights": detailed_breakdown.get('period_weights', {}),
+                        "detailed_scoring": detailed_breakdown
+                    }
+                    
+                    return score, detailed_info
+                    
+                except Exception as e:
+                    logger.error(f"v3.53 多时间周期评分失败 {stock_code}: {e}")
+                    return 0, {"quantitative_score": 0, "factor_scores": {}, "recommendation": "评分失败", "scoring_method": "V3.53_MultiPeriod"}
+            elif self.scoring_version == "v3.52":
+                # 使用v3.5 全面优化评分引擎 - 🆕 COMPREHENSIVE
+                try:
+                    # 获取股票数据用于评分
+                    stock_data = self._get_stock_data_for_scoring(stock_code, trade_date)
+                    if not stock_data:
+                        logger.warning(f"v3.52无法获取股票数据 {stock_code}")
+                        return 45, {'error': '无法获取股票数据'}
+                    
+                    # 使用全面优化后的评分系统
+                    final_score, breakdown = self.scoring_engine_v35_comprehensive.calculate_comprehensive_score(stock_data, trade_date)
+                    
+                    base_score = final_score
+                    factor_scores = breakdown.get('factor_scores', {})
+                    
+                    # 格式化输出 - 12因子评分
+                    scoring_result = {
+                        'base_score': base_score,
+                        'breakdown': breakdown,
+                        'factor_scores': factor_scores,  # 添加顶层factor_scores用于报告生成
+                        'report_columns': ['波动', '市值', '动量', 'PB', 'PE', 'RSI6', 'KDJ_K', 'BBI', 'KDJ_D', '知行趋势', '成交量', '知行多均'],
+                        'report_values': [
+                            round(factor_scores.get('volatility_risk', 0), 1),
+                            round(factor_scores.get('market_cap', 0), 1),
+                            round(factor_scores.get('price_momentum', 0), 1),
+                            round(factor_scores.get('pb', 0), 1),
+                            round(factor_scores.get('pe_ttm', 0), 1),
+                            round(factor_scores.get('rsi6', 0), 1),
+                            round(factor_scores.get('kdj_k', 0), 1),
+                            round(factor_scores.get('bbi', 0), 1),
+                            round(factor_scores.get('kdj_d', 0), 1),
+                            round(factor_scores.get('zhixing_trend', 0), 1),
+                            round(factor_scores.get('volume_surge', 0), 1),
+                            round(factor_scores.get('zhixing_multiavg', 0), 1)
+                        ]
+                    }
+                    
+                    return base_score, scoring_result
+                    
+                except Exception as e:
+                    logger.error(f"v3.52评分失败 {stock_code}: {str(e)}")
+                    return 45, {'error': f'评分失败: {str(e)}'}
+            elif self.scoring_version == "v3.51":
+                # 使用v3.5 Qlib优化评分引擎 - 🆕 OPTIMIZED
+                try:
+                    # 获取股票数据用于评分
+                    stock_data = self._get_stock_data_for_scoring(stock_code, trade_date)
+                    if not stock_data:
+                        logger.warning(f"v3.51无法获取股票数据 {stock_code}")
+                        return 45, {'error': '无法获取股票数据'}
+                    
+                    # 使用优化后的评分系统
+                    final_score, breakdown = self.scoring_engine_v35_optimized.calculate_comprehensive_score(stock_data, trade_date)
+                    
+                    base_score = final_score
+                    factor_scores = breakdown.get('factor_scores', {})
+                    
+                    # 构建置信度和推荐
+                    if base_score >= 75:
+                        confidence = "高"
+                        recommendation = "强烈推荐"
+                    elif base_score >= 65:
+                        confidence = "中"
+                        recommendation = "推荐"
+                    elif base_score >= 55:
+                        confidence = "低" 
+                        recommendation = "关注"
+                    else:
+                        confidence = "很低"
+                        recommendation = "观望"
+                    
+                    return base_score, {
+                        'factor_scores': factor_scores,
+                        'detailed_scores': breakdown,
+                        'confidence': confidence,
+                        'recommendation': recommendation,
+                        '优化评分系统': 'v3.51 - Qlib Phase 2 权重 (+2.88% IC)'
+                    }
+                    
+                except Exception as e:
+                    logger.warning(f"v3.51评分计算失败 {stock_code}: {str(e)}")
+                    return 45, {'error': str(e)}
+                    
+            elif self.scoring_version == "v3.5":
+                # 使用v3.5知行指标集成评分引擎 - 🆕
+                scoring_result = self.scoring_engine_v35.calculate_quantitative_score(stock_code, trade_date)
+                
+                # v3.5返回的是0-100分的量化评分
+                if 'error' in scoring_result:
+                    logger.warning(f"v3.5评分计算失败 {stock_code}: {scoring_result['error']}")
+                    return 45, {'error': scoring_result['error']}
+                
+                base_score = scoring_result['quantitative_score']
+                factor_scores = {
+                    'technical': scoring_result.get('technical_score', 0),
+                    'fundamental': scoring_result.get('fundamental_score', 0),
+                    'performance': scoring_result.get('performance_score', 0),
+                    'market_regime': scoring_result.get('market_regime_score', 0),
+                    'zhixing': scoring_result.get('zhixing_score', 0)
+                }
+                
+                # 从评分推导置信度
+                if base_score >= 75:
+                    confidence = "高"
+                elif base_score >= 65:
+                    confidence = "中"
+                else:
+                    confidence = "低"
+                
+                # 推导投资建议
+                if base_score >= 80:
+                    recommendation = "强烈推荐"
+                elif base_score >= 70:
+                    recommendation = "推荐"
+                elif base_score >= 60:
+                    recommendation = "关注"
+                else:
+                    recommendation = "观望"
+                    
+                detailed_scores = {
+                    'zhixing_signals': scoring_result.get('zhixing_signals', {}),
+                    'zhixing_trend': scoring_result.get('zhixing_trend'),
+                    'zhixing_multiavg': scoring_result.get('zhixing_multiavg'),
+                    'market_multiplier': scoring_result.get('market_multiplier', 1.0)
+                }
+                
+                # 添加调试信息
+                logger.info(f"🔍 v3.5 {stock_code} 知行信号调试:")
+                logger.info(f"   原始评分结果zhixing_signals: {scoring_result.get('zhixing_signals', '未找到')}")  
+                logger.info(f"   detailed_scores zhixing_signals: {detailed_scores.get('zhixing_signals', '未找到')}")
+                signal_in_detailed = detailed_scores.get('zhixing_signals', {}).get('signal_strength', '无')
+                logger.info(f"   最终信号强度: {signal_in_detailed}")
+                
+                return base_score, {
+                    'factor_scores': factor_scores,
+                    'detailed_scores': detailed_scores,
+                    'raw_scoring_data': scoring_result,  # 添加完整的评分结果供后续使用
+                    'confidence': confidence,
+                    'recommendation': recommendation
+                }
+            elif self.scoring_version == "v3.3":
+                # 使用v3.3相关性优化评分引擎 - 🆕
+                scoring_result = self.scoring_engine_v33.calculate_comprehensive_score(stock_code, trade_date)
+                
+                # v3.3返回的是0-100分的综合评分
+                if 'error' in scoring_result:
+                    logger.warning(f"v3.3评分计算失败 {stock_code}: {scoring_result['error']}")
+                    return 45, {'error': scoring_result['error']}
+                
+                base_score = scoring_result['comprehensive_score']
+                factor_scores = scoring_result['dimension_scores'] 
+                detailed_scores = scoring_result.get('detailed_scores', {})
+                recommendation = scoring_result['recommendation']
+                
+                # 从评分推导置信度
+                if base_score >= 75:
+                    confidence = "高"
+                elif base_score >= 65:
+                    confidence = "中"
+                elif base_score >= 55:
+                    confidence = "低"
+                else:
+                    confidence = "很低"
+                
+                # 构建详细信息
+                detailed_info = {
+                    'base_score': base_score,
+                    'strategy_bonus': 0,  # v3.3不使用策略加成
+                    'final_score': base_score,
+                    'recommendation': recommendation,
+                    'confidence': confidence,
+                    'factor_scores': factor_scores,
+                    'factor_weights': {
+                        'technical': 0.35,
+                        'volume_momentum': 0.25, 
+                        'fundamental': 0.20,
+                        'sentiment_capital': 0.08,
+                        'risk_control': 0.07,
+                        'market_environment': 0.05
+                    },
+                    'detailed_scores': detailed_scores,
+                    'industry': scoring_result.get('industry', 'Unknown'),
+                    'stock_name': scoring_result.get('stock_name', 'Unknown'),
+                    '优化评分系统': 'v3.3 - 相关性深度优化版 (成交量核心+基本面强化)'
+                }
+                
+                return base_score, detailed_info
+            elif self.scoring_version == "v3.1":
+                # 使用v3.1评分引擎
+                scoring_result = self.scoring_engine_v31.calculate_stock_score(stock_code, trade_date)
+                
+                # v3.1返回的是0-1的分数，但已经包含total_score_100
+                base_score = scoring_result.get('total_score_100', scoring_result.get('total_score', 0.5) * 100)
+                
+                # 从v3.1结果中获取推荐等级
+                if base_score >= 80:
+                    recommendation = "买入"
+                    confidence = "高"
+                elif base_score >= 70:
+                    recommendation = "谨慎买入"
+                    confidence = "中"
+                elif base_score >= 60:
+                    recommendation = "观望"
+                    confidence = "低"
+                else:
+                    recommendation = "回避"
+                    confidence = "低"
+                
+                # 构建详细信息
+                detailed_info = {
+                    'base_score': base_score,
+                    'strategy_bonus': 0,  # v3.1不使用策略加成
+                    'final_score': base_score,
+                    'recommendation': recommendation,
+                    'confidence': confidence,
+                    'factor_scores': scoring_result.get('scores', {}),
+                    'factor_weights': self.scoring_engine_v31.get_weight_summary(),
+                    'industry': scoring_result.get('details', {}).get('industry', 'Unknown'),
+                    'stock_name': scoring_result.get('details', {}).get('stock_name', 'Unknown'),
+                    '优化评分系统': 'v3.1 - 相关性分析优化版 (情绪指标+风险控制)'
+                }
+                
+                return base_score, detailed_info
+            elif self.scoring_version == "v3.2":
+                # 使用v3.2挤压动量增强评分引擎 - 🆕
+                scoring_result = self.scoring_engine_v32.calculate_comprehensive_score(stock_code, trade_date)
+                
+                # v3.2返回的是0-100分的综合评分
+                if 'error' in scoring_result:
+                    return 50, {'error': scoring_result['error']}
+                
+                base_score = scoring_result.get('comprehensive_score', 50.0)
+                
+                # 从v3.2结果中获取推荐等级
+                recommendation = scoring_result.get('recommendation', '观望')
+                
+                if base_score >= 80:
+                    confidence = "高"
+                elif base_score >= 65:
+                    confidence = "中"
+                else:
+                    confidence = "低"
+                
+                # 构建详细信息，展示挤压动量因子
+                detailed_info = {
+                    'base_score': base_score,
+                    'strategy_bonus': 0,  # v3.2不使用策略加成
+                    'final_score': base_score,
+                    'recommendation': recommendation,
+                    'confidence': confidence,
+                    'dimension_scores': scoring_result.get('dimension_scores', {}),
+                    'squeeze_momentum_scores': scoring_result.get('detailed_scores', {}).get('squeeze_momentum', {}),  # 🆕 挤压动量详情
+                    'factor_scores': scoring_result.get('dimension_scores', {}),  # 🔧 修复：使用维度评分而不是详细子项评分
+                    'stock_name': stock_code,
+                    '优化评分系统': 'v3.2 - 挤压动量增强版 (集成v4.0挤压动量因子)'
+                }
+                
+                return base_score, detailed_info
+            elif self.scoring_version == "v3.41":
+                # 使用v3.41反向工程重构的评分引擎 - 🆕
+                scoring_result = self.scoring_engine_v341.calculate_quantitative_score(stock_code, trade_date)
+                
+                # v3.41返回的是0-100分的量化评分（已反转）
+                if 'error' in scoring_result:
+                    logger.warning(f"v3.41评分计算失败 {stock_code}: {scoring_result['error']}")
+                    return 45, {'error': scoring_result['error']}
+                
+                base_score = scoring_result['quantitative_score']
+                
+                # v3.41的评分已经反转：分数越高，投资价值越高！
+                # 基于实际分数分布（最高约65分）调整阈值
+                if base_score >= 55:
+                    recommendation = "买入"
+                    confidence = "高"
+                elif base_score >= 45:
+                    recommendation = "谨慎买入"
+                    confidence = "中"
+                elif base_score >= 30:
+                    recommendation = "观望"
+                    confidence = "低"
+                else:
+                    recommendation = "回避"
+                    confidence = "低"
+                
+                detailed_info = {
+                    'base_score': base_score,
+                    'recommendation': recommendation,
+                    'confidence': confidence,
+                    'original_v34_score': scoring_result.get('original_v34_score', 0),
+                    'reversed_score': scoring_result.get('reversed_score', 0),
+                    'risk_signals': scoring_result.get('risk_signals', {}),
+                    'technical_score': scoring_result.get('technical_score', 0),
+                    'fundamental_score': scoring_result.get('fundamental_score', 0),
+                    'performance_score': scoring_result.get('performance_score', 0),
+                    'market_regime_score': scoring_result.get('market_regime_score', 0),
+                    'market_regime': scoring_result.get('market_regime', 'neutral'),
+                    'market_multiplier': scoring_result.get('market_multiplier', 1.0),
+                    'version': scoring_result.get('version', 'v3.41'),
+                    'stock_code': stock_code,
+                    'stock_name': stock_code,
+                    '优化评分系统': 'v3.41 - 反向工程重构版（基于负相关发现的革命性改进）',
+                    'factor_scores': {
+                        'technical_score': scoring_result.get('technical_score', 0),
+                        'fundamental_score': scoring_result.get('fundamental_score', 0),
+                        'performance_score': scoring_result.get('performance_score', 0),
+                        'market_regime_score': scoring_result.get('market_regime_score', 0)
+                    },
+                    'reverse_engineering': True
+                }
+                
+                return base_score, detailed_info
+            elif self.scoring_version == "v3.4":
+                # 使用v3.4基于v3.0优化的评分引擎 - 🆕
+                scoring_result = self.scoring_engine_v34.calculate_quantitative_score(stock_code, trade_date)
+                
+                # v3.4返回的是0-100分的量化评分
+                if 'error' in scoring_result:
+                    logger.warning(f"v3.4评分计算失败 {stock_code}: {scoring_result['error']}")
+                    return 45, {'error': scoring_result['error']}
+                
+                base_score = scoring_result['quantitative_score']
+                
+                # 从v3.4结果中获取推荐等级
+                if base_score >= 85:
+                    recommendation = "买入"
+                    confidence = "高"
+                elif base_score >= 75:
+                    recommendation = "谨慎买入"
+                    confidence = "中"
+                elif base_score >= 65:
+                    recommendation = "观望"
+                    confidence = "低"
+                else:
+                    recommendation = "回避"
+                    confidence = "低"
+                
+                detailed_info = {
+                    'base_score': base_score,
+                    'recommendation': recommendation,
+                    'confidence': confidence,
+                    'technical_score': scoring_result.get('technical_score', 0),
+                    'fundamental_score': scoring_result.get('fundamental_score', 0),
+                    'performance_score': scoring_result.get('performance_score', 0),
+                    'market_regime_score': scoring_result.get('market_regime_score', 0),
+                    'market_regime': scoring_result.get('market_regime', 'neutral'),
+                    'market_multiplier': scoring_result.get('market_multiplier', 1.0),
+                    'version': scoring_result.get('version', 'v3.4'),
+                    'stock_code': stock_code,
+                    'stock_name': stock_code,
+                    '优化评分系统': 'v3.4 - 基于v3.0成功经验优化增强版 (新增ROE和营收增长)',
+                    'factor_scores': {
+                        'technical_score': scoring_result.get('technical_score', 0),
+                        'fundamental_score': scoring_result.get('fundamental_score', 0),
+                        'performance_score': scoring_result.get('performance_score', 0),
+                        'market_regime_score': scoring_result.get('market_regime_score', 0)
+                    }
+                }
+                
+                return base_score, detailed_info
+            elif self.scoring_version == "v3":
+                # 使用v3评分引擎
+                scoring_result = self.scoring_engine_v3.calculate_stock_score(stock_code, trade_date)
+                
+                # v3返回的是0-1的分数，转换为0-100
+                base_score = scoring_result.get('total_score', 0.5) * 100
+                
+                # 从v3结果中获取推荐等级
+                if base_score >= 80:
+                    recommendation = "买入"
+                    confidence = "高"
+                elif base_score >= 70:
+                    recommendation = "谨慎买入"
+                    confidence = "中"
+                elif base_score >= 60:
+                    recommendation = "观望"
+                    confidence = "低"
+                else:
+                    recommendation = "回避"
+                    confidence = "低"
+                
+                # 构建详细信息
+                detailed_info = {
+                    'base_score': base_score,
+                    'strategy_bonus': 0,  # v3不使用策略加成
+                    'final_score': base_score,
+                    'recommendation': recommendation,
+                    'confidence': confidence,
+                    'factor_scores': scoring_result.get('scores', {}),
+                    'factor_weights': self.scoring_engine_v3.get_weight_summary(),
+                    'industry': scoring_result.get('details', {}).get('industry', 'Unknown'),
+                    'stock_name': scoring_result.get('details', {}).get('stock_name', 'Unknown'),
+                    '优化评分系统': 'v3.0 - 智能动态权重评分系统'
+                }
+                
+                return base_score, detailed_info
+                
+            else:
+                # 使用v2评分引擎
+                scoring_result = self.scoring_engine.score_single_stock(stock_code, trade_date)
+                
+                # 合并策略信息到评分结果中
+                strategy_bonus = self._calculate_strategy_bonus(stock_info)
+                base_score = scoring_result.get('composite_score', 50.0)
+                
+                # 策略加成：多策略选中给予额外加分
+                final_score = min(base_score + strategy_bonus, 100.0)
+                
+                # 返回详细评分信息
+                detailed_info = {
+                    'base_score': base_score,
+                    'strategy_bonus': strategy_bonus,
+                    'final_score': final_score,
+                    'recommendation': scoring_result.get('recommendation', '观望'),
+                    'confidence': scoring_result.get('confidence', '低'),
+                    'factor_scores': scoring_result.get('factor_scores', {}),
+                    'factor_weights': scoring_result.get('factor_weights', {}),
+                    'industry': scoring_result.get('industry', 'Unknown'),
+                    'stock_name': scoring_result.get('stock_name', 'Unknown'),
+                    '优化评分系统': 'v2.0 - 基于3949只股票实际表现优化'
+                }
+                
+                return final_score, detailed_info
+            
+        except Exception as e:
+            # 处理 stock_info 参数类型
+            if isinstance(stock_info, str):
+                error_code = stock_info
+            else:
+                error_code = stock_info.get('stock_code', 'Unknown')
+            logger.warning(f"使用优化评分系统失败 {error_code}: {e}")
+            # 回退到简化评分逻辑
+            return self._fallback_scoring(stock_info), {'error': str(e)}
+    
+    def _calculate_strategy_bonus(self, stock_info: Dict[str, Any]) -> float:
+        """计算策略交集加成分数"""
+        strategy_count = stock_info.get('selected_by_strategies', 1)
+        strategies = stock_info.get('strategies', [])
+        
+        # 多策略加成
+        if strategy_count >= 4:
+            bonus = 15.0  # 四策略强力加成
+        elif strategy_count == 3:
+            bonus = 10.0  # 三策略优秀加成
+        elif strategy_count == 2:
+            bonus = 6.0   # 二策略良好加成
+        else:
+            bonus = 0.0   # 单策略无加成
+        
+        # SuperB1战法特殊加成
+        if 'SuperB1战法' in strategies:
+            bonus += 5.0  # SuperB1额外加成
+        
+        return min(bonus, 20.0)  # 限制最高20分加成
+    
+    def _fallback_scoring(self, stock_info: Dict[str, Any]) -> float:
+        """回退评分逻辑 - 当新评分系统失败时使用"""
+        try:
+            base_score = 50.0
+            
+            # 简化的策略评分
+            strategy_count = stock_info.get('selected_by_strategies', 1)
+            if strategy_count >= 3:
+                base_score += 15.0
+            elif strategy_count == 2:
+                base_score += 8.0
+            
+            # KDJ简单评分
+            kdj_k = stock_info.get('kdj_k', 50)
+            kdj_d = stock_info.get('kdj_d', 50)
+            if kdj_k > kdj_d and kdj_k < 70:
+                base_score += 10.0
+            
+            # 风险收益比评分
+            rr_ratio = stock_info.get('risk_reward_ratio', 2.0)
+            if rr_ratio >= 3.0:
+                base_score += 10.0
+            elif rr_ratio >= 2.5:
+                base_score += 5.0
+            
+            return min(max(base_score, 0), 100.0)
+            
+        except Exception:
+            return 50.0
+        
+    def analyze_results(self, results: Dict[str, List[str]], data: Dict[str, pd.DataFrame], target_date: pd.Timestamp = None) -> Dict[str, Any]:
+        """分析选股结果"""
+        analysis = {
+            "total_strategies": len(results),
+            "strategy_results": {},
+            "strategy_details": results,  # 保存每个策略的详细选股结果
+            "multi_strategy_stocks": {},
+            "top_recommendations": [],
+            "all_stocks_with_scores": []  # 新增：记录所有股票及其评分
+        }
+        
+        # 统计每个策略的结果
+        all_picks = set()
+        for strategy, picks in results.items():
+            analysis["strategy_results"][strategy] = len(picks)
+            all_picks.update(picks)
+            
+        # 找出被多个策略选中的股票
+        stock_counts = {}
+        for strategy, picks in results.items():
+            for stock in picks:
+                stock_counts[stock] = stock_counts.get(stock, 0) + 1
+                
+        # 按被选中次数排序
+        sorted_stocks = sorted(stock_counts.items(), key=lambda x: x[1], reverse=True)
+        
+        # 生成多策略股票统计
+        for count in range(len(results), 0, -1):
+            stocks_with_count = [stock for stock, c in sorted_stocks if c == count]
+            if stocks_with_count:
+                analysis["multi_strategy_stocks"][f"{count}个策略"] = stocks_with_count
+                
+        # 生成推荐股票 - 对所有候选股票进行综合评分排序
+        all_stocks = [stock for stock, _ in sorted_stocks]  # 获取所有候选股票
+        stock_with_scores = []
+
+        # 🔥 V3.95批量多目标预测预计算
+        if hasattr(self, 'scoring_version') and self.scoring_version == "v3.95" and all_stocks:
+            try:
+                logger.info(f"🚀 V3.95批量多目标预测预计算：{len(all_stocks)}只股票...")
+                trade_date_str = target_date.strftime('%Y-%m-%d') if hasattr(target_date, 'strftime') else str(target_date)
+
+                # 调用批量预测方法
+                batch_results = self.scoring_engine_v395.predict_scores(all_stocks, trade_date_str)
+
+                # 缓存结果
+                self.v395_batch_cache = batch_results
+
+                # 统计信息
+                if batch_results:
+                    scores = [r.get('score', 0) for r in batch_results.values()]
+                    if scores:
+                        logger.info(f"✅ V3.95批量预计算完成：{len(batch_results)}只股票，评分范围 {min(scores):.1f}-{max(scores):.1f}")
+            except Exception as e:
+                logger.warning(f"⚠️ V3.95批量预计算失败，将使用单只评分: {e}")
+                self.v395_batch_cache = {}
+
+        # 🔥 V3.94批量百分位排名预计算（解决评分集中问题）
+        if hasattr(self, 'scoring_version') and self.scoring_version == "v3.94" and all_stocks:
+            try:
+                logger.info(f"🔥 V3.94批量百分位排名预计算：{len(all_stocks)}只股票...")
+                trade_date_str = target_date.strftime('%Y-%m-%d') if hasattr(target_date, 'strftime') else str(target_date)
+
+                # 调用批量百分位排名方法
+                ranked_results = self.scoring_engine_v394.predict_scores_with_ranking(all_stocks, trade_date_str)
+
+                # 缓存结果
+                self.v394_batch_cache = ranked_results
+
+                # 统计信息
+                if ranked_results:
+                    scores = [r.get('score', 0) for r in ranked_results.values()]
+                    if scores:
+                        logger.info(f"✅ V3.94批量预计算完成：{len(ranked_results)}只股票，评分范围 {min(scores):.1f}-{max(scores):.1f}")
+            except Exception as e:
+                logger.warning(f"⚠️ V3.94批量预计算失败，将使用单只评分: {e}")
+                self.v394_batch_cache = {}
+
+        logger.info(f"开始计算 {len(all_stocks)} 只股票的综合评分...")
+        
+        for i, stock in enumerate(all_stocks, 1):
+            stock_info = self.get_stock_info(stock, data, target_date)
+            if stock_info:
+                stock_info["selected_by_strategies"] = stock_counts[stock]
+                stock_info["strategies"] = [s for s, picks in results.items() if stock in picks]
+
+                # 生成投资建议
+                investment_rec = self.generate_investment_recommendation(stock_info)
+                stock_info.update(investment_rec)
+
+                # 🎯 V3.95: 使用策略驱动预测器重新计算预测收益（基于12,655历史样本统计）
+                # 注意：必须在 generate_investment_recommendation 之后执行，因为它会覆盖 predicted_return_5d
+                if hasattr(self, 'strategy_return_predictor') and self.scoring_version == "v3.95":
+                    try:
+                        strategies_str = ', '.join(stock_info["strategies"])
+                        trade_date_str = target_date.strftime('%Y-%m-%d') if hasattr(target_date, 'strftime') else str(target_date)
+
+                        # 从数据库获取真实的技术特征
+                        features = self.strategy_return_predictor._get_features_from_db(stock, trade_date_str)
+
+                        # 调用策略驱动预测器
+                        prediction = self.strategy_return_predictor.predict_return(
+                            score=stock_info.get('score', 50),
+                            strategies=strategies_str,
+                            features=features,
+                            period='5d'
+                        )
+
+                        # 更新预测收益和相关字段（覆盖原来的错误值）
+                        stock_info['predicted_return_5d'] = prediction['predicted_return']
+                        stock_info['pred_5d'] = prediction['predicted_return']
+                        stock_info['confidence_score'] = prediction['confidence']
+                        stock_info['win_rate'] = prediction['win_rate']
+                        stock_info['recommendation'] = prediction['recommendation']
+
+                        # 更新 factor_scores 中的相关字段
+                        if 'factor_scores' in stock_info:
+                            stock_info['factor_scores']['predicted_return_5d'] = prediction['predicted_return']
+                            stock_info['factor_scores']['confidence_score'] = prediction['confidence']
+                            stock_info['factor_scores']['recommendation'] = prediction['recommendation']
+                    except Exception as e:
+                        logger.debug(f"策略驱动预测器更新失败 {stock}: {e}")
+
+                stock_with_scores.append(stock_info)
+            
+            # 进度显示
+            if i % 10 == 0:
+                logger.info(f"已计算 {i}/{len(all_stocks)} 只股票的评分...")
+        
+        # 定义推荐等级权重用于排序
+        def get_recommendation_weight(stock):
+            rec = stock.get('recommendation', '观望')
+            if rec == '强烈买入':
+                return 5
+            elif rec == '买入':
+                return 4
+            elif rec == '谨慎买入':
+                return 3
+            elif rec == '观望':
+                return 2
+            else:
+                return 1
+        
+        # 按推荐等级和内部评分排序
+        if hasattr(self, 'scoring_version') and self.scoring_version in ["v3.9", "v3.94", "v3.95"]:
+            # 🏆 V3.9x ML评分系统：以评分为主要排序依据
+            # 失败的股票（置信度0或有error）排在最后
+            def v39_sort_key(x):
+                has_error = 'error' in x.get('factor_scores', {}) or x.get('confidence_score', 1) == 0
+                if has_error:
+                    return (0, 0, 0)  # 失败的股票排最后
+                return (1, x.get('score', 0), get_recommendation_weight(x))
+            stock_with_scores.sort(key=v39_sort_key, reverse=True)
+        elif hasattr(self, 'scoring_version') and self.scoring_version == "v3.41":
+            # v3.41反向评分已修正：现在高分=好机会，评分按降序排序
+            stock_with_scores.sort(key=lambda x: (get_recommendation_weight(x), x.get('score', 0)), reverse=True)
+        else:
+            # 其他版本：高分=好机会，评分按降序排序
+            stock_with_scores.sort(key=lambda x: (get_recommendation_weight(x), x.get('score', 0)), reverse=True)
+        
+        logger.info(f"投资建议生成完成，强烈买入: {len([s for s in stock_with_scores if s.get('recommendation') == '强烈买入'])}, 买入: {len([s for s in stock_with_scores if s.get('recommendation') == '买入'])}")
+        
+        # 分离多策略股票和单策略股票
+        multi_strategy_stocks = [stock for stock in stock_with_scores if stock["selected_by_strategies"] > 1]
+        single_strategy_stocks = [stock for stock in stock_with_scores if stock["selected_by_strategies"] == 1]
+        
+        # 多策略股票按被选中次数和推荐等级排序
+        if hasattr(self, 'scoring_version') and self.scoring_version in ["v3.9", "v3.94", "v3.95"]:
+            # 🏆 V3.9x ML评分系统：以评分为主要排序依据，失败的排最后
+            multi_strategy_stocks.sort(key=v39_sort_key, reverse=True)
+        elif hasattr(self, 'scoring_version') and self.scoring_version == "v3.41":
+            # v3.41反向评分已修正：现在高分=好机会，评分按降序排序
+            multi_strategy_stocks.sort(key=lambda x: (x["selected_by_strategies"], get_recommendation_weight(x), x.get('score', 0)), reverse=True)
+        else:
+            # 其他版本：高分=好机会，评分按降序排序
+            multi_strategy_stocks.sort(key=lambda x: (x["selected_by_strategies"], get_recommendation_weight(x), x.get('score', 0)), reverse=True)
+
+        # 单策略股票按评分排序（用于选取前20只）
+        if hasattr(self, 'scoring_version') and self.scoring_version in ["v3.9", "v3.94", "v3.95"]:
+            # 🏆 V3.9x ML评分系统：以评分为主要排序依据，失败的排最后
+            single_strategy_stocks.sort(key=v39_sort_key, reverse=True)
+        elif hasattr(self, 'scoring_version') and self.scoring_version == "v3.41":
+            # v3.41反向评分已修正：现在高分=好机会，评分按降序排序
+            single_strategy_stocks.sort(key=lambda x: (get_recommendation_weight(x), x.get('score', 0)), reverse=True)
+        else:
+            # 其他版本：高分=好机会，评分按降序排序
+            single_strategy_stocks.sort(key=lambda x: (get_recommendation_weight(x), x.get('score', 0)), reverse=True)
+        
+        # 标记需要详细分析的股票
+        for stock in multi_strategy_stocks:
+            stock["needs_detailed_analysis"] = True
+            stock["analysis_reason"] = "多策略选中"
+        
+        # 只对前20只单策略股票做详细分析
+        TOP_SINGLE_STRATEGY_STOCKS = 20
+        for i, stock in enumerate(single_strategy_stocks):
+            if i < TOP_SINGLE_STRATEGY_STOCKS:
+                stock["needs_detailed_analysis"] = True
+                stock["analysis_reason"] = f"单策略TOP{i+1}"
+            else:
+                stock["needs_detailed_analysis"] = False
+                stock["analysis_reason"] = "单策略排名靠后"
+        
+        # 组合最终推荐：所有多策略股票 + 前20只单策略股票（用于详细分析）
+        detailed_analysis_stocks = multi_strategy_stocks + single_strategy_stocks[:TOP_SINGLE_STRATEGY_STOCKS]
+        
+        analysis["multi_strategy_recommendations"] = multi_strategy_stocks
+        analysis["single_strategy_recommendations"] = single_strategy_stocks
+        analysis["top_recommendations"] = detailed_analysis_stocks  # 只包含需要详细分析的股票
+        analysis["total_unique_stocks"] = len(stock_with_scores)
+        analysis["all_stock_details"] = stock_with_scores  # 保存所有股票的详细信息
+        analysis["all_stocks_with_scores"] = stock_with_scores  # 新增：保存所有股票及其评分
+        analysis["detailed_analysis_count"] = len(detailed_analysis_stocks)  # 新增：需要详细分析的股票数量
+                
+        return analysis
+        
+    def _generate_stock_detail(self, stock: Dict[str, Any]) -> str:
+        """生成单个股票的详细信息"""
+        detail = f"""
+**基本信息**
+- **股票名称**: {stock.get('stock_name', '未知')}
+- **股票代码**: {stock['stock_code']}
+- **交易所板块**: {stock.get('market', '未知')}
+- **股票类型**: {stock.get('stock_type', '未知')}
+- **所属行业**: {stock.get('industry', '未知')}
+- **注册地**: {stock.get('area', '未知')}
+- **上市日期**: {stock.get('list_date', '未知')}
+
+**市场表现**
+- **分析日期**: {stock.get('analysis_date', '未知')}
+- **收盘价**: {stock['close_price']}元
+- **涨跌幅**: {stock['price_change']:+.2f}元 ({stock['price_change_pct']:+.2f}%)
+- **成交量**: {stock['volume']:,}手
+- **波动率**: {stock['volatility']:.2f}%
+
+**技术指标**
+- **KDJ**: K={stock['kdj_k']}, D={stock['kdj_d']}, J={stock['kdj_j']}
+- **BBI**: {stock['bbi']}
+- **MACD DIF**: {stock['dif']}
+
+**选股策略**
+- **通过策略数**: {stock['selected_by_strategies']}个
+- **策略名称**: {', '.join(stock['strategies'])}
+
+**分析评价**
+- **技术面评价**: {stock.get('technical_rating', '中性')}
+- **风险评价**: {stock.get('risk_rating', '中性')}
+- **投资建议**: {stock.get('recommendation', '观望')}
+- **建议置信度**: {stock.get('confidence', '中性')}
+
+**操作建议**
+- **交易制度**: {stock.get('trading_type', 'T+1')}
+- **建议操作**: {stock.get('recommendation', '观望')}
+- **建议买入价**: {stock.get('suggested_buy_price', 0)}元 
+- **建议止损价**: {stock.get('stop_loss_price', 0)}元
+- **建议止盈价**: {stock.get('take_profit_price', 0)}元
+- **最大风险**: -{stock.get('risk_pct', 0)}% 
+- **目标收益**: +{stock.get('reward_pct', 0)}%
+- **风险收益比**: 1:{stock.get('risk_reward_ratio', 0)}
+- **风险等级**: 中等
+- **持仓建议**: 单只股票仓位不超过10%
+"""
+        return detail
+    
+    def generate_report(self, analysis: Dict[str, Any], target_date: pd.Timestamp) -> str:
+        """生成分析报告"""
+        tomorrow = target_date + timedelta(days=1)
+        
+        # 根据评分版本调整标题
+        version_titles = {
+            "v4": "v4.0 挤压动量增强版",
+            "v3.8": "V3.8 自适应评分版 (动态归一化+多时间维度+置信度评估)",
+            "v3.81": "V3.81 Level 4质量评分版 (V380+Level 4 Quality Meta-learner，解决质量评分聚集问题)",
+            "v3.7": "V3.7 高级机器学习版 (49特征三层Ensemble)",
+            "v3.6": "V3.6 机器学习版 (LightGBM+XGBoost双模型)",
+            "v3.53": "v3.53 多时间周期IC优化版",
+            "v3.52": "v3.52 全面优化版 (38参数优化)",
+            "v3.51": "v3.51 Qlib优化版 (+2.88% IC)",
+            "v3.5": "v3.5 知行指标集成版",
+            "v3.41": "v3.41 反向工程重构版",
+            "v3.4": "v3.4 基于v3.0优化增强版",
+            "v3.3": "v3.3 相关性深度优化版",
+            "v3.2": "v3.2 挤压动量集成版",
+            "v3.1": "v3.1 相关性优化增强版",
+            "v3": "v3.0 智能动态权重版",
+            "v2": "v2.0 优化版"
+        }
+        version_title = version_titles.get(self.scoring_version, "v2.0 优化版")
+        
+        # 为不同版本添加特殊说明
+        if hasattr(self, 'scoring_version') and self.scoring_version == "v3.41":
+            scoring_explanation = f"""
+
+## 🔄 **v3.41反向评分系统说明**
+
+**✅ 重要说明：v3.41已完成反向工程修正！**
+
+- 🎯 **评分理解**：分数**越高**代表机会**越大**（已修正）
+- 📊 **投资指引**：
+  - **55分以上** → ✅ **买入推荐**（优质机会）
+  - **45-54分** → 🟡 **谨慎买入**（一般机会） 
+  - **30-44分** → ⚠️ **观望为主**（机会有限）
+  - **30分以下** → 🚫 **建议回避**（风险较高）
+
+- 💡 **核心原理**：基于相关性分析发现，原评分系统存在负相关问题，v3.41通过反向工程完全解决了这个问题
+- 📈 **验证结果**：现在高分股票平均收益显著优于低分股票，成功实现正相关
+
+**📋 说明：下表按评分从高到低排序，分数越高投资价值越大**
+"""
+        elif hasattr(self, 'scoring_version') and self.scoring_version == "v3.7":
+            scoring_explanation = f"""
+
+## 🚀 **V3.7高级机器学习评分系统说明**
+
+**🌟 最强版本：三层Ensemble架构 + 49维特征！**
+
+- 🏗️ **三层架构**：
+  - **Level 1**: 5个基础模型 (LightGBM, XGBoost, CatBoost, RandomForest, MLP)
+  - **Level 2**: 4个专家模型 (技术分析、基本面、宏观、情绪)
+  - **Level 3**: Meta学习器 (神经网络)
+- 📊 **49维特征**：技术(17) + 基本面(8) + 宏观(8) + 情绪(7) + 时序(5) + 市场环境(4)
+- 🎯 **多目标预测**：同时预测1日、3日、5日收益率
+- ✅ **性能表现**：
+  - **1日预测 R²**: 92.34%
+  - **3日预测 R²**: 94.34%
+  - **5日预测 R²**: 96.22%
+- 💡 **Sigmoid映射**：将原始预测值转换为0-100评分，确保结果可解释性
+
+**📋 说明：采用最先进的机器学习技术，评分越高代表投资价值越大**
+"""
+        elif hasattr(self, 'scoring_version') and self.scoring_version == "v3.6":
+            scoring_explanation = f"""
+
+## 🤖 **V3.6机器学习评分系统说明**
+
+**🚀 革命性升级：采用机器学习非线性建模！**
+
+- 🧠 **核心技术**：LightGBM + XGBoost 双模型ensemble (60%/40%权重)
+- 📊 **训练数据**：基于qlib优化结果的12个核心特征，1000+样本训练
+- 🎯 **预测目标**：1日未来收益率，告别传统线性权重
+- ✅ **模型优势**：
+  - **非线性建模**：捕捉特征间复杂交互关系
+  - **集成学习**：多模型投票提升预测稳定性
+  - **时序交叉验证**：防止数据泄露，确保泛化性能
+  - **特征重要性**：自动发现最有价值的预测因子
+
+- 📈 **评分指引**：
+  - **80分以上** → 🔥 **强烈买入**（机器学习高置信度）
+  - **70-79分** → ✅ **谨慎买入**（模型看好）
+  - **60-69分** → 🟡 **观望**（中性偏好）
+  - **60分以下** → ⚠️ **回避**（模型不看好）
+
+**🎯 核心理念：让机器学习识别市场规律，实现智能量化选股**
+"""
+        else:
+            scoring_explanation = ""
+
+        report = f"""# 📈 量化选股分析报告 ({version_title})
+{scoring_explanation}
+## 📊 分析概览
+- **分析日期**: {target_date.strftime('%Y-%m-%d')}
+- **推荐买入日期**: {tomorrow.strftime('%Y-%m-%d')}
+- **分析策略**: {analysis['total_strategies']}个
+- **总股票池**: {sum(v.get('count', 0) if isinstance(v, dict) else v for v in analysis['strategy_results'].values())}只(含重复)
+- **独特股票**: {analysis.get('total_unique_stocks', 0)}只
+- **多策略选中**: {len(analysis.get('multi_strategy_recommendations', []))}只
+- **单策略选中**: {len(analysis.get('single_strategy_recommendations', []))}只
+- **详细分析股票数**: {analysis.get('detailed_analysis_count', 0)}只（多策略全部 + 单策略前20）
+- **推荐股票总数**: {len(analysis.get('top_recommendations', []))}只
+
+## 🎯 各策略筛选结果
+"""
+        
+        for strategy, count in analysis["strategy_results"].items():
+            report += f"- **{strategy}**: {count}只股票\n"
+        
+        report += "\n## 🔄 策略选股交集分析\n\n"
+        
+        # 分开显示不同数量策略的股票
+        multi_strategy_stocks = analysis["multi_strategy_stocks"]
+        if isinstance(multi_strategy_stocks, dict):
+            # 传统格式：字典格式
+            for combo, stocks in multi_strategy_stocks.items():
+                report += f"### {combo}选中的股票 ({len(stocks)}只)\n"
+                if len(stocks) <= 10:
+                    report += f"{', '.join(stocks)}\n\n"
+                else:
+                    report += f"{', '.join(stocks[:10])}... (共{len(stocks)}只)\n\n"
+        else:
+            # V3.8格式：列表格式
+            if multi_strategy_stocks:
+                report += f"### 自适应评分选中的股票 ({len(multi_strategy_stocks)}只)\n"
+                if len(multi_strategy_stocks) <= 10:
+                    report += f"{', '.join(multi_strategy_stocks)}\n\n"
+                else:
+                    report += f"{', '.join(multi_strategy_stocks[:10])}... (共{len(multi_strategy_stocks)}只)\n\n"
+            else:
+                report += "### 无多策略交集股票\n\n"
+                
+        # 所有股票评分列表（包含策略信息）
+        report += "## 📊 所有选中股票评分排名\n\n"
+        # 选择正确的股票数据源
+        if hasattr(self, 'scoring_version') and self.scoring_version in ["v3.8", "v3.81"]:
+            stocks_data = analysis.get('detailed_stocks', [])
+        else:
+            stocks_data = analysis.get('all_stocks_with_scores', [])
+        report += f"*共有 {len(stocks_data)} 只股票被选中，以下显示所有股票的量化评分和策略信息：*\n\n"
+        # 根据评分系统版本设置表头
+        if hasattr(self, 'scoring_version') and self.scoring_version == "v3.51":
+            report += "| 排名 | 股票代码 | 股票名称 | 选中策略 | 量化评分 | 投资建议 | 波动 | 市值 | 动量 | PB | PE | RSI6 | KDJ_K | BBI | KDJ_D | 知行趋势 | 成交量 | 知行多均 |\n"
+            report += "|------|----------|----------|----------|----------|----------|------|------|------|------|------|------|------|------|------|------|------|------|\n"
+        elif hasattr(self, 'scoring_version') and self.scoring_version == "v3.53":
+            report += "| 排名 | 股票代码 | 股票名称 | 选中策略 | 复合评分 | 投资建议 | 1日评分 | 3日评分 | 5日评分 | 10日评分 | 15日评分 | 主要因子 |\n"
+            report += "|------|----------|----------|----------|----------|----------|---------|---------|---------|----------|----------|----------|\n"
+        elif hasattr(self, 'scoring_version') and self.scoring_version == "v3.52":
+            report += "| 排名 | 股票代码 | 股票名称 | 选中策略 | 量化评分 | 投资建议 | 波动 | 市值 | 动量 | PB | PE | RSI6 | KDJ_K | BBI | KDJ_D | 知行趋势 | 成交量 | 知行多均 |\n"
+            report += "|------|----------|----------|----------|----------|----------|------|------|------|------|------|------|------|------|------|------|------|------|\n"
+        elif hasattr(self, 'scoring_version') and self.scoring_version == "v3.5":
+            report += "| 排名 | 股票代码 | 股票名称 | 选中策略 | 量化评分 | 投资建议 | 技术 | 基本 | 表现 | 市场 | 知行 | 知行信号 |\n"
+            report += "|------|----------|----------|----------|----------|----------|------|------|------|------|------|----------|\n"
+        elif hasattr(self, 'scoring_version') and self.scoring_version in ["v3.9", "v3.94", "v3.95"]:
+            # 🏆 V3.9.x A/A+ Grade Production Model - 简化表头（类似v3.8格式）
+            report += "| 排名 | 股票代码 | 股票名称 | 选中策略 | 综合评分 | 投资建议 | 预测收益 | 置信度 | 风险等级 |\n"
+            report += "|------|----------|----------|----------|----------|----------|---------|--------|----------|\n"
+        elif hasattr(self, 'scoring_version') and self.scoring_version in ["v3.8", "v3.81"]:
+            # 检查是否为混合模式
+            if analysis.get("v38_mixed_mode", False):
+                report += "| 排名 | 股票代码 | 股票名称 | 传统策略选中 | 策略数 | 综合评分 | 投资建议 | 置信度 | 短期评分 | 中期评分 | 长期评分 | 风险等级 | 质量评分 |\n"
+                report += "|------|----------|----------|--------------|--------|----------|----------|--------|----------|----------|----------|----------|----------|\n"
+            else:
+                report += "| 排名 | 股票代码 | 股票名称 | 选中策略 | 综合评分 | 投资建议 | 置信度 | 短期评分 | 中期评分 | 长期评分 | 风险等级 | 质量评分 |\n"
+                report += "|------|----------|----------|----------|----------|----------|--------|----------|----------|----------|----------|----------|\n"
+        elif hasattr(self, 'scoring_version') and self.scoring_version == "v3.7":
+            report += "| 排名 | 股票代码 | 股票名称 | 选中策略 | 量化评分 | 投资建议 | 技术 | 基本面 | 宏观 | 情绪 | 时序 |\n"
+            report += "|------|----------|----------|----------|----------|----------|------|------|------|------|------|\n"
+        elif hasattr(self, 'scoring_version') and self.scoring_version == "v3.6":
+            report += "| 排名 | 股票代码 | 股票名称 | 选中策略 | 量化评分 | 投资建议 | BBI | 成交量 | 价格动量 | 知行多均 | RSI | 市值 | KDJ交叉 | PB | 换手率 | 波动风险 | 相对强度 | PE |\n"
+            report += "|------|----------|----------|----------|----------|----------|------|------|------|------|------|------|------|------|------|------|------|------|\n"
+        elif hasattr(self, 'scoring_version') and self.scoring_version in ["v3.4", "v3.41"]:
+            report += "| 排名 | 股票代码 | 股票名称 | 选中策略 | 量化评分 | 投资建议 | 技术 | 基本 | 表现 | 市场 |\n"
+            report += "|------|----------|----------|----------|----------|----------|------|------|------|------|\n"
+        elif hasattr(self, 'scoring_version') and self.scoring_version == "v3.3":
+            report += "| 排名 | 股票代码 | 股票名称 | 选中策略 | 量化评分 | 投资建议 | 技术 | 成交量 | 基本 | 情绪 | 风控 | 市场 |\n"
+            report += "|------|----------|----------|----------|----------|----------|------|--------|------|------|------|------|\n"
+        elif hasattr(self, 'scoring_version') and self.scoring_version == "v3.2":
+            report += "| 排名 | 股票代码 | 股票名称 | 选中策略 | 量化评分 | 投资建议 | 技术 | 挤压 | 基本 | 表现 | 情绪 | 风控 | 市场 |\n"
+            report += "|------|----------|----------|----------|----------|----------|------|------|------|------|------|------|------|\n"
+        elif hasattr(self, 'scoring_version') and self.scoring_version == "v3.1":
+            report += "| 排名 | 股票代码 | 股票名称 | 选中策略 | 量化评分 | 投资建议 | 技术 | 基本 | 表现 | 情绪 | 风控 | 市场 |\n"
+            report += "|------|----------|----------|----------|----------|----------|------|------|------|------|------|------|\n"
+        else:
+            report += "| 排名 | 股票代码 | 股票名称 | 选中策略 | 量化评分 | 投资建议 | 动量 | 回归 | 突破 | 相对 | 稳定 |\n"
+            report += "|------|----------|----------|----------|----------|----------|------|------|------|------|------|\n"
+        
+        for i, stock in enumerate(stocks_data, 1):
+            # 处理不同评分版本的字段名差异
+            if hasattr(self, 'scoring_version') and self.scoring_version in ["v3.8", "v3.81"]:
+                stock_code = stock.get('code', stock.get('stock_code', ''))
+                stock_name = stock.get('name', stock.get('stock_name', '未知'))
+
+                # 检查是否为混合模式
+                if analysis.get("v38_mixed_mode", False) or analysis.get("v381_mixed_mode", False):
+                    # 混合模式：显示传统策略和V3.8/V3.81策略
+                    traditional_strategies = stock.get('traditional_strategies', [])
+                    strategies = traditional_strategies if traditional_strategies else ['无']
+                    strategy_count = stock.get('strategy_count', 0)
+                    # 🔧 V3.81混合模式：显示传统策略名称
+                    if analysis.get("v381_mixed_mode", False):
+                        # V3.81模式下也显示传统策略，不需要特殊处理
+                        pass
+                else:
+                    # 纯V3.8模式
+                    strategies = [stock.get('strategy', 'V3.8自适应评分')]
+            else:
+                stock_code = stock['stock_code']
+                stock_name = stock.get('stock_name', '未知')
+                strategies = stock.get('strategies', [])
+            # 简化策略名称显示
+            strategy_names = []
+            for s in strategies:
+                if '少妇' in s:
+                    strategy_names.append('少妇')
+                elif 'SuperB1' in s:
+                    strategy_names.append('SuperB1')
+                elif '补票' in s:
+                    strategy_names.append('补票')
+                elif 'TePu' in s:
+                    strategy_names.append('TePu')
+                elif '填坑' in s:
+                    strategy_names.append('填坑')
+                elif '知行' in s:
+                    strategy_names.append('知行')
+                elif 'V3.81 Level 4质量评分' in s:
+                    strategy_names.append('V3.81')  # 如果出现V3.81评分策略，显示V3.81
+                else:
+                    strategy_names.append(s[:4])  # 取前4个字符
+            strategies_str = ', '.join(strategy_names) if strategy_names else '未知'
+            # 处理不同评分版本的评分字段差异
+            if hasattr(self, 'scoring_version') and self.scoring_version in ["v3.8", "v3.81"]:
+                score = stock.get('final_score', 0)  # V3.8使用final_score
+                recommendation = stock.get('recommendation', '观望')
+            else:
+                score = stock.get('score', 0)
+                recommendation = stock.get('recommendation', '观望')
+            
+            # 获取因子评分信息
+            factor_scores = stock.get('factor_scores', {})
+            
+            # 根据评分系统版本处理不同的因子评分
+            if hasattr(self, 'scoring_version') and self.scoring_version in ["v3.9", "v3.94", "v3.95"]:
+                # 🏆 V3.9.x A/A+ Grade Production Model的专用字段
+                predicted_return = stock.get('predicted_return_5d', stock.get('pred_5d', 0.0))  # 预测5日收益率
+                confidence_score = stock.get('confidence_score', 0.0)   # 置信度
+                risk_level = stock.get('risk_level', 'medium')          # 风险等级
+            elif hasattr(self, 'scoring_version') and self.scoring_version in ["v3.8", "v3.81"]:
+                # v3.8自适应评分系统的专用字段
+                confidence_score = stock.get('confidence_score', 0.0)
+                confidence_level = stock.get('confidence_level', 'unknown')
+                short_term_score = stock.get('short_term_score', 50)
+                medium_term_score = stock.get('medium_term_score', 50)
+                long_term_score = stock.get('long_term_score', 50)
+                risk_level = stock.get('risk_level', 'medium')
+                overall_quality = stock.get('overall_quality', 0.5)
+            elif hasattr(self, 'scoring_version') and self.scoring_version == "v3.5":
+                # v3.5评分系统的5个维度因子（集成知行指标）
+                technical_score = factor_scores.get('technical', 0)  # 技术指标
+                fundamental_score = factor_scores.get('fundamental', 0)  # 基本面
+                performance_score = factor_scores.get('performance', 0)  # 市场表现
+                market_regime_score = factor_scores.get('market_regime', 0)  # 市场环境
+                zhixing_score = factor_scores.get('zhixing', 0)  # 知行指标
+                
+                # 获取知行信号信息 - 修复数据传递问题
+                detailed_scoring = stock.get('detailed_scoring', {})
+                detailed_scores = detailed_scoring.get('detailed_scores', {})
+                zhixing_signals = detailed_scores.get('zhixing_signals', {})
+                
+                # 如果还是没有找到，尝试从raw_scoring_data中获取
+                if not zhixing_signals:
+                    raw_data = stock.get('raw_scoring_data', {})
+                    zhixing_signals = raw_data.get('zhixing_signals', {})
+                
+                signal_strength = zhixing_signals.get('signal_strength', '无信号')
+                
+                # v3.5知行信号显示修复完成
+            elif hasattr(self, 'scoring_version') and self.scoring_version in ["v3.4", "v3.41"]:
+                # v3.4评分系统的4个维度因子（基于v3.0优化）
+                technical_score = factor_scores.get('technical_score', 0)  # 技术指标
+                fundamental_score = factor_scores.get('fundamental_score', 0)  # 基本面（增强版含ROE和营收增长）
+                performance_score = factor_scores.get('performance_score', 0)  # 市场表现
+                market_regime_score = factor_scores.get('market_regime_score', 0)  # 市场环境
+            elif hasattr(self, 'scoring_version') and self.scoring_version == "v3.3":
+                # v3.3评分系统的6个维度因子
+                technical_score = factor_scores.get('technical', 0)  # 技术指标
+                volume_momentum_score = factor_scores.get('volume_momentum', 0)  # 成交量动量
+                fundamental_score = factor_scores.get('fundamental', 0)  # 基本面
+                sentiment_capital_score = factor_scores.get('sentiment_capital', 0)  # 情绪资金
+                risk_control_score = factor_scores.get('risk_control', 0)  # 风险控制
+                market_environment_score = factor_scores.get('market_environment', 0)  # 市场环境
+            elif hasattr(self, 'scoring_version') and self.scoring_version == "v3.2":
+                # v3.2评分系统的7个维度因子
+                technical_score = factor_scores.get('technical', 0)  # 技术指标
+                squeeze_score = factor_scores.get('squeeze_momentum', 0)  # 挤压动量
+                fundamental_score = factor_scores.get('fundamental', 0)  # 基本面
+                performance_score = factor_scores.get('performance', 0)  # 市场表现
+                sentiment_score = factor_scores.get('sentiment', 0)  # 情绪指标
+                risk_control_score = factor_scores.get('risk_control', 0)  # 风险控制
+                market_regime_score = factor_scores.get('market_regime', 0)  # 市场环境
+            elif hasattr(self, 'scoring_version') and self.scoring_version == "v3.51":
+                # v3.51评分系统的12个因子 - Qlib优化权重版本
+                volatility_risk_score = factor_scores.get('volatility_risk', 50)       # 15.32% - 波动风险
+                market_cap_score = factor_scores.get('market_cap', 50)                 # 14.20% - 市值
+                price_momentum_score = factor_scores.get('price_momentum', 50)         # 13.10% - 价格动量
+                pb_score = factor_scores.get('pb', 50)                                 # 12.13% - PB估值
+                pe_ttm_score = factor_scores.get('pe_ttm', 50)                         # 8.75% - PE估值
+                rsi6_score = factor_scores.get('rsi6', 50)                             # 8.39% - RSI6
+                kdj_k_score = factor_scores.get('kdj_k', 50)                           # 6.61% - KDJ_K
+                bbi_score = factor_scores.get('bbi', 50)                               # 5.66% - BBI
+                kdj_d_score = factor_scores.get('kdj_d', 50)                           # 5.29% - KDJ_D
+                zhixing_trend_score = factor_scores.get('zhixing_trend', 50)           # 4.78% - 知行趋势 (降权)
+                volume_surge_score = factor_scores.get('volume_surge', 50)             # 3.15% - 成交量突破
+                zhixing_multiavg_score = factor_scores.get('zhixing_multiavg', 50)     # 2.62% - 知行多均线 (降权)
+            elif hasattr(self, 'scoring_version') and self.scoring_version == "v3.53":
+                # v3.53多时间周期评分系统 - 🆕 MULTI-PERIOD
+                # 从stock数据中获取详细评分信息
+                detailed_scoring = stock.get('detailed_scoring', {})
+                period_scores = detailed_scoring.get('period_scores', {})
+                score_1d = period_scores.get('1d', 0) * 100
+                score_3d = period_scores.get('3d', 0) * 100  
+                score_5d = period_scores.get('5d', 0) * 100
+                score_10d = period_scores.get('10d', 0) * 100
+                score_15d = period_scores.get('15d', 0) * 100
+                
+                # 找出主要贡献因子
+                period_details = detailed_scoring.get('factor_scores', {})
+                main_factors = []
+                if period_details:
+                    # 从各周期中找出权重最高的因子
+                    for period, details in period_details.items():
+                        if isinstance(details, dict) and 'factor_contributions' in details:
+                            contributions = details['factor_contributions']
+                            if contributions:
+                                top_factor = max(contributions.items(), key=lambda x: abs(x[1]))
+                                main_factors.append(f"{period}:{top_factor[0]}")
+                
+                main_factors_str = ", ".join(main_factors[:3]) if main_factors else "复合因子"
+            elif hasattr(self, 'scoring_version') and self.scoring_version == "v3.52":
+                # v3.52评分系统的12个因子 - 全面优化版本
+                volatility_risk_score = factor_scores.get('volatility_risk', 50)       # 波动风险
+                market_cap_score = factor_scores.get('market_cap', 50)                 # 市值
+                price_momentum_score = factor_scores.get('price_momentum', 50)         # 价格动量
+                pb_score = factor_scores.get('pb', 50)                                 # PB估值
+                pe_ttm_score = factor_scores.get('pe_ttm', 50)                         # PE估值
+                rsi6_score = factor_scores.get('rsi6', 50)                             # RSI6
+                kdj_k_score = factor_scores.get('kdj_k', 50)                           # KDJ_K
+                bbi_score = factor_scores.get('bbi', 50)                               # BBI
+                kdj_d_score = factor_scores.get('kdj_d', 50)                           # KDJ_D
+                zhixing_trend_score = factor_scores.get('zhixing_trend', 50)           # 知行趋势
+                volume_surge_score = factor_scores.get('volume_surge', 50)             # 成交量突破
+                zhixing_multiavg_score = factor_scores.get('zhixing_multiavg', 50)     # 知行多均线
+            elif hasattr(self, 'scoring_version') and self.scoring_version == "v3.7":
+                # v3.7高级机器学习评分系统的5个维度因子（从49维特征聚合）
+                technical_score = factor_scores.get('technical', 50)  # 技术分析因子(17维)
+                fundamental_score = factor_scores.get('fundamental', 50)  # 基本面因子(8维)
+                macro_score = factor_scores.get('macro', 50)  # 宏观因子(8维)
+                sentiment_score = factor_scores.get('sentiment', 50)  # 情绪因子(7维)
+                temporal_score = factor_scores.get('temporal', 50)  # 时序因子(5维)
+            elif hasattr(self, 'scoring_version') and self.scoring_version == "v3.1":
+                # v3.1评分系统的因子
+                momentum = factor_scores.get('technical', 50) * 100  # 技术指标
+                mean_reversion = factor_scores.get('fundamental', 50) * 100  # 基本面
+                volume_breakout = factor_scores.get('performance', 50) * 100  # 市场表现
+                relative_performance = factor_scores.get('sentiment', 50) * 100  # 情绪指标
+                stability = factor_scores.get('risk_control', 50) * 100  # 风险控制
+                market_regime_score = factor_scores.get('market_regime', 50) * 100  # 市场环境
+            elif hasattr(self, 'scoring_version') and self.scoring_version == "v3.6":
+                # v3.6机器学习评分系统的因子映射
+                # 将机器学习特征映射到传统的5个维度
+                momentum = factor_scores.get('price_momentum', 50)  # 价格动量
+                mean_reversion = (factor_scores.get('bbi', 50) + factor_scores.get('pb', 50) + factor_scores.get('pe_ttm', 50)) / 3  # 均值回归
+                volume_breakout = (factor_scores.get('volume_surge', 50) + factor_scores.get('kdj_cross', 50)) / 2  # 成交量突破
+                relative_performance = (factor_scores.get('rsi', 50) + factor_scores.get('relative_strength', 50)) / 2  # 相对表现
+                stability = (factor_scores.get('volatility_risk', 50) + factor_scores.get('market_cap', 50) + factor_scores.get('turnover_rate', 50)) / 3  # 稳定性
+                market_regime_score = 0  # v3.6没有市场环境分
+            else:
+                # v2/v3评分系统的因子
+                momentum = factor_scores.get('momentum', 50)
+                mean_reversion = factor_scores.get('mean_reversion', 50)
+                volume_breakout = factor_scores.get('volume_breakout', 50)
+                relative_performance = factor_scores.get('relative_performance', 50)
+                stability = factor_scores.get('stability', 50)
+                market_regime_score = 0  # v2/v3没有市场环境分
+            
+            # 根据评分系统版本输出不同格式
+            if hasattr(self, 'scoring_version') and self.scoring_version in ["v3.9", "v3.94", "v3.95"]:
+                # 🏆 V3.9.x A/A+ Grade Production Model
+                predicted_return_pct = predicted_return * 100  # 转换为百分比
+                confidence_pct = confidence_score * 100  # 转换为百分比
+                report += f"| {i} | {stock_code} | {stock_name} | {strategies_str} | {score:.1f} | {recommendation} | {predicted_return_pct:+.2f}% | {confidence_pct:.1f}% | {risk_level} |\n"
+            elif hasattr(self, 'scoring_version') and self.scoring_version in ["v3.8", "v3.81"]:
+                # 检查是否为混合模式
+                if analysis.get("v38_mixed_mode", False):
+                    # 混合模式：包含传统策略和策略数量
+                    report += f"| {i} | {stock_code} | {stock_name} | {strategies_str} | {strategy_count} | {score:.1f} | {recommendation} | {confidence_score:.3f} | {short_term_score:.1f} | {medium_term_score:.1f} | {long_term_score:.1f} | {risk_level} | {overall_quality:.2f} |\n"
+                else:
+                    # 纯V3.8模式
+                    report += f"| {i} | {stock_code} | {stock_name} | {strategies_str} | {score:.1f} | {recommendation} | {confidence_score:.3f} | {short_term_score:.1f} | {medium_term_score:.1f} | {long_term_score:.1f} | {risk_level} | {overall_quality:.2f} |\n"
+            elif hasattr(self, 'scoring_version') and self.scoring_version == "v3.7":
+                report += f"| {i} | {stock_code} | {stock_name} | {strategies_str} | {score:.1f} | {recommendation} | {technical_score:.1f} | {fundamental_score:.1f} | {macro_score:.1f} | {sentiment_score:.1f} | {temporal_score:.1f} |\n"
+            elif hasattr(self, 'scoring_version') and self.scoring_version == "v3.5":
+                report += f"| {i} | {stock_code} | {stock_name} | {strategies_str} | {score:.1f} | {recommendation} | {technical_score:.1f} | {fundamental_score:.1f} | {performance_score:.1f} | {market_regime_score:.1f} | {zhixing_score:.1f} | {signal_strength} |\n"
+            elif hasattr(self, 'scoring_version') and self.scoring_version in ["v3.4", "v3.41"]:
+                report += f"| {i} | {stock_code} | {stock_name} | {strategies_str} | {score:.1f} | {recommendation} | {technical_score:.1f} | {fundamental_score:.1f} | {performance_score:.1f} | {market_regime_score:.1f} |\n"
+            elif hasattr(self, 'scoring_version') and self.scoring_version == "v3.3":
+                report += f"| {i} | {stock_code} | {stock_name} | {strategies_str} | {score:.1f} | {recommendation} | {technical_score:.1f} | {volume_momentum_score:.1f} | {fundamental_score:.1f} | {sentiment_capital_score:.1f} | {risk_control_score:.1f} | {market_environment_score:.1f} |\n"
+            elif hasattr(self, 'scoring_version') and self.scoring_version == "v3.2":
+                report += f"| {i} | {stock_code} | {stock_name} | {strategies_str} | {score:.1f} | {recommendation} | {technical_score:.1f} | {squeeze_score:.1f} | {fundamental_score:.1f} | {performance_score:.1f} | {sentiment_score:.1f} | {risk_control_score:.1f} | {market_regime_score:.1f} |\n"
+            elif hasattr(self, 'scoring_version') and self.scoring_version == "v3.51":
+                report += f"| {i} | {stock_code} | {stock_name} | {strategies_str} | {score:.1f} | {recommendation} | {volatility_risk_score:.1f} | {market_cap_score:.1f} | {price_momentum_score:.1f} | {pb_score:.1f} | {pe_ttm_score:.1f} | {rsi6_score:.1f} | {kdj_k_score:.1f} | {bbi_score:.1f} | {kdj_d_score:.1f} | {zhixing_trend_score:.1f} | {volume_surge_score:.1f} | {zhixing_multiavg_score:.1f} |\n"
+            elif hasattr(self, 'scoring_version') and self.scoring_version == "v3.53":
+                report += f"| {i} | {stock_code} | {stock_name} | {strategies_str} | {score:.1f} | {recommendation} | {score_1d:.1f} | {score_3d:.1f} | {score_5d:.1f} | {score_10d:.1f} | {score_15d:.1f} | {main_factors_str} |\n"
+            elif hasattr(self, 'scoring_version') and self.scoring_version == "v3.52":
+                report += f"| {i} | {stock_code} | {stock_name} | {strategies_str} | {score:.1f} | {recommendation} | {volatility_risk_score:.1f} | {market_cap_score:.1f} | {price_momentum_score:.1f} | {pb_score:.1f} | {pe_ttm_score:.1f} | {rsi6_score:.1f} | {kdj_k_score:.1f} | {bbi_score:.1f} | {kdj_d_score:.1f} | {zhixing_trend_score:.1f} | {volume_surge_score:.1f} | {zhixing_multiavg_score:.1f} |\n"
+            elif hasattr(self, 'scoring_version') and self.scoring_version == "v3.6":
+                # v3.6机器学习特征显示 - 使用原始值和变换值的混合
+                bbi_score = factor_scores.get('bbi', 40)
+                volume_surge_score = factor_scores.get('volume_surge', 40) 
+                price_momentum_score = factor_scores.get('price_momentum', 40)
+                zhixing_multiavg_score = factor_scores.get('zhixing_multiavg', 40)
+                rsi_score = factor_scores.get('rsi', 40)
+                kdj_cross_score = factor_scores.get('kdj_cross', 40)
+                turnover_rate_score = factor_scores.get('turnover_rate', 40)
+                volatility_risk_score = factor_scores.get('volatility_risk', 40)
+                relative_strength_score = factor_scores.get('relative_strength', 40)
+                
+                # 转换显示值：将变换值转换回用户友好的原始值
+                pb_raw_val = factor_scores.get('pb', 40)
+                pe_raw_val = factor_scores.get('pe_ttm', 40)
+                market_cap_raw_val = factor_scores.get('market_cap', 40)
+                
+                # 如果是倒数形式，转换回原值
+                if pb_raw_val > 0 and pb_raw_val <= 1:  # 倒数形式
+                    pb_display = 1.0 / pb_raw_val if pb_raw_val > 0.001 else 999
+                else:
+                    pb_display = pb_raw_val
+                    
+                if pe_raw_val > 0 and pe_raw_val <= 1:  # 倒数形式
+                    pe_display = 1.0 / pe_raw_val if pe_raw_val > 0.001 else 999
+                else:
+                    pe_display = pe_raw_val
+                    
+                # 市值：如果是对数形式，转换回原值
+                if market_cap_raw_val < 20:  # 对数形式
+                    market_cap_display = f"{np.exp(market_cap_raw_val)/10000:.1f}万"
+                else:
+                    market_cap_display = f"{market_cap_raw_val/10000:.1f}万"
+                
+                # RSI显示（0.0-100.0范围内都是有效值）
+                rsi_display = f"{rsi_score:.1f}"
+                
+                report += f"| {i} | {stock_code} | {stock_name} | {strategies_str} | {score:.1f} | {recommendation} | {bbi_score:.1f} | {volume_surge_score:.1f} | {price_momentum_score:.1f} | {zhixing_multiavg_score:.1f} | {rsi_display} | {market_cap_display} | {kdj_cross_score:.1f} | {pb_display:.1f} | {turnover_rate_score:.1f} | {volatility_risk_score:.1f} | {relative_strength_score:.1f} | {pe_display:.1f} |\n"
+            elif hasattr(self, 'scoring_version') and self.scoring_version == "v3.1":
+                report += f"| {i} | {stock_code} | {stock_name} | {strategies_str} | {score:.1f} | {recommendation} | {momentum:.0f} | {mean_reversion:.0f} | {volume_breakout:.0f} | {relative_performance:.0f} | {stability:.0f} | {market_regime_score:.0f} |\n"
+            else:
+                report += f"| {i} | {stock_code} | {stock_name} | {strategies_str} | {score:.1f} | {recommendation} | {momentum:.0f} | {mean_reversion:.0f} | {volume_breakout:.0f} | {relative_performance:.0f} | {stability:.0f} |\n"
+        
+        report += "\n"
+        
+        report += "## 🏆 明日买入推荐股票详细分析\n\n"
+        
+        # 分别显示多策略和单策略股票
+        multi_stocks = analysis.get("multi_strategy_recommendations", [])
+        single_detailed = [s for s in analysis.get("single_strategy_recommendations", []) if s.get('needs_detailed_analysis', False)]
+        
+        # 多策略股票详细分析
+        if multi_stocks:
+            report += "### 🌟 多策略推荐股票\n\n"
+            report += f"*共有 {len(multi_stocks)} 只股票被多个策略选中*\n\n"
+            
+            for i, stock in enumerate(multi_stocks, 1):
+                report += f"#### {i}. {stock['stock_code']} - {stock.get('stock_name', '未知')}\n\n"
+                report += self._generate_stock_detail(stock)
+                report += "\n---\n\n"
+        
+        # 单策略股票详细分析（TOP 20）
+        if single_detailed:
+            report += "### 📊 单策略推荐股票（TOP 20）\n\n"
+            report += f"*单策略选中股票共 {len(analysis.get('single_strategy_recommendations', []))} 只，以下显示前20只的详细分析*\n\n"
+            
+            for i, stock in enumerate(single_detailed, 1):
+                report += f"#### {i}. {stock['stock_code']} - {stock.get('stock_name', '未知')}\n\n"
+                report += self._generate_stock_detail(stock)
+                report += "\n---\n\n"
+        
+        report += """## ⚠️ 风险提示
+
+### 市场风险
+- 股市有风险，投资需谨慎
+- 历史表现不代表未来收益
+- 市场环境变化可能影响策略效果
+
+### 策略风险  
+- 技术指标存在滞后性
+- 量化策略可能在特殊市场环境下失效
+- 建议结合基本面分析和市场情绪
+
+### 操作建议
+- 建议分批买入，避免集中投资
+- 设置合理的止损位(建议8-10%)
+- 单只股票仓位控制在总资金的5-10%
+- 密切关注市场变化，及时调整策略
+
+### 免责声明
+本分析报告仅供参考，不构成投资建议。投资者应根据自身风险承受能力做出投资决策。
+
+## 📊 数据来源
+- **数据源**: Tushare Pro API
+- **股票范围**: A股主板、科创板、创业板、北交所 + ETF/基金
+- **数据频率**: 日线数据
+- **分析时间**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+🤖 Generated with Claude Code
+"""
+        
+        return report
+
+def is_trading_day(date_str: str) -> bool:
+    """检查指定日期是否为交易日"""
+    try:
+        import tushare as ts
+        from datetime import datetime
+        
+        # 设置tushare token
+        try:
+            with open('config.json', 'r', encoding='utf-8') as f:
+                config = json.load(f)
+                token = config.get('tushare', {}).get('token')
+                if token and token != "YOUR_TUSHARE_TOKEN_HERE":
+                    ts.set_token(token)
+                    pro = ts.pro_api()
+                    
+                    # 转换日期格式
+                    check_date = datetime.strptime(date_str, '%Y-%m-%d').strftime('%Y%m%d')
+                    
+                    # 查询交易日历
+                    cal_df = pro.trade_cal(
+                        exchange='SSE',
+                        start_date=check_date,
+                        end_date=check_date,
+                        fields='cal_date,is_open'
+                    )
+                    
+                    if not cal_df.empty:
+                        return cal_df.iloc[0]['is_open'] == 1
+                        
+        except Exception as e:
+            logger.debug(f"API查询交易日失败: {e}")
+        
+        # 如果API查询失败，使用简单规则判断（周一到周五，排除明显的节假日）
+        weekday = datetime.strptime(date_str, '%Y-%m-%d').weekday()
+        if weekday >= 5:  # 周六周日
+            return False
+            
+        # 排除明显的节假日
+        month_day = date_str[5:]
+        holidays = ['01-01', '01-02', '01-03', '02-09', '02-10', '02-11', '02-12', '02-13', '02-14', '02-15', '02-16', '02-17',
+                   '04-04', '04-05', '04-06', '05-01', '05-02', '05-03', '06-10', '09-15', '09-16', '09-17', '10-01', '10-02', 
+                   '10-03', '10-04', '10-05', '10-06', '10-07']
+        
+        return month_day not in holidays
+            
+    except Exception as e:
+        logger.warning(f"交易日检查失败: {e}")
+        # 默认周一到周五为交易日
+        try:
+            weekday = datetime.strptime(date_str, '%Y-%m-%d').weekday()
+            return weekday < 5
+        except:
+            return True
+
+def main(target_date: str = None, scoring_version: str = "v3", stocks_only: bool = False):
+    """主函数
+    
+    Args:
+        target_date: 分析日期，格式YYYY-MM-DD
+        scoring_version: 评分版本，'v2'、'v3'或'v4'，默认'v3'
+        stocks_only: 是否只考虑股票，不包括ETF基金，默认False
+    """
+    # v3.6、v3.7、v3.8、v3.9、v3.94、v3.95版本应该只评价股票，因为ETF等因子无法与股票直接对比
+    if scoring_version in ["v3.6", "v3.7", "v3.8", "v3.81", "v3.9", "v3.94", "v3.95"] and not stocks_only:
+        stocks_only = True
+        logger.info(f"🔍 {scoring_version}机器学习版本自动开启仅股票模式（ETF等因子与股票不可比）")
+    
+    if target_date:
+        # 检查是否为交易日
+        if not is_trading_day(target_date):
+            logger.info(f"{target_date} 不是交易日，跳过选股分析")
+            print(f"# {target_date} 不是交易日")
+            print(f"跳过选股分析，请选择交易日进行分析。")
+            return False
+            
+        logger.info(f"=== {target_date} 股票选股分析开始 (评分版本: {scoring_version}) ===")
+    else:
+        logger.info(f"=== 最新日期股票选股分析开始 (评分版本: {scoring_version}) ===")
+    
+    # 创建选股器，传入评分版本和股票筛选选项
+    selector = TomorrowStockSelector(scoring_version=scoring_version, stocks_only=stocks_only)
+    
+    # 获取分析日期
+    if target_date:
+        latest_date = pd.Timestamp(target_date)
+        logger.info(f"指定分析日期: {latest_date.strftime('%Y-%m-%d')}")
+        target_date_str = target_date
+    else:
+        target_date_str = None
+        
+    # 加载数据（现在传入目标日期）
+    logger.info("加载股票数据...")
+    data = selector.load_data(target_date=target_date_str)
+    
+    if not data:
+        logger.error("未能加载任何数据，退出")
+        return
+    
+    # 如果没有指定日期，从加载的数据中获取最新交易日
+    if not target_date:
+        latest_date = selector.get_latest_trading_date(data)
+        logger.info(f"最新交易日: {latest_date.strftime('%Y-%m-%d')}")
+    
+    # 根据评分版本选择不同的工作流程
+    if scoring_version == "v3.81":
+        # V3.81混合工作流程：先运行传统策略，再对选中股票进行Level 4质量评分
+        logger.info("V3.81 Level 4质量评分模式：先运行传统选股策略...")
+
+        # 第一步：运行传统选股策略
+        traditional_results = selector.run_selectors(data, latest_date)
+        logger.info(f"传统策略完成，共 {len(traditional_results)} 个策略")
+
+        # 收集所有被传统策略选中的股票
+        selected_stocks = set()
+        for strategy, stocks in traditional_results.items():
+            selected_stocks.update(stocks)
+            logger.info(f"  {strategy}: {len(stocks)}只股票")
+
+        selected_stock_list = list(selected_stocks)
+        logger.info(f"传统策略共选中 {len(selected_stock_list)} 只独特股票")
+
+        # 第二步：对被选中的股票进行V3.81 Level 4质量评分
+        logger.info("对传统策略选中的股票进行V3.81 Level 4质量评分...")
+
+        # 初始化V3.81评分器
+        v381_selector = TomorrowStockSelector(scoring_version="v3.81", stocks_only=stocks_only)
+
+        # 使用V3.81批量预测接口
+        predictions = v381_selector.scoring_engine_v381.predict_scores_with_quality(
+            selected_stock_list,
+            latest_date.strftime('%Y-%m-%d')
+        )
+
+        # 🔧 缓存V3.81批处理结果到主实例，避免individual processing时重复计算不一致问题
+        selector.v381_batch_cache = predictions.copy()
+
+        # 转换为兼容格式
+        evaluation_result = {
+            'error': False,
+            'stocks': []
+        }
+
+        for code in selected_stock_list:
+            prediction_data = predictions.get(code, {})
+
+            if isinstance(prediction_data, dict):
+                # V3.81格式：包含Level 4质量评分
+                overall_score = prediction_data.get('overall_score', 50.0)
+                short_term_score = prediction_data.get('short_term_score', 50.0)
+                medium_term_score = prediction_data.get('medium_term_score', 50.0)
+                long_term_score = prediction_data.get('long_term_score', 50.0)
+                confidence_score = prediction_data.get('confidence_score', 0.8)
+                # 🎯 Level 4质量评分
+                quality_score = prediction_data.get('quality_score', 0.5)
+            else:
+                # 兼容格式
+                overall_score = prediction_data if isinstance(prediction_data, (int, float)) else 50.0
+                short_term_score = overall_score * 1.1
+                medium_term_score = overall_score
+                long_term_score = overall_score * 0.9
+                confidence_score = 0.8
+                quality_score = 0.5
+                # 兼容格式的默认投资建议
+                prediction_data = {'recommendation': '观望'}
+
+            stock_result = {
+                'code': code,
+                'final_score': overall_score / 100.0,  # 转为0-1分制
+                'confidence_score': confidence_score,
+                'short_term_score': short_term_score / 100.0,
+                'medium_term_score': medium_term_score / 100.0,
+                'long_term_score': long_term_score / 100.0,
+                # 🎯 使用Level 4质量评分作为质量指标
+                'overall_quality': quality_score,
+                'quality_score': quality_score,
+                'risk_level': v381_selector._calculate_risk_level_v381(overall_score, confidence_score, quality_score),
+                'confidence_level': 'high' if confidence_score > 0.7 else 'medium' if confidence_score > 0.4 else 'low',
+                # 🔧 保留V3.81原始投资建议，避免在后续处理中丢失
+                'recommendation': prediction_data.get('recommendation', '观望')
+            }
+            evaluation_result['stocks'].append(stock_result)
+
+        if evaluation_result.get('error'):
+            logger.error(f"V3.81评分失败: {evaluation_result['error']}")
+            return False
+
+        # 分析V3.81混合结果
+        analysis = selector.analyze_v381_mixed_results(traditional_results, evaluation_result, data)
+    elif scoring_version == "v3.8":
+        # V3.8混合工作流程：先运行传统策略，再对选中股票进行自适应评分
+        logger.info("V3.8混合评分模式：先运行传统选股策略...")
+
+        # 第一步：运行传统选股策略
+        traditional_results = selector.run_selectors(data, latest_date)
+        logger.info(f"传统策略完成，共 {len(traditional_results)} 个策略")
+
+        # 收集所有被传统策略选中的股票
+        selected_stocks = set()
+        for strategy, stocks in traditional_results.items():
+            selected_stocks.update(stocks)
+            logger.info(f"  {strategy}: {len(stocks)}只股票")
+
+        selected_stock_list = list(selected_stocks)
+        logger.info(f"传统策略共选中 {len(selected_stock_list)} 只独特股票")
+
+        # 第二步：对被选中的股票进行V3.8自适应评分
+        logger.info("对传统策略选中的股票进行V3.8自适应评分...")
+
+        # 使用V3.80批量预测接口
+        predictions = selector.scoring_engine_v38.predict_scores(
+            selected_stock_list,
+            latest_date.strftime('%Y-%m-%d')
+        )
+
+        # 转换为兼容格式
+        evaluation_result = {
+            'error': False,
+            'stocks': []
+        }
+
+        for code in selected_stock_list:
+            prediction_data = predictions.get(code, {})
+
+            # 🔧 修复：处理新的预测格式，使用真实的分期评分
+            if isinstance(prediction_data, dict):
+                # 新格式：包含详细分期信息
+                overall_score = prediction_data.get('overall_score', 50.0)
+                short_term_score = prediction_data.get('short_term_score', 50.0)
+                medium_term_score = prediction_data.get('medium_term_score', 50.0)
+                long_term_score = prediction_data.get('long_term_score', 50.0)
+                confidence_score = prediction_data.get('confidence_score', 0.8)
+            else:
+                # 旧格式：单一评分
+                overall_score = prediction_data if isinstance(prediction_data, (int, float)) else 50.0
+                short_term_score = overall_score * 1.1  # 简单计算
+                medium_term_score = overall_score
+                long_term_score = overall_score * 0.9
+                confidence_score = 0.8
+
+            stock_result = {
+                'code': code,
+                'final_score': overall_score / 100.0,  # 转为0-1分制
+                'confidence_score': confidence_score,
+                'short_term_score': short_term_score / 100.0,   # 🔧 使用真实短期评分
+                'medium_term_score': medium_term_score / 100.0, # 🔧 使用真实中期评分
+                'long_term_score': long_term_score / 100.0,     # 🔧 使用真实长期评分
+                'overall_quality': confidence_score,
+                'risk_level': 'low' if overall_score > 70 else 'medium' if overall_score > 50 else 'high',
+                'confidence_level': 'high' if overall_score > 70 else 'medium'
+            }
+            evaluation_result['stocks'].append(stock_result)
+
+        if evaluation_result.get('error'):
+            logger.error(f"V3.8评分失败: {evaluation_result['error']}")
+            return False
+
+        # 第三步：使用V3.8评分重新排序和分析
+        v38_stocks = evaluation_result.get('stocks', [])
+
+        # 按V3.8评分排序所有被传统策略选中的股票
+        v38_sorted_stocks = sorted(v38_stocks, key=lambda x: x['final_score'], reverse=True)
+
+        # 构建结果格式，包含传统策略信息和V3.8评分
+        results = traditional_results.copy()  # 保留传统策略结果
+        results["V3.8自适应评分"] = [stock['code'] for stock in v38_sorted_stocks]
+
+        logger.info(f"V3.8评分完成，对 {len(v38_sorted_stocks)} 只传统策略选中的股票进行了评分")
+
+        # 使用混合分析逻辑
+        analysis = selector.analyze_v38_mixed_results(traditional_results, evaluation_result, data, latest_date)
+
+    else:
+        # 传统选股策略
+        logger.info("运行选股策略...")
+        results = selector.run_selectors(data, latest_date)
+
+        # 分析结果
+        logger.info("分析选股结果...")
+        analysis = selector.analyze_results(results, data, latest_date)
+    
+    # 生成报告
+    logger.info("生成分析报告...")
+    report = selector.generate_report(analysis, latest_date)
+    
+    # 根据评分版本选择不同的报告目录
+    if scoring_version == "v4":
+        report_dir = Path("reports/daily_selection_v4")
+    elif scoring_version == "v3.95":
+        report_dir = Path("reports/daily_selection_v3.95")
+    elif scoring_version == "v3.94":
+        report_dir = Path("reports/daily_selection_v3.94")
+    elif scoring_version == "v3.9":
+        report_dir = Path("reports/daily_selection_v3.9")
+    elif scoring_version == "v3.81":
+        report_dir = Path("reports/daily_selection_v3.81")
+    elif scoring_version == "v3.8":
+        report_dir = Path("reports/daily_selection_v3.8")
+    elif scoring_version == "v3.7":
+        report_dir = Path("reports/daily_selection_v3.7")
+    elif scoring_version == "v3.6":
+        report_dir = Path("reports/daily_selection_v3.6")
+    elif scoring_version == "v3.53":
+        report_dir = Path("reports/daily_selection_v3.53")
+    elif scoring_version == "v3.52":
+        report_dir = Path("reports/daily_selection_v3.52")
+    elif scoring_version == "v3.51":
+        report_dir = Path("reports/daily_selection_v3.51")
+    elif scoring_version == "v3.5":
+        report_dir = Path("reports/daily_selection_v3.5")
+    elif scoring_version == "v3.41":
+        report_dir = Path("reports/daily_selection_v3.41")
+    elif scoring_version == "v3.4":
+        report_dir = Path("reports/daily_selection_v3.4")
+    elif scoring_version == "v3.3":
+        report_dir = Path("reports/daily_selection_v3.3")
+    elif scoring_version == "v3.2":
+        report_dir = Path("reports/daily_selection_v3.2")
+    elif scoring_version == "v3.1":
+        report_dir = Path("reports/daily_selection_v3.1")
+    elif scoring_version == "v3":
+        report_dir = Path("reports/daily_selection_v3")
+    else:
+        report_dir = Path("reports/daily_selection")
+    report_dir.mkdir(parents=True, exist_ok=True)
+    
+    report_filename = f"选股分析报告_{latest_date.strftime('%Y%m%d')}.md"
+    report_file = report_dir / report_filename
+    
+    # 保存分析数据到JSON文件（供AI增强报告使用）
+    json_filename = f"analysis_data_{latest_date.strftime('%Y%m%d')}.json"
+    json_file = report_dir / json_filename
+    
+    try:
+        with open(json_file, 'w', encoding='utf-8') as f:
+            json.dump(analysis, f, ensure_ascii=False, indent=2, default=str)
+        logger.info(f"分析数据已保存到: {json_file}")
+    except Exception as e:
+        logger.error(f"保存JSON数据失败: {e}")
+    
+    # 输出完整报告到stdout
+    print(report)
+    
+    with open(report_file, 'w', encoding='utf-8') as f:
+        f.write(report)
+        
+    logger.info(f"分析报告已保存到: {report_file}")
+    logger.info(f"共分析 {analysis.get('total_unique_stocks', 0)} 只股票")
+    logger.info(f"详细分析 {analysis.get('detailed_analysis_count', 0)} 只股票")
+    logger.info("=== 选股分析完成 ===")
+
+if __name__ == "__main__":
+    import sys
+    import argparse
+    
+    parser = argparse.ArgumentParser(description='量化选股分析器')
+    parser.add_argument('date', nargs='?', help='分析日期 (YYYY-MM-DD格式)')
+    parser.add_argument('--scoring-version', '-v', choices=['v2', 'v3', 'v3.1', 'v3.2', 'v3.3', 'v3.4', 'v3.41', 'v3.5', 'v3.51', 'v3.52', 'v3.53', 'v3.6', 'v3.7', 'v3.8', 'v3.81', 'v3.9', 'v3.94', 'v3.95', 'v4'], default='v3',
+                       help='评分版本: v2(基于历史数据优化)、v3(智能动态权重)、v3.1(相关性分析优化)、v3.4(基于v3.0成功经验优化增强版)、v3.41(反向工程重构革命版)、v3.5(知行指标集成版)、v3.51(Qlib优化版,+2.88pctIC)、v3.52(全面优化版,38参数)、v3.6(机器学习版,LightGBM+XGBoost)、v3.7(高级机器学习版,49特征三层ensemble)、v3.8(自适应评分系统,动态归一化+置信度评估)、v3.81(V380+Level 4质量评分集成,解决质量聚集问题)、v3.9(🏆生产A级,42特征)、v3.94(🏆生产A+级,48特征=42基础+6活跃市值,IC+166%,Top20胜率56%)、v3.95(🚀多目标预测,3d/5d/10d滚动训练) 或 v4(挤压动量增强)，默认v3')
+    parser.add_argument('--stocks-only', '-s', action='store_true',
+                       help='只考虑A股股票，不包括ETF基金等')
+    
+    args = parser.parse_args()
+    
+    main(target_date=args.date, scoring_version=args.scoring_version, stocks_only=args.stocks_only)

@@ -1,0 +1,164 @@
+{
+  "system_config": {
+    "version": "3.8.0",
+    "description": "V3.8 自适应评分系统 - 增量学习与实时特征增强版",
+    "created_date": "2025-09-16",
+    "model_type": "adaptive_scoring_system"
+  },
+
+  "normalization_config": {
+    "default_strategy": "adaptive_sigmoid",
+    "available_strategies": [
+      "adaptive_sigmoid",
+      "robust_sigmoid",
+      "quantile_based",
+      "market_aware",
+      "distribution_adaptive"
+    ],
+    "adaptation_sensitivity": 1.0,
+    "min_sigmoid_slope": 2.0,
+    "max_sigmoid_slope": 15.0,
+    "market_volatility_window": 20,
+    "enhancement_factor": 3.0,
+    "variance_amplification": 2.5
+  },
+
+  "temporal_scoring_config": {
+    "time_windows": {
+      "short_term": 3,
+      "medium_term": 10,
+      "long_term": 30
+    },
+    "weight_adaptation_method": "performance_based",
+    "base_weights": {
+      "short_term": 0.6,
+      "medium_term": 0.25,
+      "long_term": 0.15
+    },
+    "indicator_weights": {
+      "short_term": {
+        "rsi": 0.25,
+        "kdj": 0.20,
+        "macd": 0.20,
+        "bb_position": 0.15,
+        "volume_ratio": 0.10,
+        "momentum": 0.10
+      },
+      "medium_term": {
+        "ma_trend": 0.30,
+        "ema_cross": 0.20,
+        "trend_strength": 0.25,
+        "relative_strength": 0.15,
+        "fundamental": 0.10
+      },
+      "long_term": {
+        "long_term_trend": 0.40,
+        "fundamental_comprehensive": 0.30,
+        "valuation": 0.20,
+        "long_term_momentum": 0.10
+      }
+    }
+  },
+
+  "confidence_config": {
+    "confidence_levels": [0.68, 0.95],
+    "history_window": 100,
+    "min_samples_for_calibration": 30,
+    "quality_weights": {
+      "completeness": 0.3,
+      "consistency": 0.25,
+      "timeliness": 0.2,
+      "accuracy": 0.15,
+      "stability": 0.1
+    },
+    "component_weights": {
+      "model": 0.25,
+      "historical": 0.35,
+      "data": 0.25,
+      "market": 0.15
+    }
+  },
+
+  "data_adapter_config": {
+    "db_path": "data_adapter/stock_data.db",
+    "default_days": 60,
+    "field_mapping": {
+      "price_fields": {
+        "open": "open",
+        "high": "high",
+        "low": "low",
+        "close": "close",
+        "volume": "volume",
+        "trade_date": "trade_date"
+      },
+      "technical_fields": {
+        "rsi": "rsi6",
+        "rsi_12": "rsi12",
+        "rsi_24": "rsi24",
+        "kdj_k": "kdj_k",
+        "kdj_d": "kdj_d",
+        "kdj_j": "kdj_j",
+        "macd": "macd_dif",
+        "macd_signal": "macd_dea",
+        "macd_histogram": "macd_macd",
+        "bb_upper": "boll_upper",
+        "bb_middle": "boll_middle",
+        "bb_lower": "boll_lower",
+        "bbi": "bbi",
+        "volume_ma5": "volume_ma5",
+        "volume_ratio": "volume_ratio"
+      }
+    }
+  },
+
+  "performance_config": {
+    "batch_processing": {
+      "max_workers": 4,
+      "parallel_threshold": 5,
+      "timeout_seconds": 60
+    },
+    "caching": {
+      "enable_cache": true,
+      "cache_ttl_seconds": 300,
+      "max_cache_size": 1000
+    },
+    "logging": {
+      "log_level": "INFO",
+      "log_file": "logs/v38_scoring.log",
+      "enable_performance_logging": true
+    }
+  },
+
+  "market_regimes": {
+    "volatility_thresholds": {
+      "low": 0.5,
+      "high": 1.5,
+      "extreme": 2.0
+    },
+    "trend_strength_thresholds": {
+      "weak": 0.3,
+      "moderate": 0.7,
+      "strong": 1.0
+    },
+    "sentiment_thresholds": {
+      "neutral": 0.2,
+      "moderate": 0.5,
+      "extreme": 0.8
+    }
+  },
+
+  "scoring_thresholds": {
+    "min_score": 0.0,
+    "max_score": 1.0,
+    "default_score": 0.5,
+    "confidence_threshold": 0.3,
+    "quality_threshold": 0.5
+  },
+
+  "integration_config": {
+    "compatible_versions": ["v3.6", "v3.7"],
+    "fallback_version": "v3.6",
+    "enable_version_comparison": true,
+    "migration_mode": false
+  }
+}

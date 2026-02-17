@@ -1,0 +1,744 @@
+{% extends "base.html" %}
+
+{% block title %}回测分析 - StockTradebyZ Web{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-12">
+        <h2 class="mb-4">
+            <i class="bi bi-graph-up-arrow"></i> 回测分析
+        </h2>
+    </div>
+</div>
+
+<!-- 汇总统计 -->
+<div class="row g-3 mb-4">
+    <div class="col-md-3">
+        <div class="card text-white bg-primary h-100">
+            <div class="card-body">
+                <h6 class="card-title">回测报告数</h6>
+                <h3 id="stat-total-backtests">-</h3>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card text-white bg-success h-100">
+            <div class="card-body">
+                <h6 class="card-title">JSON报告</h6>
+                <h3 id="stat-json-reports">-</h3>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card text-white bg-info h-100">
+            <div class="card-body">
+                <h6 class="card-title">最新回测</h6>
+                <h5 id="stat-latest-time">-</h5>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card text-white bg-warning h-100">
+            <div class="card-body">
+                <h6 class="card-title">最新报告</h6>
+                <h6 id="stat-latest-report" class="text-truncate">-</h6>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 版本性能统计 -->
+<div class="row mb-4">
+    <div class="col-md-6">
+        <div class="card h-100">
+            <div class="card-header bg-primary text-white">
+                <h5 class="mb-0"><i class="bi bi-bar-chart"></i> 版本平均收益对比</h5>
+            </div>
+            <div class="card-body">
+                <div id="version-return-chart" style="height: 300px;"></div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-6">
+        <div class="card h-100">
+            <div class="card-header bg-success text-white">
+                <h5 class="mb-0"><i class="bi bi-speedometer2"></i> 版本夏普比率对比</h5>
+            </div>
+            <div class="card-body">
+                <div id="version-sharpe-chart" style="height: 300px;"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 运行中的任务 -->
+<div class="row mb-4" id="running-tasks-section" style="display: none;">
+    <div class="col-12">
+        <div class="card border-warning">
+            <div class="card-header bg-warning text-dark">
+                <h5 class="mb-0"><i class="bi bi-hourglass-split"></i> 运行中的任务 <span id="running-count" class="badge bg-dark">0</span></h5>
+            </div>
+            <div class="card-body" id="running-tasks-body">
+                <!-- 动态填充 -->
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 新建回测 -->
+<div class="row mb-4">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header bg-info text-white">
+                <h5 class="mb-0"><i class="bi bi-play-circle"></i> 新建回测</h5>
+            </div>
+            <div class="card-body">
+                <form id="backtest-form">
+                    <div class="row">
+                        <div class="col-md-3 mb-3">
+                            <label class="form-label">ML版本</label>
+                            <select class="form-select" id="ml-version" required>
+                                <!-- 动态加载版本 -->
+                            </select>
+                        </div>
+                        <div class="col-md-2 mb-3">
+                            <label class="form-label">开始日期</label>
+                            <input type="date" class="form-control" id="start-date" value="2024-01-01" required>
+                        </div>
+                        <div class="col-md-2 mb-3">
+                            <label class="form-label">结束日期</label>
+                            <input type="date" class="form-control" id="end-date" required>
+                        </div>
+                        <div class="col-md-2 mb-3">
+                            <label class="form-label">初始资金</label>
+                            <input type="number" class="form-control" id="initial-capital" value="5000000" step="100000">
+                        </div>
+                        <div class="col-md-2 mb-3">
+                            <label class="form-label">手续费率</label>
+                            <input type="number" class="form-control" id="commission" value="0.0003" step="0.0001">
+                        </div>
+                        <div class="col-md-1 mb-3 d-flex align-items-end">
+                            <button type="submit" class="btn btn-info w-100" id="btn-backtest">
+                                <i class="bi bi-play-fill"></i>
+                            </button>
+                        </div>
+                    </div>
+                </form>
+
+                <!-- 回测进度 -->
+                <div id="backtest-progress" style="display: none;">
+                    <hr>
+                    <h6><i class="bi bi-hourglass-split"></i> 回测进度</h6>
+                    <div class="progress mb-2" style="height: 25px;">
+                        <div class="progress-bar progress-bar-striped progress-bar-animated bg-info"
+                             id="progress-bar" style="width: 0%">0%</div>
+                    </div>
+                    <div id="progress-status" class="alert alert-info mb-0">准备开始...</div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 历史回测报告列表 -->
+<div class="row mb-4">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header bg-dark text-white">
+                <div class="d-flex justify-content-between align-items-center">
+                    <h5 class="mb-0"><i class="bi bi-folder2-open"></i> 历史回测报告</h5>
+                    <button class="btn btn-outline-light btn-sm" onclick="loadBacktestResults()">
+                        <i class="bi bi-arrow-clockwise"></i> 刷新
+                    </button>
+                </div>
+            </div>
+            <div class="card-body">
+                <div class="table-responsive">
+                    <table class="table table-hover" id="results-table">
+                        <thead class="table-secondary">
+                            <tr>
+                                <th>报告名称</th>
+                                <th>测试周期</th>
+                                <th>测试版本</th>
+                                <th>最佳版本</th>
+                                <th>最佳收益</th>
+                                <th>时间</th>
+                                <th>操作</th>
+                            </tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 回测详情模态框 -->
+<div class="modal fade" id="resultModal" tabindex="-1">
+    <div class="modal-dialog modal-xl modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header bg-primary text-white">
+                <h5 class="modal-title"><i class="bi bi-file-earmark-bar-graph"></i> 回测详情</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div id="result-detail-loading" class="text-center py-4">
+                    <div class="spinner-border"></div>
+                    <p class="mt-2">加载中...</p>
+                </div>
+                <div id="result-detail-content" style="display:none;">
+                    <!-- 回测概览 -->
+                    <div class="row g-3 mb-4" id="result-overview"></div>
+
+                    <!-- 版本对比图表 -->
+                    <div class="row mb-4">
+                        <div class="col-12">
+                            <h6><i class="bi bi-bar-chart-line"></i> 版本性能对比</h6>
+                            <div id="comparison-chart" style="height: 350px;"></div>
+                        </div>
+                    </div>
+
+                    <!-- 详细指标表格 -->
+                    <div class="row">
+                        <div class="col-12">
+                            <h6><i class="bi bi-table"></i> 详细性能指标</h6>
+                            <div class="table-responsive">
+                                <table class="table table-striped table-bordered" id="metrics-detail-table">
+                                    <thead class="table-dark">
+                                        <tr>
+                                            <th>版本</th>
+                                            <th>总收益率</th>
+                                            <th>年化收益</th>
+                                            <th>夏普比率</th>
+                                            <th>最大回撤</th>
+                                            <th>交易次数</th>
+                                            <th>胜率</th>
+                                            <th>平均得分</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody></tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+{% endblock %}
+
+{% block extra_js %}
+<script>
+let versionReturnChart = null;
+let versionSharpeChart = null;
+let comparisonChart = null;
+
+$(document).ready(function() {
+    const today = new Date().toISOString().split('T')[0];
+    $('#end-date').val(today);
+
+    // 先加载版本列表
+    loadMLVersionOptions();
+    loadBacktestSummary();
+    loadBacktestResults();
+    loadRunningTasks();
+
+    // 每5秒刷新运行中的任务
+    setInterval(loadRunningTasks, 5000);
+
+    $('#backtest-form').submit(function(e) {
+        e.preventDefault();
+        startBacktest();
+    });
+});
+
+function loadRunningTasks() {
+    $.ajax({
+        url: '/api/tasks/running',
+        success: function(response) {
+            if (response.success) {
+                const tasks = response.tasks || [];
+                const section = $('#running-tasks-section');
+                const body = $('#running-tasks-body');
+
+                if (tasks.length === 0) {
+                    section.hide();
+                    return;
+                }
+
+                section.show();
+                $('#running-count').text(tasks.length);
+
+                let html = '<div class="table-responsive"><table class="table table-sm table-striped mb-0">';
+                html += '<thead><tr><th>类型</th><th>参数</th><th>进度</th><th>已运行</th><th>状态</th></tr></thead><tbody>';
+
+                tasks.forEach(task => {
+                    const meta = task.metadata || {};
+                    const duration = Math.floor(task.duration || 0);
+                    const mins = Math.floor(duration / 60);
+                    const secs = duration % 60;
+                    const timeStr = mins > 0 ? `${mins}分${secs}秒` : `${secs}秒`;
+
+                    const params = [];
+                    if (meta.ml_version) params.push(`ML: ${meta.ml_version.toUpperCase()}`);
+                    if (meta.start_date) params.push(`${meta.start_date} ~ ${meta.end_date || ''}`);
+
+                    html += `<tr>
+                        <td><span class="badge bg-primary">${task.type}</span></td>
+                        <td><small>${params.join(', ')}</small></td>
+                        <td>
+                            <div class="progress" style="height: 20px; min-width: 100px;">
+                                <div class="progress-bar progress-bar-striped progress-bar-animated"
+                                     style="width: ${task.progress}%">${task.progress}%</div>
+                            </div>
+                        </td>
+                        <td>${timeStr}</td>
+                        <td><small class="text-muted">${task.message || ''}</small></td>
+                    </tr>`;
+                });
+
+                html += '</tbody></table></div>';
+                body.html(html);
+            }
+        }
+    });
+}
+
+function loadMLVersionOptions() {
+    // 从API动态加载ML版本列表
+    $.ajax({
+        url: '/api/backtest/strategies',
+        success: function(response) {
+            if (response.success && response.ml_versions) {
+                const mlVersionSelect = $('#ml-version');
+                mlVersionSelect.empty();
+
+                // ml_versions已按版本排序，直接使用
+                response.ml_versions.forEach((v, index) => {
+                    const selected = index === 0 ? 'selected' : '';
+                    mlVersionSelect.append(`<option value="${v.id}" ${selected}>${v.name}</option>`);
+                });
+            }
+        }
+    });
+}
+
+function loadBacktestSummary() {
+    $.ajax({
+        url: '/api/backtest/summary',
+        success: function(response) {
+            if (response.success) {
+                const summary = response.summary;
+                $('#stat-total-backtests').text(summary.total_backtests);
+                $('#stat-json-reports').text(summary.json_reports);
+                $('#stat-latest-time').text(summary.latest_time || '-');
+                $('#stat-latest-report').text(summary.latest_report || '-');
+
+                displayVersionCharts(summary.version_stats);
+            }
+        }
+    });
+}
+
+function displayVersionCharts(versionStats) {
+    const versions = Object.keys(versionStats);
+    const returns = versions.map(v => versionStats[v].avg_return || 0);
+    const sharpes = versions.map(v => versionStats[v].avg_sharpe || 0);
+
+    const returnOptions = {
+        series: [{
+            name: '平均收益率 (%)',
+            data: returns
+        }],
+        chart: { type: 'bar', height: 300, toolbar: { show: false } },
+        plotOptions: {
+            bar: {
+                horizontal: false,
+                borderRadius: 4,
+                distributed: true
+            }
+        },
+        colors: returns.map(r => r >= 0 ? '#10b981' : '#ef4444'),
+        xaxis: { categories: versions },
+        dataLabels: {
+            enabled: true,
+            formatter: function(val) { return val.toFixed(2) + '%'; }
+        },
+        legend: { show: false }
+    };
+
+    if (versionReturnChart) versionReturnChart.destroy();
+    if (versions.length > 0) {
+        versionReturnChart = new ApexCharts(document.querySelector("#version-return-chart"), returnOptions);
+        versionReturnChart.render();
+    }
+
+    const sharpeOptions = {
+        series: [{
+            name: '平均夏普比率',
+            data: sharpes
+        }],
+        chart: { type: 'bar', height: 300, toolbar: { show: false } },
+        plotOptions: {
+            bar: {
+                horizontal: false,
+                borderRadius: 4,
+                distributed: true
+            }
+        },
+        colors: sharpes.map(s => s >= 0 ? '#3b82f6' : '#f97316'),
+        xaxis: { categories: versions },
+        dataLabels: {
+            enabled: true,
+            formatter: function(val) { return val.toFixed(3); }
+        },
+        legend: { show: false }
+    };
+
+    if (versionSharpeChart) versionSharpeChart.destroy();
+    if (versions.length > 0) {
+        versionSharpeChart = new ApexCharts(document.querySelector("#version-sharpe-chart"), sharpeOptions);
+        versionSharpeChart.render();
+    }
+}
+
+function loadBacktestResults() {
+    console.log('[BacktestResults] 开始加载...');
+    const tbody = $('#results-table tbody');
+    console.log('[BacktestResults] tbody元素:', tbody.length);
+    tbody.html('<tr><td colspan="7" class="text-center"><div class="spinner-border spinner-border-sm"></div> 加载中...</td></tr>');
+
+    $.ajax({
+        url: '/api/backtest/results?limit=30',
+        success: function(response) {
+            console.log('[BacktestResults] 收到响应:', response);
+            console.log('[BacktestResults] success:', response.success, 'results数量:', response.results?.length);
+            tbody.empty();
+            if (response.success && response.results && response.results.length > 0) {
+                response.results.forEach(function(result) {
+                    const returnClass = (result.best_return || 0) >= 0 ? 'text-success' : 'text-danger';
+                    const returnValue = result.best_return ? (result.best_return * 100).toFixed(2) + '%' : '-';
+                    const versions = (result.versions_tested || []).join(', ') || '-';
+
+                    tbody.append(`
+                        <tr>
+                            <td>
+                                <span class="badge bg-${result.type === 'json' ? 'success' : 'secondary'} me-1">
+                                    ${result.type.toUpperCase()}
+                                </span>
+                                <code class="small">${result.id.substring(0, 30)}...</code>
+                            </td>
+                            <td>${result.test_period || '-'}</td>
+                            <td>${versions}</td>
+                            <td><span class="badge bg-primary">${result.best_version || '-'}</span></td>
+                            <td class="${returnClass}"><strong>${returnValue}</strong></td>
+                            <td>${result.modified_time}</td>
+                            <td>
+                                <button class="btn btn-sm btn-outline-primary"
+                                        onclick="showResultDetail('${result.id}')">
+                                    <i class="bi bi-eye"></i>
+                                </button>
+                            </td>
+                        </tr>
+                    `);
+                });
+            } else {
+                tbody.html('<tr><td colspan="7" class="text-center text-muted">暂无回测报告</td></tr>');
+            }
+        },
+        error: function() {
+            tbody.html('<tr><td colspan="7" class="text-center text-danger">加载失败</td></tr>');
+        }
+    });
+}
+
+function showResultDetail(resultId) {
+    $('#result-detail-loading').show();
+    $('#result-detail-content').hide();
+    $('#resultModal').modal('show');
+
+    $.ajax({
+        url: `/api/backtest/result/${resultId}`,
+        success: function(response) {
+            $('#result-detail-loading').hide();
+            if (response.success) {
+                displayResultDetail(response.result);
+                $('#result-detail-content').show();
+            }
+        },
+        error: function() {
+            $('#result-detail-loading').html('<div class="alert alert-danger">加载失败</div>');
+        }
+    });
+}
+
+function displayResultDetail(result) {
+    let overviewHtml = '';
+    if (result.test_period) {
+        overviewHtml += `
+            <div class="col-md-4">
+                <div class="card bg-light">
+                    <div class="card-body text-center">
+                        <small class="text-muted">测试周期</small>
+                        <h6 class="mb-0">${result.test_period}</h6>
+                    </div>
+                </div>
+            </div>
+        `;
+    }
+
+    const comparison = result.comparison_analysis || {};
+    const best = comparison.best_performance || {};
+    if (best.version) {
+        const returnPct = (best.return * 100).toFixed(2);
+        const returnClass = best.return >= 0 ? 'text-success' : 'text-danger';
+        overviewHtml += `
+            <div class="col-md-4">
+                <div class="card bg-light">
+                    <div class="card-body text-center">
+                        <small class="text-muted">最佳版本</small>
+                        <h6 class="mb-0"><span class="badge bg-primary">${best.version}</span></h6>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-4">
+                <div class="card bg-light">
+                    <div class="card-body text-center">
+                        <small class="text-muted">最佳收益</small>
+                        <h6 class="mb-0 ${returnClass}">${returnPct}%</h6>
+                    </div>
+                </div>
+            </div>
+        `;
+    }
+    $('#result-overview').html(overviewHtml);
+
+    const tbody = $('#metrics-detail-table tbody');
+    tbody.empty();
+
+    const individualResults = result.individual_results || {};
+    const versions = Object.keys(individualResults);
+
+    versions.forEach(version => {
+        const r = individualResults[version];
+        const returnPct = ((r.total_return || 0) * 100).toFixed(2);
+        const annualPct = ((r.annual_return || 0) * 100).toFixed(2);
+        const drawdown = ((r.max_drawdown || 0) * 100).toFixed(2);
+        const winRate = ((r.win_rate || 0) * 100).toFixed(1);
+        const returnClass = (r.total_return || 0) >= 0 ? 'text-success' : 'text-danger';
+
+        tbody.append(`
+            <tr>
+                <td><span class="badge bg-primary">${version}</span></td>
+                <td class="${returnClass}"><strong>${returnPct}%</strong></td>
+                <td class="${returnClass}">${annualPct}%</td>
+                <td>${(r.sharpe_ratio || 0).toFixed(3)}</td>
+                <td class="text-danger">${drawdown}%</td>
+                <td>${r.total_trades || 0}</td>
+                <td>${winRate}%</td>
+                <td>${(r.avg_score || 0).toFixed(1)}</td>
+            </tr>
+        `);
+    });
+
+    displayComparisonChart(individualResults);
+}
+
+function displayComparisonChart(individualResults) {
+    const versions = Object.keys(individualResults);
+
+    const chartOptions = {
+        series: [
+            {
+                name: '总收益率 (%)',
+                type: 'bar',
+                data: versions.map(v => ((individualResults[v].total_return || 0) * 100).toFixed(2))
+            },
+            {
+                name: '最大回撤 (%)',
+                type: 'bar',
+                data: versions.map(v => ((individualResults[v].max_drawdown || 0) * 100).toFixed(2))
+            },
+            {
+                name: '夏普比率',
+                type: 'line',
+                data: versions.map(v => (individualResults[v].sharpe_ratio || 0).toFixed(3))
+            }
+        ],
+        chart: {
+            type: 'line',
+            height: 350,
+            toolbar: { show: false }
+        },
+        stroke: { width: [0, 0, 3] },
+        plotOptions: { bar: { borderRadius: 4 } },
+        colors: ['#10b981', '#ef4444', '#3b82f6'],
+        xaxis: { categories: versions },
+        yaxis: [
+            { title: { text: '收益率 / 回撤 (%)' } },
+            { opposite: true, title: { text: '夏普比率' } }
+        ],
+        legend: { position: 'top' },
+        dataLabels: { enabled: false }
+    };
+
+    if (comparisonChart) comparisonChart.destroy();
+    if (versions.length > 0) {
+        comparisonChart = new ApexCharts(document.querySelector("#comparison-chart"), chartOptions);
+        comparisonChart.render();
+    }
+}
+
+function startBacktest() {
+    const mlVersion = $('#ml-version').val();
+    const startDate = $('#start-date').val();
+    const endDate = $('#end-date').val();
+    const initialCapital = $('#initial-capital').val();
+    const commission = $('#commission').val();
+
+    if (!confirm(`确定要开始回测吗？\n\n回测参数：\n- ML版本: ${mlVersion}\n- 时间范围: ${startDate} ~ ${endDate}\n- 初始资金: ${parseInt(initialCapital).toLocaleString()}\n\n回测可能需要较长时间。`)) {
+        return;
+    }
+
+    $('#btn-backtest').prop('disabled', true);
+    $('#backtest-progress').show();
+    // 重置进度条到0%
+    $('#progress-bar').css('width', '0%').text('0%');
+    $('#progress-status').removeClass('alert-success alert-danger alert-warning').addClass('alert-info')
+        .html(`<strong>[${mlVersion.toUpperCase()}]</strong> 准备开始...`);
+
+    $.ajax({
+        url: '/api/backtest/run',
+        method: 'POST',
+        contentType: 'application/json',
+        data: JSON.stringify({
+            ml_version: mlVersion,
+            start_date: startDate,
+            end_date: endDate,
+            initial_capital: parseInt(initialCapital),
+            commission: parseFloat(commission)
+        }),
+        success: function(response) {
+            if (response.success) {
+                monitorBacktestProgress(response.task_id, mlVersion);
+            }
+        },
+        error: function(xhr) {
+            $('#btn-backtest').prop('disabled', false);
+            $('#progress-status').removeClass('alert-info').addClass('alert-danger')
+                .text('启动回测失败: ' + (xhr.responseJSON?.error || '未知错误'));
+        }
+    });
+}
+
+function monitorBacktestProgress(taskId, mlVersion) {
+    const eventSource = new EventSource('/api/backtest/run/stream?task_id=' + taskId);
+    let lastHeartbeat = Date.now();
+    let messageCount = 0;
+    const startTime = Date.now();
+    let lastMessage = '等待回测...';
+    const versionTag = mlVersion ? `[${mlVersion.toUpperCase()}] ` : '';
+
+    eventSource.onopen = function() {
+        console.log('SSE连接已建立');
+        $('#progress-status').text('连接已建立，等待回测...');
+    };
+
+    eventSource.onmessage = function(event) {
+        messageCount++;
+        lastHeartbeat = Date.now();
+
+        try {
+            const data = JSON.parse(event.data);
+            if (data.heartbeat) {
+                // 显示运行时间
+                const elapsed = Math.floor((Date.now() - startTime) / 1000);
+                const mins = Math.floor(elapsed / 60);
+                const secs = elapsed % 60;
+                const timeStr = mins > 0 ? `${mins}分${secs}秒` : `${secs}秒`;
+                $('#progress-status').html(`<strong>${versionTag}</strong>${lastMessage} (已运行 ${timeStr})`);
+                return;
+            }
+
+            console.log('收到进度:', data);
+            lastMessage = data.message || '处理中...';
+            $('#progress-bar').css('width', data.progress + '%').text(data.progress.toFixed(0) + '%');
+            $('#progress-status').html(`<strong>${versionTag}</strong>${lastMessage}`);
+
+            if (data.status === 'completed' || data.status === 'failed') {
+                eventSource.close();
+                $('#btn-backtest').prop('disabled', false);
+
+                if (data.status === 'completed') {
+                    $('#progress-status').removeClass('alert-info').addClass('alert-success');
+                    setTimeout(function() {
+                        loadBacktestSummary();
+                        loadBacktestResults();
+                    }, 1000);
+                } else {
+                    $('#progress-status').removeClass('alert-info').addClass('alert-danger');
+                }
+            }
+        } catch (e) {
+            console.error('解析SSE消息失败:', e, event.data);
+        }
+    };
+
+    eventSource.onerror = function(e) {
+        const timeSinceLastHeartbeat = Date.now() - lastHeartbeat;
+        const readyState = eventSource.readyState;
+        console.log('SSE关闭:', {
+            readyState: readyState,
+            messageCount: messageCount,
+            timeSinceLastHeartbeat: timeSinceLastHeartbeat + 'ms'
+        });
+
+        eventSource.close();
+        $('#btn-backtest').prop('disabled', false);
+
+        // 如果收到过消息，说明任务可能已完成，查询最终状态
+        if (messageCount > 0) {
+            $.ajax({
+                url: '/api/tasks/',
+                success: function(response) {
+                    if (response.success && response.tasks.length > 0) {
+                        const latestTask = response.tasks[0];
+                        if (latestTask.status === 'completed') {
+                            const output = latestTask.result?.output || '';
+                            if (output.includes('❌') || output.includes('失败')) {
+                                $('#progress-bar').css('width', '100%').text('100%');
+                                $('#progress-status').removeClass('alert-info').addClass('alert-warning')
+                                    .html('<strong>回测完成但有错误:</strong><br><pre style="white-space:pre-wrap;font-size:12px;max-height:200px;overflow:auto;">' + output + '</pre>');
+                            } else {
+                                $('#progress-bar').css('width', '100%').text('100%');
+                                $('#progress-status').removeClass('alert-info').addClass('alert-success')
+                                    .text('回测完成');
+                                loadBacktestSummary();
+                                loadBacktestResults();
+                            }
+                            return;
+                        }
+                    }
+                    // 如果没找到完成的任务，显示连接中断
+                    $('#progress-status').removeClass('alert-info').addClass('alert-danger')
+                        .text('任务状态未知，请刷新查看结果');
+                },
+                error: function() {
+                    $('#progress-status').removeClass('alert-info').addClass('alert-danger')
+                        .text('连接中断（已收到' + messageCount + '条消息）');
+                }
+            });
+        } else {
+            $('#progress-status').removeClass('alert-info').addClass('alert-danger')
+                .text('无法建立连接，请刷新页面重试');
+        }
+    };
+}
+</script>
+{% endblock %}

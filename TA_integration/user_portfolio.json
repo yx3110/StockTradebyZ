@@ -1,0 +1,63 @@
+{
+  "portfolio_info": {
+    "last_updated": "2025-08-01",
+    "total_positions": 9,
+    "positions": [
+      {
+        "stock_code": "003016",
+        "stock_name": "待确认",
+        "shares": 700,
+        "position_type": "A股"
+      },
+      {
+        "stock_code": "603071",
+        "stock_name": "物产环能", 
+        "shares": 400,
+        "position_type": "A股"
+      },
+      {
+        "stock_code": "002917",
+        "stock_name": "待确认",
+        "shares": 200,
+        "position_type": "A股"
+      },
+      {
+        "stock_code": "603809",
+        "stock_name": "待确认",
+        "shares": 300,
+        "position_type": "A股"
+      },
+      {
+        "stock_code": "002056",
+        "stock_name": "横店东磁",
+        "shares": 400,
+        "position_type": "A股"
+      },
+      {
+        "stock_code": "601020",
+        "stock_name": "待确认",
+        "shares": 4000,
+        "position_type": "A股"
+      },
+      {
+        "stock_code": "002594",
+        "stock_name": "待确认",
+        "shares": 2700,
+        "position_type": "A股"
+      },
+      {
+        "stock_code": "601398",
+        "stock_name": "待确认",
+        "shares": 2400,
+        "position_type": "A股"
+      },
+      {
+        "stock_code": "002167",
+        "stock_name": "待确认",
+        "shares": 1700,
+        "position_type": "A股"
+      }
+    ]
+  },
+  "notes": "用户持仓记录，包含股票代码和持股数量"
+}

@@ -1,0 +1,1832 @@
+{
+  "optimization_date": "20250908_231557",
+  "data_period": {
+    "start": "2024-01-01",
+    "end": "2025-09-01"
+  },
+  "sample_size": 154358,
+  "best_parameters": {
+    "bbi_good_range": 0.0686382458973926,
+    "bbi_optimal_max": 1.084523460514478,
+    "bbi_optimal_min": 0.9836107125488714,
+    "kdj_d_good_range": 11.136495162549137,
+    "kdj_d_optimal_max": 55.30464869566685,
+    "kdj_d_optimal_min": 32.9887428859869,
+    "kdj_k_good_range": 9.738050876967998,
+    "kdj_k_optimal_max": 54.282741422892585,
+    "kdj_k_optimal_min": 30.343570153343308,
+    "rsi_good_range": 15.112884785739539,
+    "rsi_optimal_max": 46.568524921244595,
+    "rsi_optimal_min": 30.163375966580663,
+    "zhixing_multiavg_good_range": 0.14572113994245792,
+    "zhixing_multiavg_optimal_ratio_max": 1.0631863799733623,
+    "zhixing_multiavg_optimal_ratio_min": 0.9311482393402472,
+    "zhixing_trend_good_range": 0.09421805270416957,
+    "zhixing_trend_optimal_ratio_max": 1.0670748587182963,
+    "zhixing_trend_optimal_ratio_min": 0.9674177723062284
+  },
+  "optimization_results": {
+    "best_params": {
+      "bbi_good_range": 0.0686382458973926,
+      "bbi_optimal_max": 1.084523460514478,
+      "bbi_optimal_min": 0.9836107125488714,
+      "kdj_d_good_range": 11.136495162549137,
+      "kdj_d_optimal_max": 55.30464869566685,
+      "kdj_d_optimal_min": 32.9887428859869,
+      "kdj_k_good_range": 9.738050876967998,
+      "kdj_k_optimal_max": 54.282741422892585,
+      "kdj_k_optimal_min": 30.343570153343308,
+      "rsi_good_range": 15.112884785739539,
+      "rsi_optimal_max": 46.568524921244595,
+      "rsi_optimal_min": 30.163375966580663,
+      "zhixing_multiavg_good_range": 0.14572113994245792,
+      "zhixing_multiavg_optimal_ratio_max": 1.0631863799733623,
+      "zhixing_multiavg_optimal_ratio_min": 0.9311482393402472,
+      "zhixing_trend_good_range": 0.09421805270416957,
+      "zhixing_trend_optimal_ratio_max": 1.0670748587182963,
+      "zhixing_trend_optimal_ratio_min": 0.9674177723062284
+    },
+    "best_ic": 0.031209150567475804,
+    "trials_count": 30,
+    "optimization_history": [
+      [
+        -0.019339497680679777,
+        {
+          "bbi_good_range": [
+            0.06354890606255426
+          ],
+          "bbi_optimal_max": [
+            1.1327740494468226
+          ],
+          "bbi_optimal_min": [
+            0.9967963718250582
+          ],
+          "kdj_d_good_range": [
+            16.929168568701314
+          ],
+          "kdj_d_optimal_max": [
+            58.995030667624455
+          ],
+          "kdj_d_optimal_min": [
+            40.46153688228491
+          ],
+          "kdj_k_good_range": [
+            22.39574076398016
+          ],
+          "kdj_k_optimal_max": [
+            51.160303644327165
+          ],
+          "kdj_k_optimal_min": [
+            30.017100481019614
+          ],
+          "rsi_good_range": [
+            16.749879791383094
+          ],
+          "rsi_optimal_max": [
+            60.63120083104909
+          ],
+          "rsi_optimal_min": [
+            31.716968228417628
+          ],
+          "zhixing_multiavg_good_range": [
+            0.10159123335332347
+          ],
+          "zhixing_multiavg_optimal_ratio_max": [
+            1.0864697553606688
+          ],
+          "zhixing_multiavg_optimal_ratio_min": [
+            0.9836936683806083
+          ],
+          "zhixing_trend_good_range": [
+            0.0632020535753711
+          ],
+          "zhixing_trend_optimal_ratio_max": [
+            1.0018984281574899
+          ],
+          "zhixing_trend_optimal_ratio_min": [
+            0.9852246396283465
+          ]
+        }
+      ],
+      [
+        0.0059196640713550025,
+        {
+          "bbi_good_range": [
+            0.03476541494463385
+          ],
+          "bbi_optimal_max": [
+            1.116338358434742
+          ],
+          "bbi_optimal_min": [
+            0.9846956556837576
+          ],
+          "kdj_d_good_range": [
+            6.5307215679068715
+          ],
+          "kdj_d_optimal_max": [
+            50.47642520461176
+          ],
+          "kdj_d_optimal_min": [
+            42.35789387671123
+          ],
+          "kdj_k_good_range": [
+            18.994367420536665
+          ],
+          "kdj_k_optimal_max": [
+            68.75515002570431
+          ],
+          "kdj_k_optimal_min": [
+            32.018993257332866
+          ],
+          "rsi_good_range": [
+            18.923986666392363
+          ],
+          "rsi_optimal_max": [
+            65.07722030805641
+          ],
+          "rsi_optimal_min": [
+            51.59018122749123
+          ],
+          "zhixing_multiavg_good_range": [
+            0.11405126766340723
+          ],
+          "zhixing_multiavg_optimal_ratio_max": [
+            1.11256452578032
+          ],
+          "zhixing_multiavg_optimal_ratio_min": [
+            1.0280630911380304
+          ],
+          "zhixing_trend_good_range": [
+            0.03985432682109995
+          ],
+          "zhixing_trend_optimal_ratio_max": [
+            1.0531469551656574
+          ],
+          "zhixing_trend_optimal_ratio_min": [
+            0.9908145695156368
+          ]
+        }
+      ],
+      [
+        9.98524048871443,
+        {
+          "bbi_good_range": [
+            0.03553472188508372
+          ],
+          "bbi_optimal_max": [
+            1.1363611215605807
+          ],
+          "bbi_optimal_min": [
+            1.0262368542318643
+          ],
+          "kdj_d_good_range": [
+            8.036350463399987
+          ],
+          "kdj_d_optimal_max": [
+            53.91864303921285
+          ],
+          "kdj_d_optimal_min": [
+            34.03570144961652
+          ],
+          "kdj_k_good_range": [
+            7.971218396748984
+          ],
+          "kdj_k_optimal_max": [
+            50.37270715746597
+          ],
+          "kdj_k_optimal_min": [
+            53.07288754914192
+          ],
+          "rsi_good_range": [
+            9.629769310093103
+          ],
+          "rsi_optimal_max": [
+            45.2485755007987
+          ],
+          "rsi_optimal_min": [
+            39.74713966369646
+          ],
+          "zhixing_multiavg_good_range": [
+            0.10874435971568014
+          ],
+          "zhixing_multiavg_optimal_ratio_max": [
+            1.0244027936858358
+          ],
+          "zhixing_multiavg_optimal_ratio_min": [
+            0.9421350560023363
+          ],
+          "zhixing_trend_good_range": [
+            0.05699441672431794
+          ],
+          "zhixing_trend_optimal_ratio_max": [
+            1.0418519943025404
+          ],
+          "zhixing_trend_optimal_ratio_min": [
+            0.9720691132059673
+          ]
+        }
+      ],
+      [
+        -0.027400625907485376,
+        {
+          "bbi_good_range": [
+            0.07738174395441033
+          ],
+          "bbi_optimal_max": [
+            1.1021326068999209
+          ],
+          "bbi_optimal_min": [
+            1.0441643384390606
+          ],
+          "kdj_d_good_range": [
+            11.55582726347868
+          ],
+          "kdj_d_optimal_max": [
+            59.61020576409351
+          ],
+          "kdj_d_optimal_min": [
+            36.44918222478226
+          ],
+          "kdj_k_good_range": [
+            8.660236456181462
+          ],
+          "kdj_k_optimal_max": [
+            53.24681640409085
+          ],
+          "kdj_k_optimal_min": [
+            28.33512214627134
+          ],
+          "rsi_good_range": [
+            11.782289652233034
+          ],
+          "rsi_optimal_max": [
+            46.84054886499929
+          ],
+          "rsi_optimal_min": [
+            35.50972521286927
+          ],
+          "zhixing_multiavg_good_range": [
+            0.1352678150391918
+          ],
+          "zhixing_multiavg_optimal_ratio_max": [
+            1.0018416182654832
+          ],
+          "zhixing_multiavg_optimal_ratio_min": [
+            0.9362139915239845
+          ],
+          "zhixing_trend_good_range": [
+            0.0704477299822439
+          ],
+          "zhixing_trend_optimal_ratio_max": [
+            1.037129665386895
+          ],
+          "zhixing_trend_optimal_ratio_min": [
+            0.9622734455279176
+          ]
+        }
+      ],
+      [
+        -0.01993689893480997,
+        {
+          "bbi_good_range": [
+            0.09162852216268451
+          ],
+          "bbi_optimal_max": [
+            1.1175366291489783
+          ],
+          "bbi_optimal_min": [
+            1.0188367123434625
+          ],
+          "kdj_d_good_range": [
+            17.907102275261312
+          ],
+          "kdj_d_optimal_max": [
+            48.35658596033825
+          ],
+          "kdj_d_optimal_min": [
+            46.26146516973075
+          ],
+          "kdj_k_good_range": [
+            23.724670686144112
+          ],
+          "kdj_k_optimal_max": [
+            60.31610224007597
+          ],
+          "kdj_k_optimal_min": [
+            25.501680995320363
+          ],
+          "rsi_good_range": [
+            5.996373830883133
+          ],
+          "rsi_optimal_max": [
+            52.862669373670734
+          ],
+          "rsi_optimal_min": [
+            36.328580022281905
+          ],
+          "zhixing_multiavg_good_range": [
+            0.07889538606995739
+          ],
+          "zhixing_multiavg_optimal_ratio_max": [
+            1.0989357527318622
+          ],
+          "zhixing_multiavg_optimal_ratio_min": [
+            0.9984899647307853
+          ],
+          "zhixing_trend_good_range": [
+            0.0585029869526427
+          ],
+          "zhixing_trend_optimal_ratio_max": [
+            1.009458010143831
+          ],
+          "zhixing_trend_optimal_ratio_min": [
+            0.964342345223203
+          ]
+        }
+      ],
+      [
+        0.016880684670663042,
+        {
+          "bbi_good_range": [
+            0.09788913806479209
+          ],
+          "bbi_optimal_max": [
+            1.1132788519361556
+          ],
+          "bbi_optimal_min": [
+            0.9879251261741493
+          ],
+          "kdj_d_good_range": [
+            10.223147663044182
+          ],
+          "kdj_d_optimal_max": [
+            60.2982615018289
+          ],
+          "kdj_d_optimal_min": [
+            40.616709799376814
+          ],
+          "kdj_k_good_range": [
+            12.074834063943602
+          ],
+          "kdj_k_optimal_max": [
+            73.82530274136573
+          ],
+          "kdj_k_optimal_min": [
+            33.20081433117704
+          ],
+          "rsi_good_range": [
+            19.725804347339984
+          ],
+          "rsi_optimal_max": [
+            69.68272163467833
+          ],
+          "rsi_optimal_min": [
+            54.955958962488594
+          ],
+          "zhixing_multiavg_good_range": [
+            0.08743815077343473
+          ],
+          "zhixing_multiavg_optimal_ratio_max": [
+            1.022017345542633
+          ],
+          "zhixing_multiavg_optimal_ratio_min": [
+            1.0343055764348812
+          ],
+          "zhixing_trend_good_range": [
+            0.020850831818538095
+          ],
+          "zhixing_trend_optimal_ratio_max": [
+            1.0485258079362019
+          ],
+          "zhixing_trend_optimal_ratio_min": [
+            0.9756439634868371
+          ]
+        }
+      ],
+      [
+        -0.01594688358617105,
+        {
+          "bbi_good_range": [
+            0.04048002510511254
+          ],
+          "bbi_optimal_max": [
+            1.1197151203312063
+          ],
+          "bbi_optimal_min": [
+            0.9909133067883479
+          ],
+          "kdj_d_good_range": [
+            6.120453375587777
+          ],
+          "kdj_d_optimal_max": [
+            57.81388854798959
+          ],
+          "kdj_d_optimal_min": [
+            43.76102529120663
+          ],
+          "kdj_k_good_range": [
+            24.75746355097025
+          ],
+          "kdj_k_optimal_max": [
+            57.12816307312918
+          ],
+          "kdj_k_optimal_min": [
+            37.19210780330641
+          ],
+          "rsi_good_range": [
+            12.75794131607184
+          ],
+          "rsi_optimal_max": [
+            47.2470064817196
+          ],
+          "rsi_optimal_min": [
+            41.363624895930286
+          ],
+          "zhixing_multiavg_good_range": [
+            0.10313749426983876
+          ],
+          "zhixing_multiavg_optimal_ratio_max": [
+            1.0453353838495807
+          ],
+          "zhixing_multiavg_optimal_ratio_min": [
+            0.9724221349392768
+          ],
+          "zhixing_trend_good_range": [
+            0.04630632072743036
+          ],
+          "zhixing_trend_optimal_ratio_max": [
+            1.050259436972627
+          ],
+          "zhixing_trend_optimal_ratio_min": [
+            0.959525038426606
+          ]
+        }
+      ],
+      [
+        9.99414038449419,
+        {
+          "bbi_good_range": [
+            0.0216127842370853
+          ],
+          "bbi_optimal_max": [
+            1.1107132195173055
+          ],
+          "bbi_optimal_min": [
+            1.0415064903856348
+          ],
+          "kdj_d_good_range": [
+            9.489464194612626
+          ],
+          "kdj_d_optimal_max": [
+            61.2828912628285
+          ],
+          "kdj_d_optimal_min": [
+            52.12828783567596
+          ],
+          "kdj_k_good_range": [
+            11.0315268830779
+          ],
+          "kdj_k_optimal_max": [
+            66.69991265895494
+          ],
+          "kdj_k_optimal_min": [
+            33.13290379965265
+          ],
+          "rsi_good_range": [
+            7.03038232248515
+          ],
+          "rsi_optimal_max": [
+            50.27119172538668
+          ],
+          "rsi_optimal_min": [
+            52.0510355198525
+          ],
+          "zhixing_multiavg_good_range": [
+            0.108456472048429
+          ],
+          "zhixing_multiavg_optimal_ratio_max": [
+            1.1117811721481798
+          ],
+          "zhixing_multiavg_optimal_ratio_min": [
+            1.00956487269773
+          ],
+          "zhixing_trend_good_range": [
+            0.06577092803134868
+          ],
+          "zhixing_trend_optimal_ratio_max": [
+            1.0426188128020955
+          ],
+          "zhixing_trend_optimal_ratio_min": [
+            1.0067899699785576
+          ]
+        }
+      ],
+      [
+        -0.00519474178570679,
+        {
+          "bbi_good_range": [
+            0.028541342455297488
+          ],
+          "bbi_optimal_max": [
+            1.1115300609673238
+          ],
+          "bbi_optimal_min": [
+            1.0303313720230345
+          ],
+          "kdj_d_good_range": [
+            13.218881030446363
+          ],
+          "kdj_d_optimal_max": [
+            60.86830615800994
+          ],
+          "kdj_d_optimal_min": [
+            35.63930734768669
+          ],
+          "kdj_k_good_range": [
+            10.577131465473968
+          ],
+          "kdj_k_optimal_max": [
+            67.34186391355807
+          ],
+          "kdj_k_optimal_min": [
+            37.815266995511784
+          ],
+          "rsi_good_range": [
+            7.797769308324664
+          ],
+          "rsi_optimal_max": [
+            65.94757375012749
+          ],
+          "rsi_optimal_min": [
+            33.09201674623193
+          ],
+          "zhixing_multiavg_good_range": [
+            0.13144600427729752
+          ],
+          "zhixing_multiavg_optimal_ratio_max": [
+            1.0686258634732733
+          ],
+          "zhixing_multiavg_optimal_ratio_min": [
+            1.0407627425529655
+          ],
+          "zhixing_trend_good_range": [
+            0.06531315370047495
+          ],
+          "zhixing_trend_optimal_ratio_max": [
+            1.0485218010015105
+          ],
+          "zhixing_trend_optimal_ratio_min": [
+            1.0197759506258368
+          ]
+        }
+      ],
+      [
+        0.0008035812702943968,
+        {
+          "bbi_good_range": [
+            0.06770868783478579
+          ],
+          "bbi_optimal_max": [
+            1.0941746989040613
+          ],
+          "bbi_optimal_min": [
+            1.013730601150435
+          ],
+          "kdj_d_good_range": [
+            7.490942712146652
+          ],
+          "kdj_d_optimal_max": [
+            53.11320188253354
+          ],
+          "kdj_d_optimal_min": [
+            48.078834881396645
+          ],
+          "kdj_k_good_range": [
+            17.646787869038885
+          ],
+          "kdj_k_optimal_max": [
+            61.84988078863541
+          ],
+          "kdj_k_optimal_min": [
+            51.06254577026661
+          ],
+          "rsi_good_range": [
+            15.804473039180465
+          ],
+          "rsi_optimal_max": [
+            59.639763890334834
+          ],
+          "rsi_optimal_min": [
+            40.32116817265672
+          ],
+          "zhixing_multiavg_good_range": [
+            0.030454992604610893
+          ],
+          "zhixing_multiavg_optimal_ratio_max": [
+            0.982905944051459
+          ],
+          "zhixing_multiavg_optimal_ratio_min": [
+            0.9228175973154715
+          ],
+          "zhixing_trend_good_range": [
+            0.09825998186234788
+          ],
+          "zhixing_trend_optimal_ratio_max": [
+            1.0361573575807392
+          ],
+          "zhixing_trend_optimal_ratio_min": [
+            1.0009284159447533
+          ]
+        }
+      ],
+      [
+        -0.0009717081674470836,
+        {
+          "bbi_good_range": [
+            0.03758672079153024
+          ],
+          "bbi_optimal_max": [
+            1.0653496005489789
+          ],
+          "bbi_optimal_min": [
+            1.0262661667498965
+          ],
+          "kdj_d_good_range": [
+            18.588721558353264
+          ],
+          "kdj_d_optimal_max": [
+            51.955629099047506
+          ],
+          "kdj_d_optimal_min": [
+            41.31603652150004
+          ],
+          "kdj_k_good_range": [
+            16.63323606385368
+          ],
+          "kdj_k_optimal_max": [
+            57.25991830403987
+          ],
+          "kdj_k_optimal_min": [
+            36.74431574822576
+          ],
+          "rsi_good_range": [
+            13.719709725620307
+          ],
+          "rsi_optimal_max": [
+            65.97442356686683
+          ],
+          "rsi_optimal_min": [
+            48.43267236762877
+          ],
+          "zhixing_multiavg_good_range": [
+            0.03946330054927343
+          ],
+          "zhixing_multiavg_optimal_ratio_max": [
+            1.1094869421894509
+          ],
+          "zhixing_multiavg_optimal_ratio_min": [
+            0.9278792787096375
+          ],
+          "zhixing_trend_good_range": [
+            0.08839472625013364
+          ],
+          "zhixing_trend_optimal_ratio_max": [
+            1.0487528839938627
+          ],
+          "zhixing_trend_optimal_ratio_min": [
+            0.9842497495598148
+          ]
+        }
+      ],
+      [
+        0.017556660966444287,
+        {
+          "bbi_good_range": [
+            0.03281257032084735
+          ],
+          "bbi_optimal_max": [
+            1.0735344044422346
+          ],
+          "bbi_optimal_min": [
+            0.9948599235429241
+          ],
+          "kdj_d_good_range": [
+            6.636819711996095
+          ],
+          "kdj_d_optimal_max": [
+            45.329244890815744
+          ],
+          "kdj_d_optimal_min": [
+            41.939061332493054
+          ],
+          "kdj_k_good_range": [
+            19.414289714271646
+          ],
+          "kdj_k_optimal_max": [
+            65.21780793573457
+          ],
+          "kdj_k_optimal_min": [
+            54.07420215340951
+          ],
+          "rsi_good_range": [
+            8.471077570394396
+          ],
+          "rsi_optimal_max": [
+            68.75324226170889
+          ],
+          "rsi_optimal_min": [
+            50.00237380884553
+          ],
+          "zhixing_multiavg_good_range": [
+            0.09251823329836788
+          ],
+          "zhixing_multiavg_optimal_ratio_max": [
+            0.9920274031099777
+          ],
+          "zhixing_multiavg_optimal_ratio_min": [
+            0.9594992912590263
+          ],
+          "zhixing_trend_good_range": [
+            0.07620127122424471
+          ],
+          "zhixing_trend_optimal_ratio_max": [
+            1.0217479706107098
+          ],
+          "zhixing_trend_optimal_ratio_min": [
+            0.9559167612239329
+          ]
+        }
+      ],
+      [
+        -0.003693745519738639,
+        {
+          "bbi_good_range": [
+            0.09766296507796042
+          ],
+          "bbi_optimal_max": [
+            1.122696135130634
+          ],
+          "bbi_optimal_min": [
+            1.039021751601181
+          ],
+          "kdj_d_good_range": [
+            17.540472961645488
+          ],
+          "kdj_d_optimal_max": [
+            61.17140662558148
+          ],
+          "kdj_d_optimal_min": [
+            42.24218888230008
+          ],
+          "kdj_k_good_range": [
+            15.943386041524558
+          ],
+          "kdj_k_optimal_max": [
+            62.04396124189311
+          ],
+          "kdj_k_optimal_min": [
+            29.42928100539222
+          ],
+          "rsi_good_range": [
+            13.690046441158708
+          ],
+          "rsi_optimal_max": [
+            54.845103308787124
+          ],
+          "rsi_optimal_min": [
+            53.240073426577574
+          ],
+          "zhixing_multiavg_good_range": [
+            0.08347951215892048
+          ],
+          "zhixing_multiavg_optimal_ratio_max": [
+            1.000630592588525
+          ],
+          "zhixing_multiavg_optimal_ratio_min": [
+            0.9052942597482003
+          ],
+          "zhixing_trend_good_range": [
+            0.04653651853726109
+          ],
+          "zhixing_trend_optimal_ratio_max": [
+            1.0352126093704122
+          ],
+          "zhixing_trend_optimal_ratio_min": [
+            0.9842236153949588
+          ]
+        }
+      ],
+      [
+        -0.003245373254055748,
+        {
+          "bbi_good_range": [
+            0.09004014080665322
+          ],
+          "bbi_optimal_max": [
+            1.1381031406216682
+          ],
+          "bbi_optimal_min": [
+            1.0050360531646088
+          ],
+          "kdj_d_good_range": [
+            18.157049072441232
+          ],
+          "kdj_d_optimal_max": [
+            63.792369668250146
+          ],
+          "kdj_d_optimal_min": [
+            31.30371377013309
+          ],
+          "kdj_k_good_range": [
+            24.197551029538037
+          ],
+          "kdj_k_optimal_max": [
+            49.83963125402296
+          ],
+          "kdj_k_optimal_min": [
+            39.514303170691576
+          ],
+          "rsi_good_range": [
+            16.731597703364507
+          ],
+          "rsi_optimal_max": [
+            59.314689018866446
+          ],
+          "rsi_optimal_min": [
+            48.46496125365906
+          ],
+          "zhixing_multiavg_good_range": [
+            0.13394842085868774
+          ],
+          "zhixing_multiavg_optimal_ratio_max": [
+            1.051730758403166
+          ],
+          "zhixing_multiavg_optimal_ratio_min": [
+            0.9443202208903053
+          ],
+          "zhixing_trend_good_range": [
+            0.09116232698061565
+          ],
+          "zhixing_trend_optimal_ratio_max": [
+            1.0654770163130167
+          ],
+          "zhixing_trend_optimal_ratio_min": [
+            0.9866702206099538
+          ]
+        }
+      ],
+      [
+        -0.01433470794820796,
+        {
+          "bbi_good_range": [
+            0.08503954830296336
+          ],
+          "bbi_optimal_max": [
+            1.069445375988988
+          ],
+          "bbi_optimal_min": [
+            1.0344955240727822
+          ],
+          "kdj_d_good_range": [
+            8.440572909310422
+          ],
+          "kdj_d_optimal_max": [
+            66.67447036176038
+          ],
+          "kdj_d_optimal_min": [
+            41.2864348956858
+          ],
+          "kdj_k_good_range": [
+            13.847691122955638
+          ],
+          "kdj_k_optimal_max": [
+            60.11098433519486
+          ],
+          "kdj_k_optimal_min": [
+            50.21360836626045
+          ],
+          "rsi_good_range": [
+            16.90226104083791
+          ],
+          "rsi_optimal_max": [
+            52.04063845192482
+          ],
+          "rsi_optimal_min": [
+            31.047848487772924
+          ],
+          "zhixing_multiavg_good_range": [
+            0.12988038215713385
+          ],
+          "zhixing_multiavg_optimal_ratio_max": [
+            1.053867199591052
+          ],
+          "zhixing_multiavg_optimal_ratio_min": [
+            0.9896650498697369
+          ],
+          "zhixing_trend_good_range": [
+            0.024378923638661138
+          ],
+          "zhixing_trend_optimal_ratio_max": [
+            1.0340564320297616
+          ],
+          "zhixing_trend_optimal_ratio_min": [
+            0.9750325027015184
+          ]
+        }
+      ],
+      [
+        0.008455710202945011,
+        {
+          "bbi_good_range": [
+            0.05026751355576223
+          ],
+          "bbi_optimal_max": [
+            1.0453533609923369
+          ],
+          "bbi_optimal_min": [
+            1.0408024406937846
+          ],
+          "kdj_d_good_range": [
+            8.266137658679217
+          ],
+          "kdj_d_optimal_max": [
+            66.27950577605071
+          ],
+          "kdj_d_optimal_min": [
+            54.81221745693568
+          ],
+          "kdj_k_good_range": [
+            8.261217558014247
+          ],
+          "kdj_k_optimal_max": [
+            70.45969645283958
+          ],
+          "kdj_k_optimal_min": [
+            44.214705287741346
+          ],
+          "rsi_good_range": [
+            13.955864229318989
+          ],
+          "rsi_optimal_max": [
+            57.74972954933075
+          ],
+          "rsi_optimal_min": [
+            50.816760145692115
+          ],
+          "zhixing_multiavg_good_range": [
+            0.06790178300041902
+          ],
+          "zhixing_multiavg_optimal_ratio_max": [
+            0.9838479117072534
+          ],
+          "zhixing_multiavg_optimal_ratio_min": [
+            0.9854715707778999
+          ],
+          "zhixing_trend_good_range": [
+            0.02022696477913824
+          ],
+          "zhixing_trend_optimal_ratio_max": [
+            1.0344632874810362
+          ],
+          "zhixing_trend_optimal_ratio_min": [
+            0.9808659927098563
+          ]
+        }
+      ],
+      [
+        -0.014596475749702346,
+        {
+          "bbi_good_range": [
+            0.041591361302624925
+          ],
+          "bbi_optimal_max": [
+            1.0588733703659514
+          ],
+          "bbi_optimal_min": [
+            1.0411308314264824
+          ],
+          "kdj_d_good_range": [
+            15.70431811703033
+          ],
+          "kdj_d_optimal_max": [
+            57.59293678583515
+          ],
+          "kdj_d_optimal_min": [
+            54.301426323374926
+          ],
+          "kdj_k_good_range": [
+            21.181457058346837
+          ],
+          "kdj_k_optimal_max": [
+            56.9776544798256
+          ],
+          "kdj_k_optimal_min": [
+            31.993847175759555
+          ],
+          "rsi_good_range": [
+            11.149302381325006
+          ],
+          "rsi_optimal_max": [
+            48.56605438456923
+          ],
+          "rsi_optimal_min": [
+            48.39366381137328
+          ],
+          "zhixing_multiavg_good_range": [
+            0.13751719358534711
+          ],
+          "zhixing_multiavg_optimal_ratio_max": [
+            1.0365192469155036
+          ],
+          "zhixing_multiavg_optimal_ratio_min": [
+            0.9902860841184168
+          ],
+          "zhixing_trend_good_range": [
+            0.0665946881402668
+          ],
+          "zhixing_trend_optimal_ratio_max": [
+            1.053304148309208
+          ],
+          "zhixing_trend_optimal_ratio_min": [
+            0.9798139607951694
+          ]
+        }
+      ],
+      [
+        0.01260030321120748,
+        {
+          "bbi_good_range": [
+            0.09220190823480842
+          ],
+          "bbi_optimal_max": [
+            1.1257091215562607
+          ],
+          "bbi_optimal_min": [
+            1.0084654924375782
+          ],
+          "kdj_d_good_range": [
+            15.29221741180076
+          ],
+          "kdj_d_optimal_max": [
+            61.49329152501305
+          ],
+          "kdj_d_optimal_min": [
+            40.68509812807118
+          ],
+          "kdj_k_good_range": [
+            16.684223662553737
+          ],
+          "kdj_k_optimal_max": [
+            60.47613243304896
+          ],
+          "kdj_k_optimal_min": [
+            49.514366376202354
+          ],
+          "rsi_good_range": [
+            13.213210725069363
+          ],
+          "rsi_optimal_max": [
+            66.23042530865548
+          ],
+          "rsi_optimal_min": [
+            49.9849660853799
+          ],
+          "zhixing_multiavg_good_range": [
+            0.12185930512370768
+          ],
+          "zhixing_multiavg_optimal_ratio_max": [
+            1.112454527603699
+          ],
+          "zhixing_multiavg_optimal_ratio_min": [
+            0.9401345445913638
+          ],
+          "zhixing_trend_good_range": [
+            0.04026608689202069
+          ],
+          "zhixing_trend_optimal_ratio_max": [
+            1.0431926379373109
+          ],
+          "zhixing_trend_optimal_ratio_min": [
+            0.9760388196232936
+          ]
+        }
+      ],
+      [
+        -0.015206579859241736,
+        {
+          "bbi_good_range": [
+            0.09217821800431523
+          ],
+          "bbi_optimal_max": [
+            1.066953727536826
+          ],
+          "bbi_optimal_min": [
+            1.011582147645666
+          ],
+          "kdj_d_good_range": [
+            17.298526025719042
+          ],
+          "kdj_d_optimal_max": [
+            64.00922292732892
+          ],
+          "kdj_d_optimal_min": [
+            33.91520202398381
+          ],
+          "kdj_k_good_range": [
+            17.002333026335762
+          ],
+          "kdj_k_optimal_max": [
+            51.98763476181988
+          ],
+          "kdj_k_optimal_min": [
+            42.15840135029587
+          ],
+          "rsi_good_range": [
+            19.205123717652885
+          ],
+          "rsi_optimal_max": [
+            47.92408874309022
+          ],
+          "rsi_optimal_min": [
+            46.15552948481424
+          ],
+          "zhixing_multiavg_good_range": [
+            0.1410426577180032
+          ],
+          "zhixing_multiavg_optimal_ratio_max": [
+            1.0779565051663593
+          ],
+          "zhixing_multiavg_optimal_ratio_min": [
+            1.0086923252739097
+          ],
+          "zhixing_trend_good_range": [
+            0.09932278195961869
+          ],
+          "zhixing_trend_optimal_ratio_max": [
+            1.037027529603163
+          ],
+          "zhixing_trend_optimal_ratio_min": [
+            0.9931586793749523
+          ]
+        }
+      ],
+      [
+        -0.010141920316593884,
+        {
+          "bbi_good_range": [
+            0.04434063979632054
+          ],
+          "bbi_optimal_max": [
+            1.0480879927823554
+          ],
+          "bbi_optimal_min": [
+            0.9991396556035091
+          ],
+          "kdj_d_good_range": [
+            6.0246205547757
+          ],
+          "kdj_d_optimal_max": [
+            64.39755188764074
+          ],
+          "kdj_d_optimal_min": [
+            40.46943348520873
+          ],
+          "kdj_k_good_range": [
+            8.880933493201606
+          ],
+          "kdj_k_optimal_max": [
+            68.61632903853102
+          ],
+          "kdj_k_optimal_min": [
+            44.96606381099093
+          ],
+          "rsi_good_range": [
+            18.15955301269421
+          ],
+          "rsi_optimal_max": [
+            52.07303731105693
+          ],
+          "rsi_optimal_min": [
+            38.444629638452795
+          ],
+          "zhixing_multiavg_good_range": [
+            0.06644715828851332
+          ],
+          "zhixing_multiavg_optimal_ratio_max": [
+            1.0004781757526666
+          ],
+          "zhixing_multiavg_optimal_ratio_min": [
+            1.007626382325385
+          ],
+          "zhixing_trend_good_range": [
+            0.061757252159832285
+          ],
+          "zhixing_trend_optimal_ratio_max": [
+            1.0010070214149742
+          ],
+          "zhixing_trend_optimal_ratio_min": [
+            0.9979195755345499
+          ]
+        }
+      ],
+      [
+        9.973552849696828,
+        {
+          "bbi_good_range": [
+            0.07548607049737892
+          ],
+          "bbi_optimal_max": [
+            1.0954957623336765
+          ],
+          "bbi_optimal_min": [
+            1.0483749167904568
+          ],
+          "kdj_d_good_range": [
+            19.88488648611081
+          ],
+          "kdj_d_optimal_max": [
+            45.557507926996315
+          ],
+          "kdj_d_optimal_min": [
+            46.75325695642921
+          ],
+          "kdj_k_good_range": [
+            5.158546556203698
+          ],
+          "kdj_k_optimal_max": [
+            45.828355610441385
+          ],
+          "kdj_k_optimal_min": [
+            25.61965878412324
+          ],
+          "rsi_good_range": [
+            5.216353862234113
+          ],
+          "rsi_optimal_max": [
+            54.57062919144381
+          ],
+          "rsi_optimal_min": [
+            36.07473365268144
+          ],
+          "zhixing_multiavg_good_range": [
+            0.056998423280693884
+          ],
+          "zhixing_multiavg_optimal_ratio_max": [
+            1.0950805331536633
+          ],
+          "zhixing_multiavg_optimal_ratio_min": [
+            0.9544651910819838
+          ],
+          "zhixing_trend_good_range": [
+            0.07905408770454989
+          ],
+          "zhixing_trend_optimal_ratio_max": [
+            1.0160625119499795
+          ],
+          "zhixing_trend_optimal_ratio_min": [
+            0.9633903531005116
+          ]
+        }
+      ],
+      [
+        -0.025587953631295096,
+        {
+          "bbi_good_range": [
+            0.07873024484100041
+          ],
+          "bbi_optimal_max": [
+            1.148927682415014
+          ],
+          "bbi_optimal_min": [
+            1.0187824272892676
+          ],
+          "kdj_d_good_range": [
+            12.458327366132112
+          ],
+          "kdj_d_optimal_max": [
+            48.70237256648693
+          ],
+          "kdj_d_optimal_min": [
+            38.13651447794427
+          ],
+          "kdj_k_good_range": [
+            6.138019247322306
+          ],
+          "kdj_k_optimal_max": [
+            54.18326664431296
+          ],
+          "kdj_k_optimal_min": [
+            25.611387024198898
+          ],
+          "rsi_good_range": [
+            6.330797084935146
+          ],
+          "rsi_optimal_max": [
+            45.26519878826779
+          ],
+          "rsi_optimal_min": [
+            35.41116021341948
+          ],
+          "zhixing_multiavg_good_range": [
+            0.05104859064280538
+          ],
+          "zhixing_multiavg_optimal_ratio_max": [
+            1.0162340547561755
+          ],
+          "zhixing_multiavg_optimal_ratio_min": [
+            0.9183334769127026
+          ],
+          "zhixing_trend_good_range": [
+            0.07417840498136381
+          ],
+          "zhixing_trend_optimal_ratio_max": [
+            1.0122884636326086
+          ],
+          "zhixing_trend_optimal_ratio_min": [
+            0.9512598386423808
+          ]
+        }
+      ],
+      [
+        -0.02128635037169328,
+        {
+          "bbi_good_range": [
+            0.07693310839161623
+          ],
+          "bbi_optimal_max": [
+            1.1484631672943233
+          ],
+          "bbi_optimal_min": [
+            1.021014226115782
+          ],
+          "kdj_d_good_range": [
+            11.792904702698156
+          ],
+          "kdj_d_optimal_max": [
+            69.61944983907955
+          ],
+          "kdj_d_optimal_min": [
+            36.54916879743139
+          ],
+          "kdj_k_good_range": [
+            5.191846020349631
+          ],
+          "kdj_k_optimal_max": [
+            47.76503737411274
+          ],
+          "kdj_k_optimal_min": [
+            26.839624980543114
+          ],
+          "rsi_good_range": [
+            10.888332950795876
+          ],
+          "rsi_optimal_max": [
+            45.08394166815965
+          ],
+          "rsi_optimal_min": [
+            44.4418612700294
+          ],
+          "zhixing_multiavg_good_range": [
+            0.04515784058567594
+          ],
+          "zhixing_multiavg_optimal_ratio_max": [
+            1.0098533711429383
+          ],
+          "zhixing_multiavg_optimal_ratio_min": [
+            0.904256414695422
+          ],
+          "zhixing_trend_good_range": [
+            0.07696590566948242
+          ],
+          "zhixing_trend_optimal_ratio_max": [
+            1.0236187172906825
+          ],
+          "zhixing_trend_optimal_ratio_min": [
+            0.9500162289465731
+          ]
+        }
+      ],
+      [
+        -0.02605194212698909,
+        {
+          "bbi_good_range": [
+            0.056681956320656215
+          ],
+          "bbi_optimal_max": [
+            1.0822244856854948
+          ],
+          "bbi_optimal_min": [
+            1.00281045849836
+          ],
+          "kdj_d_good_range": [
+            12.935936255066784
+          ],
+          "kdj_d_optimal_max": [
+            54.684819296422134
+          ],
+          "kdj_d_optimal_min": [
+            37.60759314855585
+          ],
+          "kdj_k_good_range": [
+            6.679461871725691
+          ],
+          "kdj_k_optimal_max": [
+            54.111122852116736
+          ],
+          "kdj_k_optimal_min": [
+            28.175970874589364
+          ],
+          "rsi_good_range": [
+            11.11416017011804
+          ],
+          "rsi_optimal_max": [
+            45.02971318091015
+          ],
+          "rsi_optimal_min": [
+            34.27411973394968
+          ],
+          "zhixing_multiavg_good_range": [
+            0.1491761782722008
+          ],
+          "zhixing_multiavg_optimal_ratio_max": [
+            1.020496744276318
+          ],
+          "zhixing_multiavg_optimal_ratio_min": [
+            0.9168701771020802
+          ],
+          "zhixing_trend_good_range": [
+            0.08165663532161133
+          ],
+          "zhixing_trend_optimal_ratio_max": [
+            1.0767368790737784
+          ],
+          "zhixing_trend_optimal_ratio_min": [
+            0.9512064775360297
+          ]
+        }
+      ],
+      [
+        -0.02872801601375459,
+        {
+          "bbi_good_range": [
+            0.05154830082195082
+          ],
+          "bbi_optimal_max": [
+            1.0830683816703812
+          ],
+          "bbi_optimal_min": [
+            0.9808839651283089
+          ],
+          "kdj_d_good_range": [
+            13.95223659683019
+          ],
+          "kdj_d_optimal_max": [
+            55.29204980490904
+          ],
+          "kdj_d_optimal_min": [
+            31.281627633890174
+          ],
+          "kdj_k_good_range": [
+            6.713390858719951
+          ],
+          "kdj_k_optimal_max": [
+            54.784992393086014
+          ],
+          "kdj_k_optimal_min": [
+            29.163856145814652
+          ],
+          "rsi_good_range": [
+            11.147495825756225
+          ],
+          "rsi_optimal_max": [
+            49.41966332147096
+          ],
+          "rsi_optimal_min": [
+            32.83073132656753
+          ],
+          "zhixing_multiavg_good_range": [
+            0.14869088637391872
+          ],
+          "zhixing_multiavg_optimal_ratio_max": [
+            1.031893740615402
+          ],
+          "zhixing_multiavg_optimal_ratio_min": [
+            0.9006970036240979
+          ],
+          "zhixing_trend_good_range": [
+            0.08410399099823941
+          ],
+          "zhixing_trend_optimal_ratio_max": [
+            1.0774473676447802
+          ],
+          "zhixing_trend_optimal_ratio_min": [
+            0.9685966685567967
+          ]
+        }
+      ],
+      [
+        9.973801394114822,
+        {
+          "bbi_good_range": [
+            0.0555515093990205
+          ],
+          "bbi_optimal_max": [
+            1.0311974979255951
+          ],
+          "bbi_optimal_min": [
+            1.04941956829702
+          ],
+          "kdj_d_good_range": [
+            14.358491933977994
+          ],
+          "kdj_d_optimal_max": [
+            54.32329554261707
+          ],
+          "kdj_d_optimal_min": [
+            30.99967562945253
+          ],
+          "kdj_k_good_range": [
+            13.678575286121086
+          ],
+          "kdj_k_optimal_max": [
+            46.87956636758576
+          ],
+          "kdj_k_optimal_min": [
+            34.902062073163805
+          ],
+          "rsi_good_range": [
+            9.458689953785756
+          ],
+          "rsi_optimal_max": [
+            49.17822097880293
+          ],
+          "rsi_optimal_min": [
+            38.14401858805433
+          ],
+          "zhixing_multiavg_good_range": [
+            0.14992219943444174
+          ],
+          "zhixing_multiavg_optimal_ratio_max": [
+            1.0352347698822701
+          ],
+          "zhixing_multiavg_optimal_ratio_min": [
+            0.9008581873154293
+          ],
+          "zhixing_trend_good_range": [
+            0.08899558325269631
+          ],
+          "zhixing_trend_optimal_ratio_max": [
+            1.0759294445655656
+          ],
+          "zhixing_trend_optimal_ratio_min": [
+            0.9697011657598382
+          ]
+        }
+      ],
+      [
+        -0.031209150567475804,
+        {
+          "bbi_good_range": [
+            0.0686382458973926
+          ],
+          "bbi_optimal_max": [
+            1.084523460514478
+          ],
+          "bbi_optimal_min": [
+            0.9836107125488714
+          ],
+          "kdj_d_good_range": [
+            11.136495162549137
+          ],
+          "kdj_d_optimal_max": [
+            55.30464869566685
+          ],
+          "kdj_d_optimal_min": [
+            32.9887428859869
+          ],
+          "kdj_k_good_range": [
+            9.738050876967998
+          ],
+          "kdj_k_optimal_max": [
+            54.282741422892585
+          ],
+          "kdj_k_optimal_min": [
+            30.343570153343308
+          ],
+          "rsi_good_range": [
+            15.112884785739539
+          ],
+          "rsi_optimal_max": [
+            46.568524921244595
+          ],
+          "rsi_optimal_min": [
+            30.163375966580663
+          ],
+          "zhixing_multiavg_good_range": [
+            0.14572113994245792
+          ],
+          "zhixing_multiavg_optimal_ratio_max": [
+            1.0631863799733623
+          ],
+          "zhixing_multiavg_optimal_ratio_min": [
+            0.9311482393402472
+          ],
+          "zhixing_trend_good_range": [
+            0.09421805270416957
+          ],
+          "zhixing_trend_optimal_ratio_max": [
+            1.0670748587182963
+          ],
+          "zhixing_trend_optimal_ratio_min": [
+            0.9674177723062284
+          ]
+        }
+      ],
+      [
+        -0.028273812705821532,
+        {
+          "bbi_good_range": [
+            0.06799939372262133
+          ],
+          "bbi_optimal_max": [
+            1.0814929588659032
+          ],
+          "bbi_optimal_min": [
+            0.9807290022604739
+          ],
+          "kdj_d_good_range": [
+            10.488378484978963
+          ],
+          "kdj_d_optimal_max": [
+            55.905322325920125
+          ],
+          "kdj_d_optimal_min": [
+            30.23576396639315
+          ],
+          "kdj_k_good_range": [
+            10.532476422952188
+          ],
+          "kdj_k_optimal_max": [
+            56.19320911235861
+          ],
+          "kdj_k_optimal_min": [
+            35.01844310294185
+          ],
+          "rsi_good_range": [
+            15.180898645880623
+          ],
+          "rsi_optimal_max": [
+            50.789181292612135
+          ],
+          "rsi_optimal_min": [
+            30.12286469954498
+          ],
+          "zhixing_multiavg_good_range": [
+            0.14966555353513178
+          ],
+          "zhixing_multiavg_optimal_ratio_max": [
+            1.064471479015685
+          ],
+          "zhixing_multiavg_optimal_ratio_min": [
+            0.9101663586035551
+          ],
+          "zhixing_trend_good_range": [
+            0.09409170297747958
+          ],
+          "zhixing_trend_optimal_ratio_max": [
+            1.067139644141251
+          ],
+          "zhixing_trend_optimal_ratio_min": [
+            0.9678826106432953
+          ]
+        }
+      ],
+      [
+        -0.022664515639179015,
+        {
+          "bbi_good_range": [
+            0.06401725882542358
+          ],
+          "bbi_optimal_max": [
+            1.0857780189325612
+          ],
+          "bbi_optimal_min": [
+            0.9816370867726281
+          ],
+          "kdj_d_good_range": [
+            14.686414795975493
+          ],
+          "kdj_d_optimal_max": [
+            56.05333055757621
+          ],
+          "kdj_d_optimal_min": [
+            32.64076987861553
+          ],
+          "kdj_k_good_range": [
+            6.839187847500109
+          ],
+          "kdj_k_optimal_max": [
+            48.739037612543555
+          ],
+          "kdj_k_optimal_min": [
+            30.43601237797716
+          ],
+          "rsi_good_range": [
+            15.36447594220505
+          ],
+          "rsi_optimal_max": [
+            62.50065613996044
+          ],
+          "rsi_optimal_min": [
+            32.583816417768276
+          ],
+          "zhixing_multiavg_good_range": [
+            0.12116329898037712
+          ],
+          "zhixing_multiavg_optimal_ratio_max": [
+            1.0822584599654106
+          ],
+          "zhixing_multiavg_optimal_ratio_min": [
+            0.9666887870772306
+          ],
+          "zhixing_trend_good_range": [
+            0.08330892637064413
+          ],
+          "zhixing_trend_optimal_ratio_max": [
+            1.062664827990085
+          ],
+          "zhixing_trend_optimal_ratio_min": [
+            0.957228579098765
+          ]
+        }
+      ],
+      [
+        -0.02677132125846743,
+        {
+          "bbi_good_range": [
+            0.05031082939221319
+          ],
+          "bbi_optimal_max": [
+            1.1012427945802614
+          ],
+          "bbi_optimal_min": [
+            0.9934687694628974
+          ],
+          "kdj_d_good_range": [
+            16.14203968315751
+          ],
+          "kdj_d_optimal_max": [
+            50.88638796831788
+          ],
+          "kdj_d_optimal_min": [
+            33.149219971938734
+          ],
+          "kdj_k_good_range": [
+            12.823765682919802
+          ],
+          "kdj_k_optimal_max": [
+            45.269846482740284
+          ],
+          "kdj_k_optimal_min": [
+            30.647972741432575
+          ],
+          "rsi_good_range": [
+            9.914404756140135
+          ],
+          "rsi_optimal_max": [
+            55.949205135281204
+          ],
+          "rsi_optimal_min": [
+            30.85935701558225
+          ],
+          "zhixing_multiavg_good_range": [
+            0.14305847661621146
+          ],
+          "zhixing_multiavg_optimal_ratio_max": [
+            1.0663116935682744
+          ],
+          "zhixing_multiavg_optimal_ratio_min": [
+            0.9548166429745741
+          ],
+          "zhixing_trend_good_range": [
+            0.08466614224234184
+          ],
+          "zhixing_trend_optimal_ratio_max": [
+            1.072190880511702
+          ],
+          "zhixing_trend_optimal_ratio_min": [
+            0.9666433311417275
+          ]
+        }
+      ]
+    ]
+  },
+  "data_stats": {
+    "total_records": 154358,
+    "unique_stocks": 998,
+    "date_range": {
+      "start": "2024-11-08",
+      "end": "2025-08-29"
+    }
+  }
+}

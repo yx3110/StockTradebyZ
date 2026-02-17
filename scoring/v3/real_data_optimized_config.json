@@ -1,0 +1,12 @@
+{
+  "momentum_factor_weight": 0.4,
+  "mean_reversion_weight": 0.25,
+  "volume_breakout_weight": 0.2,
+  "relative_performance_weight": 0.1,
+  "stability_factor_weight": 0.05,
+  "buy_threshold": 75.0,
+  "cautious_buy_threshold": 70.0,
+  "watch_threshold": 60.0,
+  "optimization_date": "2025-08-13",
+  "based_on_samples": 3949
+}

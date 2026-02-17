@@ -1,0 +1,756 @@
+{% extends "base.html" %}
+
+{% block title %}首页 - StockTradebyZ Web{% endblock %}
+
+{% block extra_css %}
+<style>
+    .dashboard-card {
+        transition: transform 0.2s, box-shadow 0.2s;
+    }
+    .dashboard-card:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    }
+    .stat-icon {
+        opacity: 0.8;
+    }
+    .mini-chart {
+        height: 120px;
+    }
+    .quick-action-btn {
+        transition: all 0.2s;
+    }
+    .quick-action-btn:hover {
+        transform: scale(1.02);
+    }
+    .module-card {
+        border-left: 4px solid;
+    }
+    .module-card.daily { border-left-color: #0d6efd; }
+    .module-card.model { border-left-color: #198754; }
+    .module-card.backtest { border-left-color: #6f42c1; }
+    .report-item {
+        border-left: 3px solid transparent;
+        transition: all 0.2s;
+    }
+    .report-item:hover {
+        border-left-color: #0d6efd;
+        background-color: #f8f9fa;
+    }
+    .version-badge {
+        font-size: 0.75rem;
+    }
+    .loading-placeholder {
+        background: linear-gradient(90deg, #f0f0f0 25%, #e0e0e0 50%, #f0f0f0 75%);
+        background-size: 200% 100%;
+        animation: loading 1.5s infinite;
+    }
+    @keyframes loading {
+        0% { background-position: 200% 0; }
+        100% { background-position: -200% 0; }
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-12">
+        <h2 class="mb-4">
+            <i class="bi bi-speedometer2"></i> 系统仪表板
+        </h2>
+    </div>
+</div>
+
+<!-- 核心指标卡片 -->
+<div class="row g-3 mb-4">
+    <div class="col-lg-3 col-md-6">
+        <div class="card dashboard-card text-white bg-primary h-100">
+            <div class="card-body">
+                <div class="d-flex justify-content-between align-items-center">
+                    <div>
+                        <h6 class="card-title mb-1">股票/ETF总数</h6>
+                        <h3 class="mb-0" id="total-stocks">
+                            <span class="loading-placeholder rounded" style="display:inline-block;width:60px;height:28px;">&nbsp;</span>
+                        </h3>
+                        <small class="opacity-75">数据库记录</small>
+                    </div>
+                    <i class="bi bi-building stat-icon fs-1"></i>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-lg-3 col-md-6">
+        <div class="card dashboard-card text-white bg-success h-100">
+            <div class="card-body">
+                <div class="d-flex justify-content-between align-items-center">
+                    <div>
+                        <h6 class="card-title mb-1">最新数据日期</h6>
+                        <h4 class="mb-0" id="latest-date">
+                            <span class="loading-placeholder rounded" style="display:inline-block;width:100px;height:24px;">&nbsp;</span>
+                        </h4>
+                        <small class="opacity-75" id="data-freshness">-</small>
+                    </div>
+                    <i class="bi bi-calendar-check stat-icon fs-1"></i>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-lg-3 col-md-6">
+        <div class="card dashboard-card text-white bg-info h-100">
+            <div class="card-body">
+                <div class="d-flex justify-content-between align-items-center">
+                    <div>
+                        <h6 class="card-title mb-1">ML模型数</h6>
+                        <h3 class="mb-0" id="total-models">
+                            <span class="loading-placeholder rounded" style="display:inline-block;width:40px;height:28px;">&nbsp;</span>
+                        </h3>
+                        <small class="opacity-75" id="trained-models">-</small>
+                    </div>
+                    <i class="bi bi-cpu stat-icon fs-1"></i>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-lg-3 col-md-6">
+        <div class="card dashboard-card text-white bg-purple h-100" style="background-color: #6f42c1;">
+            <div class="card-body">
+                <div class="d-flex justify-content-between align-items-center">
+                    <div>
+                        <h6 class="card-title mb-1">回测报告数</h6>
+                        <h3 class="mb-0" id="total-backtests">
+                            <span class="loading-placeholder rounded" style="display:inline-block;width:40px;height:28px;">&nbsp;</span>
+                        </h3>
+                        <small class="opacity-75" id="latest-backtest">-</small>
+                    </div>
+                    <i class="bi bi-graph-up stat-icon fs-1"></i>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 快速操作 -->
+<div class="row mb-4">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header bg-primary text-white">
+                <h5 class="mb-0"><i class="bi bi-lightning"></i> 快速操作</h5>
+            </div>
+            <div class="card-body">
+                <div class="row g-3">
+                    <div class="col-lg-3 col-md-6">
+                        <a href="{{ url_for('daily_tasks') }}" class="btn btn-outline-primary w-100 py-3 quick-action-btn">
+                            <i class="bi bi-arrow-repeat fs-3 d-block mb-2"></i>
+                            <h6 class="mb-1">数据更新</h6>
+                            <small class="text-muted">更新市场行情数据</small>
+                        </a>
+                    </div>
+                    <div class="col-lg-3 col-md-6">
+                        <a href="{{ url_for('daily_tasks') }}#selection" class="btn btn-outline-success w-100 py-3 quick-action-btn">
+                            <i class="bi bi-list-check fs-3 d-block mb-2"></i>
+                            <h6 class="mb-1">今日选股</h6>
+                            <small class="text-muted">运行ML选股策略</small>
+                        </a>
+                    </div>
+                    <div class="col-lg-3 col-md-6">
+                        <a href="{{ url_for('model_training') }}" class="btn btn-outline-info w-100 py-3 quick-action-btn">
+                            <i class="bi bi-cpu fs-3 d-block mb-2"></i>
+                            <h6 class="mb-1">模型管理</h6>
+                            <small class="text-muted">查看和训练ML模型</small>
+                        </a>
+                    </div>
+                    <div class="col-lg-3 col-md-6">
+                        <a href="{{ url_for('backtest') }}" class="btn btn-outline-purple w-100 py-3 quick-action-btn" style="border-color: #6f42c1; color: #6f42c1;">
+                            <i class="bi bi-graph-up fs-3 d-block mb-2"></i>
+                            <h6 class="mb-1">策略回测</h6>
+                            <small class="text-muted">测试策略性能</small>
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 正在运行的任务 -->
+<div class="row mb-4" id="running-tasks-section" style="display: none;">
+    <div class="col-12">
+        <div class="card border-warning">
+            <div class="card-header bg-warning text-dark d-flex justify-content-between align-items-center">
+                <h5 class="mb-0">
+                    <i class="bi bi-hourglass-split"></i> 正在运行的任务
+                    <span class="badge bg-dark ms-2" id="running-task-count">0</span>
+                </h5>
+                <button class="btn btn-sm btn-outline-dark" onclick="loadRunningTasks()">
+                    <i class="bi bi-arrow-clockwise"></i> 刷新
+                </button>
+            </div>
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table table-hover mb-0">
+                        <thead class="table-light">
+                            <tr>
+                                <th>任务类型</th>
+                                <th>状态</th>
+                                <th>进度</th>
+                                <th>消息</th>
+                                <th>开始时间</th>
+                                <th>耗时</th>
+                            </tr>
+                        </thead>
+                        <tbody id="running-tasks-body">
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 三大模块概览 -->
+<div class="row g-4 mb-4">
+    <!-- 每日任务模块 -->
+    <div class="col-lg-4">
+        <div class="card module-card daily h-100">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="mb-0"><i class="bi bi-calendar-day text-primary"></i> 每日任务</h5>
+                <a href="{{ url_for('daily_tasks') }}" class="btn btn-sm btn-outline-primary">查看全部</a>
+            </div>
+            <div class="card-body">
+                <div class="mb-3">
+                    <h6 class="text-muted mb-2">最近选股报告</h6>
+                    <div id="recent-selections">
+                        <div class="text-center py-3">
+                            <div class="spinner-border spinner-border-sm text-primary" role="status"></div>
+                            <small class="text-muted d-block mt-1">加载中...</small>
+                        </div>
+                    </div>
+                </div>
+                <hr>
+                <div class="row text-center">
+                    <div class="col-6">
+                        <h5 class="mb-0 text-primary" id="today-picks">-</h5>
+                        <small class="text-muted">今日精选</small>
+                    </div>
+                    <div class="col-6">
+                        <h5 class="mb-0 text-success" id="selection-reports">-</h5>
+                        <small class="text-muted">选股报告</small>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 模型训练模块 -->
+    <div class="col-lg-4">
+        <div class="card module-card model h-100">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="mb-0"><i class="bi bi-cpu text-success"></i> 模型训练</h5>
+                <a href="{{ url_for('model_training') }}" class="btn btn-sm btn-outline-success">查看全部</a>
+            </div>
+            <div class="card-body">
+                <div class="mb-3">
+                    <h6 class="text-muted mb-2">模型版本状态</h6>
+                    <div id="model-versions">
+                        <div class="text-center py-3">
+                            <div class="spinner-border spinner-border-sm text-success" role="status"></div>
+                            <small class="text-muted d-block mt-1">加载中...</small>
+                        </div>
+                    </div>
+                </div>
+                <hr>
+                <div class="row text-center">
+                    <div class="col-6">
+                        <h5 class="mb-0 text-success" id="model-size">-</h5>
+                        <small class="text-muted">模型总大小</small>
+                    </div>
+                    <div class="col-6">
+                        <h5 class="mb-0 text-info" id="latest-training">-</h5>
+                        <small class="text-muted">最近训练</small>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 回测分析模块 -->
+    <div class="col-lg-4">
+        <div class="card module-card backtest h-100">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="mb-0"><i class="bi bi-graph-up" style="color: #6f42c1;"></i> 回测分析</h5>
+                <a href="{{ url_for('backtest') }}" class="btn btn-sm btn-outline-secondary" style="border-color: #6f42c1; color: #6f42c1;">查看全部</a>
+            </div>
+            <div class="card-body">
+                <div class="mb-3">
+                    <h6 class="text-muted mb-2">版本表现对比</h6>
+                    <div id="version-performance-chart" class="mini-chart">
+                        <div class="text-center py-3">
+                            <div class="spinner-border spinner-border-sm" style="color: #6f42c1;" role="status"></div>
+                            <small class="text-muted d-block mt-1">加载中...</small>
+                        </div>
+                    </div>
+                </div>
+                <hr>
+                <div class="row text-center">
+                    <div class="col-6">
+                        <h5 class="mb-0" style="color: #6f42c1;" id="best-version">-</h5>
+                        <small class="text-muted">最佳版本</small>
+                    </div>
+                    <div class="col-6">
+                        <h5 class="mb-0 text-success" id="best-return">-</h5>
+                        <small class="text-muted">最高收益</small>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 系统信息和数据库统计 -->
+<div class="row">
+    <div class="col-lg-6">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0"><i class="bi bi-database"></i> 数据库统计</h5>
+            </div>
+            <div class="card-body">
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <div class="border rounded p-3 text-center">
+                            <h4 class="mb-1 text-primary" id="db-size">-</h4>
+                            <small class="text-muted">数据库大小</small>
+                        </div>
+                    </div>
+                    <div class="col-md-6">
+                        <div class="border rounded p-3 text-center">
+                            <h4 class="mb-1 text-success" id="total-quotes">-</h4>
+                            <small class="text-muted">日线数据条数</small>
+                        </div>
+                    </div>
+                    <div class="col-md-6">
+                        <div class="border rounded p-3 text-center">
+                            <h4 class="mb-1 text-info" id="total-indicators">-</h4>
+                            <small class="text-muted">技术指标条数</small>
+                        </div>
+                    </div>
+                    <div class="col-md-6">
+                        <div class="border rounded p-3 text-center">
+                            <h4 class="mb-1 text-warning" id="date-range">-</h4>
+                            <small class="text-muted">数据时间跨度</small>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-lg-6">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0"><i class="bi bi-info-circle"></i> 系统信息</h5>
+            </div>
+            <div class="card-body">
+                <table class="table table-borderless mb-0">
+                    <tr>
+                        <th width="140">系统版本</th>
+                        <td><span class="badge bg-primary">{{ app_version }}</span></td>
+                    </tr>
+                    <tr>
+                        <th>数据库类型</th>
+                        <td>SQLite (stock_data.db)</td>
+                    </tr>
+                    <tr>
+                        <th>ML评分版本</th>
+                        <td>
+                            <span class="badge bg-secondary me-1 version-badge">v3.6</span>
+                            <span class="badge bg-secondary me-1 version-badge">v3.7</span>
+                            <span class="badge bg-secondary me-1 version-badge">v3.8</span>
+                            <span class="badge bg-info me-1 version-badge">v3.81</span>
+                            <span class="badge bg-success version-badge">v3.9</span>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th>量化策略</th>
+                        <td>
+                            <span class="badge bg-outline-secondary border me-1">少负战法</span>
+                            <span class="badge bg-outline-secondary border me-1">补票战法</span>
+                            <span class="badge bg-outline-secondary border me-1">TePu战法</span>
+                            <span class="badge bg-outline-secondary border">填坑战法</span>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th>服务启动时间</th>
+                        <td id="uptime">{{ now.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+                    </tr>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+
+{% endblock %}
+
+{% block extra_js %}
+<script src="https://cdn.jsdelivr.net/npm/apexcharts"></script>
+<script>
+$(document).ready(function() {
+    // 并行加载所有数据
+    loadSystemStatus();
+    loadModelSummary();
+    loadBacktestSummary();
+    loadRecentSelections();
+    loadRunningTasks();
+
+    // 每5秒刷新任务状态
+    setInterval(loadRunningTasks, 5000);
+
+    // 每60秒刷新其他数据
+    setInterval(function() {
+        loadSystemStatus();
+        loadModelSummary();
+        loadBacktestSummary();
+    }, 60000);
+});
+
+function loadSystemStatus() {
+    $.ajax({
+        url: '/api/daily/status',
+        method: 'GET',
+        success: function(response) {
+            if (response.success) {
+                const stats = response.database_stats;
+
+                $('#total-stocks').text(stats.total_stocks.toLocaleString());
+                $('#latest-date').text(stats.latest_date || '-');
+                $('#db-size').text(stats.db_size_mb.toFixed(1) + ' MB');
+
+                // 数据新鲜度
+                if (stats.latest_date) {
+                    const today = new Date();
+                    const latestDate = new Date(stats.latest_date);
+                    const diffDays = Math.floor((today - latestDate) / (1000 * 60 * 60 * 24));
+                    if (diffDays === 0) {
+                        $('#data-freshness').text('数据已是最新');
+                    } else if (diffDays === 1) {
+                        $('#data-freshness').text('1天前更新');
+                    } else {
+                        $('#data-freshness').text(diffDays + '天前更新');
+                    }
+                }
+
+                // 更多数据库统计
+                if (stats.total_quotes) {
+                    $('#total-quotes').text(formatNumber(stats.total_quotes));
+                }
+                if (stats.total_indicators) {
+                    $('#total-indicators').text(formatNumber(stats.total_indicators));
+                }
+                if (stats.date_range) {
+                    $('#date-range').text(stats.date_range);
+                }
+            }
+        },
+        error: function(xhr, status, error) {
+            console.error('加载系统状态失败:', error);
+            $('#total-stocks').text('-');
+            $('#latest-date').text('-');
+        }
+    });
+}
+
+function loadModelSummary() {
+    $.ajax({
+        url: '/api/models/summary',
+        method: 'GET',
+        success: function(response) {
+            if (response.success) {
+                const summary = response.summary;
+
+                $('#total-models').text(summary.total_versions);
+                $('#trained-models').text(summary.trained_versions + ' 个已训练');
+                $('#model-size').text(summary.total_size_mb.toFixed(1) + ' MB');
+
+                if (summary.latest_training) {
+                    $('#latest-training').text(summary.latest_training.substring(0, 10));
+                }
+
+                // 渲染模型版本状态
+                let versionsHtml = '';
+                const versions = summary.versions || [];
+                versions.slice(0, 4).forEach(function(v) {
+                    const statusClass = v.has_model ? 'success' : 'secondary';
+                    const statusText = v.has_model ? '已训练' : '未训练';
+                    versionsHtml += `
+                        <div class="d-flex justify-content-between align-items-center mb-2">
+                            <span><strong>${v.version}</strong> <small class="text-muted">${v.name}</small></span>
+                            <span class="badge bg-${statusClass}">${statusText}</span>
+                        </div>
+                    `;
+                });
+                $('#model-versions').html(versionsHtml || '<p class="text-muted text-center">暂无模型</p>');
+            }
+        },
+        error: function() {
+            $('#model-versions').html('<p class="text-danger text-center">加载失败</p>');
+        }
+    });
+}
+
+function loadBacktestSummary() {
+    $.ajax({
+        url: '/api/backtest/summary',
+        method: 'GET',
+        success: function(response) {
+            if (response.success) {
+                const summary = response.summary;
+
+                $('#total-backtests').text(summary.total_backtests);
+                if (summary.latest_time) {
+                    $('#latest-backtest').text('最近: ' + summary.latest_time.substring(0, 10));
+                }
+
+                // 版本表现
+                const versionStats = summary.version_stats || {};
+                let bestVersion = '-';
+                let bestReturn = 0;
+
+                // 渲染版本对比图
+                const versions = Object.keys(versionStats);
+                if (versions.length > 0) {
+                    const returns = versions.map(v => versionStats[v].avg_return || 0);
+
+                    // 找最佳版本
+                    versions.forEach((v, i) => {
+                        if (returns[i] > bestReturn) {
+                            bestReturn = returns[i];
+                            bestVersion = v;
+                        }
+                    });
+
+                    $('#best-version').text(bestVersion);
+                    $('#best-return').text(bestReturn.toFixed(1) + '%');
+
+                    // 渲染迷你图表
+                    renderVersionChart(versions, returns);
+                } else {
+                    $('#version-performance-chart').html('<p class="text-muted text-center py-4">暂无回测数据</p>');
+                }
+            }
+        },
+        error: function() {
+            $('#version-performance-chart').html('<p class="text-danger text-center py-4">加载失败</p>');
+        }
+    });
+}
+
+function loadRecentSelections() {
+    $.ajax({
+        url: '/api/daily/reports?version=v3.9&limit=5',
+        method: 'GET',
+        success: function(response) {
+            if (response.success && response.reports && response.reports.length > 0) {
+                let html = '';
+                response.reports.forEach(function(r, index) {
+                    if (index < 3) {
+                        html += `
+                            <div class="report-item p-2 mb-1 rounded">
+                                <div class="d-flex justify-content-between align-items-center">
+                                    <span>
+                                        <i class="bi bi-file-text text-primary me-1"></i>
+                                        <small>${r.date}</small>
+                                    </span>
+                                    <span class="badge bg-primary">${r.stock_count || '-'}只</span>
+                                </div>
+                            </div>
+                        `;
+                    }
+                });
+                $('#recent-selections').html(html);
+                $('#selection-reports').text(response.total || response.reports.length);
+
+                // 今日精选数量
+                if (response.reports.length > 0) {
+                    const todayReport = response.reports[0];
+                    $('#today-picks').text(todayReport.stock_count || '-');
+                }
+            } else {
+                $('#recent-selections').html('<p class="text-muted text-center">暂无报告</p>');
+            }
+        },
+        error: function() {
+            $('#recent-selections').html('<p class="text-danger text-center">加载失败</p>');
+        }
+    });
+}
+
+function renderVersionChart(versions, returns) {
+    const options = {
+        series: [{
+            name: '平均收益',
+            data: returns
+        }],
+        chart: {
+            type: 'bar',
+            height: 120,
+            toolbar: { show: false },
+            sparkline: { enabled: false }
+        },
+        plotOptions: {
+            bar: {
+                horizontal: false,
+                columnWidth: '60%',
+                borderRadius: 4,
+                colors: {
+                    ranges: [{
+                        from: -100,
+                        to: 0,
+                        color: '#dc3545'
+                    }, {
+                        from: 0,
+                        to: 100,
+                        color: '#6f42c1'
+                    }]
+                }
+            }
+        },
+        dataLabels: { enabled: false },
+        xaxis: {
+            categories: versions,
+            labels: { style: { fontSize: '10px' } }
+        },
+        yaxis: {
+            labels: {
+                formatter: function(val) { return val.toFixed(0) + '%'; },
+                style: { fontSize: '10px' }
+            }
+        },
+        grid: { show: false },
+        tooltip: {
+            y: { formatter: function(val) { return val.toFixed(2) + '%'; } }
+        }
+    };
+
+    $('#version-performance-chart').empty();
+    const chart = new ApexCharts(document.querySelector("#version-performance-chart"), options);
+    chart.render();
+}
+
+function formatNumber(num) {
+    if (num >= 1000000) {
+        return (num / 1000000).toFixed(1) + 'M';
+    } else if (num >= 1000) {
+        return (num / 1000).toFixed(1) + 'K';
+    }
+    return num.toString();
+}
+
+function loadRunningTasks() {
+    $.ajax({
+        url: '/api/tasks/running',
+        method: 'GET',
+        success: function(response) {
+            if (response.success) {
+                const tasks = response.tasks;
+                const count = tasks.length;
+
+                $('#running-task-count').text(count);
+
+                if (count > 0) {
+                    $('#running-tasks-section').show();
+                    renderTasksTable(tasks);
+                } else {
+                    $('#running-tasks-section').hide();
+                }
+            }
+        },
+        error: function() {
+            console.error('加载运行中任务失败');
+        }
+    });
+}
+
+function renderTasksTable(tasks) {
+    const tbody = $('#running-tasks-body');
+    tbody.empty();
+
+    const typeNames = {
+        'data_update': '数据更新',
+        'stock_selection': '股票选择',
+        'ai_analysis': 'AI分析',
+        'model_training': '模型训练',
+        'backtest': '策略回测'
+    };
+
+    const typeColors = {
+        'data_update': 'primary',
+        'stock_selection': 'success',
+        'ai_analysis': 'info',
+        'model_training': 'warning',
+        'backtest': 'purple'
+    };
+
+    const statusNames = {
+        'pending': '等待中',
+        'running': '运行中',
+        'completed': '已完成',
+        'failed': '失败',
+        'cancelled': '已取消'
+    };
+
+    const statusColors = {
+        'pending': 'secondary',
+        'running': 'primary',
+        'completed': 'success',
+        'failed': 'danger',
+        'cancelled': 'warning'
+    };
+
+    tasks.forEach(function(task) {
+        const typeName = typeNames[task.type] || task.type;
+        const typeColor = typeColors[task.type] || 'secondary';
+        const statusName = statusNames[task.status] || task.status;
+        const statusColor = statusColors[task.status] || 'secondary';
+
+        const progress = task.progress || 0;
+        const progressClass = task.status === 'running' ? 'progress-bar-striped progress-bar-animated' : '';
+
+        const startTime = task.started_at ? new Date(task.started_at).toLocaleTimeString('zh-CN') : '-';
+        const duration = task.duration ? formatDuration(task.duration) : '-';
+
+        tbody.append(`
+            <tr>
+                <td><span class="badge bg-${typeColor}">${typeName}</span></td>
+                <td><span class="badge bg-${statusColor}">${statusName}</span></td>
+                <td style="min-width: 150px;">
+                    <div class="progress" style="height: 20px;">
+                        <div class="progress-bar ${progressClass}" style="width: ${progress}%">
+                            ${progress.toFixed(0)}%
+                        </div>
+                    </div>
+                </td>
+                <td><small>${task.message || '-'}</small></td>
+                <td><small>${startTime}</small></td>
+                <td><small>${duration}</small></td>
+            </tr>
+        `);
+    });
+}
+
+function formatDuration(seconds) {
+    if (seconds < 60) {
+        return Math.round(seconds) + '秒';
+    } else if (seconds < 3600) {
+        const mins = Math.floor(seconds / 60);
+        const secs = Math.round(seconds % 60);
+        return mins + '分' + secs + '秒';
+    } else {
+        const hours = Math.floor(seconds / 3600);
+        const mins = Math.floor((seconds % 3600) / 60);
+        return hours + '时' + mins + '分';
+    }
+}
+</script>
+{% endblock %}

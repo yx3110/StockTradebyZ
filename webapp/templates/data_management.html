@@ -1,0 +1,867 @@
+{% extends "base.html" %}
+
+{% block title %}数据管理 - StockTradebyZ Web{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-12">
+        <h2 class="mb-4">
+            <i class="bi bi-database"></i> 数据管理
+        </h2>
+    </div>
+</div>
+
+<!-- 数据库统计概览 -->
+<div class="row g-3 mb-4">
+    <div class="col-md-3">
+        <div class="card text-white bg-primary h-100">
+            <div class="card-body">
+                <h6 class="card-title">活跃证券</h6>
+                <h3 id="stat-securities">-</h3>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card text-white bg-success h-100">
+            <div class="card-body">
+                <h6 class="card-title">数据库大小</h6>
+                <h3 id="stat-db-size">-</h3>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card text-white bg-info h-100">
+            <div class="card-body">
+                <h6 class="card-title">数据日期范围</h6>
+                <h5 id="stat-date-range">-</h5>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card text-white bg-warning h-100">
+            <div class="card-body">
+                <h6 class="card-title">V39缓存完整度</h6>
+                <h3 id="stat-v39-completeness">-</h3>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 数据完整度检查 -->
+<div class="row mb-4">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header bg-primary text-white">
+                <div class="d-flex justify-content-between align-items-center">
+                    <h5 class="mb-0"><i class="bi bi-check2-circle"></i> 数据完整度检查</h5>
+                    <div class="d-flex gap-2">
+                        <input type="date" class="form-control form-control-sm" id="check-start-date" style="width: 150px;">
+                        <span class="text-white align-self-center">~</span>
+                        <input type="date" class="form-control form-control-sm" id="check-end-date" style="width: 150px;">
+                        <button class="btn btn-light btn-sm" onclick="refreshCompleteness()">
+                            <i class="bi bi-arrow-clockwise"></i> 刷新
+                        </button>
+                    </div>
+                </div>
+            </div>
+            <div class="card-body">
+                <div class="row g-3" id="completeness-cards">
+                    <div class="text-center text-muted py-4">
+                        <div class="spinner-border" role="status">
+                            <span class="visually-hidden">加载中...</span>
+                        </div>
+                        <p class="mt-2">加载数据完整度...</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 每日数据详情图表 -->
+<div class="row mb-4">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header bg-info text-white">
+                <div class="d-flex justify-content-between align-items-center">
+                    <h5 class="mb-0"><i class="bi bi-graph-up"></i> 每日数据完整度</h5>
+                    <select id="table-select" class="form-select form-select-sm" style="width: 200px;">
+                        <option value="v39_feature_cache">V39特征缓存</option>
+                        <option value="daily_quotes">日线行情</option>
+                        <option value="daily_basic">日线基本面</option>
+                        <option value="technical_indicators">技术指标</option>
+                    </select>
+                </div>
+            </div>
+            <div class="card-body">
+                <div id="daily-chart" style="height: 350px;"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Backfill任务管理 -->
+<div class="row mb-4">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header bg-success text-white">
+                <h5 class="mb-0"><i class="bi bi-arrow-repeat"></i> Backfill任务</h5>
+            </div>
+            <div class="card-body">
+                <form id="backfill-form">
+                    <div class="row g-3">
+                        <div class="col-md-3">
+                            <label class="form-label">任务类型</label>
+                            <select class="form-select" id="backfill-type" required>
+                                <option value="v39_features">V3.9特征缓存</option>
+                                <option value="daily_basic">日线基本面数据</option>
+                                <option value="daily_quotes">日线行情数据</option>
+                                <option value="technical_indicators">技术指标</option>
+                                <option value="active_mv">活跃市值特征</option>
+                            </select>
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label">开始日期</label>
+                            <input type="date" class="form-control" id="backfill-start" required>
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label">结束日期</label>
+                            <input type="date" class="form-control" id="backfill-end" required>
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label">并发数</label>
+                            <input type="number" class="form-control" id="backfill-workers" value="4" min="1" max="8">
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label">批次大小</label>
+                            <input type="number" class="form-control" id="backfill-batch" value="50" min="10" max="200">
+                        </div>
+                        <div class="col-md-1 d-flex align-items-end">
+                            <button type="submit" class="btn btn-success w-100" id="btn-backfill">
+                                <i class="bi bi-play-fill"></i> 启动
+                            </button>
+                        </div>
+                    </div>
+                </form>
+
+                <!-- 任务进度 -->
+                <div id="backfill-progress" style="display: none;">
+                    <hr>
+                    <h6><i class="bi bi-hourglass-split"></i> 任务进度</h6>
+                    <div class="progress mb-2" style="height: 25px;">
+                        <div class="progress-bar progress-bar-striped progress-bar-animated"
+                             id="backfill-progress-bar" style="width: 0%">0%</div>
+                    </div>
+                    <div id="backfill-status" class="alert alert-info mb-0">准备开始...</div>
+                </div>
+
+                <!-- 快捷操作 -->
+                <div class="mt-3">
+                    <h6>快捷操作</h6>
+                    <div class="btn-group" role="group">
+                        <button class="btn btn-outline-primary btn-sm" onclick="quickBackfill('last_week')">
+                            <i class="bi bi-calendar-week"></i> 最近一周
+                        </button>
+                        <button class="btn btn-outline-primary btn-sm" onclick="quickBackfill('last_month')">
+                            <i class="bi bi-calendar-month"></i> 最近一月
+                        </button>
+                        <button class="btn btn-outline-primary btn-sm" onclick="quickBackfill('last_quarter')">
+                            <i class="bi bi-calendar3"></i> 最近一季
+                        </button>
+                        <button class="btn btn-outline-warning btn-sm" onclick="fillMissingDates()">
+                            <i class="bi bi-patch-exclamation"></i> 填补缺失日期
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 缺失数据列表 -->
+<div class="row mb-4">
+    <div class="col-md-6">
+        <div class="card h-100">
+            <div class="card-header bg-warning text-dark">
+                <div class="d-flex justify-content-between align-items-center">
+                    <h5 class="mb-0"><i class="bi bi-exclamation-triangle"></i> 缺失/不完整日期</h5>
+                    <div class="btn-group btn-group-sm">
+                        <button class="btn btn-danger" id="btn-auto-backfill" onclick="autoBackfillMissing()" disabled>
+                            <i class="bi bi-lightning-charge-fill"></i> 一键补全
+                        </button>
+                        <button class="btn btn-outline-dark" onclick="refreshMissingDates()">
+                            <i class="bi bi-arrow-clockwise"></i>
+                        </button>
+                    </div>
+                </div>
+            </div>
+            <div class="card-body" style="max-height: 400px; overflow-y: auto;">
+                <div id="missing-dates-list">
+                    <div class="text-center text-muted py-4">
+                        <div class="spinner-border spinner-border-sm"></div>
+                        <span class="ms-2">加载中...</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-6">
+        <div class="card h-100">
+            <div class="card-header bg-secondary text-white">
+                <h5 class="mb-0"><i class="bi bi-clock-history"></i> Backfill历史记录</h5>
+            </div>
+            <div class="card-body" style="max-height: 400px; overflow-y: auto;">
+                <div class="table-responsive">
+                    <table class="table table-sm table-hover" id="backfill-history-table">
+                        <thead class="table-dark">
+                            <tr>
+                                <th>日期</th>
+                                <th>类型</th>
+                                <th>状态</th>
+                                <th>记录数</th>
+                                <th>耗时</th>
+                            </tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 各表记录数统计 -->
+<div class="row">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header bg-dark text-white">
+                <h5 class="mb-0"><i class="bi bi-table"></i> 数据表统计</h5>
+            </div>
+            <div class="card-body">
+                <div class="table-responsive">
+                    <table class="table table-striped" id="tables-stats">
+                        <thead class="table-secondary">
+                            <tr>
+                                <th>表名</th>
+                                <th>记录数</th>
+                                <th>说明</th>
+                            </tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+{% endblock %}
+
+{% block extra_js %}
+<script>
+let dailyChart = null;
+
+$(document).ready(function() {
+    // 设置默认日期
+    const today = new Date();
+    const lastYear = new Date(today.getFullYear() - 1, today.getMonth(), today.getDate());
+
+    $('#check-start-date').val(formatDateInput(lastYear));
+    $('#check-end-date').val(formatDateInput(today));
+    $('#backfill-start').val(formatDateInput(new Date(today.getFullYear(), today.getMonth() - 1, 1)));
+    $('#backfill-end').val(formatDateInput(today));
+
+    // 加载数据
+    loadDatabaseStats();
+    refreshCompleteness();
+    loadDailyChart();
+    refreshMissingDates();
+    loadBackfillHistory();
+
+    // 事件绑定
+    $('#table-select').change(function() {
+        loadDailyChart();
+    });
+
+    $('#backfill-form').submit(function(e) {
+        e.preventDefault();
+        startBackfill();
+    });
+});
+
+function formatDateInput(date) {
+    // 使用本地日期格式化，用于input[type=date]，格式必须是yyyy-MM-dd
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+}
+
+function loadDatabaseStats() {
+    $.ajax({
+        url: '/api/data/stats',
+        success: function(response) {
+            if (response.success) {
+                const stats = response.stats;
+                $('#stat-securities').text((stats.active_securities || 0).toLocaleString());
+                $('#stat-db-size').text((stats.db_size_mb || 0).toFixed(1) + ' MB');
+
+                if (stats.date_range) {
+                    $('#stat-date-range').text(
+                        `${stats.date_range.start || '-'} ~ ${stats.date_range.end || '-'}`
+                    );
+                }
+
+                // 显示表统计
+                displayTablesStats(stats.tables || {});
+            }
+        }
+    });
+}
+
+function displayTablesStats(tables) {
+    const tableDescriptions = {
+        'securities': '证券基本信息',
+        'daily_quotes': '日线行情数据',
+        'daily_basic': '日线基本面数据 (PE/PB/市值)',
+        'technical_indicators': '技术指标',
+        'v39_feature_cache': 'V3.9特征缓存',
+        'stock_signals': '选股信号',
+        'backtest_trades': '回测交易记录',
+        'backtest_results': '回测结果',
+        'data_update_log': '数据更新日志'
+    };
+
+    const tbody = $('#tables-stats tbody');
+    tbody.empty();
+
+    for (const [table, data] of Object.entries(tables)) {
+        tbody.append(`
+            <tr>
+                <td><code>${table}</code></td>
+                <td>${(data.count || 0).toLocaleString()}</td>
+                <td>${tableDescriptions[table] || '-'}</td>
+            </tr>
+        `);
+    }
+}
+
+function refreshCompleteness() {
+    const startDate = $('#check-start-date').val();
+    const endDate = $('#check-end-date').val();
+
+    $('#completeness-cards').html(`
+        <div class="text-center text-muted py-4">
+            <div class="spinner-border" role="status"></div>
+            <p class="mt-2">检查数据完整度...</p>
+        </div>
+    `);
+
+    $.ajax({
+        url: '/api/data/completeness',
+        data: { start_date: startDate, end_date: endDate },
+        success: function(response) {
+            if (response.success) {
+                displayCompleteness(response.completeness);
+
+                // 更新V39完整度统计
+                const v39 = response.completeness.v39_feature_cache;
+                if (v39 && v39.exists) {
+                    $('#stat-v39-completeness').text(v39.completeness_pct + '%');
+                }
+            }
+        },
+        error: function() {
+            $('#completeness-cards').html(`
+                <div class="col-12 text-center text-danger">
+                    <i class="bi bi-exclamation-triangle fs-1"></i>
+                    <p>加载失败</p>
+                </div>
+            `);
+        }
+    });
+}
+
+function displayCompleteness(completeness) {
+    const colorMap = {
+        'daily_quotes': 'primary',
+        'daily_basic': 'success',
+        'technical_indicators': 'info',
+        'v39_feature_cache': 'warning'
+    };
+
+    const nameMap = {
+        'daily_quotes': '日线行情',
+        'daily_basic': '日线基本面',
+        'technical_indicators': '技术指标',
+        'v39_feature_cache': 'V3.9特征缓存'
+    };
+
+    let html = '';
+
+    for (const [table, data] of Object.entries(completeness)) {
+        const color = colorMap[table] || 'secondary';
+        const name = nameMap[table] || table;
+
+        if (!data.exists) {
+            html += `
+                <div class="col-md-3">
+                    <div class="card border-${color}">
+                        <div class="card-header bg-${color} text-white">${name}</div>
+                        <div class="card-body text-center text-muted">
+                            <i class="bi bi-x-circle fs-1"></i>
+                            <p>表不存在</p>
+                        </div>
+                    </div>
+                </div>
+            `;
+            continue;
+        }
+
+        const pct = data.completeness_pct || 0;
+        const dayCoverage = data.day_coverage_pct || 0;
+        const completeDays = data.complete_days || 0;
+        const progressColor = pct >= 90 ? 'success' : pct >= 70 ? 'warning' : 'danger';
+        const coverageColor = dayCoverage >= 90 ? 'success' : dayCoverage >= 70 ? 'warning' : 'danger';
+
+        html += `
+            <div class="col-md-3">
+                <div class="card border-${color} h-100">
+                    <div class="card-header bg-${color} text-white">${name}</div>
+                    <div class="card-body">
+                        <div class="mb-2">
+                            <small class="text-muted">日期覆盖率</small>
+                            <div class="d-flex justify-content-between">
+                                <span class="h5 mb-0">${dayCoverage}%</span>
+                                <span class="badge bg-${coverageColor}">${data.trading_days || 0}/${data.expected_days || 0}天</span>
+                            </div>
+                            <div class="progress mb-2" style="height: 6px;">
+                                <div class="progress-bar bg-${coverageColor}" style="width: ${dayCoverage}%"></div>
+                            </div>
+                        </div>
+                        <div class="mb-2">
+                            <small class="text-muted">数据完整度</small>
+                            <div class="d-flex justify-content-between">
+                                <span class="h5 mb-0">${pct}%</span>
+                                <span class="badge bg-${progressColor}">${completeDays}天完整</span>
+                            </div>
+                            <div class="progress mb-2" style="height: 6px;">
+                                <div class="progress-bar bg-${progressColor}" style="width: ${Math.min(pct, 100)}%"></div>
+                            </div>
+                        </div>
+                        <small class="text-muted">
+                            记录数: ${(data.total_records || 0).toLocaleString()}<br>
+                            日期: ${data.date_range?.start || '-'} ~ ${data.date_range?.end || '-'}
+                        </small>
+                    </div>
+                </div>
+            </div>
+        `;
+    }
+
+    $('#completeness-cards').html(html);
+}
+
+function loadDailyChart() {
+    const table = $('#table-select').val();
+    const startDate = $('#check-start-date').val();
+    const endDate = $('#check-end-date').val();
+
+    $.ajax({
+        url: '/api/data/completeness/daily',
+        data: {
+            table: table,
+            start_date: startDate,
+            end_date: endDate,
+            limit: 180
+        },
+        success: function(response) {
+            if (response.success) {
+                displayDailyChart(response.daily_stats, table);
+            }
+        }
+    });
+}
+
+function displayDailyChart(dailyStats, table) {
+    if (dailyChart) {
+        dailyChart.destroy();
+    }
+
+    // 反转数据使日期从旧到新
+    const reversed = [...dailyStats].reverse();
+
+    const dates = reversed.map(d => d.date);
+    const completeness = reversed.map(d => d.completeness);
+    const counts = reversed.map(d => d.count);
+
+    const chartOptions = {
+        series: [{
+            name: '完整度 (%)',
+            type: 'line',
+            data: completeness
+        }, {
+            name: '记录数',
+            type: 'bar',
+            data: counts
+        }],
+        chart: {
+            height: 350,
+            type: 'line',
+            toolbar: { show: true },
+            zoom: { enabled: true }
+        },
+        stroke: {
+            width: [3, 0],
+            curve: 'smooth'
+        },
+        plotOptions: {
+            bar: {
+                columnWidth: '50%'
+            }
+        },
+        xaxis: {
+            categories: dates,
+            labels: {
+                rotate: -45,
+                rotateAlways: true,
+                formatter: function(val) {
+                    return val ? val.substring(5) : '';  // 只显示月-日
+                }
+            }
+        },
+        yaxis: [{
+            title: { text: '完整度 (%)' },
+            min: 0,
+            max: 100
+        }, {
+            opposite: true,
+            title: { text: '记录数' }
+        }],
+        colors: ['#10b981', '#3b82f6'],
+        legend: {
+            position: 'top'
+        },
+        annotations: {
+            yaxis: [{
+                y: 80,
+                borderColor: '#ef4444',
+                label: {
+                    text: '完整度阈值 80%',
+                    style: { color: '#ef4444' }
+                }
+            }]
+        }
+    };
+
+    dailyChart = new ApexCharts(document.querySelector("#daily-chart"), chartOptions);
+    dailyChart.render();
+}
+
+function refreshMissingDates() {
+    const table = $('#table-select').val();
+    const startDate = $('#check-start-date').val();
+    const endDate = $('#check-end-date').val();
+
+    $('#missing-dates-list').html(`
+        <div class="text-center py-3">
+            <div class="spinner-border spinner-border-sm"></div>
+            <span class="ms-2">检查缺失日期...</span>
+        </div>
+    `);
+
+    $.ajax({
+        url: '/api/data/completeness/missing',
+        data: {
+            table: 'v39_feature_cache',
+            start_date: startDate,
+            end_date: endDate,
+            threshold: 80
+        },
+        success: function(response) {
+            if (response.success) {
+                displayMissingDates(response.missing_dates);
+            }
+        }
+    });
+}
+
+// 存储缺失日期供一键补全使用
+let cachedMissingDates = [];
+
+function displayMissingDates(dates) {
+    cachedMissingDates = dates;
+
+    if (dates.length === 0) {
+        $('#missing-dates-list').html(`
+            <div class="text-center text-success py-3">
+                <i class="bi bi-check-circle fs-1"></i>
+                <p class="mb-0">没有缺失的日期</p>
+            </div>
+        `);
+        $('#btn-auto-backfill').prop('disabled', true);
+        return;
+    }
+
+    // 启用一键补全按钮
+    $('#btn-auto-backfill').prop('disabled', false);
+
+    let html = `<p class="text-danger mb-2"><strong>${dates.length}</strong> 个日期数据不完整 (< 80%)</p>`;
+    html += '<div class="d-flex flex-wrap gap-1">';
+
+    dates.slice(0, 50).forEach(date => {
+        html += `<span class="badge bg-warning text-dark">${date}</span>`;
+    });
+
+    if (dates.length > 50) {
+        html += `<span class="badge bg-secondary">+${dates.length - 50} 更多...</span>`;
+    }
+
+    html += '</div>';
+
+    $('#missing-dates-list').html(html);
+}
+
+function autoBackfillMissing() {
+    if (cachedMissingDates.length === 0) {
+        alert('没有需要补全的日期');
+        return;
+    }
+
+    // 获取最早和最晚的缺失日期
+    const sortedDates = [...cachedMissingDates].sort();
+    const firstMissing = sortedDates[0];
+    const lastMissing = sortedDates[sortedDates.length - 1];
+
+    // V3.9特征需要lookahead_days=5，所以结束日期需要往后延7天
+    const lastMissingDate = new Date(lastMissing);
+    lastMissingDate.setDate(lastMissingDate.getDate() + 7);
+    const extendedEndDate = formatDateInput(lastMissingDate);
+
+    const confirmMsg = `确定要一键补全缺失数据吗？\n\n` +
+        `缺失日期: ${cachedMissingDates.length} 个\n` +
+        `目标范围: ${firstMissing} ~ ${lastMissing}\n` +
+        `实际计算: ${firstMissing} ~ ${extendedEndDate}\n` +
+        `(结束日期+7天，用于计算未来收益标签)\n\n` +
+        `任务类型: V3.9特征缓存\n\n` +
+        `⚠️ 这可能需要数小时，请耐心等待。`;
+
+    if (!confirm(confirmMsg)) {
+        return;
+    }
+
+    // 禁用按钮
+    $('#btn-auto-backfill').prop('disabled', true).html('<i class="bi bi-hourglass-split"></i> 补全中...');
+
+    // 自动填充表单并启动任务
+    $('#backfill-type').val('v39_features');
+    $('#backfill-start').val(firstMissing);
+    $('#backfill-end').val(extendedEndDate);
+
+    // 显示进度区域
+    $('#backfill-progress').show();
+    $('#backfill-status').removeClass('alert-success alert-danger').addClass('alert-info').text('准备开始一键补全...');
+
+    // 启动backfill任务
+    $.ajax({
+        url: '/api/data/backfill/start',
+        method: 'POST',
+        contentType: 'application/json',
+        data: JSON.stringify({
+            task_type: 'v39_features',
+            start_date: firstMissing,
+            end_date: extendedEndDate,
+            workers: 4,
+            batch_size: 50
+        }),
+        success: function(response) {
+            if (response.success) {
+                monitorBackfillProgress(response.task_id);
+            }
+        },
+        error: function(xhr) {
+            $('#btn-auto-backfill').prop('disabled', false).html('<i class="bi bi-lightning-charge-fill"></i> 一键补全');
+            $('#backfill-status').removeClass('alert-info').addClass('alert-danger')
+                .text('启动失败: ' + (xhr.responseJSON?.error || '未知错误'));
+        }
+    });
+}
+
+function loadBackfillHistory() {
+    $.ajax({
+        url: '/api/data/backfill/history',
+        data: { limit: 20 },
+        success: function(response) {
+            if (response.success) {
+                displayBackfillHistory(response.history);
+            }
+        }
+    });
+}
+
+function displayBackfillHistory(history) {
+    const tbody = $('#backfill-history-table tbody');
+    tbody.empty();
+
+    if (history.length === 0) {
+        tbody.append('<tr><td colspan="5" class="text-center text-muted">暂无历史记录</td></tr>');
+        return;
+    }
+
+    history.forEach(h => {
+        const statusBadge = h.status === 'SUCCESS' ? 'bg-success' :
+                           h.status === 'FAILED' ? 'bg-danger' : 'bg-warning';
+        const duration = h.duration_seconds ? `${Math.round(h.duration_seconds / 60)}分` : '-';
+
+        tbody.append(`
+            <tr>
+                <td>${h.update_date || '-'}</td>
+                <td><span class="badge bg-info">${h.update_type || '-'}</span></td>
+                <td><span class="badge ${statusBadge}">${h.status || '-'}</span></td>
+                <td>${(h.records_added || 0).toLocaleString()}</td>
+                <td>${duration}</td>
+            </tr>
+        `);
+    });
+}
+
+function startBackfill() {
+    const taskType = $('#backfill-type').val();
+    const startDate = $('#backfill-start').val();
+    const endDate = $('#backfill-end').val();
+    const workers = $('#backfill-workers').val();
+    const batchSize = $('#backfill-batch').val();
+
+    const taskNames = {
+        'v39_features': 'V3.9特征缓存',
+        'daily_basic': '日线基本面',
+        'daily_quotes': '日线行情',
+        'technical_indicators': '技术指标',
+        'active_mv': '活跃市值特征'
+    };
+
+    if (!confirm(`确定要启动Backfill任务吗？\n\n任务类型: ${taskNames[taskType]}\n日期范围: ${startDate} ~ ${endDate}\n\n这可能需要较长时间。`)) {
+        return;
+    }
+
+    $('#btn-backfill').prop('disabled', true);
+    $('#backfill-progress').show();
+    $('#backfill-status').removeClass('alert-success alert-danger').addClass('alert-info').text('准备开始...');
+
+    $.ajax({
+        url: '/api/data/backfill/start',
+        method: 'POST',
+        contentType: 'application/json',
+        data: JSON.stringify({
+            task_type: taskType,
+            start_date: startDate,
+            end_date: endDate,
+            workers: parseInt(workers),
+            batch_size: parseInt(batchSize)
+        }),
+        success: function(response) {
+            if (response.success) {
+                monitorBackfillProgress(response.task_id);
+            }
+        },
+        error: function(xhr) {
+            $('#btn-backfill').prop('disabled', false);
+            $('#backfill-status').removeClass('alert-info').addClass('alert-danger')
+                .text('启动失败: ' + (xhr.responseJSON?.error || '未知错误'));
+        }
+    });
+}
+
+function monitorBackfillProgress(taskId) {
+    const eventSource = new EventSource('/api/data/backfill/stream?task_id=' + taskId);
+
+    eventSource.onmessage = function(event) {
+        const data = JSON.parse(event.data);
+        if (data.heartbeat) return;
+
+        $('#backfill-progress-bar').css('width', data.progress + '%').text(data.progress.toFixed(0) + '%');
+        $('#backfill-status').text(data.message || '处理中...');
+
+        if (data.status === 'completed' || data.status === 'failed') {
+            eventSource.close();
+            $('#btn-backfill').prop('disabled', false);
+            // 重置一键补全按钮
+            $('#btn-auto-backfill').prop('disabled', false).html('<i class="bi bi-lightning-charge-fill"></i> 一键补全');
+
+            if (data.status === 'completed') {
+                $('#backfill-status').removeClass('alert-info').addClass('alert-success');
+                // 刷新数据
+                setTimeout(function() {
+                    refreshCompleteness();
+                    loadDailyChart();
+                    refreshMissingDates();
+                    loadBackfillHistory();
+                }, 1000);
+            } else {
+                $('#backfill-status').removeClass('alert-info').addClass('alert-danger');
+            }
+        }
+    };
+
+    eventSource.onerror = function() {
+        eventSource.close();
+        $('#btn-backfill').prop('disabled', false);
+        // 重置一键补全按钮
+        $('#btn-auto-backfill').prop('disabled', false).html('<i class="bi bi-lightning-charge-fill"></i> 一键补全');
+        $('#backfill-status').removeClass('alert-info').addClass('alert-danger')
+            .text('连接中断，请检查任务状态');
+    };
+}
+
+function quickBackfill(period) {
+    const today = new Date();
+    let startDate;
+
+    switch (period) {
+        case 'last_week':
+            startDate = new Date(today.getTime() - 7 * 24 * 60 * 60 * 1000);
+            break;
+        case 'last_month':
+            startDate = new Date(today.getFullYear(), today.getMonth() - 1, today.getDate());
+            break;
+        case 'last_quarter':
+            startDate = new Date(today.getFullYear(), today.getMonth() - 3, today.getDate());
+            break;
+    }
+
+    $('#backfill-start').val(formatDateInput(startDate));
+    $('#backfill-end').val(formatDateInput(today));
+}
+
+function fillMissingDates() {
+    // 获取缺失日期并自动填充
+    const startDate = $('#check-start-date').val();
+    const endDate = $('#check-end-date').val();
+
+    $.ajax({
+        url: '/api/data/completeness/missing',
+        data: {
+            table: 'v39_feature_cache',
+            start_date: startDate,
+            end_date: endDate,
+            threshold: 80
+        },
+        success: function(response) {
+            if (response.success && response.missing_dates.length > 0) {
+                const dates = response.missing_dates;
+                const firstMissing = dates[dates.length - 1];  // 最早的缺失日期
+                const lastMissing = dates[0];  // 最晚的缺失日期
+
+                $('#backfill-start').val(firstMissing);
+                $('#backfill-end').val(lastMissing);
+                $('#backfill-type').val('v39_features');
+
+                alert(`已设置日期范围: ${firstMissing} ~ ${lastMissing}\n共 ${dates.length} 个缺失日期`);
+            } else {
+                alert('没有发现缺失的日期');
+            }
+        }
+    });
+}
+</script>
+{% endblock %}

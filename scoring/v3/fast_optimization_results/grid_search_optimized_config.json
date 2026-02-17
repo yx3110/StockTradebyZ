@@ -1,0 +1,95 @@
+{
+  "version": "v3.1-FastOptimized-GridSearch",
+  "description": "网格搜索优化权重配置",
+  "optimization_info": {
+    "method": "grid_search",
+    "performance_score": 100.0,
+    "optimization_date": "2025-08-24 18:26:44",
+    "data_records_used": 24055
+  },
+  "optimized_weights": {
+    "technical": 0.450,
+    "fundamental": 0.100,
+    "performance": 0.200,
+    "sentiment": 0.070,
+    "risk_control": 0.070,
+    "market_regime": 0.070
+  },
+  "weight_changes_from_original": {
+    "technical": "60.0% → 45.0% (-15%)",
+    "fundamental": "18.0% → 10.0% (-8%)", 
+    "performance": "15.0% → 20.0% (+5%)",
+    "sentiment": "5.0% → 7.0% (+2%)",
+    "risk_control": "5.0% → 7.0% (+2%)",
+    "market_regime": "5.0% → 7.0% (+2%)"
+  },
+  "weights": {
+    "technical": {
+      "_comment": "技术指标权重从60%降至45%",
+      "kdj_strength": 0.07795175437828273,
+      "rsi_momentum": 0.0692213479072448,
+      "bbi_trend": 0.043242234136893386,
+      "volume_surge": 0.0692213479072448
+    },
+    "fundamental": {
+      "_comment": "基本面权重从18%降至10%",
+      "pe_valuation": 0.015957817332815119,
+      "pb_valuation": 0.015957817332815119,
+      "roe_profitability": 0.018237745808930134,
+      "financial_quality": 0.01139873017691951,
+      "market_cap": 0.00911086408596298,
+      "turnover_activity": 0.01139873017691951
+    },
+    "performance": {
+      "_comment": "市场表现权重从15%升至20%",
+      "price_momentum": 0.13130871978545286,
+      "relative_strength": 0.03936063593563585,
+      "volatility_risk": 0.026240423957090572
+    },
+    "sentiment": {
+      "_comment": "情绪指标权重从5%升至7%",
+      "money_flow": 0.034468884643481366,
+      "market_attention": 0.020681330786088818,
+      "investor_emotion": 0.013787553857392545
+    },
+    "risk_control": {
+      "_comment": "风险控制权重从5%升至7%",
+      "stop_loss_risk": 0.027575107714785092,
+      "max_drawdown": 0.016545064628871054,
+      "risk_adjusted_return": 0.011029220085978043
+    },
+    "market_regime": {
+      "_comment": "市场环境权重从5%升至7%",
+      "market_beta": 0.016545064628871054,
+      "sector_rotation": 0.022060440171956086,
+      "liquidity": 0.016545064628871054
+    }
+  },
+  "parameters": {
+    "_comment": "基于网格搜索优化的参数",
+    "lookback_periods": [3, 5, 10, 20],
+    "dynamic_kdj_threshold": {
+      "bull": 15,
+      "bear": 25,
+      "neutral": 20
+    },
+    "dynamic_rsi_threshold": {
+      "bull": 25,
+      "bear": 35,
+      "neutral": 30
+    },
+    "volume_multiplier": 2.0,
+    "volatility_window": 20,
+    "beta_window": 60,
+    "stop_loss_threshold": 0.08,
+    "max_drawdown_threshold": 0.15,
+    "sentiment_window": 5,
+    "money_flow_threshold": 1.5
+  },
+  "expected_improvements": [
+    "降低技术分析过度权重，提升其他维度平衡性",
+    "增强市场表现因子影响力",
+    "平衡情绪、风控、市场环境权重",
+    "基于24055条记录的大数据优化"
+  ]
+}

@@ -1,0 +1,35 @@
+{
+  "stock_code": "515680",
+  "analysis_date": "2025-08-04",
+  "integrated_sentiment": 0.0,
+  "total_discussions": 0,
+  "sentiment_distribution": {
+    "positive": 0,
+    "neutral": 0,
+    "negative": 0
+  },
+  "hot_topics": [],
+  "data_sources": {
+    "eastmoney": {
+      "stock_code": "515680",
+      "platform": "东方财富股吧",
+      "total_posts": 0,
+      "avg_sentiment": 0.0,
+      "sentiment_distribution": {
+        "positive": 0,
+        "neutral": 0,
+        "negative": 0
+      },
+      "hot_topics": [],
+      "summary": "暂无东方财富股吧讨论数据"
+    },
+    "source_weights": {
+      "eastmoney": 1.0,
+      "other": 0.0
+    }
+  },
+  "advanced_analysis": {},
+  "analysis_summary": "股票515680在东方财富股吧整体情绪中性，讨论较少。共分析0条讨论。情绪指数0.000。",
+  "confidence_level": "低",
+  "data_freshness": "2025-08-04 22:29:40"
+}

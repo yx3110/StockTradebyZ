@@ -1,0 +1,1550 @@
+{% extends "base.html" %}
+
+{% block title %}持仓管理 - StockTradebyZ Web{% endblock %}
+
+{% block extra_css %}
+<style>
+    /* 排序表头样式 */
+    th.sortable {
+        cursor: pointer;
+        user-select: none;
+        white-space: nowrap;
+        transition: background-color 0.2s;
+    }
+    th.sortable:hover {
+        background-color: #495057 !important;
+    }
+    th.sortable .sort-icon {
+        opacity: 0.6;
+        font-size: 0.75em;
+        margin-left: 4px;
+    }
+    th.sortable:hover .sort-icon {
+        opacity: 1;
+    }
+    th.sorting-asc .sort-icon::before {
+        content: "\F235"; /* bi-arrow-up */
+    }
+    th.sorting-desc .sort-icon::before {
+        content: "\F229"; /* bi-arrow-down */
+    }
+    th.sorting-asc,
+    th.sorting-desc {
+        background-color: #495057 !important;
+    }
+    th.sorting-asc .sort-icon,
+    th.sorting-desc .sort-icon {
+        opacity: 1;
+        color: #ffc107;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-12">
+        <h2 class="mb-4">
+            <i class="bi bi-briefcase"></i> 持仓管理
+        </h2>
+    </div>
+</div>
+
+<!-- 持仓汇总卡片 -->
+<div class="row g-3 mb-4">
+    <div class="col-md-3">
+        <div class="card text-white bg-primary h-100">
+            <div class="card-body">
+                <h6 class="card-title"><i class="bi bi-cash-stack"></i> 总市值</h6>
+                <h3 id="stat-total-mv">-</h3>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card h-100" id="card-profit-loss">
+            <div class="card-body">
+                <h6 class="card-title"><i class="bi bi-graph-up-arrow"></i> 总盈亏</h6>
+                <h3 id="stat-profit-loss">-</h3>
+                <small id="stat-profit-loss-pct" class="text-muted">-</small>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card text-white bg-info h-100">
+            <div class="card-body">
+                <h6 class="card-title"><i class="bi bi-layers"></i> 持仓数量</h6>
+                <h3 id="stat-position-count">-</h3>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card text-white bg-secondary h-100">
+            <div class="card-body">
+                <h6 class="card-title"><i class="bi bi-trophy"></i> 胜率</h6>
+                <h3 id="stat-win-rate">-</h3>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 标签页导航 -->
+<ul class="nav nav-tabs mb-4" id="portfolioTabs" role="tablist">
+    <li class="nav-item">
+        <button class="nav-link active" id="positions-tab" data-bs-toggle="tab" data-bs-target="#positions" type="button">
+            <i class="bi bi-list-ul"></i> 当前持仓
+        </button>
+    </li>
+    <li class="nav-item">
+        <button class="nav-link" id="recommendations-tab" data-bs-toggle="tab" data-bs-target="#recommendations" type="button">
+            <i class="bi bi-lightbulb"></i> 操作建议
+        </button>
+    </li>
+    <li class="nav-item">
+        <button class="nav-link" id="trades-tab" data-bs-toggle="tab" data-bs-target="#trades" type="button">
+            <i class="bi bi-journal-text"></i> 交易记录
+        </button>
+    </li>
+    <li class="nav-item">
+        <button class="nav-link" id="evaluations-tab" data-bs-toggle="tab" data-bs-target="#evaluations" type="button">
+            <i class="bi bi-star"></i> 事后回顾
+        </button>
+    </li>
+</ul>
+
+<!-- 标签页内容 -->
+<div class="tab-content" id="portfolioTabContent">
+
+    <!-- 当前持仓 -->
+    <div class="tab-pane fade show active" id="positions" role="tabpanel">
+        <div class="card">
+            <div class="card-header bg-primary text-white">
+                <div class="d-flex justify-content-between align-items-center">
+                    <h5 class="mb-0"><i class="bi bi-briefcase-fill"></i> 当前持仓</h5>
+                    <div>
+                        <button class="btn btn-light btn-sm me-2" id="btn-refresh-prices">
+                            <i class="bi bi-arrow-repeat"></i> 刷新价格
+                        </button>
+                        <button class="btn btn-warning btn-sm me-2" data-bs-toggle="modal" data-bs-target="#groupModal">
+                            <i class="bi bi-folder-plus"></i> 管理分组
+                        </button>
+                        <button class="btn btn-success btn-sm" data-bs-toggle="modal" data-bs-target="#addPositionModal">
+                            <i class="bi bi-plus-lg"></i> 添加持仓
+                        </button>
+                    </div>
+                </div>
+            </div>
+            <div class="card-body">
+                <!-- 分组筛选 -->
+                <div class="mb-3" id="group-filter-container">
+                    <span class="me-2 text-muted"><i class="bi bi-funnel"></i> 分组筛选:</span>
+                    <div class="btn-group btn-group-sm" id="group-filter-btns">
+                        <button type="button" class="btn btn-outline-secondary active" data-group-id="">全部</button>
+                    </div>
+                </div>
+
+                <div class="table-responsive">
+                    <table class="table table-hover" id="positions-table">
+                        <thead class="table-dark">
+                            <tr>
+                                <th data-sort="group_name" class="sortable">分组 <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th data-sort="code" class="sortable">代码 <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th data-sort="name" class="sortable">名称 <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th data-sort="quantity" data-sort-type="number" class="sortable">数量 <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th data-sort="avg_cost" data-sort-type="number" class="sortable">成本价 <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th data-sort="current_price" data-sort-type="number" class="sortable">现价 <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th data-sort="market_value" data-sort-type="number" class="sortable">市值 <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th data-sort="profit_loss" data-sort-type="number" class="sortable">盈亏 <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th data-sort="profit_loss_pct" data-sort-type="number" class="sortable">盈亏% <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th>操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="positions-tbody">
+                            <tr>
+                                <td colspan="10" class="text-center text-muted py-4">
+                                    <i class="bi bi-inbox fs-1"></i>
+                                    <p>暂无持仓，点击"添加持仓"开始记录</p>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 操作建议 -->
+    <div class="tab-pane fade" id="recommendations" role="tabpanel">
+        <div class="card">
+            <div class="card-header bg-warning">
+                <div class="d-flex justify-content-between align-items-center">
+                    <h5 class="mb-0"><i class="bi bi-lightbulb-fill"></i> 今日操作建议</h5>
+                    <button class="btn btn-dark btn-sm" id="btn-generate-recommendations">
+                        <i class="bi bi-magic"></i> 生成建议
+                    </button>
+                </div>
+            </div>
+            <div class="card-body">
+                <!-- 分析汇总 -->
+                <div class="row g-2 mb-3" id="rec-summary" style="display: none;">
+                    <div class="col-md-3">
+                        <div class="alert alert-secondary mb-0 py-2">
+                            <small><i class="bi bi-layers"></i> 持仓数:</small>
+                            <strong id="rec-total">0</strong>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="alert alert-danger mb-0 py-2">
+                            <small><i class="bi bi-exclamation-triangle"></i> 危急:</small>
+                            <strong id="rec-critical">0</strong>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="alert alert-warning mb-0 py-2">
+                            <small><i class="bi bi-exclamation-circle"></i> 高优先:</small>
+                            <strong id="rec-high">0</strong>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="alert alert-success mb-0 py-2">
+                            <small><i class="bi bi-cpu"></i> ML评分:</small>
+                            <strong id="rec-ml-scored">0</strong>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="table-responsive">
+                    <table class="table table-hover table-sm" id="recommendations-table">
+                        <thead class="table-dark">
+                            <tr>
+                                <th data-sort="urgency" class="sortable">紧急 <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th data-sort="code" class="sortable">代码 <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th data-sort="name" class="sortable">名称 <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th data-sort="ml_score" data-sort-type="number" class="sortable">ML评分 <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th data-sort="predicted_return_5d" data-sort-type="number" class="sortable">5日预测 <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th data-sort="trend" class="sortable">趋势 <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th data-sort="rsi" data-sort-type="number" class="sortable">RSI <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th data-sort="action" class="sortable">建议 <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th>原因</th>
+                                <th data-sort="stop_loss_price" data-sort-type="number" class="sortable">止损 <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th data-sort="take_profit_price" data-sort-type="number" class="sortable">止盈 <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th data-sort="kelly_position" data-sort-type="number" class="sortable">Kelly% <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th data-sort="confidence" data-sort-type="number" class="sortable">置信度 <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th>状态</th>
+                            </tr>
+                        </thead>
+                        <tbody id="recommendations-tbody">
+                            <tr>
+                                <td colspan="14" class="text-center text-muted py-4">
+                                    <i class="bi bi-lightbulb fs-1"></i>
+                                    <p>点击"生成建议"使用V3.9.0 ML系统分析持仓</p>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 交易记录 -->
+    <div class="tab-pane fade" id="trades" role="tabpanel">
+        <div class="card">
+            <div class="card-header bg-success text-white">
+                <div class="d-flex justify-content-between align-items-center">
+                    <h5 class="mb-0"><i class="bi bi-journal-text"></i> 交易记录</h5>
+                    <button class="btn btn-light btn-sm" data-bs-toggle="modal" data-bs-target="#addTradeModal">
+                        <i class="bi bi-plus-lg"></i> 添加记录
+                    </button>
+                </div>
+            </div>
+            <div class="card-body">
+                <div class="table-responsive">
+                    <table class="table table-striped" id="trades-table">
+                        <thead class="table-dark">
+                            <tr>
+                                <th data-sort="trade_date" data-sort-type="date" class="sortable">日期 <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th data-sort="code" class="sortable">代码 <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th data-sort="name" class="sortable">名称 <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th data-sort="action" class="sortable">操作 <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th data-sort="quantity" data-sort-type="number" class="sortable">数量 <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th data-sort="price" data-sort-type="number" class="sortable">价格 <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th data-sort="amount" data-sort-type="number" class="sortable">金额 <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th>原因</th>
+                                <th>管理</th>
+                            </tr>
+                        </thead>
+                        <tbody id="trades-tbody"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 事后回顾 -->
+    <div class="tab-pane fade" id="evaluations" role="tabpanel">
+        <div class="card">
+            <div class="card-header bg-info text-white">
+                <div class="d-flex justify-content-between align-items-center">
+                    <h5 class="mb-0"><i class="bi bi-star-fill"></i> 操作评估</h5>
+                    <button class="btn btn-light btn-sm" id="btn-run-evaluations">
+                        <i class="bi bi-calculator"></i> 执行评估
+                    </button>
+                </div>
+            </div>
+            <div class="card-body">
+                <!-- 评估统计 -->
+                <div class="row g-3 mb-4" id="evaluation-stats">
+                    <div class="col-md-3">
+                        <div class="card border-primary">
+                            <div class="card-body text-center">
+                                <h6>评估次数</h6>
+                                <h3 id="eval-total">-</h3>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="card border-success">
+                            <div class="card-body text-center">
+                                <h6>平均评分</h6>
+                                <h3 id="eval-avg-score">-</h3>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="card border-info">
+                            <div class="card-body text-center">
+                                <h6>平均收益</h6>
+                                <h3 id="eval-avg-return">-</h3>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="card border-warning">
+                            <div class="card-body text-center">
+                                <h6>胜率</h6>
+                                <h3 id="eval-win-rate">-</h3>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 等级分布图表 -->
+                <div class="row mb-4">
+                    <div class="col-md-6">
+                        <div id="grade-chart" style="height: 250px;"></div>
+                    </div>
+                    <div class="col-md-6">
+                        <div id="grade-cards" class="row g-2"></div>
+                    </div>
+                </div>
+
+                <!-- 评估列表 -->
+                <h6><i class="bi bi-list-stars"></i> 最近评估</h6>
+                <div class="table-responsive">
+                    <table class="table table-striped" id="evaluations-table">
+                        <thead class="table-dark">
+                            <tr>
+                                <th data-sort="trade_date" data-sort-type="date" class="sortable">交易日期 <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th data-sort="code" class="sortable">代码 <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th data-sort="name" class="sortable">名称 <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th data-sort="action" class="sortable">操作 <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th data-sort="price" data-sort-type="number" class="sortable">交易价 <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th data-sort="price_after" data-sort-type="number" class="sortable">N日后价 <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th data-sort="return_pct" data-sort-type="number" class="sortable">收益率 <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th data-sort="score" data-sort-type="number" class="sortable">评分 <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th data-sort="grade" class="sortable">等级 <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th>评价</th>
+                            </tr>
+                        </thead>
+                        <tbody id="evaluations-tbody"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 添加持仓模态框 -->
+<div class="modal fade" id="addPositionModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header bg-primary text-white">
+                <h5 class="modal-title"><i class="bi bi-plus-circle"></i> 添加持仓</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <form id="add-position-form">
+                    <div class="mb-3">
+                        <label class="form-label">股票代码</label>
+                        <input type="text" class="form-control" id="pos-code" placeholder="输入股票代码，如 000001" required>
+                        <div id="stock-search-results" class="list-group position-absolute" style="z-index: 1000; width: 100%; max-height: 200px; overflow-y: auto;"></div>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">股票名称</label>
+                        <input type="text" class="form-control" id="pos-name" readonly>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">持仓数量</label>
+                        <input type="number" class="form-control" id="pos-quantity" min="100" step="100" required>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">买入均价</label>
+                        <input type="number" class="form-control" id="pos-cost" step="0.01" required>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">备注</label>
+                        <textarea class="form-control" id="pos-notes" rows="2"></textarea>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                <button type="button" class="btn btn-primary" id="btn-save-position">保存</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 加减仓模态框 -->
+<div class="modal fade" id="adjustPositionModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header" id="adjust-modal-header">
+                <h5 class="modal-title" id="adjust-modal-title">调整持仓</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <form id="adjust-position-form">
+                    <input type="hidden" id="adjust-position-id">
+                    <input type="hidden" id="adjust-action">
+                    <div class="mb-3">
+                        <label class="form-label">股票</label>
+                        <input type="text" class="form-control" id="adjust-stock-info" readonly>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">当前持仓</label>
+                        <input type="text" class="form-control" id="adjust-current-qty" readonly>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label" id="adjust-qty-label">数量</label>
+                        <input type="number" class="form-control" id="adjust-quantity" min="100" step="100" required>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">价格</label>
+                        <input type="number" class="form-control" id="adjust-price" step="0.01" required>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">原因</label>
+                        <input type="text" class="form-control" id="adjust-reason">
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                <button type="button" class="btn btn-primary" id="btn-confirm-adjust">确认</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 添加交易记录模态框 -->
+<div class="modal fade" id="addTradeModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header bg-success text-white">
+                <h5 class="modal-title"><i class="bi bi-plus-circle"></i> 添加交易记录</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <form id="add-trade-form">
+                    <div class="mb-3">
+                        <label class="form-label">交易日期</label>
+                        <input type="date" class="form-control" id="trade-date" required>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">股票代码</label>
+                        <input type="text" class="form-control" id="trade-code" required>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">操作类型</label>
+                        <select class="form-select" id="trade-action" required>
+                            <option value="buy">买入</option>
+                            <option value="sell">卖出</option>
+                            <option value="add">加仓</option>
+                            <option value="reduce">减仓</option>
+                        </select>
+                    </div>
+                    <div class="row">
+                        <div class="col-6 mb-3">
+                            <label class="form-label">数量</label>
+                            <input type="number" class="form-control" id="trade-quantity" min="100" step="100" required>
+                        </div>
+                        <div class="col-6 mb-3">
+                            <label class="form-label">价格</label>
+                            <input type="number" class="form-control" id="trade-price" step="0.01" required>
+                        </div>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">交易原因</label>
+                        <input type="text" class="form-control" id="trade-reason">
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                <button type="button" class="btn btn-success" id="btn-save-trade">保存</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 分组管理模态框 -->
+<div class="modal fade" id="groupModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header bg-warning">
+                <h5 class="modal-title"><i class="bi bi-folder-plus"></i> 管理持仓分组</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <!-- 添加新分组 -->
+                <div class="card mb-3">
+                    <div class="card-header">
+                        <i class="bi bi-plus-circle"></i> 添加新分组
+                    </div>
+                    <div class="card-body">
+                        <form id="add-group-form" class="row g-3">
+                            <div class="col-md-4">
+                                <label class="form-label">分组名称</label>
+                                <input type="text" class="form-control" id="group-name" placeholder="如：长期持有" required>
+                            </div>
+                            <div class="col-md-3">
+                                <label class="form-label">颜色</label>
+                                <input type="color" class="form-control form-control-color w-100" id="group-color" value="#6c757d">
+                            </div>
+                            <div class="col-md-3">
+                                <label class="form-label">排序</label>
+                                <input type="number" class="form-control" id="group-order" value="0" min="0">
+                            </div>
+                            <div class="col-md-2 d-flex align-items-end">
+                                <button type="button" class="btn btn-success w-100" id="btn-add-group">
+                                    <i class="bi bi-plus"></i> 添加
+                                </button>
+                            </div>
+                            <div class="col-12">
+                                <label class="form-label">描述</label>
+                                <input type="text" class="form-control" id="group-description" placeholder="可选描述">
+                            </div>
+                        </form>
+                    </div>
+                </div>
+
+                <!-- 现有分组列表 -->
+                <div class="card">
+                    <div class="card-header">
+                        <i class="bi bi-list"></i> 现有分组
+                    </div>
+                    <div class="card-body p-0">
+                        <table class="table table-hover mb-0">
+                            <thead class="table-light">
+                                <tr>
+                                    <th>颜色</th>
+                                    <th>名称</th>
+                                    <th>描述</th>
+                                    <th>排序</th>
+                                    <th>持仓数</th>
+                                    <th>操作</th>
+                                </tr>
+                            </thead>
+                            <tbody id="groups-tbody">
+                                <tr>
+                                    <td colspan="6" class="text-center text-muted py-3">暂无分组</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+{% endblock %}
+
+{% block extra_js %}
+<script>
+let positionsData = [];
+let tradesData = [];
+let evaluationsData = [];
+let recommendationsData = [];
+let groupsData = [];
+let currentGroupFilter = null;
+let searchTimeout = null;
+let sortState = {}; // 记录每个表格的排序状态
+
+$(document).ready(function() {
+    // 初始化
+    loadGroups().then(() => {
+        loadPositions();
+    });
+    loadTrades();
+    loadEvaluations();
+
+    // 设置默认日期
+    $('#trade-date').val(new Date().toISOString().split('T')[0]);
+
+    // 事件绑定
+    $('#btn-refresh-prices').click(refreshPrices);
+    $('#btn-save-position').click(savePosition);
+    $('#btn-generate-recommendations').click(generateRecommendations);
+    $('#btn-run-evaluations').click(runEvaluations);
+    $('#btn-confirm-adjust').click(confirmAdjust);
+    $('#btn-save-trade').click(saveTrade);
+    $('#btn-add-group').click(addGroup);
+
+    // 股票代码搜索
+    $('#pos-code').on('input', debounce(searchStocks, 300));
+    $(document).click(function(e) {
+        if (!$(e.target).closest('#pos-code, #stock-search-results').length) {
+            $('#stock-search-results').empty();
+        }
+    });
+
+    // 标签页切换时刷新数据
+    $('button[data-bs-toggle="tab"]').on('shown.bs.tab', function(e) {
+        const target = $(e.target).attr('data-bs-target');
+        if (target === '#trades') loadTrades();
+        else if (target === '#evaluations') loadEvaluations();
+        else if (target === '#recommendations') loadRecommendations();
+    });
+
+    // 分组筛选按钮点击
+    $(document).on('click', '#group-filter-btns .btn', function() {
+        $('#group-filter-btns .btn').removeClass('active');
+        $(this).addClass('active');
+        currentGroupFilter = $(this).data('group-id') || null;
+        loadPositions();
+    });
+
+    // 分组管理模态框打开时刷新分组列表
+    $('#groupModal').on('shown.bs.modal', function() {
+        loadGroups();
+    });
+
+    // 初始化表格排序功能
+    initTableSorting();
+});
+
+// ==================== 表格排序功能 ====================
+
+function initTableSorting() {
+    // 为所有表头添加排序点击事件
+    $(document).on('click', 'th[data-sort]', function() {
+        const $th = $(this);
+        const tableId = $th.closest('table').attr('id');
+        const sortKey = $th.data('sort');
+        const sortType = $th.data('sort-type') || 'string';
+
+        // 切换排序方向
+        if (!sortState[tableId]) sortState[tableId] = {};
+        const currentDir = sortState[tableId][sortKey] || 'asc';
+        const newDir = currentDir === 'asc' ? 'desc' : 'asc';
+        sortState[tableId][sortKey] = newDir;
+
+        // 更新表头图标
+        $th.closest('thead').find('th').removeClass('sorting-asc sorting-desc');
+        $th.addClass('sorting-' + newDir);
+
+        // 根据表格ID调用对应的排序和重新渲染
+        if (tableId === 'positions-table') {
+            sortData(positionsData, sortKey, newDir, sortType);
+            renderPositions(positionsData);
+        } else if (tableId === 'trades-table') {
+            sortData(tradesData, sortKey, newDir, sortType);
+            renderTrades(tradesData);
+        } else if (tableId === 'evaluations-table') {
+            sortData(evaluationsData, sortKey, newDir, sortType);
+            renderEvaluations(evaluationsData);
+        } else if (tableId === 'recommendations-table') {
+            sortData(recommendationsData, sortKey, newDir, sortType);
+            renderRecommendations(recommendationsData);
+        }
+    });
+}
+
+function sortData(data, key, direction, type) {
+    data.sort((a, b) => {
+        let valA = a[key];
+        let valB = b[key];
+
+        // 处理 null/undefined
+        if (valA == null) valA = type === 'number' ? -Infinity : '';
+        if (valB == null) valB = type === 'number' ? -Infinity : '';
+
+        // 根据类型比较
+        let result;
+        if (type === 'number') {
+            result = parseFloat(valA) - parseFloat(valB);
+        } else if (type === 'date') {
+            result = new Date(valA) - new Date(valB);
+        } else {
+            result = String(valA).localeCompare(String(valB), 'zh-CN');
+        }
+
+        return direction === 'asc' ? result : -result;
+    });
+}
+
+function debounce(func, wait) {
+    return function(...args) {
+        clearTimeout(searchTimeout);
+        searchTimeout = setTimeout(() => func.apply(this, args), wait);
+    };
+}
+
+// ==================== 持仓管理 ====================
+
+function loadPositions(refresh = false) {
+    console.log('loadPositions called, refresh:', refresh);
+    let url = '/api/portfolio/positions';
+    const params = [];
+    if (refresh) params.push('refresh_prices=true');
+    if (currentGroupFilter) params.push('group_id=' + currentGroupFilter);
+    if (params.length) url += '?' + params.join('&');
+
+    $.ajax({
+        url: url,
+        success: function(response) {
+            console.log('loadPositions response:', response);
+            if (response.success) {
+                positionsData = response.positions;
+                console.log('Positions count:', response.positions.length);
+                updateSummary(response.summary);
+                renderPositions(response.positions);
+            }
+        },
+        error: function(xhr, status, error) {
+            console.error('loadPositions error:', status, error);
+        }
+    });
+}
+
+function refreshPrices() {
+    showLoading('正在刷新价格...');
+    loadPositions(true);
+    setTimeout(hideLoading, 1000);
+}
+
+function updateSummary(summary) {
+    $('#stat-total-mv').text(formatCurrency(summary.total_market_value || 0));
+    $('#stat-profit-loss').text(formatCurrency(summary.total_profit_loss || 0));
+    $('#stat-profit-loss-pct').text((summary.total_profit_loss_pct || 0).toFixed(2) + '%');
+    $('#stat-position-count').text(summary.position_count || 0);
+    $('#stat-win-rate').text((summary.win_rate || 0).toFixed(1) + '%');
+
+    // 设置盈亏卡片颜色
+    const card = $('#card-profit-loss');
+    card.removeClass('text-white bg-success bg-danger');
+    if ((summary.total_profit_loss || 0) >= 0) {
+        card.addClass('text-white bg-danger'); // 中国股市红色为涨
+    } else {
+        card.addClass('text-white bg-success'); // 绿色为跌
+    }
+}
+
+function renderPositions(positions) {
+    console.log('renderPositions called with', positions ? positions.length : 0, 'positions');
+    const tbody = $('#positions-tbody');
+    console.log('tbody element found:', tbody.length > 0);
+    tbody.empty();
+
+    if (!positions || positions.length === 0) {
+        tbody.html(`
+            <tr>
+                <td colspan="10" class="text-center text-muted py-4">
+                    <i class="bi bi-inbox fs-1"></i>
+                    <p>暂无持仓，点击"添加持仓"开始记录</p>
+                </td>
+            </tr>
+        `);
+        return;
+    }
+
+    positions.forEach(function(pos) {
+        const plClass = (pos.profit_loss_pct || 0) >= 0 ? 'text-danger' : 'text-success';
+        const plIcon = (pos.profit_loss_pct || 0) >= 0 ? '▲' : '▼';
+
+        // 生成分组下拉菜单选项
+        let groupOptions = '<option value="">未分组</option>';
+        groupsData.forEach(g => {
+            const selected = pos.group_id === g.id ? 'selected' : '';
+            groupOptions += `<option value="${g.id}" ${selected}>${g.name}</option>`;
+        });
+
+        // 分组显示
+        const groupBadge = pos.group_name
+            ? `<span class="badge" style="background-color: ${pos.group_color || '#6c757d'}">${pos.group_name}</span>`
+            : '<span class="text-muted">-</span>';
+
+        tbody.append(`
+            <tr data-position-id="${pos.id}">
+                <td>
+                    <div class="dropdown">
+                        <span class="dropdown-toggle cursor-pointer" data-bs-toggle="dropdown">
+                            ${groupBadge}
+                        </span>
+                        <ul class="dropdown-menu">
+                            <li><a class="dropdown-item" href="#" onclick="setPositionGroup(${pos.id}, null); return false;">
+                                <i class="bi bi-x-circle"></i> 未分组
+                            </a></li>
+                            <li><hr class="dropdown-divider"></li>
+                            ${groupsData.map(g => `
+                                <li><a class="dropdown-item ${pos.group_id === g.id ? 'active' : ''}" href="#"
+                                       onclick="setPositionGroup(${pos.id}, ${g.id}); return false;">
+                                    <span class="badge me-2" style="background-color: ${g.color}">&nbsp;</span>
+                                    ${g.name}
+                                </a></li>
+                            `).join('')}
+                        </ul>
+                    </div>
+                </td>
+                <td><code>${pos.code}</code></td>
+                <td>${pos.name || '-'}</td>
+                <td>${pos.quantity?.toLocaleString() || 0}</td>
+                <td>${pos.avg_cost?.toFixed(2) || '-'}</td>
+                <td>${pos.current_price?.toFixed(2) || '-'}</td>
+                <td>${formatCurrency(pos.market_value)}</td>
+                <td class="${plClass}">${formatCurrency(pos.profit_loss)}</td>
+                <td class="${plClass}">${plIcon} ${(pos.profit_loss_pct || 0).toFixed(2)}%</td>
+                <td>
+                    <div class="btn-group btn-group-sm">
+                        <button class="btn btn-outline-success" onclick="openAdjustModal(${pos.id}, 'add')">
+                            <i class="bi bi-plus"></i> 加
+                        </button>
+                        <button class="btn btn-outline-warning" onclick="openAdjustModal(${pos.id}, 'reduce')">
+                            <i class="bi bi-dash"></i> 减
+                        </button>
+                        <button class="btn btn-outline-danger" onclick="deletePosition(${pos.id})">
+                            <i class="bi bi-trash"></i>
+                        </button>
+                    </div>
+                </td>
+            </tr>
+        `);
+    });
+}
+
+function searchStocks() {
+    const query = $('#pos-code').val().trim();
+    if (query.length < 1) {
+        $('#stock-search-results').empty();
+        return;
+    }
+
+    $.ajax({
+        url: '/api/portfolio/stocks/search?q=' + encodeURIComponent(query),
+        success: function(response) {
+            if (response.success && response.stocks.length > 0) {
+                const results = $('#stock-search-results');
+                results.empty();
+                response.stocks.forEach(function(stock) {
+                    results.append(`
+                        <a href="#" class="list-group-item list-group-item-action"
+                           onclick="selectStock('${stock.code}', '${stock.name}'); return false;">
+                            <code>${stock.code}</code> ${stock.name}
+                        </a>
+                    `);
+                });
+            } else {
+                $('#stock-search-results').empty();
+            }
+        }
+    });
+}
+
+function selectStock(code, name) {
+    $('#pos-code').val(code);
+    $('#pos-name').val(name);
+    $('#stock-search-results').empty();
+
+    // 获取当前价格
+    $.ajax({
+        url: '/api/portfolio/stocks/' + code + '/price',
+        success: function(response) {
+            if (response.success) {
+                $('#pos-cost').val(response.price);
+            }
+        }
+    });
+}
+
+function savePosition() {
+    const data = {
+        code: $('#pos-code').val().trim(),
+        name: $('#pos-name').val().trim(),
+        quantity: parseInt($('#pos-quantity').val()),
+        avg_cost: parseFloat($('#pos-cost').val()),
+        notes: $('#pos-notes').val().trim()
+    };
+
+    if (!data.code || !data.quantity || !data.avg_cost) {
+        showToast('请填写完整信息', 'warning');
+        return;
+    }
+
+    $.ajax({
+        url: '/api/portfolio/positions',
+        method: 'POST',
+        contentType: 'application/json',
+        data: JSON.stringify(data),
+        success: function(response) {
+            if (response.success) {
+                showToast(response.message, 'success');
+                $('#addPositionModal').modal('hide');
+                $('#add-position-form')[0].reset();
+                loadPositions();
+            } else {
+                showToast(response.error, 'error');
+            }
+        },
+        error: function(xhr) {
+            showToast(xhr.responseJSON?.error || '添加失败', 'error');
+        }
+    });
+}
+
+function openAdjustModal(positionId, action) {
+    const position = positionsData.find(p => p.id === positionId);
+    if (!position) return;
+
+    $('#adjust-position-id').val(positionId);
+    $('#adjust-action').val(action);
+    $('#adjust-stock-info').val(`${position.code} ${position.name}`);
+    $('#adjust-current-qty').val(position.quantity.toLocaleString() + ' 股');
+    $('#adjust-price').val(position.current_price?.toFixed(2) || '');
+
+    if (action === 'add') {
+        $('#adjust-modal-header').removeClass('bg-warning').addClass('bg-success text-white');
+        $('#adjust-modal-title').text('加仓');
+        $('#adjust-qty-label').text('加仓数量');
+        $('#adjust-reason').val('加仓');
+    } else {
+        $('#adjust-modal-header').removeClass('bg-success').addClass('bg-warning');
+        $('#adjust-modal-title').text('减仓');
+        $('#adjust-qty-label').text('减仓数量');
+        $('#adjust-reason').val('减仓');
+    }
+
+    $('#adjustPositionModal').modal('show');
+}
+
+function confirmAdjust() {
+    const positionId = $('#adjust-position-id').val();
+    const action = $('#adjust-action').val();
+    const data = {
+        quantity: parseInt($('#adjust-quantity').val()),
+        price: parseFloat($('#adjust-price').val()),
+        reason: $('#adjust-reason').val()
+    };
+
+    if (!data.quantity || !data.price) {
+        showToast('请填写数量和价格', 'warning');
+        return;
+    }
+
+    $.ajax({
+        url: `/api/portfolio/positions/${positionId}/${action}`,
+        method: 'POST',
+        contentType: 'application/json',
+        data: JSON.stringify(data),
+        success: function(response) {
+            if (response.success) {
+                showToast(response.message, 'success');
+                $('#adjustPositionModal').modal('hide');
+                loadPositions();
+            } else {
+                showToast(response.error, 'error');
+            }
+        },
+        error: function(xhr) {
+            showToast(xhr.responseJSON?.error || '操作失败', 'error');
+        }
+    });
+}
+
+function deletePosition(positionId) {
+    if (!confirm('确定要删除这个持仓吗？')) return;
+
+    $.ajax({
+        url: '/api/portfolio/positions/' + positionId,
+        method: 'DELETE',
+        success: function(response) {
+            if (response.success) {
+                showToast('持仓已删除', 'success');
+                loadPositions();
+            } else {
+                showToast(response.error, 'error');
+            }
+        }
+    });
+}
+
+// ==================== 分组管理 ====================
+
+function loadGroups() {
+    return new Promise((resolve, reject) => {
+        $.ajax({
+            url: '/api/portfolio/groups',
+            success: function(response) {
+                if (response.success) {
+                    groupsData = response.groups || [];
+                    renderGroupFilter();
+                    renderGroupsList();
+                }
+                resolve();
+            },
+            error: function() {
+                resolve();
+            }
+        });
+    });
+}
+
+function renderGroupFilter() {
+    const container = $('#group-filter-btns');
+    container.empty();
+
+    // 添加"全部"按钮
+    container.append(`
+        <button type="button" class="btn btn-outline-secondary ${!currentGroupFilter ? 'active' : ''}" data-group-id="">
+            全部
+        </button>
+    `);
+
+    // 添加各分组按钮
+    groupsData.forEach(g => {
+        const isActive = currentGroupFilter == g.id ? 'active' : '';
+        container.append(`
+            <button type="button" class="btn btn-outline-secondary ${isActive}" data-group-id="${g.id}"
+                    style="border-color: ${g.color}; ${isActive ? 'background-color: ' + g.color + '; color: white;' : ''}">
+                ${g.name}
+            </button>
+        `);
+    });
+}
+
+function renderGroupsList() {
+    const tbody = $('#groups-tbody');
+    tbody.empty();
+
+    if (groupsData.length === 0) {
+        tbody.html('<tr><td colspan="6" class="text-center text-muted py-3">暂无分组</td></tr>');
+        return;
+    }
+
+    groupsData.forEach(g => {
+        tbody.append(`
+            <tr data-group-id="${g.id}">
+                <td>
+                    <span class="badge" style="background-color: ${g.color}; width: 24px; height: 24px;">&nbsp;</span>
+                </td>
+                <td>${g.name}</td>
+                <td>${g.description || '-'}</td>
+                <td>${g.sort_order || 0}</td>
+                <td>${g.position_count || 0}</td>
+                <td>
+                    <button class="btn btn-sm btn-outline-danger" onclick="deleteGroup(${g.id})">
+                        <i class="bi bi-trash"></i>
+                    </button>
+                </td>
+            </tr>
+        `);
+    });
+}
+
+function addGroup() {
+    const data = {
+        name: $('#group-name').val().trim(),
+        color: $('#group-color').val(),
+        description: $('#group-description').val().trim(),
+        sort_order: parseInt($('#group-order').val()) || 0
+    };
+
+    if (!data.name) {
+        showToast('请输入分组名称', 'warning');
+        return;
+    }
+
+    $.ajax({
+        url: '/api/portfolio/groups',
+        method: 'POST',
+        contentType: 'application/json',
+        data: JSON.stringify(data),
+        success: function(response) {
+            if (response.success) {
+                showToast('分组已添加', 'success');
+                $('#add-group-form')[0].reset();
+                $('#group-color').val('#6c757d');
+                loadGroups();
+            } else {
+                showToast(response.error, 'error');
+            }
+        },
+        error: function(xhr) {
+            showToast(xhr.responseJSON?.error || '添加失败', 'error');
+        }
+    });
+}
+
+function deleteGroup(groupId) {
+    if (!confirm('确定要删除这个分组吗？该分组下的持仓将变为未分组。')) return;
+
+    $.ajax({
+        url: '/api/portfolio/groups/' + groupId,
+        method: 'DELETE',
+        success: function(response) {
+            if (response.success) {
+                showToast('分组已删除', 'success');
+                loadGroups().then(() => {
+                    loadPositions();
+                });
+            } else {
+                showToast(response.error, 'error');
+            }
+        }
+    });
+}
+
+function setPositionGroup(positionId, groupId) {
+    $.ajax({
+        url: `/api/portfolio/positions/${positionId}/group`,
+        method: 'PUT',
+        contentType: 'application/json',
+        data: JSON.stringify({ group_id: groupId }),
+        success: function(response) {
+            if (response.success) {
+                showToast('分组已更新', 'success');
+                loadPositions();
+            } else {
+                showToast(response.error, 'error');
+            }
+        },
+        error: function(xhr) {
+            showToast(xhr.responseJSON?.error || '更新失败', 'error');
+        }
+    });
+}
+
+// ==================== 操作建议 ====================
+
+function loadRecommendations() {
+    $.ajax({
+        url: '/api/portfolio/recommendations',
+        success: function(response) {
+            if (response.success) {
+                recommendationsData = response.recommendations;
+                renderRecommendations(recommendationsData);
+            }
+        }
+    });
+}
+
+function generateRecommendations() {
+    showLoading('正在使用V3.9.0 ML系统分析持仓...');
+
+    $.ajax({
+        url: '/api/portfolio/recommendations/generate',
+        method: 'POST',
+        success: function(response) {
+            hideLoading();
+            if (response.success) {
+                showToast(response.message, 'success');
+                recommendationsData = response.recommendations;
+                renderRecommendations(response.recommendations, response.analysis_summary);
+            } else {
+                showToast(response.error, 'error');
+            }
+        },
+        error: function(xhr) {
+            hideLoading();
+            showToast(xhr.responseJSON?.error || '生成建议失败', 'error');
+        }
+    });
+}
+
+function renderRecommendations(recommendations, summary) {
+    const tbody = $('#recommendations-tbody');
+    tbody.empty();
+
+    if (!recommendations || recommendations.length === 0) {
+        $('#rec-summary').hide();
+        tbody.html(`
+            <tr>
+                <td colspan="14" class="text-center text-muted py-4">
+                    <i class="bi bi-check-circle fs-1 text-success"></i>
+                    <p>当前无操作建议，持仓状况良好</p>
+                </td>
+            </tr>
+        `);
+        return;
+    }
+
+    // 更新汇总信息
+    if (summary) {
+        $('#rec-summary').show();
+        $('#rec-total').text(summary.total_positions || 0);
+        $('#rec-critical').text(summary.critical_actions || 0);
+        $('#rec-high').text(summary.high_actions || 0);
+        $('#rec-ml-scored').text(summary.ml_scored || 0);
+    }
+
+    const urgencyLabels = {
+        'critical': '危急',
+        'high': '高',
+        'normal': '中',
+        'low': '低'
+    };
+    const urgencyColors = {
+        'critical': 'danger',
+        'high': 'warning',
+        'normal': 'info',
+        'low': 'secondary'
+    };
+    const actionLabels = {
+        'hold': '持有',
+        'sell': '卖出',
+        'reduce': '减仓',
+        'add': '加仓'
+    };
+    const actionColors = {
+        'hold': 'secondary',
+        'sell': 'danger',
+        'reduce': 'warning',
+        'add': 'success'
+    };
+    const trendLabels = {
+        'up': '↑ 上涨',
+        'down': '↓ 下跌',
+        'sideways': '→ 横盘',
+        'unknown': '-'
+    };
+    const trendColors = {
+        'up': 'text-danger',
+        'down': 'text-success',
+        'sideways': 'text-muted',
+        'unknown': 'text-muted'
+    };
+
+    recommendations.forEach(function(rec) {
+        const urgencyBadge = `<span class="badge bg-${urgencyColors[rec.urgency] || 'secondary'}">${urgencyLabels[rec.urgency] || rec.urgency}</span>`;
+        const actionBadge = `<span class="badge bg-${actionColors[rec.action]}">${actionLabels[rec.action] || rec.action}</span>`;
+        const confidencePct = (rec.confidence * 100).toFixed(0);
+        const confidenceClass = confidencePct >= 70 ? 'text-success' : (confidencePct >= 50 ? 'text-warning' : 'text-danger');
+
+        // ML评分显示
+        let mlScoreHtml = '-';
+        if (rec.ml_score != null) {
+            const mlClass = rec.ml_score >= 65 ? 'text-danger' : (rec.ml_score >= 54 ? 'text-warning' : 'text-success');
+            mlScoreHtml = `<strong class="${mlClass}">${rec.ml_score?.toFixed(1)}</strong>`;
+        }
+
+        // 5日预测收益
+        let predictHtml = '-';
+        if (rec.predicted_return_5d != null) {
+            const pct = (rec.predicted_return_5d * 100).toFixed(2);
+            const predictClass = rec.predicted_return_5d >= 0 ? 'text-danger' : 'text-success';
+            predictHtml = `<span class="${predictClass}">${pct}%</span>`;
+        }
+
+        // 趋势
+        const trendHtml = `<span class="${trendColors[rec.trend] || 'text-muted'}">${trendLabels[rec.trend] || '-'}</span>`;
+
+        // RSI
+        let rsiHtml = '-';
+        if (rec.rsi != null) {
+            const rsiClass = rec.rsi > 70 ? 'text-danger' : (rec.rsi < 30 ? 'text-success' : 'text-muted');
+            rsiHtml = `<span class="${rsiClass}">${rec.rsi?.toFixed(0)}</span>`;
+        }
+
+        // Kelly仓位
+        const kellyHtml = rec.kelly_position != null ? `${rec.kelly_position?.toFixed(1)}%` : '-';
+
+        tbody.append(`
+            <tr>
+                <td>${urgencyBadge}</td>
+                <td><code>${rec.code}</code></td>
+                <td>${rec.name || '-'}</td>
+                <td>${mlScoreHtml}</td>
+                <td>${predictHtml}</td>
+                <td>${trendHtml}</td>
+                <td>${rsiHtml}</td>
+                <td>${actionBadge}</td>
+                <td><small title="${rec.reason || ''}">${(rec.reason || '-').substring(0, 30)}${(rec.reason?.length > 30) ? '...' : ''}</small></td>
+                <td class="text-danger">${rec.stop_loss_price?.toFixed(2) || '-'}</td>
+                <td class="text-success">${rec.take_profit_price?.toFixed(2) || '-'}</td>
+                <td>${kellyHtml}</td>
+                <td class="${confidenceClass}"><strong>${confidencePct}%</strong></td>
+                <td>
+                    ${rec.is_executed ?
+                        '<span class="badge bg-success"><i class="bi bi-check"></i> 已执行</span>' :
+                        `<button class="btn btn-sm btn-outline-primary" onclick="markExecuted(${rec.id})">
+                            <i class="bi bi-check2"></i>
+                        </button>`
+                    }
+                </td>
+            </tr>
+        `);
+    });
+}
+
+function markExecuted(recId) {
+    $.ajax({
+        url: `/api/portfolio/recommendations/${recId}/execute`,
+        method: 'POST',
+        success: function(response) {
+            if (response.success) {
+                showToast('已标记为已执行', 'success');
+                loadRecommendations();
+            }
+        }
+    });
+}
+
+// ==================== 交易记录 ====================
+
+function loadTrades() {
+    $.ajax({
+        url: '/api/portfolio/trades',
+        success: function(response) {
+            if (response.success) {
+                tradesData = response.trades;
+                renderTrades(tradesData);
+            }
+        }
+    });
+}
+
+function renderTrades(trades) {
+    const tbody = $('#trades-tbody');
+    tbody.empty();
+
+    if (!trades || trades.length === 0) {
+        tbody.html(`
+            <tr>
+                <td colspan="9" class="text-center text-muted py-4">暂无交易记录</td>
+            </tr>
+        `);
+        return;
+    }
+
+    const actionLabels = {
+        'buy': '买入',
+        'sell': '卖出',
+        'add': '加仓',
+        'reduce': '减仓'
+    };
+    const actionColors = {
+        'buy': 'text-danger',
+        'sell': 'text-success',
+        'add': 'text-danger',
+        'reduce': 'text-success'
+    };
+
+    trades.forEach(function(trade) {
+        tbody.append(`
+            <tr>
+                <td>${trade.trade_date}</td>
+                <td><code>${trade.code}</code></td>
+                <td>${trade.name || '-'}</td>
+                <td class="${actionColors[trade.action]}">${actionLabels[trade.action] || trade.action}</td>
+                <td>${trade.quantity?.toLocaleString()}</td>
+                <td>${trade.price?.toFixed(2)}</td>
+                <td>${formatCurrency(trade.amount)}</td>
+                <td>${trade.reason || '-'}</td>
+                <td>
+                    <button class="btn btn-sm btn-outline-danger" onclick="deleteTrade(${trade.id})">
+                        <i class="bi bi-trash"></i>
+                    </button>
+                </td>
+            </tr>
+        `);
+    });
+}
+
+function saveTrade() {
+    const data = {
+        trade_date: $('#trade-date').val(),
+        code: $('#trade-code').val().trim(),
+        action: $('#trade-action').val(),
+        quantity: parseInt($('#trade-quantity').val()),
+        price: parseFloat($('#trade-price').val()),
+        reason: $('#trade-reason').val().trim()
+    };
+
+    if (!data.trade_date || !data.code || !data.quantity || !data.price) {
+        showToast('请填写完整信息', 'warning');
+        return;
+    }
+
+    $.ajax({
+        url: '/api/portfolio/trades',
+        method: 'POST',
+        contentType: 'application/json',
+        data: JSON.stringify(data),
+        success: function(response) {
+            if (response.success) {
+                showToast('交易记录已添加', 'success');
+                $('#addTradeModal').modal('hide');
+                $('#add-trade-form')[0].reset();
+                $('#trade-date').val(new Date().toISOString().split('T')[0]);
+                loadTrades();
+            } else {
+                showToast(response.error, 'error');
+            }
+        }
+    });
+}
+
+function deleteTrade(tradeId) {
+    if (!confirm('确定要删除这条交易记录吗？')) return;
+
+    $.ajax({
+        url: '/api/portfolio/trades/' + tradeId,
+        method: 'DELETE',
+        success: function(response) {
+            if (response.success) {
+                showToast('交易记录已删除', 'success');
+                loadTrades();
+            }
+        }
+    });
+}
+
+// ==================== 事后回顾 ====================
+
+function loadEvaluations() {
+    $.ajax({
+        url: '/api/portfolio/evaluations',
+        success: function(response) {
+            if (response.success) {
+                evaluationsData = response.evaluations;
+                renderEvaluationStats(response.stats);
+                renderEvaluations(evaluationsData);
+            }
+        }
+    });
+}
+
+function runEvaluations() {
+    showLoading('正在评估交易...');
+
+    $.ajax({
+        url: '/api/portfolio/evaluations/run',
+        method: 'POST',
+        contentType: 'application/json',
+        data: JSON.stringify({ days_after: 5 }),
+        success: function(response) {
+            hideLoading();
+            if (response.success) {
+                showToast(response.message, 'success');
+                renderEvaluationStats(response.stats);
+                loadEvaluations();
+            }
+        },
+        error: function() {
+            hideLoading();
+            showToast('评估失败', 'error');
+        }
+    });
+}
+
+function renderEvaluationStats(stats) {
+    $('#eval-total').text(stats.total_evals || 0);
+    $('#eval-avg-score').text((stats.avg_score || 0).toFixed(1));
+    $('#eval-avg-return').text((stats.avg_return || 0).toFixed(2) + '%');
+    $('#eval-win-rate').text((stats.win_rate || 0).toFixed(1) + '%');
+
+    // 渲染等级分布
+    const grades = stats.grade_distribution || {};
+    const gradeCards = $('#grade-cards');
+    gradeCards.empty();
+
+    const gradeColors = { 'A': 'success', 'B': 'primary', 'C': 'info', 'D': 'warning', 'F': 'danger' };
+    const gradeLabels = { 'A': '优秀', 'B': '良好', 'C': '一般', 'D': '较差', 'F': '失败' };
+
+    ['A', 'B', 'C', 'D', 'F'].forEach(function(grade) {
+        const count = grades[grade] || 0;
+        gradeCards.append(`
+            <div class="col-6 col-md-4">
+                <div class="card border-${gradeColors[grade]}">
+                    <div class="card-body text-center py-2">
+                        <h3 class="text-${gradeColors[grade]}">${grade}</h3>
+                        <small>${gradeLabels[grade]}: ${count}</small>
+                    </div>
+                </div>
+            </div>
+        `);
+    });
+
+    // 渲染图表
+    if (Object.keys(grades).length > 0) {
+        const chartOptions = {
+            series: Object.values(grades),
+            chart: { type: 'donut', height: 250 },
+            labels: Object.keys(grades).map(g => `${g} (${gradeLabels[g]})`),
+            colors: ['#198754', '#0d6efd', '#0dcaf0', '#ffc107', '#dc3545'],
+            legend: { position: 'bottom' }
+        };
+
+        if (window.gradeChart) window.gradeChart.destroy();
+        window.gradeChart = new ApexCharts(document.querySelector('#grade-chart'), chartOptions);
+        window.gradeChart.render();
+    }
+}
+
+function renderEvaluations(evaluations) {
+    const tbody = $('#evaluations-tbody');
+    tbody.empty();
+
+    if (!evaluations || evaluations.length === 0) {
+        tbody.html(`
+            <tr>
+                <td colspan="10" class="text-center text-muted py-4">暂无评估数据，点击"执行评估"开始</td>
+            </tr>
+        `);
+        return;
+    }
+
+    const gradeColors = { 'A': 'success', 'B': 'primary', 'C': 'info', 'D': 'warning', 'F': 'danger' };
+    const actionLabels = { 'buy': '买入', 'sell': '卖出', 'add': '加仓', 'reduce': '减仓' };
+
+    evaluations.forEach(function(e) {
+        const returnClass = e.return_pct >= 0 ? 'text-danger' : 'text-success';
+
+        tbody.append(`
+            <tr>
+                <td>${e.trade_date}</td>
+                <td><code>${e.code}</code></td>
+                <td>${e.name || '-'}</td>
+                <td>${actionLabels[e.action] || e.action}</td>
+                <td>${e.trade_price?.toFixed(2)}</td>
+                <td>${e.price_after?.toFixed(2)}</td>
+                <td class="${returnClass}">${e.return_pct?.toFixed(2)}%</td>
+                <td>${e.score}</td>
+                <td><span class="badge bg-${gradeColors[e.grade]}">${e.grade}</span></td>
+                <td>${e.comments || '-'}</td>
+            </tr>
+        `);
+    });
+}
+
+// ==================== 工具函数 ====================
+
+function formatCurrency(value) {
+    if (value === null || value === undefined) return '-';
+    return value.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+</script>
+{% endblock %}

@@ -1,0 +1,58 @@
+# Large database files
+data_adapter/stock_data.db
+data_adapter/stock_data.db-shm
+data_adapter/stock_data.db-wal
+data_adapter/*.db
+data_adapter/*.db.backup_*
+data_adapter/*.db.backup_before_fix
+
+# Model files (large - entire directory, use separate model storage)
+models/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Auto-claude worktree stuff
+.auto-claude/
+.worktrees/
+
+# Logs
+logs/
+*.log
+
+# Reports (too many files)
+reports/
+
+# Data files
+full_securities_data/
+stock_data.db.backup_*
+*.csv
+*.json.bak
+
+# Archive databases (large)
+archive/old_databases/
+
+# OS
+.DS_Store
+Miniconda3-latest-MacOSX-arm64.sh
+openmp.tar.xz
+
+# API Keys and Secrets
+config.json
+TA_integration/config/config.json
+
+# Nested git repositories (add as submodules if needed)
+WorldQuantAlpha101/
+hikyuu/
+qlib/
+TradingAgents/
+
+# Auto Claude files
+.auto-claude-security.json
+.auto-claude-status
+.claude_settings.json
+.security-key
+logs/security/

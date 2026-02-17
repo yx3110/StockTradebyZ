@@ -1,0 +1,132 @@
+{
+  "feature_l1_mean": {
+    "index": 0,
+    "original_name": "l1_mean",
+    "description": "Level 4 quality feature: l1_mean"
+  },
+  "feature_l1_std": {
+    "index": 1,
+    "original_name": "l1_std",
+    "description": "Level 4 quality feature: l1_std"
+  },
+  "feature_l1_min": {
+    "index": 2,
+    "original_name": "l1_min",
+    "description": "Level 4 quality feature: l1_min"
+  },
+  "feature_l1_max": {
+    "index": 3,
+    "original_name": "l1_max",
+    "description": "Level 4 quality feature: l1_max"
+  },
+  "feature_l1_range": {
+    "index": 4,
+    "original_name": "l1_range",
+    "description": "Level 4 quality feature: l1_range"
+  },
+  "feature_l2_technical": {
+    "index": 5,
+    "original_name": "l2_technical",
+    "description": "Level 4 quality feature: l2_technical"
+  },
+  "feature_l2_fundamental": {
+    "index": 6,
+    "original_name": "l2_fundamental",
+    "description": "Level 4 quality feature: l2_fundamental"
+  },
+  "feature_l2_macro": {
+    "index": 7,
+    "original_name": "l2_macro",
+    "description": "Level 4 quality feature: l2_macro"
+  },
+  "feature_l2_sentiment": {
+    "index": 8,
+    "original_name": "l2_sentiment",
+    "description": "Level 4 quality feature: l2_sentiment"
+  },
+  "feature_l3_final_score": {
+    "index": 9,
+    "original_name": "l3_final_score",
+    "description": "Level 4 quality feature: l3_final_score"
+  },
+  "feature_l1_consistency": {
+    "index": 10,
+    "original_name": "l1_consistency",
+    "description": "Level 4 quality feature: l1_consistency"
+  },
+  "feature_l2_consistency": {
+    "index": 11,
+    "original_name": "l2_consistency",
+    "description": "Level 4 quality feature: l2_consistency"
+  },
+  "feature_l1l2_consistency": {
+    "index": 12,
+    "original_name": "l1l2_consistency",
+    "description": "Level 4 quality feature: l1l2_consistency"
+  },
+  "feature_l1_confidence": {
+    "index": 13,
+    "original_name": "l1_confidence",
+    "description": "Level 4 quality feature: l1_confidence"
+  },
+  "feature_l2_confidence": {
+    "index": 14,
+    "original_name": "l2_confidence",
+    "description": "Level 4 quality feature: l2_confidence"
+  },
+  "feature_meta_confidence": {
+    "index": 15,
+    "original_name": "meta_confidence",
+    "description": "Level 4 quality feature: meta_confidence"
+  },
+  "feature_feature_completeness": {
+    "index": 16,
+    "original_name": "completeness",
+    "description": "Level 4 quality feature: completeness"
+  },
+  "feature_feature_variance": {
+    "index": 17,
+    "original_name": "variance",
+    "description": "Level 4 quality feature: variance"
+  },
+  "feature_outlier_ratio": {
+    "index": 18,
+    "original_name": "outlier_ratio",
+    "description": "Level 4 quality feature: outlier_ratio"
+  },
+  "feature_temporal_variance": {
+    "index": 19,
+    "original_name": "temporal_variance",
+    "description": "Level 4 quality feature: temporal_variance"
+  },
+  "feature_trend_consistency": {
+    "index": 20,
+    "original_name": "trend_consistency",
+    "description": "Level 4 quality feature: trend_consistency"
+  },
+  "feature_market_regime_match": {
+    "index": 21,
+    "original_name": "market_regime_match",
+    "description": "Level 4 quality feature: market_regime_match"
+  },
+  "feature_volatility_match": {
+    "index": 22,
+    "original_name": "volatility_match",
+    "description": "Level 4 quality feature: volatility_match"
+  },
+  "feature_cv_score": {
+    "index": 23,
+    "original_name": "cv_score",
+    "description": "Level 4 quality feature: cv_score"
+  },
+  "feature_model_consistency": {
+    "index": 24,
+    "original_name": "model_consistency",
+    "description": "Level 4 quality feature: model_consistency"
+  },
+  "quality_overall": {
+    "index": 25,
+    "original_name": "quality_overall",
+    "description": "Target variable: overall quality score"
+  }
+}

@@ -1,0 +1,1146 @@
+{% extends "base.html" %}
+
+{% block title %}模型训练 - StockTradebyZ Web{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-12">
+        <h2 class="mb-4">
+            <i class="bi bi-cpu"></i> 模型训练
+        </h2>
+    </div>
+</div>
+
+<!-- 模型汇总统计 -->
+<div class="row g-3 mb-4">
+    <div class="col-md-3">
+        <div class="card text-white bg-primary h-100">
+            <div class="card-body">
+                <h6 class="card-title">模型版本</h6>
+                <h3 id="stat-total-models">-</h3>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card text-white bg-success h-100">
+            <div class="card-body">
+                <h6 class="card-title">已训练</h6>
+                <h3 id="stat-trained-models">-</h3>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card text-white bg-info h-100">
+            <div class="card-body">
+                <h6 class="card-title">模型总大小</h6>
+                <h4 id="stat-total-size">-</h4>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card text-white bg-warning h-100">
+            <div class="card-body">
+                <h6 class="card-title">最新训练</h6>
+                <h4 id="stat-latest-training">-</h4>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 模型版本卡片 -->
+<div class="row mb-4">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header bg-primary text-white">
+                <h5 class="mb-0"><i class="bi bi-collection"></i> 模型版本</h5>
+            </div>
+            <div class="card-body">
+                <div class="row g-3" id="models-list">
+                    <div class="text-center text-muted py-4">
+                        <div class="spinner-border" role="status">
+                            <span class="visually-hidden">加载中...</span>
+                        </div>
+                        <p class="mt-2">加载模型信息...</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 模型详情和特征重要性 -->
+<div class="row mb-4">
+    <div class="col-md-6">
+        <div class="card h-100">
+            <div class="card-header bg-info text-white">
+                <div class="d-flex justify-content-between align-items-center">
+                    <h5 class="mb-0"><i class="bi bi-bar-chart-fill"></i> 特征重要性</h5>
+                    <select id="feature-version-select" class="form-select form-select-sm" style="width: 150px;">
+                        <!-- 动态加载版本 -->
+                    </select>
+                </div>
+            </div>
+            <div class="card-body">
+                <div id="feature-chart" style="height: 400px;"></div>
+                <div id="feature-loading" class="text-center py-4">
+                    <div class="spinner-border spinner-border-sm"></div>
+                    <span class="ms-2">加载特征数据...</span>
+                </div>
+                <div id="feature-empty" class="text-center text-muted py-4" style="display:none;">
+                    <i class="bi bi-inbox fs-1"></i>
+                    <p>暂无特征重要性数据</p>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-6">
+        <div class="card h-100">
+            <div class="card-header bg-secondary text-white">
+                <h5 class="mb-0"><i class="bi bi-file-earmark-text"></i> 训练报告</h5>
+            </div>
+            <div class="card-body">
+                <div id="training-report">
+                    <div class="text-center text-muted py-4">
+                        <i class="bi bi-inbox fs-1"></i>
+                        <p>选择模型版本查看训练报告</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 训练配置和进度 -->
+<div class="row mb-4">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header bg-success text-white">
+                <h5 class="mb-0"><i class="bi bi-gear"></i> 训练配置</h5>
+            </div>
+            <div class="card-body">
+                <form id="training-form">
+                    <div class="row">
+                        <div class="col-md-3 mb-3">
+                            <label class="form-label">模型版本</label>
+                            <select class="form-select" id="train-version" required>
+                                <!-- 动态加载版本 -->
+                            </select>
+                        </div>
+                        <div class="col-md-2 mb-3">
+                            <label class="form-label">开始日期</label>
+                            <input type="date" class="form-control" id="start-date" value="2020-01-01" required>
+                        </div>
+                        <div class="col-md-2 mb-3">
+                            <label class="form-label">结束日期</label>
+                            <input type="date" class="form-control" id="end-date" required>
+                        </div>
+                        <div class="col-md-2 mb-3">
+                            <label class="form-label">回望天数</label>
+                            <input type="number" class="form-control" id="lookback-days" value="10" min="5" max="30">
+                        </div>
+                        <div class="col-md-2 mb-3">
+                            <label class="form-label">前瞻天数</label>
+                            <input type="number" class="form-control" id="lookahead-days" value="5" min="1" max="20">
+                        </div>
+                        <div class="col-md-1 mb-3 d-flex align-items-end">
+                            <button type="submit" class="btn btn-success w-100" id="btn-train">
+                                <i class="bi bi-play-fill"></i> 训练
+                            </button>
+                        </div>
+                    </div>
+                </form>
+
+                <!-- 训练进度 -->
+                <div id="training-progress" style="display: none;">
+                    <hr>
+                    <h6><i class="bi bi-hourglass-split"></i> 训练进度</h6>
+                    <div class="progress mb-2" style="height: 25px;">
+                        <div class="progress-bar progress-bar-striped progress-bar-animated"
+                             id="progress-bar" style="width: 0%">0%</div>
+                    </div>
+                    <div id="progress-status" class="alert alert-info mb-0">准备开始...</div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 模型性能指标 -->
+<div class="row mb-4">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header bg-warning text-dark">
+                <h5 class="mb-0"><i class="bi bi-speedometer2"></i> 模型性能指标</h5>
+            </div>
+            <div class="card-body">
+                <div class="row g-3" id="metrics-container">
+                    <div class="col-md-4">
+                        <div id="metrics-chart" style="height: 300px;"></div>
+                    </div>
+                    <div class="col-md-8">
+                        <div class="table-responsive">
+                            <table class="table table-striped" id="metrics-table">
+                                <thead class="table-dark">
+                                    <tr>
+                                        <th>版本</th>
+                                        <th>特征数</th>
+                                        <th>训练样本</th>
+                                        <th>验证RMSE</th>
+                                        <th>最佳迭代</th>
+                                        <th>训练时间</th>
+                                    </tr>
+                                </thead>
+                                <tbody></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 训练曲线 -->
+<div class="row mb-4">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header bg-danger text-white">
+                <div class="d-flex justify-content-between align-items-center">
+                    <h5 class="mb-0"><i class="bi bi-graph-up"></i> 训练曲线 (Loss Curves)</h5>
+                    <select id="curves-version-select" class="form-select form-select-sm" style="width: 150px;">
+                        <!-- 动态加载版本 -->
+                    </select>
+                </div>
+            </div>
+            <div class="card-body">
+                <div id="curves-loading" class="text-center py-4">
+                    <div class="spinner-border spinner-border-sm"></div>
+                    <span class="ms-2">加载训练曲线数据...</span>
+                </div>
+                <div id="curves-empty" class="text-center text-muted py-4" style="display:none;">
+                    <i class="bi bi-inbox fs-1"></i>
+                    <p>暂无训练曲线数据</p>
+                    <p class="small">训练模型后将自动记录loss曲线</p>
+                </div>
+                <div id="curves-container" style="display:none;">
+                    <!-- 训练曲线图表 -->
+                    <div class="row g-3">
+                        <div class="col-md-8">
+                            <div id="loss-curves-chart" style="height: 400px;"></div>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="card h-100">
+                                <div class="card-header bg-light">
+                                    <h6 class="mb-0"><i class="bi bi-info-circle"></i> 训练汇总</h6>
+                                </div>
+                                <div class="card-body" id="training-summary">
+                                    <!-- 动态填充 -->
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <!-- 各模型对比 -->
+                    <div class="row g-3 mt-3">
+                        <div class="col-12">
+                            <h6><i class="bi bi-bar-chart-steps"></i> 各模型最终性能对比</h6>
+                            <div id="models-comparison-chart" style="height: 300px;"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 模型文件列表 -->
+<div class="row">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header bg-dark text-white">
+                <h5 class="mb-0"><i class="bi bi-folder2-open"></i> 模型文件</h5>
+            </div>
+            <div class="card-body">
+                <div class="table-responsive">
+                    <table class="table table-hover" id="files-table">
+                        <thead class="table-secondary">
+                            <tr>
+                                <th>版本</th>
+                                <th>文件名</th>
+                                <th>大小</th>
+                                <th>修改时间</th>
+                            </tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+{% endblock %}
+
+{% block extra_js %}
+<script>
+let featureChart = null;
+let metricsChart = null;
+let lossCurvesChart = null;
+let modelsComparisonChart = null;
+
+$(document).ready(function() {
+    // 设置默认结束日期为今天
+    const today = new Date().toISOString().split('T')[0];
+    $('#end-date').val(today);
+
+    // 先加载版本列表，再加载其他数据
+    loadVersionOptions().then(function() {
+        loadModelsSummary();
+        loadModels();
+        const defaultVersion = $('#feature-version-select').val();
+        if (defaultVersion) {
+            loadFeatureImportance(defaultVersion);
+            loadTrainingCurves(defaultVersion);
+        }
+    });
+
+    $('#feature-version-select').change(function() {
+        loadFeatureImportance($(this).val());
+        loadTrainingReport($(this).val());
+    });
+
+    $('#curves-version-select').change(function() {
+        loadTrainingCurves($(this).val());
+    });
+
+    $('#training-form').submit(function(e) {
+        e.preventDefault();
+        startTraining();
+    });
+});
+
+function loadVersionOptions() {
+    // 从API动态加载模型版本列表
+    return $.ajax({
+        url: '/api/models/',
+        success: function(response) {
+            if (response.success && response.models) {
+                const versions = response.models.map(m => ({
+                    id: m.version,
+                    name: m.name
+                }));
+
+                // 按版本号倒序排列（最新版本在前）
+                versions.sort((a, b) => b.id.localeCompare(a.id));
+
+                // 更新特征版本选择框
+                const featureSelect = $('#feature-version-select');
+                featureSelect.empty();
+                versions.forEach((v, index) => {
+                    const selected = index === 0 ? 'selected' : '';
+                    featureSelect.append(`<option value="${v.id}" ${selected}>${v.id.toUpperCase()}</option>`);
+                });
+
+                // 更新训练版本选择框
+                const trainSelect = $('#train-version');
+                trainSelect.empty();
+                versions.forEach((v, index) => {
+                    const selected = index === 0 ? 'selected' : '';
+                    trainSelect.append(`<option value="${v.id}" ${selected}>${v.name}</option>`);
+                });
+
+                // 更新训练曲线版本选择框
+                const curvesSelect = $('#curves-version-select');
+                curvesSelect.empty();
+                versions.forEach((v, index) => {
+                    const selected = index === 0 ? 'selected' : '';
+                    curvesSelect.append(`<option value="${v.id}" ${selected}>${v.id.toUpperCase()}</option>`);
+                });
+            }
+        }
+    });
+}
+
+function loadModelsSummary() {
+    $.ajax({
+        url: '/api/models/summary',
+        success: function(response) {
+            if (response.success) {
+                const summary = response.summary;
+                $('#stat-total-models').text(summary.total_models);
+                $('#stat-trained-models').text(summary.trained_models);
+                $('#stat-total-size').text(summary.total_size_mb.toFixed(1) + ' MB');
+                $('#stat-latest-training').text(summary.latest_training || '-');
+
+                // 更新指标表格
+                updateMetricsTable(summary.versions);
+            }
+        }
+    });
+}
+
+function loadModels() {
+    $.ajax({
+        url: '/api/models/',
+        success: function(response) {
+            if (response.success) {
+                displayModels(response.models);
+                displayFilesTable(response.models);
+            }
+        },
+        error: function() {
+            $('#models-list').html(`
+                <div class="col-12 text-center text-danger">
+                    <i class="bi bi-exclamation-triangle fs-1"></i>
+                    <p>加载模型信息失败</p>
+                </div>
+            `);
+        }
+    });
+}
+
+function displayModels(models) {
+    const colors = {
+        'v3.9': 'primary',
+        'v3.81': 'success',
+        'v3.8': 'info',
+        'v3.7': 'warning'
+    };
+
+    const icons = {
+        'v3.9': 'bi-star-fill',
+        'v3.81': 'bi-award',
+        'v3.8': 'bi-arrow-repeat',
+        'v3.7': 'bi-layers'
+    };
+
+    const html = models.map(model => {
+        const color = colors[model.version] || 'secondary';
+        const icon = icons[model.version] || 'bi-cpu';
+        const totalSize = model.model_files.reduce((sum, f) => sum + f.size, 0);
+        const sizeMB = (totalSize / (1024 * 1024)).toFixed(2);
+
+        return `
+            <div class="col-md-6 col-lg-3">
+                <div class="card border-${color} h-100">
+                    <div class="card-header bg-${color} text-white">
+                        <i class="bi ${icon}"></i> ${model.version}
+                    </div>
+                    <div class="card-body">
+                        <h6 class="card-title">${model.name}</h6>
+                        <p class="card-text small text-muted mb-2">
+                            ${_get_model_description(model.version)}
+                        </p>
+                        <div class="d-flex justify-content-between">
+                            <span class="badge ${model.status === 'trained' ? 'bg-success' : 'bg-secondary'}">
+                                ${model.status === 'trained' ? '已训练' : '未训练'}
+                            </span>
+                            <small class="text-muted">
+                                ${model.model_files.length} 文件 | ${sizeMB} MB
+                            </small>
+                        </div>
+                    </div>
+                    <div class="card-footer bg-transparent">
+                        <button class="btn btn-sm btn-outline-${color} w-100"
+                                onclick="showModelDetail('${model.version}')">
+                            <i class="bi bi-eye"></i> 查看详情
+                        </button>
+                    </div>
+                </div>
+            </div>
+        `;
+    }).join('');
+
+    $('#models-list').html(html);
+}
+
+function _get_model_description(version) {
+    const descriptions = {
+        'v3.9': '42个增强特征，17个财务指标',
+        'v3.81': '质量元学习器，解决评分聚集',
+        'v3.8': '增量学习，自适应评分',
+        'v3.7': '三层Ensemble，49个特征'
+    };
+    return descriptions[version] || '';
+}
+
+function displayFilesTable(models) {
+    const tbody = $('#files-table tbody');
+    tbody.empty();
+
+    models.forEach(model => {
+        model.model_files.forEach(file => {
+            const sizeMB = (file.size / (1024 * 1024)).toFixed(2);
+            const modTime = new Date(file.modified_time).toLocaleString('zh-CN');
+            tbody.append(`
+                <tr>
+                    <td><span class="badge bg-primary">${model.version}</span></td>
+                    <td><code>${file.name}</code></td>
+                    <td>${sizeMB} MB</td>
+                    <td>${modTime}</td>
+                </tr>
+            `);
+        });
+    });
+
+    if (tbody.children().length === 0) {
+        tbody.append('<tr><td colspan="4" class="text-center text-muted">暂无模型文件</td></tr>');
+    }
+}
+
+function loadFeatureImportance(version) {
+    // 先销毁旧图表
+    if (featureChart) {
+        featureChart.destroy();
+        featureChart = null;
+    }
+    document.querySelector("#feature-chart").innerHTML = '';
+
+    $('#feature-loading').show();
+    $('#feature-empty').hide();
+    $('#feature-chart').hide();
+
+    $.ajax({
+        url: `/api/models/${version}/features`,
+        cache: false,  // 禁用缓存
+        success: function(response) {
+            $('#feature-loading').hide();
+            if (response.success && response.features.length > 0) {
+                $('#feature-chart').show();
+                displayFeatureChart(response.features, version);
+            } else {
+                $('#feature-empty').show();
+            }
+        },
+        error: function() {
+            $('#feature-loading').hide();
+            $('#feature-empty').show();
+        }
+    });
+
+    loadTrainingReport(version);
+}
+
+function displayFeatureChart(features, version) {
+    // 只显示前15个重要特征
+    const topFeatures = features.slice(0, 15);
+
+    // 构建图表数据 - 处理不同版本返回的字段名
+    const chartData = topFeatures.map(f => {
+        // v3.7/v3.6 返回 avg_importance, v3.81/v3.9 返回 importance
+        return parseFloat(f.avg_importance || f.importance || 0);
+    });
+    const categories = topFeatures.map(f => f.name);
+
+    console.log('版本:', version, '特征数:', topFeatures.length, '数据:', chartData.slice(0, 3));
+
+    const chartOptions = {
+        series: [{
+            name: '重要性',
+            data: chartData
+        }],
+        chart: {
+            type: 'bar',
+            height: 400,
+            toolbar: { show: false },
+            animations: { enabled: true, speed: 300 }
+        },
+        plotOptions: {
+            bar: {
+                horizontal: true,
+                borderRadius: 4,
+                distributed: true
+            }
+        },
+        colors: ['#10b981', '#3b82f6', '#6366f1', '#8b5cf6', '#ec4899',
+                 '#f43f5e', '#f97316', '#eab308', '#84cc16', '#22c55e',
+                 '#14b8a6', '#06b6d4', '#0ea5e9', '#6366f1', '#a855f7'],
+        xaxis: {
+            categories: categories
+        },
+        dataLabels: {
+            enabled: true,
+            formatter: function(val) {
+                return val.toFixed(0);
+            }
+        },
+        legend: { show: false }
+    };
+
+    // 直接创建图表（loadFeatureImportance 已经清理过了）
+    featureChart = new ApexCharts(document.querySelector("#feature-chart"), chartOptions);
+    featureChart.render();
+}
+
+function loadTrainingReport(version) {
+    $.ajax({
+        url: `/api/models/${version}/report`,
+        success: function(response) {
+            if (response.success) {
+                displayTrainingReport(response.report);
+            }
+        }
+    });
+}
+
+function displayTrainingReport(report) {
+    let html = '';
+
+    if (report.training_time) {
+        html += `<p><strong>训练时间:</strong> ${report.training_time}</p>`;
+    }
+
+    if (report.params) {
+        html += '<h6 class="mt-3">训练参数</h6><ul class="list-group list-group-flush">';
+        const paramLabels = {
+            time_range: '时间范围',
+            lookback_days: '回望天数',
+            lookahead_days: '前瞻天数',
+            training_samples: '训练样本',
+            feature_count: '特征数量',
+            model_version: '模型版本'
+        };
+        for (const [key, value] of Object.entries(report.params)) {
+            const label = paramLabels[key] || key;
+            html += `<li class="list-group-item d-flex justify-content-between">
+                <span>${label}</span>
+                <strong>${value}</strong>
+            </li>`;
+        }
+        html += '</ul>';
+    }
+
+    if (report.training_history) {
+        const history = report.training_history;
+        html += '<h6 class="mt-3">训练历史</h6><ul class="list-group list-group-flush">';
+        if (history.best_iteration) {
+            html += `<li class="list-group-item d-flex justify-content-between">
+                <span>最佳迭代</span><strong>${history.best_iteration}</strong>
+            </li>`;
+        }
+        if (history.n_features) {
+            html += `<li class="list-group-item d-flex justify-content-between">
+                <span>特征数量</span><strong>${history.n_features}</strong>
+            </li>`;
+        }
+        if (history.best_score) {
+            const trainRmse = history.best_score.train?.rmse;
+            const valRmse = history.best_score.val?.rmse;
+            if (trainRmse) {
+                html += `<li class="list-group-item d-flex justify-content-between">
+                    <span>训练RMSE</span><strong>${trainRmse.toFixed(4)}</strong>
+                </li>`;
+            }
+            if (valRmse) {
+                html += `<li class="list-group-item d-flex justify-content-between">
+                    <span>验证RMSE</span><strong>${valRmse.toFixed(4)}</strong>
+                </li>`;
+            }
+        }
+        html += '</ul>';
+    }
+
+    if (report.model_path) {
+        html += `<p class="mt-3 small text-muted"><i class="bi bi-folder"></i> ${report.model_path}</p>`;
+    }
+
+    if (!html) {
+        html = '<div class="text-center text-muted py-4"><i class="bi bi-inbox fs-1"></i><p>暂无训练报告</p></div>';
+    }
+
+    $('#training-report').html(html);
+}
+
+function updateMetricsTable(versions) {
+    const tbody = $('#metrics-table tbody');
+    tbody.empty();
+
+    versions.forEach(v => {
+        // 加载每个版本的指标
+        $.ajax({
+            url: `/api/models/${v.version}/metrics`,
+            success: function(response) {
+                if (response.success) {
+                    const m = response.metrics;
+                    tbody.append(`
+                        <tr>
+                            <td><span class="badge bg-primary">${v.version}</span></td>
+                            <td>${m.feature_count || m.n_features || '-'}</td>
+                            <td>${m.training_samples || '-'}</td>
+                            <td>${m.val_score ? m.val_score.toFixed(4) : '-'}</td>
+                            <td>${m.best_iteration || '-'}</td>
+                            <td>${m.training_time || v.latest_modified || '-'}</td>
+                        </tr>
+                    `);
+                }
+            }
+        });
+    });
+
+    // 绘制指标对比图
+    displayMetricsChart(versions);
+}
+
+function displayMetricsChart(versions) {
+    const trainedVersions = versions.filter(v => v.status === 'trained');
+
+    const chartOptions = {
+        series: [{
+            name: '模型大小 (MB)',
+            data: trainedVersions.map(v => v.size_mb)
+        }],
+        chart: {
+            type: 'donut',
+            height: 300
+        },
+        labels: trainedVersions.map(v => v.version),
+        colors: ['#3b82f6', '#10b981', '#06b6d4', '#f59e0b'],
+        legend: {
+            position: 'bottom'
+        },
+        plotOptions: {
+            pie: {
+                donut: {
+                    labels: {
+                        show: true,
+                        total: {
+                            show: true,
+                            label: '总大小',
+                            formatter: function(w) {
+                                const total = w.globals.seriesTotals.reduce((a, b) => a + b, 0);
+                                return total.toFixed(1) + ' MB';
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    };
+
+    if (metricsChart) metricsChart.destroy();
+    if (trainedVersions.length > 0) {
+        metricsChart = new ApexCharts(document.querySelector("#metrics-chart"), chartOptions);
+        metricsChart.render();
+    }
+}
+
+function showModelDetail(version) {
+    $('#feature-version-select').val(version).trigger('change');
+    $('html, body').animate({
+        scrollTop: $('#feature-version-select').offset().top - 100
+    }, 500);
+}
+
+function startTraining() {
+    const version = $('#train-version').val();
+    const startDate = $('#start-date').val();
+    const endDate = $('#end-date').val();
+    const lookbackDays = $('#lookback-days').val();
+    const lookaheadDays = $('#lookahead-days').val();
+
+    if (!confirm(`确定要训练模型 ${version} 吗？\n\n训练参数：\n- 时间范围: ${startDate} ~ ${endDate}\n- 回望天数: ${lookbackDays}\n- 前瞻天数: ${lookaheadDays}\n\n这可能需要30-60分钟。`)) {
+        return;
+    }
+
+    $('#btn-train').prop('disabled', true);
+    $('#training-progress').show();
+    $('#progress-status').removeClass('alert-success alert-danger').addClass('alert-info').text('准备开始...');
+
+    $.ajax({
+        url: '/api/models/train',
+        method: 'POST',
+        contentType: 'application/json',
+        data: JSON.stringify({
+            version: version,
+            start_date: startDate,
+            end_date: endDate,
+            lookback_days: parseInt(lookbackDays),
+            lookahead_days: parseInt(lookaheadDays)
+        }),
+        success: function(response) {
+            if (response.success) {
+                monitorTrainingProgress(response.task_id);
+            }
+        },
+        error: function(xhr) {
+            $('#btn-train').prop('disabled', false);
+            $('#progress-status').removeClass('alert-info').addClass('alert-danger')
+                .text('启动训练失败: ' + (xhr.responseJSON?.error || '未知错误'));
+        }
+    });
+}
+
+// ==================== 训练曲线相关函数 ====================
+
+function loadTrainingCurves(version) {
+    // 清理旧图表
+    if (lossCurvesChart) {
+        lossCurvesChart.destroy();
+        lossCurvesChart = null;
+    }
+    if (modelsComparisonChart) {
+        modelsComparisonChart.destroy();
+        modelsComparisonChart = null;
+    }
+
+    $('#curves-loading').show();
+    $('#curves-empty').hide();
+    $('#curves-container').hide();
+
+    $.ajax({
+        url: `/api/models/${version}/training_curves`,
+        cache: false,
+        success: function(response) {
+            $('#curves-loading').hide();
+            if (response.success && response.training_curves) {
+                const curves = response.training_curves;
+                const hasData = curves.models && Object.keys(curves.models).length > 0;
+
+                if (hasData) {
+                    $('#curves-container').show();
+                    displayLossCurves(curves);
+                    displayTrainingSummary(curves);
+                    displayModelsComparison(curves);
+                } else {
+                    $('#curves-empty').show();
+                }
+            } else {
+                $('#curves-empty').show();
+            }
+        },
+        error: function() {
+            $('#curves-loading').hide();
+            $('#curves-empty').show();
+        }
+    });
+}
+
+function displayLossCurves(curves) {
+    const series = [];
+    const colors = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4'];
+    let colorIdx = 0;
+
+    // 遍历每个模型的训练曲线
+    for (const [modelName, modelData] of Object.entries(curves.models || {})) {
+        if (modelData.val_losses && modelData.val_losses.length > 0) {
+            // 验证集loss曲线
+            series.push({
+                name: `${modelName} (验证)`,
+                data: modelData.val_losses.map((v, i) => [i + 1, v]),
+                type: 'line'
+            });
+
+            // 如果有训练集loss，也显示
+            if (modelData.train_losses && modelData.train_losses.length > 0 &&
+                JSON.stringify(modelData.train_losses) !== JSON.stringify(modelData.val_losses)) {
+                series.push({
+                    name: `${modelName} (训练)`,
+                    data: modelData.train_losses.map((v, i) => [i + 1, v]),
+                    type: 'line',
+                    dashArray: 5  // 虚线
+                });
+            }
+        }
+        colorIdx++;
+    }
+
+    // 如果有元模型
+    if (curves.meta_model && curves.meta_model.val_losses) {
+        series.push({
+            name: 'Meta模型 (验证)',
+            data: curves.meta_model.val_losses.map((v, i) => [i + 1, v]),
+            type: 'line'
+        });
+    }
+
+    if (series.length === 0) {
+        // 没有曲线数据，显示最终指标
+        displayFinalMetricsOnly(curves);
+        return;
+    }
+
+    const chartOptions = {
+        series: series,
+        chart: {
+            type: 'line',
+            height: 400,
+            toolbar: { show: true },
+            animations: { enabled: true, speed: 300 },
+            zoom: { enabled: true }
+        },
+        stroke: {
+            width: 2,
+            curve: 'smooth'
+        },
+        xaxis: {
+            title: { text: '迭代次数 (Iteration)' },
+            type: 'numeric'
+        },
+        yaxis: {
+            title: { text: 'Loss (RMSE)' },
+            labels: {
+                formatter: function(val) {
+                    return val ? val.toFixed(4) : '-';
+                }
+            }
+        },
+        title: {
+            text: '训练/验证 Loss 曲线',
+            align: 'center',
+            style: { fontSize: '16px', fontWeight: 'bold' }
+        },
+        legend: {
+            position: 'top',
+            horizontalAlign: 'center'
+        },
+        tooltip: {
+            shared: true,
+            y: {
+                formatter: function(val) {
+                    return val ? val.toFixed(6) : '-';
+                }
+            }
+        },
+        grid: {
+            borderColor: '#e0e0e0',
+            strokeDashArray: 3
+        }
+    };
+
+    lossCurvesChart = new ApexCharts(document.querySelector("#loss-curves-chart"), chartOptions);
+    lossCurvesChart.render();
+}
+
+function displayFinalMetricsOnly(curves) {
+    // 当没有逐轮loss数据时，显示最终指标的简单图表
+    const labels = [];
+    const finalLosses = [];
+
+    for (const [modelName, modelData] of Object.entries(curves.models || {})) {
+        if (modelData.final_val_loss) {
+            labels.push(modelName);
+            finalLosses.push(modelData.final_val_loss);
+        }
+    }
+
+    if (labels.length === 0) {
+        document.querySelector("#loss-curves-chart").innerHTML =
+            '<div class="text-center text-muted py-5"><i class="bi bi-graph-up fs-1"></i><p>暂无详细训练曲线数据</p></div>';
+        return;
+    }
+
+    const chartOptions = {
+        series: [{
+            name: '验证Loss',
+            data: finalLosses
+        }],
+        chart: {
+            type: 'bar',
+            height: 400,
+            toolbar: { show: false }
+        },
+        plotOptions: {
+            bar: {
+                horizontal: false,
+                columnWidth: '55%',
+                borderRadius: 4
+            }
+        },
+        xaxis: {
+            categories: labels,
+            title: { text: '模型' }
+        },
+        yaxis: {
+            title: { text: '验证 Loss (RMSE)' }
+        },
+        title: {
+            text: '各模型最终验证Loss',
+            align: 'center'
+        },
+        dataLabels: {
+            enabled: true,
+            formatter: function(val) {
+                return val.toFixed(4);
+            }
+        },
+        colors: ['#3b82f6']
+    };
+
+    lossCurvesChart = new ApexCharts(document.querySelector("#loss-curves-chart"), chartOptions);
+    lossCurvesChart.render();
+}
+
+function displayTrainingSummary(curves) {
+    const summary = curves.summary || {};
+    const status = curves.status || 'unknown';
+    const duration = curves.duration_seconds;
+
+    let html = '';
+
+    // 状态
+    const statusBadge = status === 'completed' ? 'bg-success' :
+                       status === 'training' ? 'bg-warning' : 'bg-secondary';
+    html += `<p><strong>状态:</strong> <span class="badge ${statusBadge}">${status}</span></p>`;
+
+    // 训练时间
+    if (curves.start_time) {
+        html += `<p><strong>开始时间:</strong><br><small>${new Date(curves.start_time).toLocaleString('zh-CN')}</small></p>`;
+    }
+    if (duration) {
+        const minutes = Math.floor(duration / 60);
+        const seconds = Math.floor(duration % 60);
+        html += `<p><strong>训练时长:</strong> ${minutes}分${seconds}秒</p>`;
+    }
+
+    // 数据统计
+    if (summary.training_samples) {
+        html += `<p><strong>训练样本:</strong> ${summary.training_samples.toLocaleString()}</p>`;
+    }
+    if (summary.validation_samples) {
+        html += `<p><strong>验证样本:</strong> ${summary.validation_samples.toLocaleString()}</p>`;
+    }
+    if (summary.feature_count) {
+        html += `<p><strong>特征数量:</strong> ${summary.feature_count}</p>`;
+    }
+
+    // 最终指标
+    if (summary.final_metrics) {
+        html += '<hr><h6>最终指标</h6>';
+        for (const [key, value] of Object.entries(summary.final_metrics)) {
+            if (value !== null && value !== undefined) {
+                const displayKey = key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+                html += `<p class="small mb-1"><strong>${displayKey}:</strong> ${typeof value === 'number' ? value.toFixed(4) : value}</p>`;
+            }
+        }
+    }
+
+    // 模型数量
+    const modelsCount = Object.keys(curves.models || {}).length;
+    if (modelsCount > 0) {
+        html += `<hr><p><strong>训练模型数:</strong> ${modelsCount}</p>`;
+    }
+
+    if (!html) {
+        html = '<p class="text-muted">暂无汇总信息</p>';
+    }
+
+    $('#training-summary').html(html);
+}
+
+function displayModelsComparison(curves) {
+    const models = curves.models || {};
+    const modelNames = Object.keys(models);
+
+    if (modelNames.length === 0) {
+        document.querySelector("#models-comparison-chart").innerHTML =
+            '<div class="text-center text-muted py-3">暂无模型对比数据</div>';
+        return;
+    }
+
+    // 收集各模型的指标
+    const categories = modelNames;
+    const finalValLoss = [];
+    const bestIterations = [];
+
+    modelNames.forEach(name => {
+        const model = models[name];
+        finalValLoss.push(model.final_val_loss || 0);
+        bestIterations.push(model.best_iteration || 0);
+    });
+
+    const chartOptions = {
+        series: [{
+            name: '验证Loss (RMSE)',
+            type: 'bar',
+            data: finalValLoss
+        }, {
+            name: '最佳迭代次数',
+            type: 'line',
+            data: bestIterations
+        }],
+        chart: {
+            type: 'line',
+            height: 300,
+            toolbar: { show: false }
+        },
+        plotOptions: {
+            bar: {
+                columnWidth: '50%',
+                borderRadius: 4
+            }
+        },
+        stroke: {
+            width: [0, 3]
+        },
+        xaxis: {
+            categories: categories
+        },
+        yaxis: [{
+            title: { text: 'Loss (RMSE)' },
+            labels: {
+                formatter: function(val) {
+                    return val ? val.toFixed(4) : '-';
+                }
+            }
+        }, {
+            opposite: true,
+            title: { text: '迭代次数' },
+            labels: {
+                formatter: function(val) {
+                    return Math.round(val);
+                }
+            }
+        }],
+        colors: ['#3b82f6', '#10b981'],
+        legend: {
+            position: 'top'
+        },
+        dataLabels: {
+            enabled: false
+        }
+    };
+
+    modelsComparisonChart = new ApexCharts(document.querySelector("#models-comparison-chart"), chartOptions);
+    modelsComparisonChart.render();
+}
+
+function monitorTrainingProgress(taskId) {
+    const eventSource = new EventSource('/api/models/train/stream?task_id=' + taskId);
+
+    eventSource.onmessage = function(event) {
+        const data = JSON.parse(event.data);
+        if (data.heartbeat) return;
+
+        $('#progress-bar').css('width', data.progress + '%').text(data.progress.toFixed(0) + '%');
+        $('#progress-status').text(data.message || '处理中...');
+
+        if (data.status === 'completed' || data.status === 'failed') {
+            eventSource.close();
+            $('#btn-train').prop('disabled', false);
+
+            if (data.status === 'completed') {
+                $('#progress-status').removeClass('alert-info').addClass('alert-success');
+                // 刷新数据
+                setTimeout(function() {
+                    loadModelsSummary();
+                    loadModels();
+                    // 刷新训练曲线
+                    const version = $('#curves-version-select').val();
+                    if (version) {
+                        loadTrainingCurves(version);
+                    }
+                }, 1000);
+            } else {
+                $('#progress-status').removeClass('alert-info').addClass('alert-danger');
+            }
+        }
+    };
+
+    eventSource.onerror = function() {
+        eventSource.close();
+        $('#btn-train').prop('disabled', false);
+        $('#progress-status').removeClass('alert-info').addClass('alert-danger')
+            .text('连接中断，请检查训练状态');
+    };
+}
+</script>
+{% endblock %}
