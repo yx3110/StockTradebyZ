@@ -8,10 +8,3 @@
 .worktrees/
 .security-key
 logs/security/
-
-# Paper trading generated files
-*.db
-*.log
-paper_trading.db
-paper_trading.log
-test_*.db
