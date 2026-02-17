@@ -1,0 +1,92 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+# ---------------------------------------------------------------------------
+# Ruff – fast Python linter (replaces flake8 + isort + pyupgrade + more)
+# ---------------------------------------------------------------------------
+[tool.ruff]
+# 100 chars is slightly more generous than the 88-char PEP 8 default to
+# accommodate the Chinese comments and long Pandas/NumPy call chains that
+# appear throughout this codebase.
+line-length = 100
+
+# Code uses int | None union syntax and built-in generic types (list[str],
+# set[str], tuple[...]) which require Python 3.10+.
+target-version = "py310"
+
+# Directories that should never be linted (data files, caches, etc.)
+exclude = [
+    ".git",
+    ".venv",
+    "__pycache__",
+    "data",
+    "*.csv",
+    "*.parquet",
+    "*.feather",
+    "*.pkl",
+    "build",
+    "dist",
+    ".eggs",
+]
+
+[tool.ruff.lint]
+# Rule sets enabled:
+#   E / W  – pycodestyle errors and warnings
+#   F      – pyflakes (undefined names, unused imports, …)
+#   I      – isort (import ordering)
+#   UP     – pyupgrade (modernise syntax, e.g. typing.Optional → X | None)
+#   B      – flake8-bugbear (likely bugs and design problems)
+select = ["E", "W", "F", "I", "UP", "B"]
+
+# Globally ignored rules:
+#   E501 – line-too-long  (already handled by line-length above; Chinese
+#           characters count as 1 column in ruff but render wider in editors,
+#           so we avoid double-penalising long comment lines)
+#   B008 – do-not-perform-function-calls-in-default-arguments
+#           (common pattern in argparse defaults throughout the project)
+ignore = ["E501", "B008"]
+
+[tool.ruff.lint.per-file-ignores]
+# __init__.py files often re-export names that aren't used in the file itself.
+"__init__.py" = ["F401"]
+
+[tool.ruff.lint.isort]
+# Keep stdlib / third-party / local sections clearly separated.
+known-third-party = ["pandas", "numpy", "scipy", "tushare", "tqdm"]
+known-first-party = []
+
+# ---------------------------------------------------------------------------
+# Black – opinionated Python formatter
+# ---------------------------------------------------------------------------
+[tool.black]
+# Keep in sync with ruff's line-length so the two tools never disagree.
+line-length = 100
+target-version = ["py310"]
+# Skip magic trailing comma so Black doesn't expand every trailing-comma list.
+skip-magic-trailing-comma = false
+
+# ---------------------------------------------------------------------------
+# Mypy – optional static type checker
+# ---------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.10"
+
+# Data-science projects rely heavily on pandas/numpy stubs which are
+# incomplete; use lenient settings so mypy is useful without being noisy.
+ignore_missing_imports = true
+warn_unused_ignores = false
+warn_return_any = false
+disallow_untyped_defs = false
+check_untyped_defs = true
+
+# Report errors on unresolved imports but don't fail the build.
+follow_imports = "silent"
+
+[[tool.mypy.overrides]]
+module = [
+    "tushare.*",
+    "scipy.*",
+    "tqdm.*",
+]
+ignore_missing_imports = true
