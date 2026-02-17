@@ -112,8 +112,10 @@ def find_by_price_single_stock(
     mask = (df_filtered[price_type] >= min_price) & (df_filtered[price_type] <= max_price)
     matching_rows = df_filtered[mask]
     
-    for _, row in matching_rows.iterrows():  # type: ignore
-        results.append((stock_code, row[price_type], pd.to_datetime(row['date']).strftime('%Y-%m-%d')))
+    # 使用向量化操作替代 iterrows，提高性能
+    date_strs = matching_rows['date'].dt.strftime('%Y-%m-%d').tolist()
+    prices = matching_rows[price_type].tolist()
+    results = list(zip([stock_code] * len(matching_rows), prices, date_strs))
     
     return results
 
