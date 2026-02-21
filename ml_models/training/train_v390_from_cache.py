@@ -17,9 +17,9 @@ from datetime import datetime
 import logging
 import json
 import pickle
-from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+from scipy.stats import spearmanr
 import lightgbm as lgb
 import xgboost as xgb
 from catboost import CatBoostRegressor
@@ -47,7 +47,7 @@ class V390CachedTrainer:
             min_samples: 最小样本数阈值
 
         Returns:
-            (X, y): 特征矩阵和标签向量
+            (X, y, dates): 特征矩阵、标签向量、日期数组
         """
         logger.info("="*80)
         logger.info("📥 从数据库加载预计算特征...")
@@ -55,7 +55,7 @@ class V390CachedTrainer:
 
         conn = sqlite3.connect(self.db_path)
 
-        # 查询所有有效样本
+        # 查询所有有效样本（按时间排序）
         query = """
             SELECT code, trade_date, features_json, label_5d
             FROM v39_feature_cache
@@ -75,6 +75,7 @@ class V390CachedTrainer:
         logger.info("📊 解析JSON特征...")
         features_list = []
         labels = []
+        dates = []
 
         for idx, row in df.iterrows():
             try:
@@ -82,6 +83,7 @@ class V390CachedTrainer:
                 features_dict = json.loads(row['features_json'])
                 features_list.append(features_dict)
                 labels.append(row['label_5d'])
+                dates.append(row['trade_date'])
 
             except Exception as e:
                 logger.warning(f"跳过无效样本 {row['code']} {row['trade_date']}: {e}")
@@ -94,17 +96,19 @@ class V390CachedTrainer:
         # 转换为DataFrame
         X = pd.DataFrame(features_list)
         y = np.array(labels)
+        dates = np.array(dates)
 
         logger.info(f"✅ 特征矩阵: {X.shape}")
         logger.info(f"✅ 标签向量: {y.shape}")
         logger.info(f"✅ 特征列数: {X.shape[1]}")
+        logger.info(f"✅ 日期范围: {dates[0]} ~ {dates[-1]}")
 
         # 处理缺失值
         if X.isnull().any().any():
             logger.warning("⚠️  检测到缺失值，使用0填充")
             X = X.fillna(0)
 
-        return X, y
+        return X, y, dates
 
     def train_base_models(self, X_train, y_train, X_val, y_val):
         """
@@ -181,19 +185,18 @@ class V390CachedTrainer:
 
         return self.models
 
-    def train_meta_model(self, X_train, y_train, X_val, y_val):
+    def train_meta_model(self, X_val, y_val, X_test=None, y_test=None):
         """
         训练元模型（Stacking）
+
+        修复: 使用验证集的基础模型预测作为元特征（天然OOF，因为基础模型未见过验证集）
+        旧版错误: 使用训练集预测→基础模型过拟合→元特征虚高→元模型学到虚假信号
         """
         logger.info("\n" + "="*80)
-        logger.info("🔧 训练元模型 (Stacking)...")
+        logger.info("🔧 训练元模型 (Stacking - OOF on validation set)...")
         logger.info("="*80)
 
-        # 生成元特征（基础模型的预测）
-        meta_features_train = np.column_stack([
-            model.predict(X_train) for model in self.models.values()
-        ])
-
+        # 用基础模型对验证集预测（天然out-of-fold，无泄漏）
         meta_features_val = np.column_stack([
             model.predict(X_val) for model in self.models.values()
         ])
@@ -206,17 +209,24 @@ class V390CachedTrainer:
             random_state=42
         )
 
-        # 训练元模型
-        logger.info("🔹 训练Gradient Boosting元模型...")
-        self.meta_model.fit(meta_features_train, y_train)
+        # 在验证集元特征上训练元模型
+        logger.info("🔹 训练Gradient Boosting元模型 (基于验证集OOF预测)...")
+        self.meta_model.fit(meta_features_val, y_val)
 
-        # 评估
-        y_pred = self.meta_model.predict(meta_features_val)
-        mse = mean_squared_error(y_val, y_pred)
-        mae = mean_absolute_error(y_val, y_pred)
-        r2 = r2_score(y_val, y_pred)
+        # 在测试集上评估（如果提供）
+        if X_test is not None and y_test is not None:
+            meta_features_test = np.column_stack([
+                model.predict(X_test) for model in self.models.values()
+            ])
+            y_pred = self.meta_model.predict(meta_features_test)
+            mse = mean_squared_error(y_test, y_pred)
+            mae = mean_absolute_error(y_test, y_pred)
+            r2 = r2_score(y_test, y_pred)
+            ic, _ = spearmanr(y_pred, y_test)
+            direction_acc = np.mean((y_pred > 0) == (y_test > 0))
 
-        logger.info(f"✅ 元模型: MSE={mse:.6f}, MAE={mae:.6f}, R²={r2:.4f}")
+            logger.info(f"✅ 元模型 (测试集): MSE={mse:.6f}, MAE={mae:.6f}, R²={r2:.4f}")
+            logger.info(f"  IC={ic:.4f}, 方向准确率={direction_acc:.4f}")
 
         return self.meta_model
 
@@ -256,30 +266,80 @@ class V390CachedTrainer:
 
         return full_path
 
-    def train(self, test_size=0.2, random_state=42):
+    def temporal_split(self, X, y, dates, val_ratio=0.15, test_ratio=0.15, purge_days=5):
+        """
+        按时间顺序划分数据集，并在边界处添加 purge gap 避免标签窗口重叠
+
+        Args:
+            X: 特征矩阵
+            y: 标签
+            dates: 日期数组（与X行对齐）
+            val_ratio: 验证集占比
+            test_ratio: 测试集占比
+            purge_days: 边界 purge 天数（应 >= label 前瞻天数，label_5d 需要至少5天）
+
+        Returns:
+            X_train, y_train, X_val, y_val, X_test, y_test
+        """
+        unique_dates = np.sort(np.unique(dates))
+        n_dates = len(unique_dates)
+
+        # 计算各段的日期边界
+        train_date_end_idx = int(n_dates * (1 - val_ratio - test_ratio)) - 1
+        val_date_end_idx = int(n_dates * (1 - test_ratio)) - 1
+
+        train_date_end = unique_dates[train_date_end_idx]
+        val_date_start = unique_dates[min(train_date_end_idx + 1 + purge_days, n_dates - 1)]
+        val_date_end = unique_dates[val_date_end_idx]
+        test_date_start = unique_dates[min(val_date_end_idx + 1 + purge_days, n_dates - 1)]
+
+        # 按日期筛选样本
+        train_mask = dates <= train_date_end
+        val_mask = (dates >= val_date_start) & (dates <= val_date_end)
+        test_mask = dates >= test_date_start
+
+        X_train = X.loc[train_mask].reset_index(drop=True)
+        y_train = y[train_mask]
+        X_val = X.loc[val_mask].reset_index(drop=True)
+        y_val = y[val_mask]
+        X_test = X.loc[test_mask].reset_index(drop=True)
+        y_test = y[test_mask]
+
+        logger.info(f"  时序划分 (purge_gap={purge_days}天):")
+        logger.info(f"  训练集: {len(X_train):,} 样本, {train_date_end} 及之前")
+        logger.info(f"  验证集: {len(X_val):,} 样本, {val_date_start} ~ {val_date_end}")
+        logger.info(f"  测试集: {len(X_test):,} 样本, {test_date_start} 及之后")
+        logger.info(f"  Purge gap: 训练/验证之间丢弃 {purge_days} 个交易日, 验证/测试之间丢弃 {purge_days} 个交易日")
+
+        return X_train, y_train, X_val, y_val, X_test, y_test
+
+    def train(self, val_ratio=0.15, test_ratio=0.15, purge_days=5):
         """
         完整训练流程
-        """
-        # 1. 加载数据
-        X, y = self.load_cached_features()
 
-        # 2. 划分训练/验证集
+        修复:
+        1. 使用时序划分替代随机 shuffle（避免未来数据泄漏）
+        2. 添加 purge gap（避免标签窗口重叠）
+        3. 元模型使用验证集 OOF 预测训练（避免 stacking 泄漏）
+        4. 在独立测试集上评估真实泛化能力
+        """
+        # 1. 加载数据（含日期）
+        X, y, dates = self.load_cached_features()
+
+        # 2. 时序划分: train / purge / val / purge / test
         logger.info("\n" + "="*80)
-        logger.info("📊 划分训练/验证集...")
+        logger.info("📊 时序划分数据集 (带 Purge Gap)...")
         logger.info("="*80)
 
-        X_train, X_val, y_train, y_val = train_test_split(
-            X, y, test_size=test_size, random_state=random_state, shuffle=True
+        X_train, y_train, X_val, y_val, X_test, y_test = self.temporal_split(
+            X, y, dates, val_ratio=val_ratio, test_ratio=test_ratio, purge_days=purge_days
         )
 
-        logger.info(f"  训练集: {X_train.shape[0]:,} 样本")
-        logger.info(f"  验证集: {X_val.shape[0]:,} 样本")
-
-        # 3. 训练基础模型
+        # 3. 训练基础模型（在训练集上训练，验证集上评估）
         self.train_base_models(X_train, y_train, X_val, y_val)
 
-        # 4. 训练元模型
-        self.train_meta_model(X_train, y_train, X_val, y_val)
+        # 4. 训练元模型（在验证集OOF预测上训练，测试集上评估）
+        self.train_meta_model(X_val, y_val, X_test, y_test)
 
         # 5. 保存模型
         model_path = self.save_model()
@@ -294,22 +354,29 @@ class V390CachedTrainer:
 def main():
     parser = argparse.ArgumentParser(description='V3.9模型训练（基于预计算特征）')
     parser.add_argument('--db-path', type=str, default=str(PROJECT_ROOT / 'data_adapter' / 'stock_data.db'), help='数据库路径')
-    parser.add_argument('--test-size', type=float, default=0.2, help='验证集比例')
-    parser.add_argument('--random-state', type=int, default=42, help='随机种子')
+    parser.add_argument('--val-ratio', type=float, default=0.15, help='验证集比例')
+    parser.add_argument('--test-ratio', type=float, default=0.15, help='测试集比例')
+    parser.add_argument('--purge-days', type=int, default=5, help='Purge gap天数 (应>=标签前瞻天数)')
     parser.add_argument('--output-dir', type=str, default=str(PROJECT_ROOT / 'ml_models' / 'trained_models' / 'v39'), help='模型输出目录')
 
     args = parser.parse_args()
 
     logger.info("="*80)
-    logger.info("🚀 V3.9模型训练 - 基于预计算特征缓存")
+    logger.info("🚀 V3.9模型训练 - 基于预计算特征缓存 (时序划分, 无数据泄漏)")
     logger.info("="*80)
     logger.info(f"数据库: {args.db_path}")
-    logger.info(f"验证集比例: {args.test_size}")
+    logger.info(f"验证集比例: {args.val_ratio}")
+    logger.info(f"测试集比例: {args.test_ratio}")
+    logger.info(f"Purge gap: {args.purge_days} 天")
     logger.info(f"输出目录: {args.output_dir}")
 
     # 训练
     trainer = V390CachedTrainer(db_path=args.db_path)
-    model_path = trainer.train(test_size=args.test_size, random_state=args.random_state)
+    model_path = trainer.train(
+        val_ratio=args.val_ratio,
+        test_ratio=args.test_ratio,
+        purge_days=args.purge_days
+    )
 
     logger.info(f"\n✅ 模型已保存至: {model_path}")
 

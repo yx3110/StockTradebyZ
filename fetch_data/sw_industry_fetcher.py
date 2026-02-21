@@ -92,12 +92,38 @@ class SWIndustryFetcher:
             df = pd.DataFrame()
         return df
 
-    def fetch_industry_members(self, l1_code: str) -> pd.DataFrame:
-        """获取某个一级行业的成分股"""
-        df = self.pro.index_member_all(index_code=l1_code)
-        if df is None:
+    def fetch_all_members_paginated(self) -> pd.DataFrame:
+        """
+        分页获取所有申万行业成分股
+
+        index_member_all API 每次最多返回3000条，需要分页获取全部数据。
+        返回的列: l1_code, l1_name, ts_code, name, in_date, out_date, is_new
+        """
+        all_dfs = []
+        offset = 0
+        page_size = 3000
+
+        while True:
+            logger.info(f"获取行业成分股数据 (offset={offset})...")
+            time.sleep(0.5)
+
+            df = self.pro.index_member_all(offset=offset, limit=page_size)
+            if df is None or df.empty:
+                break
+
+            all_dfs.append(df)
+            logger.info(f"  获取 {len(df)} 条记录")
+
+            if len(df) < page_size:
+                break
+            offset += page_size
+
+        if not all_dfs:
             return pd.DataFrame()
-        return df
+
+        result = pd.concat(all_dfs, ignore_index=True)
+        logger.info(f"共获取 {len(result)} 条行业成分记录")
+        return result
 
     def update_all(self, force: bool = False) -> int:
         """
@@ -115,48 +141,39 @@ class SWIndustryFetcher:
 
         start_time = time.time()
 
-        # 1. 获取L1行业列表
-        industries = self.fetch_l1_industries()
-        if industries.empty:
-            logger.error("无法获取行业分类，放弃更新")
+        # 1. 分页获取所有行业成分股数据
+        members = self.fetch_all_members_paginated()
+        if members.empty:
+            logger.error("无法获取行业成分数据，放弃更新")
             return 0
 
-        # 2. 遍历每个行业获取成分股
+        # 2. 解析为记录列表
         all_records = []
-        for _, ind in industries.iterrows():
-            l1_code = ind['index_code']
-            l1_name = ind['industry_name']
-            logger.info(f"获取 {l1_name} ({l1_code}) 成分股...")
-
-            time.sleep(0.5)  # API间隔
-
-            try:
-                members = self.fetch_industry_members(l1_code)
-                if members.empty:
-                    logger.warning(f"  {l1_name} 无成分股数据")
-                    continue
-
-                for _, m in members.iterrows():
-                    con_code = m.get('con_code', '')
-                    if not con_code:
-                        continue
-                    code = con_code.split('.')[0]
-                    all_records.append({
-                        'code': code,
-                        'ts_code': con_code,
-                        'stock_name': m.get('con_name', ''),
-                        'l1_code': l1_code,
-                        'l1_name': l1_name,
-                        'in_date': m.get('in_date', ''),
-                        'out_date': m.get('out_date', ''),
-                        'is_new': 'Y' if pd.isna(m.get('out_date')) or m.get('out_date') == '' else 'N',
-                    })
-
-                logger.info(f"  {l1_name}: {len(members)} 只成分股")
-
-            except Exception as e:
-                logger.warning(f"  获取 {l1_name} 成分股失败: {e}")
+        for _, m in members.iterrows():
+            ts_code = m.get('ts_code', '')
+            if not ts_code:
                 continue
+            code = ts_code.split('.')[0]
+            is_new = m.get('is_new', 'Y')
+            if pd.isna(is_new):
+                is_new = 'Y' if pd.isna(m.get('out_date')) else 'N'
+
+            all_records.append({
+                'code': code,
+                'ts_code': ts_code,
+                'stock_name': m.get('name', ''),
+                'l1_code': m.get('l1_code', ''),
+                'l1_name': m.get('l1_name', ''),
+                'in_date': m.get('in_date', ''),
+                'out_date': m.get('out_date', '') if not pd.isna(m.get('out_date')) else '',
+                'is_new': is_new,
+            })
+
+        # 统计行业分布
+        from collections import Counter
+        active = [r for r in all_records if r['is_new'] == 'Y']
+        industry_counts = Counter(r['l1_name'] for r in active)
+        logger.info(f"活跃成分股: {len(active)} 只, {len(industry_counts)} 个行业")
 
         # 3. 批量写入数据库
         if not all_records:

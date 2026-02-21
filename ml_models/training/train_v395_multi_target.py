@@ -12,6 +12,7 @@ V3.9.5 多目标 + 市场状态特征 训练脚本
 创建时间: 2025-12-27
 """
 
+import sys
 import numpy as np
 import pandas as pd
 import sqlite3
@@ -219,22 +220,48 @@ class V395MultiTargetTrainer:
 
         return X, y_3d, y_5d, y_10d, df
 
-    def split_data(self, X, y_3d, y_5d, y_10d, df, val_ratio=0.15, test_ratio=0.15):
-        """时间序列划分数据集"""
-        logger.info("划分数据集...")
+    def split_data(self, X, y_3d, y_5d, y_10d, df, val_ratio=0.15, test_ratio=0.15, purge_days=10):
+        """
+        时间序列划分数据集，带 Purge Gap
 
-        n = len(X)
-        train_end = int(n * (1 - val_ratio - test_ratio))
-        val_end = int(n * (1 - test_ratio))
+        Purge Gap: 在 train/val 和 val/test 边界丢弃 purge_days 个交易日的样本，
+        避免标签窗口重叠（label_10d 使用未来10天价格，相邻样本标签高度相关）
 
-        X_train, X_val, X_test = X[:train_end], X[train_end:val_end], X[val_end:]
-        y_3d_train, y_3d_val, y_3d_test = y_3d[:train_end], y_3d[train_end:val_end], y_3d[val_end:]
-        y_5d_train, y_5d_val, y_5d_test = y_5d[:train_end], y_5d[train_end:val_end], y_5d[val_end:]
-        y_10d_train, y_10d_val, y_10d_test = y_10d[:train_end], y_10d[train_end:val_end], y_10d[val_end:]
+        Args:
+            purge_days: purge gap 交易日天数（应 >= 最大标签前瞻天数，label_10d 需要10天）
+        """
+        logger.info("划分数据集 (带 Purge Gap)...")
 
-        logger.info(f"  训练集: {len(X_train):,}")
-        logger.info(f"  验证集: {len(X_val):,}")
-        logger.info(f"  测试集: {len(X_test):,}")
+        # 使用 df 中的 trade_date 来做基于日期的划分
+        dates = df['trade_date'].values
+        unique_dates = np.sort(np.unique(dates))
+        n_dates = len(unique_dates)
+
+        # 按交易日数量划分边界
+        train_date_end_idx = int(n_dates * (1 - val_ratio - test_ratio)) - 1
+        val_date_end_idx = int(n_dates * (1 - test_ratio)) - 1
+
+        train_date_end = unique_dates[train_date_end_idx]
+        val_date_start = unique_dates[min(train_date_end_idx + 1 + purge_days, n_dates - 1)]
+        val_date_end = unique_dates[val_date_end_idx]
+        test_date_start = unique_dates[min(val_date_end_idx + 1 + purge_days, n_dates - 1)]
+
+        # 按日期筛选样本 mask
+        train_mask = dates <= train_date_end
+        val_mask = (dates >= val_date_start) & (dates <= val_date_end)
+        test_mask = dates >= test_date_start
+
+        X_train, X_val, X_test = X[train_mask], X[val_mask], X[test_mask]
+        y_3d_train, y_3d_val, y_3d_test = y_3d[train_mask], y_3d[val_mask], y_3d[test_mask]
+        y_5d_train, y_5d_val, y_5d_test = y_5d[train_mask], y_5d[val_mask], y_5d[test_mask]
+        y_10d_train, y_10d_val, y_10d_test = y_10d[train_mask], y_10d[val_mask], y_10d[test_mask]
+
+        purged_samples = len(X) - len(X_train) - len(X_val) - len(X_test)
+
+        logger.info(f"  训练集: {len(X_train):,} 样本, <= {train_date_end}")
+        logger.info(f"  验证集: {len(X_val):,} 样本, {val_date_start} ~ {val_date_end}")
+        logger.info(f"  测试集: {len(X_test):,} 样本, >= {test_date_start}")
+        logger.info(f"  Purge gap: {purge_days} 个交易日, 丢弃 {purged_samples:,} 个样本")
 
         return (X_train, X_val, X_test,
                 y_3d_train, y_3d_val, y_3d_test,
@@ -374,11 +401,11 @@ class V395MultiTargetTrainer:
             result += weights[name] * pred
         return result
 
-    def train(self, start_date: str = None, end_date: str = None):
+    def train(self, start_date: str = None, end_date: str = None, purge_days: int = 10):
         """完整训练流程"""
         start_time = datetime.now()
         logger.info("=" * 60)
-        logger.info("V3.95 多目标 + 市场状态 训练开始")
+        logger.info("V3.95 多目标 + 市场状态 训练开始 (带 Purge Gap)")
         logger.info("=" * 60)
 
         # 1. 加载数据
@@ -387,11 +414,11 @@ class V395MultiTargetTrainer:
         # 2. 准备特征
         X, y_3d, y_5d, y_10d, df = self.prepare_features(df)
 
-        # 3. 划分数据
+        # 3. 划分数据（带 purge gap）
         (X_train, X_val, X_test,
          y_3d_train, y_3d_val, y_3d_test,
          y_5d_train, y_5d_val, y_5d_test,
-         y_10d_train, y_10d_val, y_10d_test) = self.split_data(X, y_3d, y_5d, y_10d, df)
+         y_10d_train, y_10d_val, y_10d_test) = self.split_data(X, y_3d, y_5d, y_10d, df, purge_days=purge_days)
 
         # 4. 训练各目标模型
         all_results = {}
@@ -552,10 +579,11 @@ def main():
     parser = argparse.ArgumentParser(description='V3.95 多目标+市场状态训练')
     parser.add_argument('--start-date', type=str, default='2022-01-01', help='训练开始日期')
     parser.add_argument('--end-date', type=str, default=None, help='训练结束日期')
+    parser.add_argument('--purge-days', type=int, default=10, help='Purge gap天数 (应>=最大标签前瞻天数, label_10d需要10天)')
     args = parser.parse_args()
 
     trainer = V395MultiTargetTrainer()
-    trainer.train(start_date=args.start_date, end_date=args.end_date)
+    trainer.train(start_date=args.start_date, end_date=args.end_date, purge_days=args.purge_days)
 
 
 if __name__ == '__main__':
