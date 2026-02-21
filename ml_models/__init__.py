@@ -9,6 +9,7 @@
   - v3.7, v3.81 - 代码和模型已移除
 
 模型文件存储: ml_models/trained_models/
+训练脚本: ml_models/training/
 """
 
 # Active versions

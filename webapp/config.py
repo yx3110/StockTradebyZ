@@ -120,7 +120,7 @@ class Config:
     QUICK_DAILY_UPDATE_SCRIPT = SCRIPTS_DIR / 'fetch_data' / 'quick_daily_update.py'
     STOCK_SELECTOR_SCRIPT = SCRIPTS_DIR / 'tomorrow_stock_selector.py'
     AI_ENHANCED_SCRIPT = SCRIPTS_DIR / 'ai_enhanced_daily_report.py'
-    TRAIN_SCRIPT = SCRIPTS_DIR / 'training' / 'train_v380_parameterized.py'
+    TRAIN_SCRIPT = SCRIPTS_DIR / 'ml_models' / 'training' / 'train_v380_parameterized.py'
     BACKTEST_SCRIPT = SCRIPTS_DIR / 'backtest' / 'extensible_backtest_engine.py'
 
     # 任务配置

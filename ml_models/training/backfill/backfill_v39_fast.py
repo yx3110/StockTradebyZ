@@ -10,7 +10,7 @@ V3.9特征快速补全脚本 - 优化版
 """
 import sys
 from pathlib import Path
-PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 import sqlite3

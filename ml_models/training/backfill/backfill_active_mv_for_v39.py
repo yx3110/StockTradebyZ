@@ -18,7 +18,7 @@ from datetime import datetime
 import logging
 from tqdm import tqdm
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 logging.basicConfig(

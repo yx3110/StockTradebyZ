@@ -17,7 +17,7 @@ V3.9特征完整回填脚本 (内存预加载优化版)
 """
 import sys
 from pathlib import Path
-PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 import argparse

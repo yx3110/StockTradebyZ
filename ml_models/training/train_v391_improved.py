@@ -13,7 +13,7 @@ V3.91 改进版多周期模型训练器
 """
 import sys
 from pathlib import Path
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 import argparse

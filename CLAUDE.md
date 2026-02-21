@@ -182,6 +182,11 @@ ml_models/
 │   ├── v390_enhanced_feature_ml_system.py
 │   ├── v394_production_scorer.py      # V3.94生产评分器
 │   └── v395_production_scorer.py      # V3.95生产评分器
+├── training/                # 训练脚本 (从根目录迁入)
+│   ├── train_v390_from_cache.py       # v3.9 日常推荐训练
+│   ├── train_v395_multi_target.py     # v3.95 最新生产版
+│   ├── train_v380_parameterized.py    # v3.8 (deprecated)
+│   └── backfill/                      # 数据回填脚本
 └── trained_models/          # 训练好的模型文件 (.gitignore)
     ├── v390_full_from_cache.pkl       # 生产 v3.9 模型
     ├── v39/                           # v3.9 训练组件
@@ -240,33 +245,12 @@ incremental_learning/
   - 向量化算法早期退出优化
   - 支持任意窗口期(10-30天)和相似度阈值
 
-#### 8. **Training Scripts** (`training/`)
-```
-training/
-├── __init__.py
-├── train_v390_from_cache.py          ← 日常推荐 (v3.9)
-├── train_v395_multi_target.py        ← 最新生产版 (v3.95)
-├── train_v380_parameterized.py       # v3.7/v3.8/v3.81 (deprecated)
-├── train_v39*.py                     # v3.9系列变体
-├── train_v391_*.py                   # v3.91系列
-├── train_v394_*.py                   # v3.94系列
-├── train_v395_rolling.py             # v3.95滚动训练
-└── backfill/
-    ├── __init__.py
-    ├── backfill_v39_complete.py       # 完整回填
-    ├── backfill_v39_fast.py           # 快速回填
-    ├── backfill_v39_memory_optimized.py
-    ├── backfill_v39_parallel.py
-    ├── backfill_active_mv_for_v39.py
-    └── backfill_daily_basic_circ_mv.py
-```
-
-#### 9. **Strategy & Backtesting**
+#### 8. **Strategy & Backtesting**
 - **`strategy/`**: Conservative, Balanced, Aggressive strategies
 - **`backtest/`**: Comprehensive backtesting engine + all backtest scripts
 - **`backtest/extensible_backtest_engine.py`**: 支持多版本的统一回测框架
 
-#### 10. **Archive** (`archive/`)
+#### 9. **Archive** (`archive/`)
 ```
 archive/
 ├── debug_scripts/          # 调试脚本 (debug_*.py, diagnose_*.py)
@@ -281,7 +265,7 @@ archive/
 └── weight_optimization/    # 权重优化实验
 ```
 
-#### 11. **Report Generation** (`reports/`)
+#### 10. **Report Generation** (`reports/`)
 ```
 reports/
 ├── daily_selection/       # V1.0 quantitative selection reports
@@ -403,12 +387,12 @@ AI analysis configuration and weights
 1. **V3.9 Production Scorer** (生产A级):
    - 42个增强特征 + 17个扩展财务指标
    - LightGBM + XGBoost + CatBoost + RandomForest Ensemble
-   - 训练脚本: `training/train_v390_from_cache.py`
+   - 训练脚本: `ml_models/training/train_v390_from_cache.py`
 
 2. **V3.95 Multi-Target Predictor** (多目标预测):
    - 同时预测3天、5天、10天收益
    - 市场状态特征 + 滚动训练窗口
-   - 训练脚本: `training/train_v395_multi_target.py`
+   - 训练脚本: `ml_models/training/train_v395_multi_target.py`
 
 ### Risk Management
 - **Position Sizing**: Max 10% per stock
@@ -497,10 +481,10 @@ cat reports/backtest/回测结果_YYYYMMDD.md
 ### Training ML Models
 ```bash
 # Train V3.9 model (日常推荐，基于缓存特征)
-python3 training/train_v390_from_cache.py
+python3 ml_models/training/train_v390_from_cache.py
 
 # Train V3.95 model (多目标预测，最新生产版)
-python3 training/train_v395_multi_target.py
+python3 ml_models/training/train_v395_multi_target.py
 ```
 
 ### 🔍 Quantitative Scoring Correlation Analysis
@@ -535,8 +519,8 @@ python3 -c "from ml_models.v39.v390_production_scorer import V390ProductionScore
 python3 -c "from ml_models.v39.v395_production_scorer import V395ProductionScorer; print('✅ v3.95 OK')"
 
 # Test training scripts
-python3 training/train_v390_from_cache.py --help
-python3 training/train_v395_multi_target.py --help
+python3 ml_models/training/train_v390_from_cache.py --help
+python3 ml_models/training/train_v395_multi_target.py --help
 ```
 
 ## 🚨 Important Notes

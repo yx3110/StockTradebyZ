@@ -34,7 +34,7 @@ import argparse
 import lightgbm as lgb
 from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 logging.basicConfig(

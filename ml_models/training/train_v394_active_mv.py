@@ -40,7 +40,8 @@ from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error
 from sklearn.preprocessing import RobustScaler
 
 # 项目路径
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
 
 from ml_models.v39.v390_enhanced_feature_ml_system import V390EnhancedFeatureMLSystem
 
