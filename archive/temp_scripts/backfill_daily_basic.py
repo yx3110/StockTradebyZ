@@ -15,8 +15,11 @@ import logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s')
 logger = logging.getLogger(__name__)
 
+# 项目根目录
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+
 # 加载配置
-config_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'config.json')
+config_path = os.path.join(PROJECT_ROOT, 'config.json')
 with open(config_path, 'r') as f:
     config = json.load(f)
 
@@ -24,7 +27,7 @@ import tushare as ts
 ts.set_token(config['tushare']['token'])
 pro = ts.pro_api()
 
-DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data_adapter', 'stock_data.db')
+DB_PATH = os.path.join(PROJECT_ROOT, 'data_adapter', 'stock_data.db')
 
 
 def get_null_dates(db):

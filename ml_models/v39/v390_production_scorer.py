@@ -53,6 +53,10 @@ class V390ProductionScorer:
             db_path = str(self.project_root / 'data_adapter' / 'stock_data.db')
         self.db_path = db_path
 
+        # 加载申万行业映射 (用于行业分位数计算)
+        self._sw_industry_mapping = {}  # code -> l1_name
+        self._load_sw_industry_mapping()
+
         logger.info("✅ V3.9.0生产版评分系统初始化完成")
         logger.info(f"   模型: {model_path}")
         logger.info(f"   特征数: {self.n_features}")
@@ -142,7 +146,7 @@ class V390ProductionScorer:
 
             # 获取股票基本信息
             df_info = pd.read_sql_query("""
-                SELECT industry, area, exchange as market, list_date
+                SELECT code, industry, area, exchange as market, list_date
                 FROM securities
                 WHERE code = ?
             """, conn, params=(code,))
@@ -394,9 +398,82 @@ class V390ProductionScorer:
         """计算利润增长稳定性"""
         return 0.5
 
+    def _load_sw_industry_mapping(self):
+        """加载申万行业映射"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='sw_industry'")
+            if not cursor.fetchone():
+                conn.close()
+                logger.info("sw_industry表不存在，行业分位数将使用默认值")
+                return
+            cursor.execute("SELECT code, l1_name FROM sw_industry WHERE is_new = 'Y'")
+            self._sw_industry_mapping = {row[0]: row[1] for row in cursor.fetchall()}
+            conn.close()
+            if self._sw_industry_mapping:
+                logger.info(f"加载申万行业映射: {len(self._sw_industry_mapping)} 只股票")
+        except Exception as e:
+            logger.warning(f"加载申万行业映射失败: {e}")
+
     def _calculate_industry_percentile(self, df_info, df_basic, column):
-        """计算行业分位数"""
-        return 0.3
+        """
+        计算行业内估值分位数
+
+        使用sw_industry表中的行业分类，查询同行业股票的估值指标，
+        计算当前股票在行业内的百分位排名。
+        """
+        if not self._sw_industry_mapping or df_info.empty or df_basic.empty:
+            return 0.3
+
+        try:
+            code = df_info.iloc[0].get('code', '')
+            if not code:
+                return 0.3
+
+            l1_name = self._sw_industry_mapping.get(code)
+            if not l1_name:
+                return 0.3
+
+            # 获取同行业所有股票代码
+            peer_codes = [c for c, name in self._sw_industry_mapping.items() if name == l1_name]
+            if len(peer_codes) < 3:
+                return 0.3
+
+            # 当前股票的估值
+            current_val = df_basic.iloc[0].get(column)
+            if current_val is None or pd.isna(current_val) or current_val <= 0:
+                return 0.3
+
+            # 使用df_basic中的日期作为查询日期
+            trade_date = df_basic.iloc[0].get('trade_date', '')
+
+            conn = sqlite3.connect(self.db_path)
+            placeholders = ','.join(['?' for _ in peer_codes])
+            query = f"""
+                SELECT db.{column}
+                FROM daily_basic db
+                JOIN securities s ON db.security_id = s.id
+                WHERE s.code IN ({placeholders})
+                AND db.trade_date = ?
+                AND db.{column} IS NOT NULL
+                AND db.{column} > 0
+            """
+            cursor = conn.cursor()
+            cursor.execute(query, peer_codes + [trade_date])
+            peer_values = [row[0] for row in cursor.fetchall()]
+            conn.close()
+
+            if len(peer_values) < 3:
+                return 0.3
+
+            # 计算分位数: 比当前值小的比例
+            rank = sum(1 for v in peer_values if v < current_val) / len(peer_values)
+            return float(np.clip(rank, 0.0, 1.0))
+
+        except Exception as e:
+            logger.debug(f"行业分位数计算失败: {e}")
+            return 0.3
 
     def _calculate_advance_decline_ratio(self, df):
         """计算涨跌比率"""

@@ -61,6 +61,12 @@ class V39FeatureCacheUpdaterOptimized:
         self._batch_stock_data = None
         self._batch_market_features = None
 
+        # 行业数据缓存
+        self._sw_industry_mapping = None  # code -> l1_name
+        self._sw_l1_label_encoding = None  # l1_name -> int
+        self._industry_valuation_cache = None  # {code: {pe_rank, pb_rank, ps_rank}}
+        self._industry_return_cache = None  # {code: {return_5d, return_20d, relative_strength}}
+
     def get_stock_list(self) -> List[str]:
         """获取所有A股代码"""
         conn = sqlite3.connect(self.db_path)
@@ -280,6 +286,153 @@ class V39FeatureCacheUpdaterOptimized:
 
         return labels
 
+    def _load_sw_industry_mapping(self):
+        """从sw_industry表加载行业映射 (code -> l1_name, l1_name -> label)"""
+        if self._sw_industry_mapping is not None:
+            return
+
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        # 检查表是否存在
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='sw_industry'")
+        if not cursor.fetchone():
+            logger.warning("sw_industry表不存在，行业特征将使用默认值")
+            self._sw_industry_mapping = {}
+            self._sw_l1_label_encoding = {}
+            conn.close()
+            return
+
+        # code -> l1_name
+        cursor.execute("SELECT code, l1_name FROM sw_industry WHERE is_new = 'Y'")
+        self._sw_industry_mapping = {row[0]: row[1] for row in cursor.fetchall()}
+
+        # l1_name -> label (排序后编码)
+        cursor.execute("SELECT DISTINCT l1_name FROM sw_industry WHERE is_new = 'Y' ORDER BY l1_name")
+        names = [row[0] for row in cursor.fetchall()]
+        self._sw_l1_label_encoding = {name: i for i, name in enumerate(names)}
+
+        conn.close()
+        logger.info(f"加载申万行业映射: {len(self._sw_industry_mapping)} 只股票, "
+                     f"{len(self._sw_l1_label_encoding)} 个行业")
+
+    def _batch_load_industry_valuation(self, date: str):
+        """
+        批量加载行业内估值排名数据
+
+        一次SQL获取所有股票的PE/PB/PS，按行业分组计算分位数
+        """
+        if self._industry_valuation_cache is not None:
+            return
+
+        self._load_sw_industry_mapping()
+        if not self._sw_industry_mapping:
+            self._industry_valuation_cache = {}
+            return
+
+        conn = sqlite3.connect(self.db_path)
+
+        # 获取当天或最近的daily_basic数据
+        query = """
+        SELECT s.code, db.pe_ttm, db.pb, db.ps_ttm
+        FROM daily_basic db
+        JOIN securities s ON db.security_id = s.id
+        WHERE s.type = 'A股'
+        AND db.trade_date = (
+            SELECT MAX(trade_date) FROM daily_basic WHERE trade_date <= ?
+        )
+        """
+        df = pd.read_sql_query(query, conn, params=(date,))
+        conn.close()
+
+        if df.empty:
+            self._industry_valuation_cache = {}
+            return
+
+        # 添加行业列
+        df['l1_name'] = df['code'].map(self._sw_industry_mapping)
+        df = df.dropna(subset=['l1_name'])
+
+        # 按行业分组计算分位数
+        result = {}
+        for col, rank_name in [('pe_ttm', 'pe_rank'), ('pb', 'pb_rank'), ('ps_ttm', 'ps_rank')]:
+            # 去掉异常值 (负值或极端值)
+            valid = df[df[col].notna() & (df[col] > 0)].copy()
+            if valid.empty:
+                continue
+            valid[rank_name] = valid.groupby('l1_name')[col].rank(pct=True)
+            for _, row in valid.iterrows():
+                code = row['code']
+                if code not in result:
+                    result[code] = {}
+                result[code][rank_name] = row[rank_name]
+
+        self._industry_valuation_cache = result
+        logger.info(f"加载行业估值排名: {len(result)} 只股票")
+
+    def _batch_load_industry_returns(self, date: str, stock_data_map: Dict[str, pd.DataFrame]):
+        """
+        利用已加载的行情数据，计算行业平均收益率和个股相对强度
+
+        Args:
+            date: 当前日期
+            stock_data_map: 已预加载的 {code: DataFrame} 股票数据
+        """
+        if self._industry_return_cache is not None:
+            return
+
+        self._load_sw_industry_mapping()
+        if not self._sw_industry_mapping:
+            self._industry_return_cache = {}
+            return
+
+        # 收集每只股票的5d和20d收益率
+        stock_returns = {}
+        for code, df in stock_data_map.items():
+            if df is None or len(df) < 5:
+                continue
+            closes = df['close'].values
+            r5 = (closes[-1] / closes[-5] - 1) if len(closes) >= 5 and closes[-5] > 0 else 0.0
+            r20 = (closes[-1] / closes[-20] - 1) if len(closes) >= 20 and closes[-20] > 0 else 0.0
+            stock_returns[code] = {'return_5d': r5, 'return_20d': r20}
+
+        # 按行业分组计算平均收益
+        industry_avg = {}  # l1_name -> {avg_5d, avg_20d}
+        industry_stocks = {}  # l1_name -> [returns...]
+
+        for code, ret in stock_returns.items():
+            l1_name = self._sw_industry_mapping.get(code)
+            if not l1_name:
+                continue
+            if l1_name not in industry_stocks:
+                industry_stocks[l1_name] = []
+            industry_stocks[l1_name].append(ret)
+
+        for l1_name, stocks in industry_stocks.items():
+            if not stocks:
+                continue
+            avg_5d = np.mean([s['return_5d'] for s in stocks])
+            avg_20d = np.mean([s['return_20d'] for s in stocks])
+            industry_avg[l1_name] = {'avg_5d': avg_5d, 'avg_20d': avg_20d}
+
+        # 计算每只股票的行业收益和相对强度
+        result = {}
+        for code, ret in stock_returns.items():
+            l1_name = self._sw_industry_mapping.get(code)
+            if not l1_name or l1_name not in industry_avg:
+                continue
+            avg = industry_avg[l1_name]
+            # 相对强度 = 个股5d收益 - 行业平均5d收益
+            relative_strength = ret['return_5d'] - avg['avg_5d']
+            result[code] = {
+                'industry_return_5d': avg['avg_5d'],
+                'industry_return_20d': avg['avg_20d'],
+                'industry_relative_strength': relative_strength,
+            }
+
+        self._industry_return_cache = result
+        logger.info(f"计算行业收益特征: {len(result)} 只股票, {len(industry_avg)} 个行业")
+
     def _compute_lightweight_features(self, code: str, stock_df: pd.DataFrame) -> Optional[Dict]:
         """
         计算轻量级特征 (不依赖V390系统)
@@ -380,6 +533,26 @@ class V39FeatureCacheUpdaterOptimized:
                 features['max_pct_change_5d'] = 0
                 features['min_pct_change_5d'] = 0
 
+            # 8. 行业特征 (申万2021)
+            # sw_l1_code: 行业label编码
+            l1_name = self._sw_industry_mapping.get(code) if self._sw_industry_mapping else None
+            if l1_name and self._sw_l1_label_encoding:
+                features['sw_l1_code'] = self._sw_l1_label_encoding.get(l1_name, -1)
+            else:
+                features['sw_l1_code'] = -1
+
+            # 行业内估值分位数
+            val = self._industry_valuation_cache.get(code, {}) if self._industry_valuation_cache else {}
+            features['pe_industry_rank'] = val.get('pe_rank', 0.5)
+            features['pb_industry_rank'] = val.get('pb_rank', 0.5)
+            features['ps_industry_rank'] = val.get('ps_rank', 0.5)
+
+            # 行业收益率和相对强度
+            ind_ret = self._industry_return_cache.get(code, {}) if self._industry_return_cache else {}
+            features['industry_return_5d'] = ind_ret.get('industry_return_5d', 0.0)
+            features['industry_return_20d'] = ind_ret.get('industry_return_20d', 0.0)
+            features['industry_relative_strength'] = ind_ret.get('industry_relative_strength', 0.0)
+
             return features
 
         except Exception as e:
@@ -410,6 +583,11 @@ class V39FeatureCacheUpdaterOptimized:
 
         # 3. 批量预加载所有股票数据
         stock_data_map = self._batch_load_stock_data(date, lookback=60)
+
+        # 3.5. 批量预加载行业数据 (申万2021)
+        self._load_sw_industry_mapping()
+        self._batch_load_industry_valuation(date)
+        self._batch_load_industry_returns(date, stock_data_map)
 
         # 4. 计算每只股票的特征 (使用轻量级方法)
         results = []
@@ -564,8 +742,10 @@ class V39FeatureCacheUpdaterOptimized:
         total_inserted = 0
         for i, date in enumerate(dates, 1):
             logger.info(f"\n[{i}/{len(dates)}] 处理日期: {date}")
-            # 清除缓存
+            # 清除每日缓存 (行业映射保留，估值/收益需要重算)
             self._batch_market_features = None
+            self._industry_valuation_cache = None
+            self._industry_return_cache = None
             inserted = self.update_single_date(date)
             total_inserted += inserted
 

@@ -630,6 +630,28 @@ def update_squeeze_momentum_indicators(date_str: str):
         logger.warning(f"⚠️ 挤压动量指标更新异常: {e}")
         return 0
 
+def check_sw_industry(date_str: str):
+    """检查并更新申万行业分类 (月度更新)"""
+    logger.info("检查申万行业分类数据...")
+
+    try:
+        from fetch_data.sw_industry_fetcher import SWIndustryFetcher
+
+        fetcher = SWIndustryFetcher()
+        if fetcher.is_stale():
+            logger.info("申万行业数据已过期，开始更新...")
+            count = fetcher.update_all(force=True)
+            logger.info(f"✅ 申万行业分类更新完成: {count} 条")
+            return count
+        else:
+            logger.info("✅ 申万行业分类数据有效，跳过更新")
+            return 0
+
+    except Exception as e:
+        logger.warning(f"⚠️ 申万行业分类检查异常: {e}")
+        return 0
+
+
 def quick_daily_update(date: str = None, skip_financial: bool = True):
     """快速每日更新 - 包含市场行情、基本面、财务和技术指标"""
     if date is None:
@@ -644,65 +666,70 @@ def quick_daily_update(date: str = None, skip_financial: bool = True):
         'quotes': 0,
         'indices': 0,
         'basic': 0,
+        'sw_industry': 0,
         'financial': 0,
         'technical': 0,
         'squeeze_momentum': 0,
         'active_mv': 0,  # V3.9.4 活跃市值特征
         'v39_cache': 0   # V3.9/V3.95 特征缓存
     }
-    
+
     # 1. 批量更新市场行情（A股）
-    logger.info("【步骤1/9】更新A股市场行情...")
+    logger.info("【步骤1/10】更新A股市场行情...")
     stats['quotes'] += batch_update_stocks(date)
 
     # 短暂休息避免API限制
     time.sleep(2)
 
     # 2. 批量更新ETF/基金
-    logger.info("【步骤2/9】更新ETF/基金行情...")
+    logger.info("【步骤2/10】更新ETF/基金行情...")
     stats['quotes'] += batch_update_funds(date)
 
     # 3. 更新大盘指数数据
     time.sleep(2)
-    logger.info("【步骤3/9】更新大盘指数数据...")
+    logger.info("【步骤3/10】更新大盘指数数据...")
     stats['indices'] = update_market_indices(date)
 
     # 4. 更新基本面指标
     time.sleep(2)
-    logger.info("【步骤4/9】更新基本面指标...")
+    logger.info("【步骤4/10】更新基本面指标...")
     stats['basic'] = update_daily_basic(date)
+
+    # 4.5. 检查申万行业分类 (月度更新)
+    logger.info("【步骤5/10】检查申万行业分类 (月度更新)...")
+    stats['sw_industry'] = check_sw_industry(date)
 
     # 5. 更新财务指标（如果有）
     if not skip_financial:
         time.sleep(2)
-        logger.info("【步骤5/9】检查财务指标更新...")
+        logger.info("【步骤6/10】检查财务指标更新...")
         stats['financial'] = update_financial_indicators(date)
     else:
-        logger.info("【步骤5/9】跳过财务指标更新...")
+        logger.info("【步骤6/10】跳过财务指标更新...")
         stats['financial'] = 0
 
     # 6. 计算技术指标
-    logger.info("【步骤6/9】计算技术指标...")
+    logger.info("【步骤7/10】计算技术指标...")
     stats['technical'] = calculate_technical_indicators(date)
 
     # 7. 更新挤压动量指标 (v3.2新增)
     time.sleep(1)
-    logger.info("【步骤7/9】更新挤压动量指标...")
+    logger.info("【步骤8/10】更新挤压动量指标...")
     stats['squeeze_momentum'] = update_squeeze_momentum_indicators(date)
 
     # 8. 更新V3.9.4活跃市值特征
     time.sleep(1)
-    logger.info("【步骤8/9】更新V3.9.4活跃市值特征...")
+    logger.info("【步骤9/10】更新V3.9.4活跃市值特征...")
     stats['active_mv'] = update_active_mv_features(date)
 
     # 9. 更新V3.9/V3.95特征缓存 (ML评分系统)
     time.sleep(1)
-    logger.info("【步骤9/9】更新V3.9/V3.95特征缓存...")
+    logger.info("【步骤10/10】更新V3.9/V3.95特征缓存...")
     stats['v39_cache'] = update_v39_feature_cache(date)
 
     end_time = time.time()
     duration = end_time - start_time
-    
+
     # 记录更新日志到数据库
     db_manager.log_data_update(
         update_type='DAILY_COMPLETE',
@@ -711,7 +738,7 @@ def quick_daily_update(date: str = None, skip_financial: bool = True):
         status='SUCCESS' if stats['quotes'] > 0 else 'FAILED',
         duration=duration
     )
-    
+
     # 输出统计报告
     logger.info("="*60)
     logger.info("✅ 完整数据更新完成!")
@@ -719,6 +746,7 @@ def quick_daily_update(date: str = None, skip_financial: bool = True):
     logger.info(f"市场行情: {stats['quotes']:,} 条")
     logger.info(f"大盘指数: {stats['indices']:,} 条")
     logger.info(f"基本面指标: {stats['basic']:,} 条")
+    logger.info(f"申万行业分类: {stats['sw_industry']:,} 条")
     logger.info(f"财务指标: {stats['financial']:,} 条")
     logger.info(f"技术指标: {stats['technical']:,} 条")
     logger.info(f"挤压动量指标: {stats['squeeze_momentum']:,} 只股票")
