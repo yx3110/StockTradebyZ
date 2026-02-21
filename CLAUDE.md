@@ -13,7 +13,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **7,111 stocks** tracked with daily updates
 - **SQLite database** for high-performance data storage
 - **4 quantitative strategies** for stock selection
-- **4 ML scoring systems** (v3.7, v3.8, v3.81, v3.9) with ensemble learning and incremental updates
+- **2 active ML scoring systems** (v3.9, v3.95) with ensemble learning; legacy v3.7/v3.8/v3.81 deprecated
 - **AI enhancement** via Claude 4 and TradingAgents
 - **Chinese market specialization** (T+1, 涨跌停, sentiment analysis)
 
@@ -44,11 +44,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 # Individual components
 python3 fetch_data/quick_daily_update.py --date 20250930  # Complete data update (30-45 sec)
   # 🆕 Includes: Market quotes, market indices, daily basic, financial indicators, technical indicators
-python3 tomorrow_stock_selector.py 2025-09-30             # Stock selection with v3.0 scoring
-python3 tomorrow_stock_selector.py 2025-09-30 --scoring-version v3.7  # v3.7 ML scoring
-python3 tomorrow_stock_selector.py 2025-09-30 --scoring-version v3.8  # v3.8 incremental learning
-python3 tomorrow_stock_selector.py 2025-09-30 --scoring-version v3.81 # v3.81 quality meta-learner
-python3 tomorrow_stock_selector.py 2025-09-30 --scoring-version v3.9  # 🆕 v3.9 enhanced features
+python3 tomorrow_stock_selector.py 2025-09-30                          # Stock selection (默认v3.9)
+python3 tomorrow_stock_selector.py 2025-09-30 --scoring-version v3.9   # v3.9 生产A级 (推荐)
+python3 tomorrow_stock_selector.py 2025-09-30 --scoring-version v3.95  # v3.95 多目标预测 (最新)
 python3 ai_enhanced_daily_report.py --date 2025-09-30     # 🆕 AI enhancement with market analysis
 python3 trading_advisor.py                                # Trading advice
 
@@ -246,13 +244,33 @@ incremental_learning/
   - 向量化算法早期退出优化
   - 支持任意窗口期(10-30天)和相似度阈值
 
-#### 8. **Strategy & Backtesting**
-- **`strategy/`**: Conservative, Balanced, Aggressive strategies
-- **`backtest/`**: Comprehensive backtesting engine
-- **`backtrader/`**: Professional framework with 122+ indicators
-- **`extensible_backtest_engine.py`**: 支持V3.7/V3.8/V3.81的统一回测框架
+#### 8. **Training Scripts** (`training/`)
+```
+training/
+├── __init__.py
+├── train_v390_from_cache.py          ← 日常推荐 (v3.9)
+├── train_v395_multi_target.py        ← 最新生产版 (v3.95)
+├── train_v380_parameterized.py       # v3.7/v3.8/v3.81 (deprecated)
+├── train_v39*.py                     # v3.9系列变体
+├── train_v391_*.py                   # v3.91系列
+├── train_v394_*.py                   # v3.94系列
+├── train_v395_rolling.py             # v3.95滚动训练
+└── backfill/
+    ├── __init__.py
+    ├── backfill_v39_complete.py       # 完整回填
+    ├── backfill_v39_fast.py           # 快速回填
+    ├── backfill_v39_memory_optimized.py
+    ├── backfill_v39_parallel.py
+    ├── backfill_active_mv_for_v39.py
+    └── backfill_daily_basic_circ_mv.py
+```
 
-#### 9. **Report Generation** (`reports/`)
+#### 9. **Strategy & Backtesting**
+- **`strategy/`**: Conservative, Balanced, Aggressive strategies
+- **`backtest/`**: Comprehensive backtesting engine + all backtest scripts
+- **`backtest/extensible_backtest_engine.py`**: 支持多版本的统一回测框架
+
+#### 10. **Report Generation** (`reports/`)
 ```
 reports/
 ├── daily_selection/       # V1.0 quantitative selection reports
@@ -370,25 +388,21 @@ AI analysis configuration and weights
 8. **🆕 暴力K战法** (BigBullishVolumeSelector): 捕捉大阳线放量但贴近短期均线的股票
    - 四大筛选条件：涨幅>4% + 上影线控制 + 1.5倍放量 + 贴近知行短期线
 
-### ML Scoring Systems
-1. **V3.7 Advanced ML Ensemble**:
-   - 三层Ensemble架构 (Layer1: 5个基础模型, Layer2: Meta模型, Layer3: 最终Ensemble)
-   - 49个技术特征 + 基本面特征
-   - LightGBM + XGBoost + CatBoost + RandomForest + MLP
-   - 训练脚本: `train_v380_parameterized.py`
+### ML Scoring Systems (活跃版本)
+1. **V3.9 Production Scorer** (生产A级):
+   - 42个增强特征 + 17个扩展财务指标
+   - LightGBM + XGBoost + CatBoost + RandomForest Ensemble
+   - 训练脚本: `training/train_v390_from_cache.py`
 
-2. **V3.8 Incremental Learning System**:
-   - 增量学习引擎，无需重新训练完整模型
-   - 实时特征计算 (日内动量、开盘缺口、早盘表现)
-   - 自适应评分标准化 (基于市场波动率和置信度)
-   - 模型漂移检测和自动触发重训练
-   - 训练脚本: `train_v380_parameterized.py`
+2. **V3.95 Multi-Target Predictor** (多目标预测):
+   - 同时预测3天、5天、10天收益
+   - 市场状态特征 + 滚动训练窗口
+   - 训练脚本: `training/train_v395_multi_target.py`
 
-3. **V3.81 Quality Meta-Learner**:
-   - V3.8基础 + Level 4质量元学习器
-   - 解决质量评分聚集问题 (原V3.8质量分80-90聚集)
-   - 22个质量特征 + 17个元学习特征
-   - 训练脚本: `train_v380_parameterized.py`
+### ML Scoring Systems (已弃用)
+3. **V3.7** (DEPRECATED): 三层Ensemble，训练: `training/train_v380_parameterized.py`
+4. **V3.8** (DEPRECATED): 增量学习系统，训练: `training/train_v380_parameterized.py`
+5. **V3.81** (DEPRECATED): 质量元学习器，训练: `training/train_v380_parameterized.py`
 
 ### Risk Management
 - **Position Sizing**: Max 10% per stock
@@ -419,13 +433,14 @@ AI analysis configuration and weights
 
 ### Import Conventions
 ```python
-# ✅ 正确的导入方式
-from ml_models.v37 import V370AdvancedMLSystem
-from ml_models.v38 import V380AdvancedIncrementalMLSystem
-from ml_models.v381 import V380Level4IntegratedSystem
+# ✅ 活跃版本 (推荐)
+from ml_models.v39.v390_production_scorer import V390ProductionScorer
+from ml_models.v39.v395_production_scorer import V395ProductionScorer
 
-# ❌ 错误的导入方式
-from v370_advanced_ml_system import V370AdvancedMLSystem  # 旧方式，已弃用
+# ⚠️ 已弃用版本 (仍可用，将来移除)
+from ml_models.v37 import V370AdvancedMLSystem       # DEPRECATED
+from ml_models.v38 import V380AdvancedIncrementalMLSystem  # DEPRECATED
+from ml_models.v381 import V380Level4IntegratedSystem # DEPRECATED
 ```
 
 ## 🔍 Common Workflows
@@ -437,8 +452,8 @@ python3 fetch_data/quick_daily_update.py
 # Updates: Market quotes, Daily basic (PE/PB/Market cap),
 #          Financial indicators (if new), Technical indicators
 
-# 2. Run stock selection (9:30 AM)
-python3 tomorrow_stock_selector.py 2025-09-30 --scoring-version v3.81
+# 2. Run stock selection (9:30 AM) - 默认使用v3.9
+python3 tomorrow_stock_selector.py 2025-09-30
 
 # 3. Generate AI analysis (9:45 AM)
 python3 ai_enhanced_daily_report.py --date 2025-09-30
@@ -472,7 +487,7 @@ python3 likelihood/stock_similarity_analyzer.py \
 # 1. Implement in stock_selctor/Selector.py
 # 2. Add configuration to strategy_configs.json
 # 3. Run backtest with specific ML version
-python3 extensible_backtest_engine.py --ml-version v3.81 --start-date 2024-01-01 --end-date 2025-09-30
+python3 backtest/extensible_backtest_engine.py --ml-version v3.9 --start-date 2024-01-01 --end-date 2025-09-30
 
 # 4. Analyze results
 cat reports/backtest/回测结果_YYYYMMDD.md
@@ -480,22 +495,16 @@ cat reports/backtest/回测结果_YYYYMMDD.md
 
 ### Training ML Models
 ```bash
-# Train V3.7 model (三层Ensemble)
-python3 train_v380_parameterized.py --model-version v3.7
+# Train V3.9 model (日常推荐，基于缓存特征)
+python3 training/train_v390_from_cache.py
 
-# Train V3.8 model (增量学习系统)
-python3 train_v380_parameterized.py --model-version v3.8
+# Train V3.95 model (多目标预测，最新生产版)
+python3 training/train_v395_multi_target.py
 
-# Train V3.81 model (质量元学习器)
-python3 train_v380_parameterized.py --model-version v3.81
-
-# Train with custom parameters
-python3 train_v380_parameterized.py \
-  --model-version v3.81 \
-  --start-date 2020-01-01 \
-  --end-date 2025-09-30 \
-  --lookback-days 10 \
-  --lookahead-days 5
+# Train deprecated models (v3.7/v3.8/v3.81)
+python3 training/train_v380_parameterized.py --model-version v3.7   # DEPRECATED
+python3 training/train_v380_parameterized.py --model-version v3.8   # DEPRECATED
+python3 training/train_v380_parameterized.py --model-version v3.81  # DEPRECATED
 ```
 
 ### 🔍 Quantitative Scoring Correlation Analysis
@@ -525,10 +534,13 @@ tail -f logs/daily_update.log
 # Database statistics
 python3 data_adapter/database_manager.py --stats
 
-# Test ML model imports
-python3 -c "from ml_models.v37 import V370AdvancedMLSystem; print('✅ v3.7 OK')"
-python3 -c "from ml_models.v38 import V380AdvancedIncrementalMLSystem; print('✅ v3.8 OK')"
-python3 -c "from ml_models.v381 import V380Level4IntegratedSystem; print('✅ v3.81 OK')"
+# Test ML model imports (active versions)
+python3 -c "from ml_models.v39.v390_production_scorer import V390ProductionScorer; print('✅ v3.9 OK')"
+python3 -c "from ml_models.v39.v395_production_scorer import V395ProductionScorer; print('✅ v3.95 OK')"
+
+# Test training scripts
+python3 training/train_v390_from_cache.py --help
+python3 training/train_v395_multi_target.py --help
 ```
 
 ## 🚨 Important Notes

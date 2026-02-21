@@ -33,17 +33,37 @@ logging.basicConfig(
 )
 logger = logging.getLogger("tomorrow_selector")
 
+# === 版本管理 ===
+DEPRECATED_VERSIONS = {'v2', 'v3', 'v3.1', 'v3.2', 'v3.3', 'v3.4', 'v3.41',
+                       'v3.5', 'v3.51', 'v3.52', 'v3.53', 'v3.6', 'v3.7',
+                       'v3.8', 'v3.81', 'v3.94', 'v4'}
+ACTIVE_VERSIONS = {'v3.9', 'v3.95'}
+
+
 class TomorrowStockSelector:
     """明日股票选择器"""
-    
-    def __init__(self, data_dir: str = "full_securities_data", use_database: bool = True, scoring_version: str = "v3", stocks_only: bool = False):
+
+    def __init__(self, data_dir: str = "full_securities_data", use_database: bool = True, scoring_version: str = "v3.9", stocks_only: bool = False):
         self.data_dir = Path(data_dir)
         self.use_database = True  # 强制使用数据库模式
         self.selectors = {}
         self.data_cache = {}
         self.securities_info = {}  # 证券基本信息缓存
-        self.scoring_version = scoring_version  # 评分版本: "v2", "v3", "v3.1", "v3.2", "v3.3", "v3.4", "v3.41", "v3.5", "v3.51", "v3.52", "v3.53", "v3.6", "v3.7", "v3.8", "v3.81", "v3.9", "v3.94", "v3.95" 或 "v4"，默认v3
+        self.scoring_version = scoring_version
         self.stocks_only = stocks_only  # 是否只考虑股票，不包括ETF基金
+
+        # Deprecation warning for old versions
+        if scoring_version in DEPRECATED_VERSIONS:
+            import warnings
+            warnings.warn(
+                f"评分版本 {scoring_version} 已弃用，建议使用 v3.9 或 v3.95。"
+                f"旧版本将在未来版本中移除。",
+                DeprecationWarning, stacklevel=2
+            )
+            print(f"\n{'='*60}")
+            print(f"  WARNING: 评分版本 {scoring_version} 已弃用!")
+            print(f"  推荐使用: v3.9 (生产A级) 或 v3.95 (多目标预测)")
+            print(f"{'='*60}\n")
         self.v381_batch_cache = {}  # V3.81批处理结果缓存
         self.v394_batch_cache = {}  # V3.94批处理结果缓存（用于百分位排名）
         self.v395_batch_cache = {}  # V3.95批处理结果缓存（多目标预测）
@@ -3912,8 +3932,14 @@ if __name__ == "__main__":
     
     parser = argparse.ArgumentParser(description='量化选股分析器')
     parser.add_argument('date', nargs='?', help='分析日期 (YYYY-MM-DD格式)')
-    parser.add_argument('--scoring-version', '-v', choices=['v2', 'v3', 'v3.1', 'v3.2', 'v3.3', 'v3.4', 'v3.41', 'v3.5', 'v3.51', 'v3.52', 'v3.53', 'v3.6', 'v3.7', 'v3.8', 'v3.81', 'v3.9', 'v3.94', 'v3.95', 'v4'], default='v3',
-                       help='评分版本: v2(基于历史数据优化)、v3(智能动态权重)、v3.1(相关性分析优化)、v3.4(基于v3.0成功经验优化增强版)、v3.41(反向工程重构革命版)、v3.5(知行指标集成版)、v3.51(Qlib优化版,+2.88pctIC)、v3.52(全面优化版,38参数)、v3.6(机器学习版,LightGBM+XGBoost)、v3.7(高级机器学习版,49特征三层ensemble)、v3.8(自适应评分系统,动态归一化+置信度评估)、v3.81(V380+Level 4质量评分集成,解决质量聚集问题)、v3.9(🏆生产A级,42特征)、v3.94(🏆生产A+级,48特征=42基础+6活跃市值,IC+166%,Top20胜率56%)、v3.95(🚀多目标预测,3d/5d/10d滚动训练) 或 v4(挤压动量增强)，默认v3')
+    parser.add_argument('--scoring-version', '-v',
+                       choices=['v2', 'v3', 'v3.1', 'v3.2', 'v3.3', 'v3.4', 'v3.41',
+                                'v3.5', 'v3.51', 'v3.52', 'v3.53', 'v3.6', 'v3.7',
+                                'v3.8', 'v3.81', 'v3.9', 'v3.94', 'v3.95', 'v4'],
+                       default='v3.9',
+                       help='评分版本 (默认v3.9)。'
+                            '活跃版本: v3.9(生产A级,42特征), v3.95(多目标预测,3d/5d/10d滚动训练)。'
+                            '已弃用: v2-v3.81, v3.94, v4 (仍可使用但不推荐)')
     parser.add_argument('--stocks-only', '-s', action='store_true',
                        help='只考虑A股股票，不包括ETF基金等')
     
