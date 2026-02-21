@@ -123,9 +123,9 @@ python3 likelihood/stock_similarity_analyzer.py \
 # Check database status
 python3 -c "from data_adapter.database_manager import DatabaseManager; db = DatabaseManager(); print(db.get_database_stats())"
 
-# Update fundamental data (OPTIMIZED: 3000+ stocks/min!)
-python3 data_adapter/fundamental_data_fetcher.py --mode daily
-python3 data_adapter/financial_indicator_fetcher.py --batch-size 25
+# Backfill v39 data (daily_basic / financial_indicator)
+python3 fetch_data/v39_data_backfill.py --mode daily
+python3 fetch_data/backfill_historical_data.py --mode all
 
 # Optimize database
 python3 data_adapter/optimize_database.py

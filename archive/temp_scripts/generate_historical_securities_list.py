@@ -13,7 +13,7 @@ from datetime import datetime
 
 # 确保logs目录存在
 import os
-os.makedirs("logs", exist_ok=True)
+os.makedirs("../logs", exist_ok=True)
 
 # 配置日志
 logging.basicConfig(
@@ -21,7 +21,7 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler("logs/generate_historical_list.log", encoding="utf-8")
+        logging.FileHandler("../logs/generate_historical_list.log", encoding="utf-8")
     ]
 )
 logger = logging.getLogger(__name__)

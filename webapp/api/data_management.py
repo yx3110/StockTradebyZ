@@ -324,7 +324,7 @@ def get_available_scripts():
         {
             'name': 'daily_basic',
             'description': '日线基本面数据 (PE/PB/市值)',
-            'script': 'fetch_data/v39_data_initializer.py',
+            'script': 'fetch_data/v39_data_backfill.py',
             'estimated_time': '约10分钟/月数据'
         },
         {
@@ -655,7 +655,7 @@ def _run_backfill_task(progress_callback, **params):
         # 根据任务类型选择脚本
         script_map = {
             'v39_features': 'precompute_v39_features.py',
-            'daily_basic': 'fetch_data/v39_data_initializer.py',
+            'daily_basic': 'fetch_data/v39_data_backfill.py',
             'daily_quotes': 'fetch_data/quick_daily_update.py',
             'technical_indicators': 'fetch_data/technical_indicator_calculator.py',
             'active_mv': 'backfill_active_mv_for_v39.py'
