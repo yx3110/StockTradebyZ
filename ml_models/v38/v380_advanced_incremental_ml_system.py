@@ -288,7 +288,7 @@ class V380AdvancedIncrementalMLSystem:
         self._init_model_configs()
 
         # 确保模型目录存在 (V3.8更新路径)
-        self.model_dir = Path("models/v380")
+        self.model_dir = Path("ml_models/trained_models/v380")
         self.model_dir.mkdir(parents=True, exist_ok=True)
 
         # 自动加载最新的训练模型

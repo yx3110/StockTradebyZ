@@ -12,17 +12,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **StockTradebyZ** is a sophisticated Chinese A-share trading system combining:
 - **7,111 stocks** tracked with daily updates
 - **SQLite database** for high-performance data storage
-- **4 quantitative strategies** for stock selection
-- **2 active ML scoring systems** (v3.9, v3.95) with ensemble learning; legacy v3.7/v3.8/v3.81 deprecated
+- **8 quantitative strategies** for stock selection
+- **2 active ML scoring systems** (v3.9, v3.95) with ensemble learning
 - **AI enhancement** via Claude 4 and TradingAgents
 - **Chinese market specialization** (T+1, 涨跌停, sentiment analysis)
 
 ### Core Data Flow
 ```
-[Tushare API] → [SQLite DB] → [4 Quant Strategies] → [4 ML Systems] → [AI Analysis] → [Trading Reports]
+[Tushare API] → [SQLite DB] → [8 Quant Strategies] → [2 ML Systems] → [AI Analysis] → [Trading Reports]
      ↓               ↓                ↓                     ↓               ↓              ↓
-  5 data types   stock_data.db   tomorrow_stock    V3.7/V3.8/V3.81/V3.9  Claude + TA    reports/
-  (30-45 sec)    10+ tables        selector.py        ML scoring        integration   subdirectories
+  5 data types   stock_data.db   tomorrow_stock        V3.9/V3.95     Claude + TA    reports/
+  (30-45 sec)    10+ tables        selector.py        ML scoring      integration   subdirectories
 ```
 
 ### Daily Data Update Components (🆕 已扩展支持大盘分析 + v3.9财务指标)
@@ -169,35 +169,31 @@ cd incremental_learning/tests && python3 test_v380_basic.py
 - **Orchestrator**: `tomorrow_stock_selector.py`
 - **Testing**: Comprehensive pytest suite
 
-#### 3. **🆕 Machine Learning Systems** (`ml_models/`)
+#### 3. **Machine Learning Systems** (`ml_models/`)
 ```
 ml_models/
 ├── __init__.py              # 统一模型导入接口
-├── v37/                     # V3.7高级机器学习系统
+├── v38/                     # V3.8增量学习系统 (deprecated, 保留)
 │   ├── __init__.py
-│   ├── v370_advanced_ml_system.py           # 三层Ensemble (LightGBM+XGBoost+CatBoost+RF+MLP)
-│   ├── backtest_v37_engine.py               # V3.7专用回测引擎
-│   └── backtest_v37_engine_optimized.py     # V3.7优化回测引擎
-├── v38/                     # V3.8增量学习系统
+│   └── v380_advanced_incremental_ml_system.py
+├── v39/                     # V3.9增强特征系统 (活跃)
 │   ├── __init__.py
-│   └── v380_advanced_incremental_ml_system.py  # 增量学习+自适应评分+模型漂移检测
-├── v381/                    # V3.81质量评分集成系统
-│   ├── __init__.py
-│   ├── v380_level4_integrated_system.py        # V380+Level4整合
-│   ├── level4_quality_meta_learner.py          # Level4质量元学习器
-│   ├── level4_quality_feature_extractor.py     # 质量特征提取器v1
-│   ├── level4_quality_feature_extractor_v2.py  # 质量特征提取器v2
-│   └── level4_quality_postprocessor.py         # 质量后处理器
-└── v39/                     # 🆕 V3.9增强特征系统
-    ├── __init__.py
-    └── [待集成]             # 42个增强特征，17个扩展财务指标
+│   ├── v390_production_scorer.py      # V3.9生产评分器
+│   ├── v390_enhanced_feature_ml_system.py
+│   ├── v394_production_scorer.py      # V3.94生产评分器
+│   └── v395_production_scorer.py      # V3.95生产评分器
+└── trained_models/          # 训练好的模型文件 (.gitignore)
+    ├── v390_full_from_cache.pkl       # 生产 v3.9 模型
+    ├── v39/                           # v3.9 训练组件
+    ├── v380/                          # v3.8 deprecated 模型
+    ├── v394/                          # v3.94 模型
+    └── v395/                          # v3.95 rolling ensemble
 ```
 
 **ML系统特点:**
-- **V3.7**: 三层Ensemble架构，49个特征，5个基础模型 (LightGBM, XGBoost, CatBoost, RandomForest, MLP)
-- **V3.8**: 增量学习系统，实时特征计算，自适应评分标准化，模型漂移检测
-- **V3.81**: V3.8基础 + Level 4质量元学习器，解决质量评分聚集问题
-- **🆕 V3.9**: 42个增强特征，包含17个扩展财务指标 (已集成到每日更新脚本，详见 V39_INTEGRATION_GUIDE.md)
+- **V3.9** (生产推荐): 42个增强特征 + 17个扩展财务指标，LightGBM+XGBoost+CatBoost+RF Ensemble
+- **V3.95** (最新): 多目标预测（3d/5d/10d），滚动训练窗口
+- **V3.8** (deprecated): 增量学习系统，保留模型文件供参考
 
 #### 4. **Incremental Learning Components** (`incremental_learning/`)
 ```
@@ -270,15 +266,30 @@ training/
 - **`backtest/`**: Comprehensive backtesting engine + all backtest scripts
 - **`backtest/extensible_backtest_engine.py`**: 支持多版本的统一回测框架
 
-#### 10. **Report Generation** (`reports/`)
+#### 10. **Archive** (`archive/`)
+```
+archive/
+├── debug_scripts/          # 调试脚本 (debug_*.py, diagnose_*.py)
+├── temp_analysis/          # 一次性分析脚本 (analyze_*.py)
+├── temp_scripts/           # 一次性工具脚本 (fill_gap_*.py, migrate_*.py, validate_*.py, *.sh)
+├── training_experiments/   # 训练实验脚本 (quick_train_*.py, precompute_*.py)
+├── experimental/           # 实验性脚本 (trading_strategy*.py, run_3strategy_*.py)
+├── development_docs/       # 开发文档 (BACKTEST_*.md, REBALANCE_*.md)
+├── old_versions/           # 旧版本代码
+├── tests/                  # 归档测试
+├── logs/                   # 旧日志
+└── weight_optimization/    # 权重优化实验
+```
+
+#### 11. **Report Generation** (`reports/`)
 ```
 reports/
 ├── daily_selection/       # V1.0 quantitative selection reports
 ├── daily_selection_v2/    # V2.0 scoring system reports
 ├── daily_selection_v3/    # V3.0 quantitative scoring reports
-├── daily_selection_v3.7/  # 🆕 V3.7 ML ensemble reports
-├── daily_selection_v3.8/  # 🆕 V3.8 incremental learning reports
-├── daily_selection_v3.81/ # 🆕 V3.81 quality meta-learner reports
+├── daily_selection_v3.7/  # V3.7 ML ensemble reports (archived)
+├── daily_selection_v3.8/  # V3.8 incremental learning reports (archived)
+├── daily_selection_v3.81/ # V3.81 quality meta-learner reports (archived)
 ├── ai_enhanced/          # AI-augmented analysis
 ├── correlation_analysis/ # 🆕 Quantitative scoring correlation analysis & debiased case studies
 ├── similarity_analysis/  # Stock similarity analysis reports
@@ -399,11 +410,6 @@ AI analysis configuration and weights
    - 市场状态特征 + 滚动训练窗口
    - 训练脚本: `training/train_v395_multi_target.py`
 
-### ML Scoring Systems (已弃用)
-3. **V3.7** (DEPRECATED): 三层Ensemble，训练: `training/train_v380_parameterized.py`
-4. **V3.8** (DEPRECATED): 增量学习系统，训练: `training/train_v380_parameterized.py`
-5. **V3.81** (DEPRECATED): 质量元学习器，训练: `training/train_v380_parameterized.py`
-
 ### Risk Management
 - **Position Sizing**: Max 10% per stock
 - **Stop Loss**: 8% default
@@ -436,11 +442,6 @@ AI analysis configuration and weights
 # ✅ 活跃版本 (推荐)
 from ml_models.v39.v390_production_scorer import V390ProductionScorer
 from ml_models.v39.v395_production_scorer import V395ProductionScorer
-
-# ⚠️ 已弃用版本 (仍可用，将来移除)
-from ml_models.v37 import V370AdvancedMLSystem       # DEPRECATED
-from ml_models.v38 import V380AdvancedIncrementalMLSystem  # DEPRECATED
-from ml_models.v381 import V380Level4IntegratedSystem # DEPRECATED
 ```
 
 ## 🔍 Common Workflows
@@ -500,11 +501,6 @@ python3 training/train_v390_from_cache.py
 
 # Train V3.95 model (多目标预测，最新生产版)
 python3 training/train_v395_multi_target.py
-
-# Train deprecated models (v3.7/v3.8/v3.81)
-python3 training/train_v380_parameterized.py --model-version v3.7   # DEPRECATED
-python3 training/train_v380_parameterized.py --model-version v3.8   # DEPRECATED
-python3 training/train_v380_parameterized.py --model-version v3.81  # DEPRECATED
 ```
 
 ### 🔍 Quantitative Scoring Correlation Analysis
@@ -562,8 +558,8 @@ python3 training/train_v395_multi_target.py --help
 
 ### ML Model Management
 - **训练数据**: 使用历史数据训练，确保有足够的样本量 (建议5年以上)
-- **模型文件**: 存储在 `models/` 目录，按版本管理
-- **增量更新**: V3.8/V3.81支持增量学习，无需每日重训练
+- **模型文件**: 存储在 `ml_models/trained_models/` 目录，按版本管理
+- **增量更新**: V3.8支持增量学习，无需每日重训练
 - **模型评估**: 定期评估模型性能，监控漂移情况
 
 ## 📞 Support & Feedback
@@ -585,11 +581,9 @@ python3 training/train_v395_multi_target.py --help
 - **相似度分析**: 4285只A股，25分钟完成全市场扫描
 
 ### ML Model Performance
-- **V3.7 Training**: ~30-60分钟 (5年历史数据，5个基础模型+元学习)
-- **V3.8 Training**: ~40-70分钟 (增量学习引擎初始化)
-- **V3.81 Training**: ~50-80分钟 (V3.8基础+Level4质量学习器)
+- **V3.9 Training**: ~30-60分钟 (基于缓存特征，4模型Ensemble)
+- **V3.95 Training**: ~40-70分钟 (多目标预测，滚动窗口)
 - **Daily Prediction**: <1秒/股 (所有版本)
-- **Incremental Update**: <10秒 (V3.8/V3.81增量更新)
 
 ### 🚀 Historical Batch Processing Performance
 #### 优化版两阶段方法 (推荐)

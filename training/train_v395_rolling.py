@@ -58,7 +58,7 @@ class V395RollingTrainer:
         }
 
         # 模型目录
-        self.model_dir = Path(__file__).parent / 'models' / 'v395'
+        self.model_dir = Path(__file__).parent.parent / 'ml_models' / 'trained_models' / 'v395'
         self.model_dir.mkdir(parents=True, exist_ok=True)
 
         # 数据库路径

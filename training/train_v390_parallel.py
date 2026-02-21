@@ -173,7 +173,7 @@ def main():
     parser.add_argument('--lookback-days', type=int, default=10, help='回望天数')
     parser.add_argument('--lookahead-days', type=int, default=5, help='前瞻天数')
     parser.add_argument('--sample-stocks', type=int, default=None, help='采样股票数量')
-    parser.add_argument('--output-dir', type=str, default=str(PROJECT_ROOT / 'models' / 'v39'), help='模型输出目录')
+    parser.add_argument('--output-dir', type=str, default=str(PROJECT_ROOT / 'ml_models' / 'trained_models' / 'v39'), help='模型输出目录')
     parser.add_argument('--num-workers', type=int, default=None, help='并行进程数')
 
     args = parser.parse_args()

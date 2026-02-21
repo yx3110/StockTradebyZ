@@ -553,7 +553,7 @@ class AdaptiveV391Trainer:
     def save_model(self, results: Dict, version: str = 'adaptive'):
         """保存模型"""
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        model_dir = 'models/v391'
+        model_dir = 'ml_models/trained_models/v391'
         os.makedirs(model_dir, exist_ok=True)
 
         filename = f'v391_{version}_{timestamp}.pkl'

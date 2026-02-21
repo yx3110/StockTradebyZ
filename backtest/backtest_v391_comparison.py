@@ -35,19 +35,19 @@ INITIAL_CAPITAL = 1000000
 # 模型配置
 MODEL_CONFIGS = {
     'v391_improved': {
-        'file': 'models/v391/v391_improved_20251125_232954.pkl',
+        'file': 'ml_models/trained_models/v391/v391_improved_20251125_232954.pkl',
         'desc': '多模型+元学习+早停'
     },
     'v391_adaptive_moe': {
-        'file': 'models/v391/v391_adaptive_moe_20251126_001443.pkl',
+        'file': 'ml_models/trained_models/v391/v391_adaptive_moe_20251126_001443.pkl',
         'desc': 'MoE专家模型'
     },
     'v391_adaptive_moe_full': {
-        'file': 'models/v391/v391_adaptive_moe_full_20251126_002328.pkl',
+        'file': 'ml_models/trained_models/v391/v391_adaptive_moe_full_20251126_002328.pkl',
         'desc': 'MoE+更多数据'
     },
     'v391_adaptive_moe_decay': {
-        'file': 'models/v391/v391_adaptive_moe_decay_20251126_002556.pkl',
+        'file': 'ml_models/trained_models/v391/v391_adaptive_moe_decay_20251126_002556.pkl',
         'desc': 'MoE+时间衰减'
     }
 }

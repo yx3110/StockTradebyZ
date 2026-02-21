@@ -377,7 +377,7 @@ class V390ModelAdapter(MLModelAdapter):
         """检查V3.90模型是否可用"""
         try:
             from ml_models.v39.v390_production_scorer import V390ProductionScorer
-            return self.model_path is not None or (PROJECT_ROOT / 'models' / 'v390_full_from_cache.pkl').exists()
+            return self.model_path is not None or (PROJECT_ROOT / 'ml_models' / 'trained_models' / 'v390_full_from_cache.pkl').exists()
         except ImportError:
             return False
 
@@ -502,7 +502,7 @@ class V394ModelAdapter(MLModelAdapter):
         """检查V3.94模型是否可用"""
         try:
             from ml_models.v39.v394_production_scorer import V394ProductionScorer
-            return self.model_path is not None or (PROJECT_ROOT / 'models' / 'v394' / 'v394_full_model.pkl').exists()
+            return self.model_path is not None or (PROJECT_ROOT / 'ml_models' / 'trained_models' / 'v394' / 'v394_full_model.pkl').exists()
         except ImportError:
             return False
 
@@ -523,7 +523,7 @@ class ModelRegistry:
                 name="V3.70 Advanced ML System",
                 module_name="v370_advanced_ml_system",
                 class_name="V370AdvancedMLSystem",
-                model_path_pattern=str(PROJECT_ROOT / "models/v370/v370_*.pkl"),
+                model_path_pattern=str(PROJECT_ROOT / "ml_models/trained_models/v370/v370_*.pkl"),
                 features_count=53,
                 description="5基础模型+4专家模型+Meta学习器，53个特征",
                 requires_modules=["v370_advanced_ml_system"]
@@ -533,7 +533,7 @@ class ModelRegistry:
                 name="V3.80 Advanced Incremental ML System",
                 module_name="v380_advanced_incremental_ml_system",
                 class_name="V380AdvancedIncrementalMLSystem",
-                model_path_pattern=str(PROJECT_ROOT / "models/v380/v380_*.pkl"),
+                model_path_pattern=str(PROJECT_ROOT / "ml_models/trained_models/v380/v380_*.pkl"),
                 features_count=60,
                 description="Level4质量优化特征+增量学习",
                 requires_modules=["v380_advanced_incremental_ml_system"]
@@ -543,7 +543,7 @@ class ModelRegistry:
                 name="V3.81 Level4 Integrated System",
                 module_name="v380_level4_integrated_system",
                 class_name="V380Level4IntegratedSystem",
-                model_path_pattern="models/level4/*",
+                model_path_pattern="ml_models/trained_models/level4/*",
                 features_count=70,
                 description="Level4质量控制+Meta学习集成",
                 requires_modules=["v380_level4_integrated_system"]
@@ -553,7 +553,7 @@ class ModelRegistry:
                 name="V3.90 Enhanced Feature System",
                 module_name="v390_production_scorer",
                 class_name="V390ProductionScorer",
-                model_path_pattern=str(PROJECT_ROOT / "models/v390*.pkl"),
+                model_path_pattern=str(PROJECT_ROOT / "ml_models/trained_models/v390*.pkl"),
                 features_count=42,
                 description="42个增强特征，A级模型 (81.2/100, 67.30%准确率, 95% Top20胜率)",
                 requires_modules=["v390_production_scorer"]
@@ -563,7 +563,7 @@ class ModelRegistry:
                 name="V3.94 Active Market Cap System",
                 module_name="v394_production_scorer",
                 class_name="V394ProductionScorer",
-                model_path_pattern=str(PROJECT_ROOT / "models/v394/v394*.pkl"),
+                model_path_pattern=str(PROJECT_ROOT / "ml_models/trained_models/v394/v394*.pkl"),
                 features_count=48,
                 description="48个特征（42基础+6活跃市值），优化的市场适应性",
                 requires_modules=["v394_production_scorer"]
@@ -634,7 +634,7 @@ class ModelRegistry:
 
         return model_list
 
-    def discover_new_models(self, models_dir: str = "models") -> int:
+    def discover_new_models(self, models_dir: str = "ml_models/trained_models") -> int:
         """自动发现新模型 (扩展功能)"""
         # TODO: 实现自动模型发现逻辑
         # 扫描models目录，查找新的模型文件和配置

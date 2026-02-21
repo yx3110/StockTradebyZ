@@ -38,7 +38,7 @@ class V390ProductionScorer:
 
         # 设置模型路径
         if model_path is None:
-            model_path = str(self.project_root / 'models' / 'v390_full_from_cache.pkl')
+            model_path = str(self.project_root / 'ml_models' / 'trained_models' / 'v390_full_from_cache.pkl')
         self.model_path = model_path
         self.model = None
         self.feature_names = None
@@ -480,7 +480,7 @@ class V390ProductionScorer:
 
     def predict_scores(self, codes: List[str], trade_date: str) -> Dict[str, Dict]:
         """
-        批量预测多只股票
+        批量预测多只股票（优化版：批量SQL + 批量predict）
 
         Args:
             codes: 股票代码列表
@@ -489,14 +489,190 @@ class V390ProductionScorer:
         Returns:
             {code: 评分结果} 字典
         """
+        if not codes:
+            return {}
+
+        # 尝试批量提取特征
+        try:
+            batch_features = self._extract_features_batch(codes, trade_date)
+        except Exception as e:
+            logger.warning(f"批量特征提取失败，回退到逐只提取: {e}")
+            batch_features = {}
+
         results = {}
 
+        # 处理批量提取成功的股票
+        if batch_features:
+            # 收集有效特征，组装为大矩阵做批量 predict
+            valid_codes = []
+            feature_rows = []
+            for code in codes:
+                feat = batch_features.get(code)
+                if feat is not None:
+                    valid_codes.append(code)
+                    feature_rows.append(feat)
+
+            if valid_codes:
+                try:
+                    # 合并为单个 DataFrame
+                    all_features = pd.concat(feature_rows, ignore_index=True)
+                    all_features = all_features.fillna(all_features.median())
+
+                    # 批量预测
+                    predictions = self.model.predict(all_features)
+
+                    for i, code in enumerate(valid_codes):
+                        pred = predictions[i]
+                        score = self._convert_prediction_to_score(pred)
+                        feat_row = feature_rows[i]
+                        results[code] = {
+                            'code': code,
+                            'trade_date': trade_date,
+                            'score': score,
+                            'predicted_return_5d': pred,
+                            'confidence': self._calculate_confidence(feat_row, pred),
+                            'recommendation': self._get_recommendation(score),
+                            'scoring_method': 'V3.9.0_Production',
+                            'model_grade': 'A',
+                            'model_accuracy': 0.6730,
+                            'model_ic': 0.4892
+                        }
+                except Exception as e:
+                    logger.error(f"批量predict失败: {e}")
+
+        # 对批量提取失败的股票走单只 fallback
         for code in codes:
-            result = self.predict_score(code, trade_date)
-            if result:
-                results[code] = result
+            if code not in results:
+                result = self.predict_score(code, trade_date)
+                if result:
+                    results[code] = result
 
         return results
+
+    def _extract_features_batch(self, codes: List[str], trade_date: str) -> Dict[str, Optional[pd.DataFrame]]:
+        """
+        批量提取多只股票的特征（4条SQL代替N×4条SQL）
+
+        Args:
+            codes: 股票代码列表
+            trade_date: 交易日期
+
+        Returns:
+            {code: feature_DataFrame(1行42列) 或 None}
+        """
+        if not codes:
+            return {}
+
+        conn = sqlite3.connect(self.db_path)
+        start_date = (datetime.strptime(trade_date, '%Y-%m-%d') - timedelta(days=120)).strftime('%Y-%m-%d')
+
+        try:
+            placeholders = ','.join(['?' for _ in codes])
+
+            # 1. 批量获取 security_id 映射
+            id_query = f"SELECT id, code FROM securities WHERE code IN ({placeholders})"
+            id_df = pd.read_sql_query(id_query, conn, params=codes)
+            if id_df.empty:
+                return {}
+            code_to_id = dict(zip(id_df['code'], id_df['id']))
+            security_ids = list(code_to_id.values())
+            sid_placeholders = ','.join(['?' for _ in security_ids])
+
+            # 2. 批量获取行情数据
+            quotes_query = f"""
+                SELECT security_id, trade_date, open, high, low, close, volume, amount, price_change_pct
+                FROM daily_quotes
+                WHERE security_id IN ({sid_placeholders})
+                    AND trade_date <= ? AND trade_date >= ?
+                ORDER BY security_id, trade_date
+            """
+            quotes_df = pd.read_sql_query(quotes_query, conn,
+                                          params=security_ids + [trade_date, start_date])
+
+            # 3. 批量获取基本面数据（每只股票最新1条）
+            basic_query = f"""
+                SELECT db1.security_id, db1.trade_date, db1.pe_ttm, db1.pb, db1.ps_ttm,
+                       db1.total_mv, db1.turnover_rate, db1.total_share, db1.float_share, db1.free_share
+                FROM daily_basic db1
+                INNER JOIN (
+                    SELECT security_id, MAX(trade_date) as max_date
+                    FROM daily_basic
+                    WHERE security_id IN ({sid_placeholders}) AND trade_date <= ?
+                    GROUP BY security_id
+                ) db2 ON db1.security_id = db2.security_id AND db1.trade_date = db2.max_date
+            """
+            basic_df = pd.read_sql_query(basic_query, conn,
+                                         params=security_ids + [trade_date])
+
+            # 4. 批量获取财务指标（每只股票最新1条）
+            fin_query = f"""
+                SELECT fi1.security_id, fi1.end_date, fi1.roe, fi1.roa, fi1.gross_margin,
+                       fi1.netprofit_margin, fi1.debt_to_assets, fi1.current_ratio,
+                       fi1.quick_ratio, fi1.ar_turn, fi1.inv_turn, fi1.assets_turn,
+                       fi1.ocf_to_profit
+                FROM financial_indicator fi1
+                INNER JOIN (
+                    SELECT security_id, MAX(end_date) as max_date
+                    FROM financial_indicator
+                    WHERE security_id IN ({sid_placeholders})
+                    GROUP BY security_id
+                ) fi2 ON fi1.security_id = fi2.security_id AND fi1.end_date = fi2.max_date
+            """
+            fin_df = pd.read_sql_query(fin_query, conn, params=security_ids)
+
+            # 5. 批量获取股票基本信息
+            info_query = f"SELECT code, industry, area, exchange as market, list_date FROM securities WHERE code IN ({placeholders})"
+            info_df = pd.read_sql_query(info_query, conn, params=codes)
+
+            conn.close()
+
+            # 按股票逐只计算特征
+            id_to_code = {v: k for k, v in code_to_id.items()}
+            result = {}
+
+            for code in codes:
+                sid = code_to_id.get(code)
+                if sid is None:
+                    result[code] = None
+                    continue
+
+                try:
+                    # 获取该股票的行情
+                    stock_quotes = quotes_df[quotes_df['security_id'] == sid].copy()
+                    if len(stock_quotes) < 30:
+                        result[code] = None
+                        continue
+                    stock_quotes = stock_quotes.sort_values('trade_date').reset_index(drop=True).tail(80)
+
+                    # 获取该股票的基本面
+                    stock_basic = basic_df[basic_df['security_id'] == sid]
+
+                    # 获取该股票的财务指标
+                    stock_fin = fin_df[fin_df['security_id'] == sid]
+
+                    # 获取该股票的信息
+                    stock_info = info_df[info_df['code'] == code]
+
+                    # 计算42个基础特征
+                    features = self._calculate_base_features(
+                        stock_quotes, stock_basic, stock_fin, stock_info, trade_date
+                    )
+
+                    if features is None:
+                        result[code] = None
+                    else:
+                        result[code] = pd.DataFrame([features], columns=self.feature_names)
+
+                except Exception as e:
+                    logger.debug(f"批量特征提取 {code} 失败: {e}")
+                    result[code] = None
+
+            return result
+
+        except Exception as e:
+            if conn:
+                conn.close()
+            raise
 
     def _convert_prediction_to_score(self, prediction: float) -> float:
         """

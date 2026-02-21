@@ -110,7 +110,7 @@ evaluator = ModelEvaluator(y_test.values, y_pred)
 results = evaluator.print_report()
 
 # 保存模型
-model_path = 'models/v390_full_from_cache.pkl'
+model_path = 'ml_models/trained_models/v390_full_from_cache.pkl'
 with open(model_path, 'wb') as f:
     pickle.dump({
         'model': model,
@@ -144,7 +144,7 @@ print("版本对比")
 print("="*80)
 
 try:
-    with open('models/v391_quick_test.pkl', 'rb') as f:
+    with open('ml_models/trained_models/v391_quick_test.pkl', 'rb') as f:
         v391 = pickle.load(f)
 
     v391_score = v391['evaluation']['综合评分']

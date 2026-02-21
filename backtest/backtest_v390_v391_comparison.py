@@ -30,11 +30,11 @@ DB_PATH = str(PROJECT_ROOT / 'data_adapter' / 'stock_data.db')
 # 模型配置
 MODELS = {
     'v390_full_system': {
-        'path': 'models/v39/v390_full_system_20251116_161259.pkl',
+        'path': 'ml_models/trained_models/v39/v390_full_system_20251116_161259.pkl',
         'type': 'ensemble',  # base_models + meta_model
     },
     'v391_improved': {
-        'path': 'models/v391/v391_improved_20251125_232954.pkl',
+        'path': 'ml_models/trained_models/v391/v391_improved_20251125_232954.pkl',
         'type': 'multiperiod',  # base_models + meta_models (5d/10d/15d)
     }
 }

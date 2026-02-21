@@ -107,7 +107,7 @@ class Config:
     BACKTEST_DIR = REPORTS_DIR / 'backtest'
 
     # 模型目录配置
-    MODELS_DIR = BASE_DIR / 'models'
+    MODELS_DIR = BASE_DIR / 'ml_models' / 'trained_models'
     # 自动扫描模型目录
     MODEL_DIRS = scan_model_directories(MODELS_DIR)
 
@@ -120,8 +120,8 @@ class Config:
     QUICK_DAILY_UPDATE_SCRIPT = SCRIPTS_DIR / 'fetch_data' / 'quick_daily_update.py'
     STOCK_SELECTOR_SCRIPT = SCRIPTS_DIR / 'tomorrow_stock_selector.py'
     AI_ENHANCED_SCRIPT = SCRIPTS_DIR / 'ai_enhanced_daily_report.py'
-    TRAIN_SCRIPT = SCRIPTS_DIR / 'train_v380_parameterized.py'
-    BACKTEST_SCRIPT = SCRIPTS_DIR / 'extensible_backtest_engine.py'
+    TRAIN_SCRIPT = SCRIPTS_DIR / 'training' / 'train_v380_parameterized.py'
+    BACKTEST_SCRIPT = SCRIPTS_DIR / 'backtest' / 'extensible_backtest_engine.py'
 
     # 任务配置
     MAX_WORKERS = 4  # 最大并发任务数

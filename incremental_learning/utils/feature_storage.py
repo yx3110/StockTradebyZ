@@ -33,7 +33,7 @@ class FeatureStorageManager:
     4. 特征索引优化
     """
 
-    def __init__(self, base_dir: str = "models/v380/features", db_manager: DatabaseManager = None):
+    def __init__(self, base_dir: str = "ml_models/trained_models/v380/features", db_manager: DatabaseManager = None):
         self.base_dir = Path(base_dir)
         self.base_dir.mkdir(parents=True, exist_ok=True)
 

@@ -97,7 +97,7 @@ class V394ActiveMVTrainer:
         self.db_path = 'data_adapter/stock_data.db'
 
         # 模型保存路径
-        self.model_dir = PROJECT_ROOT / 'models' / 'v394'
+        self.model_dir = PROJECT_ROOT / 'ml_models' / 'trained_models' / 'v394'
         self.model_dir.mkdir(parents=True, exist_ok=True)
 
         logger.info(f"✅ V3.9.4训练器初始化完成")

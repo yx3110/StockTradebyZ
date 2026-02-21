@@ -201,7 +201,7 @@ class V390ComprehensiveTrainer:
 
         return results
 
-    def save_model(self, filepath='models/v390_comprehensive.pkl'):
+    def save_model(self, filepath='ml_models/trained_models/v390_comprehensive.pkl'):
         """保存模型"""
         model_data = {
             'models': self.models,
@@ -224,7 +224,7 @@ def main():
                        help='结束日期 (YYYY-MM-DD), 默认使用所有数据')
     parser.add_argument('--test-size', type=float, default=0.2,
                        help='测试集比例 (默认0.2)')
-    parser.add_argument('--output', type=str, default='models/v390_comprehensive.pkl',
+    parser.add_argument('--output', type=str, default='ml_models/trained_models/v390_comprehensive.pkl',
                        help='模型保存路径')
 
     args = parser.parse_args()

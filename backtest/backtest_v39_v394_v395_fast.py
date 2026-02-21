@@ -30,7 +30,7 @@ class CachedScorer:
     def __init__(self, version: str):
         self.version = version
         self.db_path = Path(__file__).parent / 'data_adapter' / 'stock_data.db'
-        self.model_dir = Path(__file__).parent / 'models'
+        self.model_dir = Path(__file__).parent.parent / 'ml_models' / 'trained_models'
 
         # 加载模型
         self.models = {}

@@ -292,7 +292,7 @@ if not trade_dates:
     sys.exit(1)
 
 # 只测试v391_improved模型 (其他模型有序列化问题)
-MODEL_PATH = 'models/v391/v391_improved_20251125_232954.pkl'
+MODEL_PATH = 'ml_models/trained_models/v391/v391_improved_20251125_232954.pkl'
 
 stats, trades_df = run_backtest('v391_improved', MODEL_PATH, trade_dates)
 

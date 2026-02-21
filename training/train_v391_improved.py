@@ -514,7 +514,7 @@ class ImprovedV391Trainer:
 
         return results
 
-    def save_model(self, output_path='models/v391'):
+    def save_model(self, output_path='ml_models/trained_models/v391'):
         """保存模型"""
         logger.info("\n" + "=" * 80)
         logger.info("💾 保存V3.91改进版模型...")
@@ -620,7 +620,7 @@ def main():
     parser.add_argument('--db-path', type=str, default=str(PROJECT_ROOT / 'data_adapter' / 'stock_data.db'))
     parser.add_argument('--start-date', type=str, default='2023-01-01',
                        help='训练数据起始日期 (默认: 2023-01-01)')
-    parser.add_argument('--output-dir', type=str, default=str(PROJECT_ROOT / 'models' / 'v391'))
+    parser.add_argument('--output-dir', type=str, default=str(PROJECT_ROOT / 'ml_models' / 'trained_models' / 'v391'))
 
     args = parser.parse_args()
 

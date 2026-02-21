@@ -94,7 +94,7 @@ def main():
     parser.add_argument('--end-date', type=str, help='训练结束日期 (YYYY-MM-DD)')
     parser.add_argument('--months', type=int, default=6, help='自动计算：使用最近N个月数据 (默认: 6)')
     parser.add_argument('--auto', action='store_true', help='自动计算日期范围')
-    parser.add_argument('--output-dir', type=str, default=str(PROJECT_ROOT / 'models' / 'v380'), help='模型输出目录')
+    parser.add_argument('--output-dir', type=str, default=str(PROJECT_ROOT / 'ml_models' / 'trained_models' / 'v380'), help='模型输出目录')
 
     args = parser.parse_args()
 

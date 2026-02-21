@@ -52,7 +52,7 @@ def main():
                        help='前瞻天数（收益计算）')
     parser.add_argument('--sample-stocks', type=int, default=None,
                        help='样本股票数量（None=全部）')
-    parser.add_argument('--output-dir', type=str, default=str(PROJECT_ROOT / 'models' / 'v39'),
+    parser.add_argument('--output-dir', type=str, default=str(PROJECT_ROOT / 'ml_models' / 'trained_models' / 'v39'),
                        help='模型输出目录')
     parser.add_argument('--optimize-hyperparams', action='store_true',
                        help='优化超参数')

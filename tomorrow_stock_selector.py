@@ -64,6 +64,7 @@ class TomorrowStockSelector:
             print(f"  推荐使用: v3.9 (生产A级) 或 v3.95 (多目标预测)")
             print(f"{'='*60}\n")
         self.v381_batch_cache = {}  # V3.81批处理结果缓存
+        self.v39_batch_cache = {}   # V3.9批处理结果缓存
         self.v394_batch_cache = {}  # V3.94批处理结果缓存（用于百分位排名）
         self.v395_batch_cache = {}  # V3.95批处理结果缓存（多目标预测）
 
@@ -90,55 +91,20 @@ class TomorrowStockSelector:
             self.scoring_engine_v39 = V390ProductionScorer()
             logger.info("🏆 已初始化V3.9.0生产版评分系统（81.2/100 A级，67.30%方向准确率，95%Top20胜率，42基础特征）")
         elif scoring_version == "v3.81":
-            # 初始化v3.81 Level 4质量评分集成系统 - 🎯 LEVEL 4 QUALITY META-LEARNER
-            from ml_models.v381 import V380Level4IntegratedSystem
-            self.scoring_engine_v381 = V380Level4IntegratedSystem()
-            logger.info("🎯 已初始化V3.81 Level 4质量评分集成系统（V380+Level 4 Quality Meta-learner，解决质量评分聚集问题）")
+            raise ValueError("v3.81已弃用并删除，请使用v3.9或v3.95")
         elif scoring_version == "v3.8":
             # 初始化v3.80高级机器学习评分引擎 - 🚀 ADVANCED ML SYSTEM
             from ml_models.v38 import V380AdvancedIncrementalMLSystem
             self.scoring_engine_v38 = V380AdvancedIncrementalMLSystem()
             logger.info("🚀 已初始化V3.80高级机器学习系统（三层Ensemble+增量学习+自适应评分）")
         elif scoring_version == "v3.7":
-            # 初始化v3.7高级机器学习评分引擎 - 🚀 ADVANCED ML ENSEMBLE
-            from ml_models.v37 import V370AdvancedMLSystem
-            self.scoring_engine_v37 = V370AdvancedMLSystem(auto_load_model=False)
-            # 尝试加载已训练模型 - 现在支持v4模型（兼容性已修复）
-            if Path('models/v370').exists():
-                # 优先级顺序：quality_optimized > enhanced > models > advanced_v4
-                model_patterns = [
-                    'v370_quality_optimized_*.pkl',  # 质量优化版（兼容性最好）
-                    'v370_enhanced_*.pkl',           # 增强版
-                    'v370_models_*.pkl',             # 基础版
-                    'v370_advanced_v4_*.pkl'         # v4版本（特征不匹配，备用）
-                ]
-
-                latest_model = None
-                for pattern in model_patterns:
-                    model_files = list(Path('models/v370').glob(pattern))
-                    if model_files:
-                        latest_model = max(model_files, key=lambda x: x.stat().st_mtime)
-                        break
-
-                if latest_model:
-                    model_loaded = self.scoring_engine_v37.load_models(latest_model)
-                else:
-                    model_loaded = False
-            else:
-                latest_model = None
-                model_loaded = False
-
-            if model_loaded:
-                logger.info(f"✅ V3.7模型加载成功: {latest_model}")
-            else:
-                logger.warning("⚠️  V3.7模型加载失败，将使用实时训练模式")
-            logger.info("🚀 已初始化v3.7高级机器学习系统（5基础模型+4专家模型+Meta学习器三层ensemble，35+维特征）")
+            raise ValueError("v3.7已弃用并删除，请使用v3.9或v3.95")
         elif scoring_version == "v3.6":
             # 初始化v3.6机器学习评分引擎 - 🆕 MACHINE LEARNING
             from v360_ml_scoring_system import V360MLScoringSystem
             self.scoring_engine_v36 = V360MLScoringSystem()
             # 强制加载模型
-            model_loaded = self.scoring_engine_v36.load_models('models/v360')
+            model_loaded = self.scoring_engine_v36.load_models('ml_models/trained_models/v360')
             if not model_loaded:
                 logger.warning("⚠️  V3.6模型未找到，将使用实时训练模式")
             else:
@@ -240,6 +206,8 @@ class TomorrowStockSelector:
                 'MA60CrossVolumeWaveSelector': selector_module.MA60CrossVolumeWaveSelector,
                 'BigBullishVolumeSelector': selector_module.BigBullishVolumeSelector
             }
+            # 保存预计算函数引用
+            self._precompute_indicators = getattr(selector_module, 'precompute_indicators', None)
             logger.info(f"成功导入 {len(self.selector_classes)} 个选股器类")
             
         except Exception as e:
@@ -631,10 +599,19 @@ class TomorrowStockSelector:
         return max(latest_dates)
         
     def run_selectors(self, data: Dict[str, pd.DataFrame], target_date: pd.Timestamp) -> Dict[str, List[str]]:
-        """运行所有选股策略"""
+        """运行所有选股策略（预计算指标 + 并行执行）"""
+        import time as _time
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
         results = {}
 
-        # 配置七个选股策略
+        # ---- 预计算公共技术指标（BBI/KDJ/DIF/ZX/MA60）----
+        if hasattr(self, '_precompute_indicators') and self._precompute_indicators:
+            t0 = _time.time()
+            self._precompute_indicators(data, target_date)
+            logger.info(f"指标预计算完成, 耗时 {_time.time()-t0:.2f}秒")
+
+        # 配置八个选股策略
         strategies = {
             "少负战法": {
                 "class": "BBIKDJSelector",
@@ -666,7 +643,7 @@ class TomorrowStockSelector:
                 }
             },
             "补票战法": {
-                "class": "BBIShortLongSelector", 
+                "class": "BBIShortLongSelector",
                 "params": {
                     "n_short": 3,
                     "n_long": 21,
@@ -733,25 +710,31 @@ class TomorrowStockSelector:
                 }
             }
         }
-        
-        for strategy_name, config in strategies.items():
-            try:
-                logger.info(f"运行策略: {strategy_name}")
-                
-                # 实例化选股器
-                selector_class = self.selector_classes[config["class"]]
-                selector = selector_class(**config["params"])
-                
-                # 运行选股
-                picks = selector.select(target_date, data)
-                results[strategy_name] = picks
-                
-                logger.info(f"{strategy_name} 选出 {len(picks)} 只股票")
-                
-            except Exception as e:
-                logger.error(f"运行 {strategy_name} 失败: {e}")
-                results[strategy_name] = []
-                
+
+        # ---- 并行执行 8 个策略（线程安全：每个 selector 内部对 hist 做 copy）----
+        def _run_one(strategy_name, config):
+            selector_class = self.selector_classes[config["class"]]
+            selector = selector_class(**config["params"])
+            picks = selector.select(target_date, data)
+            return strategy_name, picks
+
+        t0 = _time.time()
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            futures = {
+                executor.submit(_run_one, name, cfg): name
+                for name, cfg in strategies.items()
+            }
+            for future in as_completed(futures):
+                strategy_name = futures[future]
+                try:
+                    name, picks = future.result()
+                    results[name] = picks
+                    logger.info(f"{name} 选出 {len(picks)} 只股票")
+                except Exception as e:
+                    logger.error(f"运行 {strategy_name} 失败: {e}")
+                    results[strategy_name] = []
+
+        logger.info(f"8个策略并行执行完成, 耗时 {_time.time()-t0:.2f}秒")
         return results
         
     def get_stock_info(self, stock_code: str, data: Dict[str, pd.DataFrame], target_date: pd.Timestamp = None) -> Dict[str, Any]:
@@ -1825,8 +1808,13 @@ class TomorrowStockSelector:
             elif self.scoring_version == "v3.9":
                 # 使用v3.9.0生产版评分系统 - 🏆 PRODUCTION A-GRADE MODEL
                 try:
-                    # 使用V3.9.0的预测接口评估单只股票
-                    result = self.scoring_engine_v39.predict_score(stock_code, trade_date)
+                    # 优先使用批量预计算缓存
+                    if stock_code in self.v39_batch_cache:
+                        result = self.v39_batch_cache[stock_code]
+                        logger.debug(f"使用V3.9缓存结果 {stock_code}")
+                    else:
+                        # 使用V3.9.0的预测接口评估单只股票
+                        result = self.scoring_engine_v39.predict_score(stock_code, trade_date)
 
                     if not result:
                         logger.warning(f"v3.9.0无法获取股票评分 {stock_code}")
@@ -2846,6 +2834,24 @@ class TomorrowStockSelector:
             except Exception as e:
                 logger.warning(f"⚠️ V3.95批量预计算失败，将使用单只评分: {e}")
                 self.v395_batch_cache = {}
+
+        # 🔥 V3.9批量评分预计算（批量SQL + 批量predict）
+        if hasattr(self, 'scoring_version') and self.scoring_version == "v3.9" and all_stocks:
+            try:
+                logger.info(f"🔥 V3.9批量评分预计算：{len(all_stocks)}只股票...")
+                trade_date_str = target_date.strftime('%Y-%m-%d') if hasattr(target_date, 'strftime') else str(target_date)
+
+                batch_results = self.scoring_engine_v39.predict_scores(all_stocks, trade_date_str)
+
+                self.v39_batch_cache = batch_results
+
+                if batch_results:
+                    scores = [r.get('score', 0) for r in batch_results.values()]
+                    if scores:
+                        logger.info(f"✅ V3.9批量预计算完成：{len(batch_results)}只股票，评分范围 {min(scores):.1f}-{max(scores):.1f}")
+            except Exception as e:
+                logger.warning(f"⚠️ V3.9批量预计算失败，将使用单只评分: {e}")
+                self.v39_batch_cache = {}
 
         # 🔥 V3.94批量百分位排名预计算（解决评分集中问题）
         if hasattr(self, 'scoring_version') and self.scoring_version == "v3.94" and all_stocks:

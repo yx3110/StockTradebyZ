@@ -57,7 +57,7 @@ class V394ProductionScorer:
 
         # 设置模型路径
         if model_path is None:
-            model_path = str(self.project_root / 'models' / 'v394' / 'v394_full_model.pkl')
+            model_path = str(self.project_root / 'ml_models' / 'trained_models' / 'v394' / 'v394_full_model.pkl')
         self.model_path = model_path
         self.model = None
         self.feature_names = None

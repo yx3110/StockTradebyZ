@@ -552,7 +552,7 @@ def main():
     parser.add_argument('--val-start', default='2025-07-08')
     parser.add_argument('--val-end', default='2025-09-15')
     parser.add_argument('--test-start', default='2025-09-23')
-    parser.add_argument('--output-dir', default=str(PROJECT_ROOT / 'models' / 'v394'))
+    parser.add_argument('--output-dir', default=str(PROJECT_ROOT / 'ml_models' / 'trained_models' / 'v394'))
 
     args = parser.parse_args()
 

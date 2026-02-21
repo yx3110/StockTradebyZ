@@ -673,7 +673,7 @@ def main():
     parser.add_argument('--val-start', default='2025-07-08', help='验证集开始日期')
     parser.add_argument('--val-end', default='2025-09-15', help='验证集结束日期')
     parser.add_argument('--test-start', default='2025-09-23', help='测试集开始日期')
-    parser.add_argument('--output-dir', default=str(PROJECT_ROOT / 'models' / 'v39'), help='模型输出目录 (V3.9系列)')
+    parser.add_argument('--output-dir', default=str(PROJECT_ROOT / 'ml_models' / 'trained_models' / 'v39'), help='模型输出目录 (V3.9系列)')
 
     args = parser.parse_args()
 

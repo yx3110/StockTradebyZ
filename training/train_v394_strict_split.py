@@ -515,7 +515,7 @@ def main():
     # ============================================================
     # 8. 保存模型
     # ============================================================
-    model_dir = PROJECT_ROOT / 'models' / 'v394'
+    model_dir = PROJECT_ROOT / 'ml_models' / 'trained_models' / 'v394'
     model_dir.mkdir(parents=True, exist_ok=True)
 
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')

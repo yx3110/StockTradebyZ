@@ -220,7 +220,7 @@ class V390CachedTrainer:
 
         return self.meta_model
 
-    def save_model(self, output_path='models/v39'):
+    def save_model(self, output_path='ml_models/trained_models/v39'):
         """保存模型"""
         logger.info("\n" + "="*80)
         logger.info("💾 保存模型...")
@@ -296,7 +296,7 @@ def main():
     parser.add_argument('--db-path', type=str, default=str(PROJECT_ROOT / 'data_adapter' / 'stock_data.db'), help='数据库路径')
     parser.add_argument('--test-size', type=float, default=0.2, help='验证集比例')
     parser.add_argument('--random-state', type=int, default=42, help='随机种子')
-    parser.add_argument('--output-dir', type=str, default=str(PROJECT_ROOT / 'models' / 'v39'), help='模型输出目录')
+    parser.add_argument('--output-dir', type=str, default=str(PROJECT_ROOT / 'ml_models' / 'trained_models' / 'v39'), help='模型输出目录')
 
     args = parser.parse_args()
 

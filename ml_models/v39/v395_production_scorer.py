@@ -33,7 +33,7 @@ class V395ProductionScorer:
             model_type: 'rolling' 或 'small_data'
         """
         self.model_type = model_type
-        self.model_dir = Path(__file__).parent.parent.parent / 'models' / 'v395'
+        self.model_dir = Path(__file__).parent.parent.parent / 'ml_models' / 'trained_models' / 'v395'
         self.db_path = Path(__file__).parent.parent.parent / 'data_adapter' / 'stock_data.db'
 
         # 加载模型配置

@@ -243,7 +243,7 @@ class V391MultiPeriodTrainer:
         self.meta_models[period] = meta_model
         return meta_model
 
-    def save_model(self, output_path='models/v391'):
+    def save_model(self, output_path='ml_models/trained_models/v391'):
         """保存多周期模型"""
         logger.info("\n" + "=" * 80)
         logger.info("💾 保存V3.91多周期模型...")
@@ -362,7 +362,7 @@ def main():
     parser.add_argument('--db-path', type=str, default=str(PROJECT_ROOT / 'data_adapter' / 'stock_data.db'))
     parser.add_argument('--test-size', type=float, default=0.2)
     parser.add_argument('--random-state', type=int, default=42)
-    parser.add_argument('--output-dir', type=str, default=str(PROJECT_ROOT / 'models' / 'v391'))
+    parser.add_argument('--output-dir', type=str, default=str(PROJECT_ROOT / 'ml_models' / 'trained_models' / 'v391'))
 
     args = parser.parse_args()
 

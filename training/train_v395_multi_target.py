@@ -494,7 +494,7 @@ class V395MultiTargetTrainer:
         end_time = datetime.now()
         duration = (end_time - start_time).total_seconds()
 
-        output_dir = PROJECT_ROOT / 'models' / 'v395'
+        output_dir = PROJECT_ROOT / 'ml_models' / 'trained_models' / 'v395'
         output_dir.mkdir(parents=True, exist_ok=True)
 
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
