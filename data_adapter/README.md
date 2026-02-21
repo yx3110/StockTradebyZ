@@ -8,7 +8,6 @@
 data_adapter/
 ├── database_schema.sql          # 数据库表结构定义
 ├── database_manager.py          # 数据库连接和管理
-├── csv_migration.py             # CSV数据迁移工具
 ├── data_access.py              # 数据访问层(DAO)
 ├── backtrader_integration.py   # Backtrader集成
 ├── stock_data.db               # SQLite数据库文件（运行后生成）

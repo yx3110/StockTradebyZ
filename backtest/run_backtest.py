@@ -45,20 +45,17 @@ def main():
         holding_days = 5  # 持股天数
         
         # 数据路径配置
-        stock_data_dir = str(project_root / "full_securities_data")
         reports_dir = str(project_root / "daily_result")
-        
+
         logger.info(f"回测参数:")
         logger.info(f"  - 初始资金: {initial_capital:,.0f}元")
         logger.info(f"  - 回测期间: {start_date} 至 {end_date}")
         logger.info(f"  - 持股天数: {holding_days}天")
-        logger.info(f"  - 股票数据: {stock_data_dir}")
         logger.info(f"  - 选股报告: {reports_dir}")
-        
-        # 3. 加载股票价格数据
+
+        # 3. 加载股票价格数据（从数据库）
         logger.info("2️⃣ 加载股票价格数据...")
         stock_data = backtester.load_stock_data(
-            data_dir=stock_data_dir,
             start_date=start_date,
             end_date=end_date
         )
@@ -117,12 +114,11 @@ def quick_analysis():
     # 检查必要文件
     project_root = Path(__file__).parent.parent
     reports_dir = project_root / "daily_result"
-    data_dir = project_root / "full_securities_data"
-    
+
     # 统计选股报告数量
     report_files = list(reports_dir.glob("选股分析报告_*.md"))
     valid_reports = 0
-    
+
     for report_file in report_files:
         try:
             with open(report_file, 'r', encoding='utf-8') as f:
@@ -131,19 +127,15 @@ def quick_analysis():
                     valid_reports += 1
         except:
             continue
-    
-    # 统计股票数据文件
-    data_files = list(data_dir.glob("*.csv")) if data_dir.exists() else []
-    
+
     logger.info(f"📈 发现 {len(report_files)} 个选股报告文件")
     logger.info(f"✅ 其中 {valid_reports} 个有效交易日报告")
-    logger.info(f"💾 发现 {len(data_files)} 个股票数据文件")
-    
-    if valid_reports > 0 and len(data_files) > 0:
+
+    if valid_reports > 0:
         logger.info("🎯 数据充足，可以执行完整回测")
         return True
     else:
-        logger.warning("⚠️ 数据不足，请先生成选股报告或下载股票数据")
+        logger.warning("⚠️ 数据不足，请先生成选股报告")
         return False
 
 if __name__ == "__main__":

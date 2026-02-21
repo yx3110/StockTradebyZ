@@ -73,7 +73,7 @@ def batch_update_stocks(date_str: str, batch_size: int = 500):
                 if security_id:
                     # 准备日线数据
                     trade_date = pd.to_datetime(row['trade_date'], format='%Y%m%d').strftime('%Y-%m-%d')
-                    
+
                     data_to_insert.append({
                         'security_id': security_id,
                         'trade_date': trade_date,
@@ -86,29 +86,7 @@ def batch_update_stocks(date_str: str, batch_size: int = 500):
                         'is_limit_up': row.get('limit') == 'U' if row.get('limit') else False,
                         'is_limit_down': row.get('limit') == 'D' if row.get('limit') else False
                     })
-                    
-                    # 同时保存到CSV文件（保持向后兼容）
-                    data_dir = Path("full_securities_data")
-                    file_path = data_dir / f"{code}_A股.csv"
-                    
-                    new_row = {
-                        'date': trade_date,
-                        'open': row['open'],
-                        'close': row['close'],
-                        'high': row['high'],
-                        'low': row['low'],
-                        'volume': row['vol']
-                    }
-                    
-                    if file_path.exists():
-                        existing_df = pd.read_csv(file_path)
-                        if new_row['date'] not in existing_df['date'].values:
-                            existing_df = pd.concat([existing_df, pd.DataFrame([new_row])], ignore_index=True)
-                            existing_df = existing_df.sort_values('date')
-                            existing_df.to_csv(file_path, index=False)
-                    else:
-                        pd.DataFrame([new_row]).to_csv(file_path, index=False)
-                    
+
                     success_count += 1
                     
             except Exception as e:
@@ -164,7 +142,7 @@ def batch_update_funds(date_str: str):
                 if security_id:
                     # 准备日线数据
                     trade_date = pd.to_datetime(row['trade_date'], format='%Y%m%d').strftime('%Y-%m-%d')
-                    
+
                     data_to_insert.append({
                         'security_id': security_id,
                         'trade_date': trade_date,
@@ -177,29 +155,7 @@ def batch_update_funds(date_str: str):
                         'is_limit_up': False,
                         'is_limit_down': False
                     })
-                    
-                    # 同时保存到CSV文件（保持向后兼容）
-                    data_dir = Path("full_securities_data")
-                    file_path = data_dir / f"{code}_ETF_基金.csv"
-                    
-                    new_row = {
-                        'date': trade_date,
-                        'open': row['open'],
-                        'close': row['close'],
-                        'high': row['high'],
-                        'low': row['low'],
-                        'volume': row['vol']
-                    }
-                    
-                    if file_path.exists():
-                        existing_df = pd.read_csv(file_path)
-                        if new_row['date'] not in existing_df['date'].values:
-                            existing_df = pd.concat([existing_df, pd.DataFrame([new_row])], ignore_index=True)
-                            existing_df = existing_df.sort_values('date')
-                            existing_df.to_csv(file_path, index=False)
-                    else:
-                        pd.DataFrame([new_row]).to_csv(file_path, index=False)
-                    
+
                     success_count += 1
                     
             except Exception as e:
@@ -267,7 +223,7 @@ def update_market_indices(date_str: str):
                     if security_id:
                         # 准备指数数据
                         trade_date = pd.to_datetime(row['trade_date'], format='%Y%m%d').strftime('%Y-%m-%d')
-                        
+
                         data_to_insert = {
                             'security_id': security_id,
                             'trade_date': trade_date,
@@ -280,33 +236,10 @@ def update_market_indices(date_str: str):
                             'is_limit_up': False,
                             'is_limit_down': False
                         }
-                        
+
                         # 插入数据库
                         db_manager.insert_daily_quotes([data_to_insert])
-                        
-                        # 同时保存到CSV文件（保持向后兼容）
-                        data_dir = Path("full_securities_data")
-                        file_path = data_dir / f"{code.replace('.', '_')}_指数.csv"
-                        
-                        new_row = {
-                            'date': trade_date,
-                            'open': row['open'],
-                            'close': row['close'],
-                            'high': row['high'],
-                            'low': row['low'],
-                            'volume': row.get('vol', 0),
-                            'amount': row.get('amount', 0)
-                        }
-                        
-                        if file_path.exists():
-                            existing_df = pd.read_csv(file_path)
-                            if new_row['date'] not in existing_df['date'].values:
-                                existing_df = pd.concat([existing_df, pd.DataFrame([new_row])], ignore_index=True)
-                                existing_df = existing_df.sort_values('date')
-                                existing_df.to_csv(file_path, index=False)
-                        else:
-                            pd.DataFrame([new_row]).to_csv(file_path, index=False)
-                        
+
                         success_count += 1
                         logger.info(f"更新{name}成功: {row['close']:.2f} ({row.get('pct_chg', 0):+.2f}%)")
                     
@@ -705,9 +638,6 @@ def quick_daily_update(date: str = None, skip_financial: bool = True):
     logger.info(f"开始完整数据更新 {date}")
     logger.info("="*60)
     start_time = time.time()
-
-    # 确保数据目录存在
-    Path("full_securities_data").mkdir(exist_ok=True)
 
     # 统计信息
     stats = {

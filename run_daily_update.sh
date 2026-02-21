@@ -3,7 +3,6 @@
 
 # 配置变量（请根据实际情况修改）
 TUSHARE_TOKEN="YOUR_TUSHARE_TOKEN_HERE"  # 替换为你的Tushare Token
-DATA_DIR="full_securities_data"
 WORKERS=5
 MODE="both"  # 可选: update, report, both, check, ai-enhance
 USE_DATABASE=true  # 使用数据库模式
@@ -217,9 +216,7 @@ show_help() {
     echo "  -m, --mode MODE     运行模式 (update|report|both|check|ai-enhance) [默认: both]"
     echo "  -w, --workers NUM   并发线程数 [默认: 5]"
     echo "  -t, --token TOKEN   Tushare API Token"
-    echo "  -d, --data-dir DIR  数据目录 [默认: full_securities_data]"
-    echo "  --database          启用数据库模式 (快速更新)"
-    echo "  --csv               使用传统CSV模式"
+    echo "  --database          启用数据库模式 (默认)"
     echo "  --enable-ai         启用AI增强报告 [默认启用]"
     echo "  --disable-ai        禁用AI增强报告"
     echo "  --ai-top-n NUM      AI增强分析的股票数量 [默认: 10]"

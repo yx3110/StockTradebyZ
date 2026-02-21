@@ -27,7 +27,6 @@ logs/
 reports/
 
 # Data files
-full_securities_data/
 stock_data.db.backup_*
 *.csv
 *.json.bak

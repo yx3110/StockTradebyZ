@@ -154,7 +154,7 @@ cd incremental_learning/tests && python3 test_v380_basic.py
 - **Primary Storage**: SQLite database `stock_data.db`
 - **Tables**: securities, daily_quotes, technical_indicators, daily_basic, stock_basic_info, stock_signals, backtest_trades, backtest_results
 - **Performance**: Database mode is 1800x faster than CSV mode
-- **Backup**: `full_securities_data/` contains 7,111 CSV files
+- **Storage**: Database-only mode (no CSV backups)
 
 #### 2. **Quantitative Engine** (`stock_selctor/`)
 - **8 Strategies in `Selector.py`**:
@@ -548,7 +548,7 @@ python3 training/train_v395_multi_target.py --help
 ### Data Integrity
 - **NEVER** delete data from SQLite database without backup
 - **ALWAYS** use database transactions for updates
-- **MAINTAIN** CSV backups in `full_securities_data/`
+- **MAINTAIN** regular database backups
 
 ### API Rate Limits
 - Tushare: Respect daily quota limits
@@ -580,7 +580,7 @@ python3 training/train_v395_multi_target.py --help
 - **Basic/Financial**: 5400+ stocks PE/PB/market cap in 10 seconds
 - **Technical Indicators**: 5400+ stocks calculated in 15 seconds
 - **Database Performance**: 1800x faster than CSV mode
-- **Storage**: ~4GB database + CSV backups
+- **Storage**: ~4GB database
 - **Coverage**: 10,073 securities (A-shares, ETFs, indices)
 - **相似度分析**: 4285只A股，25分钟完成全市场扫描
 

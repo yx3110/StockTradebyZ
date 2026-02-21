@@ -43,8 +43,7 @@ ACTIVE_VERSIONS = {'v3.9', 'v3.95'}
 class TomorrowStockSelector:
     """明日股票选择器"""
 
-    def __init__(self, data_dir: str = "full_securities_data", use_database: bool = True, scoring_version: str = "v3.9", stocks_only: bool = False):
-        self.data_dir = Path(data_dir)
+    def __init__(self, scoring_version: str = "v3.9", stocks_only: bool = False, **kwargs):
         self.use_database = True  # 强制使用数据库模式
         self.selectors = {}
         self.data_cache = {}
@@ -321,7 +320,7 @@ class TomorrowStockSelector:
             all_securities = all_securities[['ts_code', 'code', 'name', 'type', 'market', 'industry', 'area', 'list_date']]
             
             # 保存到文件
-            securities_file = self.data_dir / "securities_list.csv"
+            securities_file = Path("securities_list.csv")
             all_securities.to_csv(securities_file, index=False, encoding='utf-8')
             
             logger.info(f"成功更新证券列表，共{len(all_securities)}只证券")
