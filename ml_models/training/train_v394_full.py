@@ -17,6 +17,7 @@ V3.9.4 完整模型训练脚本
 创建时间: 2025-11-28
 """
 
+import sys
 import numpy as np
 import pandas as pd
 import sqlite3

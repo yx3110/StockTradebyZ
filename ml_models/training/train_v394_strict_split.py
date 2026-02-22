@@ -20,6 +20,7 @@ V3.9.4 严格时间分割训练脚本
 创建时间: 2025-11-28
 """
 
+import sys
 import numpy as np
 import pandas as pd
 import sqlite3

@@ -135,6 +135,8 @@ class V395MultiTargetTrainer:
         self.scaler = None
         self.feature_names = None
 
+        self.winsorize_bounds = None
+
         # 多目标权重 (可调整)
         self.target_weights = {
             'label_3d': 0.4,   # 短期收益权重最高
@@ -155,14 +157,28 @@ class V395MultiTargetTrainer:
         if end_date:
             date_filter += f" AND v.trade_date <= '{end_date}'"
 
+        # 过滤:
+        # 1. 三个标签都非空
+        # 2. 排除停牌日 (volume=0)
+        # 3. 排除交易日 <30 天的低历史股票
         query = f"""
         SELECT
             v.code, v.trade_date, v.features_json,
             v.label_3d, v.label_5d, v.label_10d
         FROM v39_feature_cache v
+        JOIN securities s ON v.code = s.code
+        JOIN daily_quotes q ON q.security_id = s.id AND q.trade_date = v.trade_date
         WHERE v.label_3d IS NOT NULL
           AND v.label_5d IS NOT NULL
           AND v.label_10d IS NOT NULL
+          AND q.volume > 0
+          AND v.code IN (
+              SELECT s2.code FROM daily_quotes q2
+              JOIN securities s2 ON q2.security_id = s2.id
+              WHERE s2.type = 'A股'
+              GROUP BY s2.code
+              HAVING COUNT(*) >= 30
+          )
           {date_filter}
         ORDER BY v.trade_date, v.code
         """
@@ -170,7 +186,7 @@ class V395MultiTargetTrainer:
         df = pd.read_sql(query, conn)
         conn.close()
 
-        logger.info(f"  原始记录: {len(df):,}")
+        logger.info(f"  原始记录: {len(df):,} (已过滤停牌日+低历史股票)")
 
         # 解析特征JSON
         features_list = []
@@ -193,11 +209,56 @@ class V395MultiTargetTrainer:
         market_features = self.market_calculator.calculate_market_features()
         df_features = df_features.merge(market_features, on='trade_date', how='left')
 
-        # 删除缺失值
-        df_features = df_features.dropna()
+        # 统一缺失值处理: fillna(0) + 日志告警 (与 V3.90 一致，保留样本更重要)
+        missing_count = df_features.isnull().sum().sum()
+        total_cells = df_features.shape[0] * df_features.shape[1]
+        if missing_count > 0:
+            missing_pct = missing_count / total_cells * 100
+            logger.warning(f"⚠️  检测到 {missing_count:,} 个缺失值 ({missing_pct:.2f}%)，使用 0 填充")
+            # 按列统计缺失比例较高的特征
+            col_missing = df_features.isnull().sum()
+            high_missing = col_missing[col_missing > 0].sort_values(ascending=False).head(10)
+            for col, cnt in high_missing.items():
+                logger.warning(f"    {col}: {cnt:,} 缺失 ({cnt/len(df_features)*100:.1f}%)")
+            df_features = df_features.fillna(0)
         logger.info(f"  合并市场特征后: {len(df_features):,}")
 
         return df_features
+
+    def winsorize_features(self, X: np.ndarray, lower_pct: float = 1, upper_pct: float = 99) -> tuple:
+        """
+        Per-feature winsorization: 将每列裁剪到 [1st, 99th] percentile
+
+        比硬裁剪 np.clip(-10, 10) 更好：
+        - 保留极端行情信号的相对排序
+        - 适应每个特征的自然尺度
+        - 避免将所有异常值映射到同一个值
+
+        Args:
+            X: 特征矩阵 (n_samples, n_features)
+            lower_pct: 下界百分位
+            upper_pct: 上界百分位
+
+        Returns:
+            (X_winsorized, bounds): 裁剪后的矩阵和每列的 (lo, hi) bounds
+        """
+        X_w = X.copy()
+        bounds = []
+        for i in range(X.shape[1]):
+            col = X[:, i]
+            valid = col[~np.isnan(col)]
+            if len(valid) == 0:
+                bounds.append((0.0, 0.0))
+                continue
+            lo = float(np.percentile(valid, lower_pct))
+            hi = float(np.percentile(valid, upper_pct))
+            if lo == hi:
+                # 避免常量列裁剪
+                bounds.append((lo, hi))
+                continue
+            X_w[:, i] = np.clip(col, lo, hi)
+            bounds.append((lo, hi))
+        return X_w, bounds
 
     def prepare_features(self, df: pd.DataFrame) -> tuple:
         """准备特征和标签"""
@@ -215,8 +276,9 @@ class V395MultiTargetTrainer:
         y_5d = df['label_5d'].values
         y_10d = df['label_10d'].values
 
-        # 特征裁剪（避免极端值）
-        X = np.clip(X, -10, 10)
+        # Per-feature winsorization (替代硬裁剪 np.clip(-10, 10))
+        X, self.winsorize_bounds = self.winsorize_features(X)
+        logger.info(f"  特征 winsorization: {len(self.winsorize_bounds)} 列, 1st/99th percentile")
 
         return X, y_3d, y_5d, y_10d, df
 
@@ -401,6 +463,77 @@ class V395MultiTargetTrainer:
             result += weights[name] * pred
         return result
 
+    def _log_feature_importance(self, all_results: dict, top_n: int = 20):
+        """
+        提取并打印各目标、各模型的特征重要性
+
+        Args:
+            all_results: {'3d': {'models': {...}, ...}, '5d': ..., '10d': ...}
+            top_n: 打印的前 N 个特征
+        """
+        logger.info("\n" + "=" * 60)
+        logger.info("📊 特征重要性分析")
+        logger.info("=" * 60)
+
+        all_importances = {}
+
+        for target_name, result in all_results.items():
+            models = result.get('models', {})
+            for model_name, model in models.items():
+                importance = None
+                try:
+                    if model_name == 'lgb' and hasattr(model, 'feature_importance'):
+                        importance = model.feature_importance(importance_type='gain')
+                    elif model_name == 'xgb':
+                        # xgb.Booster uses get_score
+                        score = model.get_score(importance_type='gain')
+                        if self.feature_names:
+                            importance = np.zeros(len(self.feature_names))
+                            for feat, val in score.items():
+                                # xgb features are named f0, f1, ...
+                                idx = int(feat.replace('f', ''))
+                                if idx < len(importance):
+                                    importance[idx] = val
+                    elif hasattr(model, 'feature_importances_'):
+                        importance = model.feature_importances_
+                except Exception as e:
+                    logger.debug(f"  {target_name}/{model_name} 特征重要性提取失败: {e}")
+                    continue
+
+                if importance is None or self.feature_names is None:
+                    continue
+
+                key = f"{target_name}_{model_name}"
+                feat_imp = sorted(zip(self.feature_names, importance), key=lambda x: x[1], reverse=True)
+                all_importances[key] = {f: float(v) for f, v in feat_imp}
+
+                logger.info(f"\n🔹 {key} Top {top_n}:")
+                for rank, (feat, imp) in enumerate(feat_imp[:top_n], 1):
+                    logger.info(f"  {rank:2d}. {feat:<35s} {imp:.4f}")
+
+        # 计算全局平均
+        if all_importances and self.feature_names:
+            avg_importance = {}
+            for feat in self.feature_names:
+                values = [imp.get(feat, 0) for imp in all_importances.values()]
+                avg_importance[feat] = float(np.mean(values))
+            avg_sorted = sorted(avg_importance.items(), key=lambda x: x[1], reverse=True)
+
+            logger.info(f"\n🔹 全局平均特征重要性 Top {top_n}:")
+            for rank, (feat, imp) in enumerate(avg_sorted[:top_n], 1):
+                logger.info(f"  {rank:2d}. {feat:<35s} {imp:.4f}")
+
+            all_importances['global_average'] = dict(avg_sorted)
+
+        # 保存到 JSON
+        output_dir = PROJECT_ROOT / 'ml_models' / 'trained_models' / 'v395'
+        output_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        importance_path = output_dir / f"v395_feature_importance_{timestamp}.json"
+        with open(importance_path, 'w', encoding='utf-8') as f:
+            json.dump(all_importances, f, indent=2, ensure_ascii=False)
+        logger.info(f"\n💾 特征重要性已保存: {importance_path}")
+
     def train(self, start_date: str = None, end_date: str = None, purge_days: int = 10):
         """完整训练流程"""
         start_time = datetime.now()
@@ -517,7 +650,10 @@ class V395MultiTargetTrainer:
         logger.info(f"  IC: {ic:.4f}")
         logger.info(f"  方向准确率: {direction_acc:.4f}")
 
-        # 7. 保存模型
+        # 7. 特征重要性分析
+        self._log_feature_importance(all_results)
+
+        # 8. 保存模型
         end_time = datetime.now()
         duration = (end_time - start_time).total_seconds()
 
@@ -530,7 +666,8 @@ class V395MultiTargetTrainer:
             'models': all_results,
             'feature_names': self.feature_names,
             'target_weights': self.target_weights,
-            'market_features': list(self.market_calculator.market_features.columns[1:])
+            'market_features': list(self.market_calculator.market_features.columns[1:]),
+            'winsorize_bounds': getattr(self, 'winsorize_bounds', None),
         }
 
         model_path = output_dir / f'v395_multi_target_{timestamp}.pkl'

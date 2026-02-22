@@ -8,6 +8,7 @@ import os
 import sys
 import json
 import pickle
+import joblib
 import numpy as np
 import pandas as pd
 from pathlib import Path
@@ -89,15 +90,28 @@ class V395ProductionScorer:
         model_files = list(self.model_dir.glob('v395_multi_target_*.pkl'))
         if model_files:
             latest = max(model_files, key=lambda f: f.stat().st_mtime)
-            with open(latest, 'rb') as f:
-                model_data = pickle.load(f)
-                self.models = model_data.get('models', {})
-                self.weights = model_data.get('ensemble_weights', {})
-                self.scaler = model_data.get('scaler')
-                self.feature_cols = model_data.get('feature_cols', [])
-                self.market_feature_cols = model_data.get('market_feature_cols', [])
+            try:
+                model_data = joblib.load(latest)
+            except Exception:
+                with open(latest, 'rb') as f:
+                    model_data = pickle.load(f)
+            raw_models = model_data.get('models', {})
+            # 处理嵌套结构: {target: {models: {name: model}, weights: {...}}}
+            self.models = {}
+            self.weights = model_data.get('ensemble_weights', {})
+            for target, target_data in raw_models.items():
+                if isinstance(target_data, dict) and 'models' in target_data:
+                    self.models[target] = target_data['models']
+                    if not self.weights:
+                        self.weights[f'label_{target}'] = target_data.get('weights', {})
+                else:
+                    self.models[target] = target_data
+            self.scaler = model_data.get('scaler')
+            self.feature_cols = model_data.get('feature_names', model_data.get('feature_cols', []))
+            self.market_feature_cols = model_data.get('market_features', model_data.get('market_feature_cols', []))
+            self.target_weights = model_data.get('target_weights', self.target_weights)
 
-        print(f"V3.95 SmallData模型加载完成")
+        print(f"V3.95 SmallData模型加载完成: {list(self.models.keys())}")
 
     def _get_features(self, stock_codes: List[str], date: str) -> Optional[pd.DataFrame]:
         """获取股票特征"""
@@ -313,10 +327,16 @@ class V395ProductionScorer:
                 results[code] = {'score': 50.0, 'pred_3d': 0, 'pred_5d': 0, 'pred_10d': 0}
             return results
 
-        # 准备特征矩阵 - 使用缓存中实际存在的特征
-        # 排除非特征列
+        # 准备特征矩阵 - 使用模型训练时的特征列顺序
         exclude_cols = {'code', 'trade_date'}
-        available_cols = [c for c in features_df.columns if c not in exclude_cols]
+        if self.feature_cols:
+            # 按训练时的特征顺序对齐，缺失列填0
+            for col in self.feature_cols:
+                if col not in features_df.columns:
+                    features_df[col] = 0
+            available_cols = self.feature_cols
+        else:
+            available_cols = [c for c in features_df.columns if c not in exclude_cols]
 
         X = features_df[available_cols].fillna(0).values
         X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
@@ -386,6 +406,181 @@ class V395ProductionScorer:
             }
 
         # 对于没有特征的股票，返回默认分数
+        for code in stock_codes:
+            if code not in results:
+                results[code] = {'score': 50.0, 'pred_3d': 0, 'pred_5d': 0, 'pred_10d': 0}
+
+        return results
+
+    def preload_feature_cache(self, dates: List[str]) -> Dict[str, pd.DataFrame]:
+        """
+        批量预加载多个日期的特征缓存（用于批量报告生成）
+
+        一条 SQL WHERE trade_date IN (...) 查询所有日期的 v39_feature_cache，
+        包含 features_json 和 market_* 列。
+
+        Args:
+            dates: 日期列表 ['YYYY-MM-DD', ...]
+
+        Returns:
+            {date: features_DataFrame} 字典，每个 DataFrame 包含 code 列和所有特征列
+        """
+        result = {d: None for d in dates}
+        if not dates:
+            return result
+
+        conn = sqlite3.connect(self.db_path)
+        try:
+            placeholders = ','.join(['?' for _ in dates])
+            query = f"""
+            SELECT code, trade_date, features_json,
+                   market_return_20d, market_return_10d, market_return_5d,
+                   market_volatility_20d, market_volatility_10d,
+                   market_up_ratio_20d, market_up_ratio_10d,
+                   market_drawdown_20d, market_volume_ratio,
+                   market_position_20d, market_momentum_20d, market_momentum_5d
+            FROM v39_feature_cache
+            WHERE trade_date IN ({placeholders})
+            """
+            df = pd.read_sql_query(query, conn, params=dates)
+            conn.close()
+
+            if df.empty:
+                return result
+
+            # 按日期分组处理
+            for date, date_df in df.groupby('trade_date'):
+                features_list = []
+                valid_codes = []
+
+                for _, row in date_df.iterrows():
+                    try:
+                        features = json.loads(row['features_json'])
+                        features_list.append(features)
+                        valid_codes.append(row['code'])
+                    except (json.JSONDecodeError, TypeError):
+                        continue
+
+                if not features_list:
+                    continue
+
+                features_df = pd.DataFrame(features_list)
+                features_df['code'] = valid_codes
+
+                # 添加市场特征
+                market_cols = [c for c in date_df.columns if c.startswith('market_')]
+                df_market = date_df[date_df['code'].isin(valid_codes)][['code'] + market_cols].reset_index(drop=True)
+                features_df = features_df.merge(df_market, on='code', how='left')
+
+                result[date] = features_df
+
+            total = sum(len(v) for v in result.values() if v is not None)
+            print(f"V3.95特征缓存预加载完成: {len(dates)}天, {total}条记录")
+
+        except Exception as e:
+            print(f"V3.95特征缓存预加载失败: {e}")
+            if conn:
+                conn.close()
+
+        return result
+
+    def predict_scores_from_preloaded(self, stock_codes: List[str], date: str,
+                                       features_df: Optional[pd.DataFrame]) -> Dict[str, Dict]:
+        """
+        使用预加载的特征进行评分预测（跳过SQL查询）
+
+        Args:
+            stock_codes: 股票代码列表
+            date: 交易日期
+            features_df: 预加载的特征 DataFrame（含 code 列），可为 None
+
+        Returns:
+            Dict[股票代码, {score, pred_3d, pred_5d, pred_10d}]
+        """
+        results = {}
+
+        # 如果没有预加载数据，过滤出请求的股票
+        if features_df is None or len(features_df) == 0:
+            for code in stock_codes:
+                results[code] = {'score': 50.0, 'pred_3d': 0, 'pred_5d': 0, 'pred_10d': 0}
+            return results
+
+        # 过滤出请求的股票代码
+        mask = features_df['code'].isin(stock_codes)
+        filtered_df = features_df[mask].copy()
+
+        if len(filtered_df) == 0:
+            for code in stock_codes:
+                results[code] = {'score': 50.0, 'pred_3d': 0, 'pred_5d': 0, 'pred_10d': 0}
+            return results
+
+        # 以下逻辑复用 predict_scores 的核心路径
+        exclude_cols = {'code', 'trade_date'}
+        if self.feature_cols:
+            for col in self.feature_cols:
+                if col not in filtered_df.columns:
+                    filtered_df[col] = 0
+            available_cols = self.feature_cols
+        else:
+            available_cols = [c for c in filtered_df.columns if c not in exclude_cols]
+
+        X = filtered_df[available_cols].fillna(0).values
+        X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
+
+        model_predictions_success = False
+        predictions = {'3d': np.zeros(len(X)), '5d': np.zeros(len(X)), '10d': np.zeros(len(X))}
+
+        for target in ['3d', '5d', '10d']:
+            if target not in self.models or not self.models[target]:
+                continue
+
+            target_pred = np.zeros(len(X))
+            total_weight = 0
+            success_count = 0
+
+            for name, model in self.models[target].items():
+                try:
+                    pred = model.predict(X)
+                    weight = self.weights.get(f'label_{target}', {}).get(name, 0.2)
+                    target_pred += weight * pred
+                    total_weight += weight
+                    success_count += 1
+                except Exception:
+                    continue
+
+            if total_weight > 0:
+                target_pred /= total_weight
+                predictions[target] = target_pred
+                if success_count > 0:
+                    model_predictions_success = True
+
+        if model_predictions_success:
+            combined_pred = (
+                self.target_weights['label_3d'] * predictions['3d'] +
+                self.target_weights['label_5d'] * predictions['5d'] +
+                self.target_weights['label_10d'] * predictions['10d']
+            )
+        else:
+            combined_pred = self._calculate_fallback_scores(filtered_df, available_cols)
+            predictions = self._estimate_predictions_from_features(filtered_df, available_cols)
+
+        if len(combined_pred) > 1:
+            from scipy import stats
+            ranks = stats.rankdata(combined_pred)
+            percentiles = (ranks - 1) / (len(ranks) - 1) * 100
+            scores = 30 + percentiles * 0.6
+        else:
+            scores = np.array([60.0])
+
+        codes = filtered_df['code'].tolist()
+        for i, code in enumerate(codes):
+            results[code] = {
+                'score': float(scores[i]),
+                'pred_3d': float(predictions['3d'][i]) if i < len(predictions['3d']) else 0,
+                'pred_5d': float(predictions['5d'][i]) if i < len(predictions['5d']) else 0,
+                'pred_10d': float(predictions['10d'][i]) if i < len(predictions['10d']) else 0
+            }
+
         for code in stock_codes:
             if code not in results:
                 results[code] = {'score': 50.0, 'pred_3d': 0, 'pred_5d': 0, 'pred_10d': 0}

@@ -92,15 +92,15 @@ def bbi_deriv_uptrend(
     q_threshold: float = 0.0,
 ) -> bool:
     """
-    判断 BBI 是否“整体上升”。
+    判断 BBI 是否整体上升。
 
-    令最新交易日为 T，在区间 [T-w+1, T]（w 自适应，w ≥ min_window 且 ≤ max_window）
+    令最新交易日为 T，在区间 [T-w+1, T] (w 自适应, w >= min_window 且 <= max_window)
     内，先将 BBI 归一化：BBI_norm(t) = BBI(t) / BBI(T-w+1)。
 
-    再计算一阶差分 Δ(t) = BBI_norm(t) - BBI_norm(t-1)。  
-    若 Δ(t) 的前 q_threshold 分位数 ≥ 0，则认为该窗口通过；只要存在
-    **最长** 满足条件的窗口即可返回 True。q_threshold=0 时退化为
-    “全程单调不降”（旧版行为）。
+    再计算一阶差分 d(t) = BBI_norm(t) - BBI_norm(t-1)。
+    若 d(t) 的前 q_threshold 分位数 >= 0，则认为该窗口通过；只要存在
+    最长满足条件的窗口即可返回 True。q_threshold=0 时退化为
+    全程单调不降（旧版行为）。
 
     Parameters
     ----------
@@ -111,25 +111,38 @@ def bbi_deriv_uptrend(
     max_window : int | None
         检测窗口的最大长度；None 表示不设上限。
     q_threshold : float, default 0.0
-        允许一阶差分为负的比例（0 ≤ q_threshold ≤ 1）。
+        允许一阶差分为负的比例 (0 <= q_threshold <= 1)。
     """
     if not 0.0 <= q_threshold <= 1.0:
-        raise ValueError("q_threshold 必须位于 [0, 1] 区间内")
+        raise ValueError("q_threshold must be in [0, 1]")
 
-    bbi = bbi.dropna()
-    if len(bbi) < min_window:
+    vals = bbi.dropna().values
+    n = len(vals)
+    if n < min_window:
         return False
 
-    longest = min(len(bbi), max_window or len(bbi))
+    longest = min(n, max_window or n)
 
-    # 自最长窗口向下搜索，找到任一满足条件的区间即通过
-    for w in range(longest, min_window - 1, -1):
-        seg = bbi.iloc[-w:]                # 区间 [T-w+1, T]
-        norm = seg / seg.iloc[0]           # 归一化
-        diffs = np.diff(norm.values)       # 一阶差分
-        if np.quantile(diffs, q_threshold) >= 0:
-            return True
-    return False
+    # 预计算一次所有差分（归一化不改变差分的正负号，因为除以正常数）
+    all_diffs = np.diff(vals[-longest:])
+
+    if q_threshold == 0.0:
+        # 特殊优化：q=0 等价于要求所有差分 ≥ 0（单调不降）
+        # 只需找到从末尾往前最长的连续非负差分段
+        neg_mask = all_diffs < 0
+        if not neg_mask.any():
+            return True  # 所有差分非负，最长窗口直接通过
+        last_neg_pos = np.where(neg_mask)[0][-1]
+        suffix_window = len(all_diffs) - last_neg_pos  # 非负后缀对应的窗口大小
+        return suffix_window >= min_window
+    else:
+        # 一般情况：使用纯 numpy 数组操作，避免 pandas 开销
+        for w in range(longest, min_window - 1, -1):
+            ndiffs = w - 1
+            window_diffs = all_diffs[-ndiffs:]
+            if np.quantile(window_diffs, q_threshold) >= 0:
+                return True
+        return False
 
 
 def _find_peaks(
@@ -198,31 +211,13 @@ class BBIKDJSelector:
 
     # ---------- 单支股票过滤 ---------- #
     def _passes_filters(self, hist: pd.DataFrame) -> bool:
-        hist = hist.copy()
-        if "BBI" not in hist.columns:
-            hist["BBI"] = compute_bbi(hist)
+        # ---- 快速标量检查（不需要 copy）----
 
-        # 0. 收盘价波动幅度约束（最近 max_window 根 K 线）
-        win = hist.tail(self.max_window)
-        high, low = win["close"].max(), win["close"].min()
-        if low <= 0 or (high / low - 1) > self.price_range_pct:
-            return False
-
-        # 1. BBI 上升（允许部分回撤）
-        if not bbi_deriv_uptrend(
-            hist["BBI"],
-            min_window=self.bbi_min_window,
-            max_window=self.max_window,
-            q_threshold=self.bbi_q_threshold,
-        ):
-            return False
-
-        # 2. KDJ 过滤 —— 双重条件
+        # 1. KDJ 过滤 —— 双重条件（最便宜的检查，先执行）
         if "J" not in hist.columns:
             hist = compute_kdj(hist)
-        j_today = float(hist.iloc[-1]["J"])
+        j_today = float(hist["J"].iloc[-1])
 
-        # 最近 max_window 根 K 线的 J 分位
         j_window = hist["J"].tail(self.max_window).dropna()
         if j_window.empty:
             return False
@@ -231,10 +226,34 @@ class BBIKDJSelector:
         if not (j_today < self.j_threshold or j_today <= j_quantile):
             return False
 
-        # 3. MACD：DIF > 0
+        # 2. MACD：DIF > 0
         if "DIF" not in hist.columns:
+            hist = hist.copy()
             hist["DIF"] = compute_dif(hist)
-        return hist["DIF"].iloc[-1] > 0
+        if hist["DIF"].iloc[-1] <= 0:
+            return False
+
+        # 3. 收盘价波动幅度约束（最近 max_window 根 K 线）
+        win = hist.tail(self.max_window)
+        high, low = win["close"].max(), win["close"].min()
+        if low <= 0 or (high / low - 1) > self.price_range_pct:
+            return False
+
+        # ---- 昂贵检查：BBI 上升趋势（仅对通过上述快速检查的股票执行）----
+        if "BBI" not in hist.columns:
+            if not hasattr(hist, '_is_copy'):
+                hist = hist.copy()
+            hist["BBI"] = compute_bbi(hist)
+
+        if not bbi_deriv_uptrend(
+            hist["BBI"],
+            min_window=self.bbi_min_window,
+            max_window=self.max_window,
+            q_threshold=self.bbi_q_threshold,
+        ):
+            return False
+
+        return True
 
     # ---------- 多股票批量 ---------- #
     def select(
@@ -317,11 +336,25 @@ class SuperB1Selector:
         if len(hist) < self.lookback_n + self._extra_for_bbi:
             return False
 
-        # ---------- Step-1: 搜索满足 BBIKDJ 的 t_m ----------
+        # ---------- Step-3: 当日相对前一日跌幅（便宜检查，提前执行）----------
+        close_today, close_prev = hist["close"].iloc[-1], hist["close"].iloc[-2]
+        if close_prev <= 0 or (close_prev - close_today) / close_prev < self.price_drop_pct:
+            return False
+
+        # ---------- Step-4: J 值极低（便宜检查，提前执行）----------
+        if "J" not in hist.columns:
+            hist = compute_kdj(hist)
+        j_today = float(hist["J"].iloc[-1])
+        j_window = hist["J"].iloc[-self.lookback_n:].dropna()
+        j_q_val = float(j_window.quantile(self.j_q_threshold)) if not j_window.empty else np.nan
+        if not (j_today < self.j_threshold or j_today <= j_q_val):
+            return False
+
+        # ---------- Step-1: 搜索满足 BBIKDJ 的 t_m（昂贵操作，最后执行）----------
         lb_hist = hist.tail(self.lookback_n + 1)  # +1 以排除自身
         tm_idx: int | None = None
         # 遍历回溯窗口
-        for idx in lb_hist.index[:-1]:            
+        for idx in lb_hist.index[:-1]:
             if self.bbi_selector._passes_filters(hist.loc[:idx]):
                 tm_idx = idx
                 stable_seg = hist.loc[tm_idx : hist.index[-2], "close"]
@@ -329,27 +362,12 @@ class SuperB1Selector:
                     tm_idx = None
                     break
                 high, low = stable_seg.max(), stable_seg.min()
-                if low <= 0 or (high / low - 1) > self.close_vol_pct:                                      
+                if low <= 0 or (high / low - 1) > self.close_vol_pct:
                     tm_idx = None
                     continue
                 else:
                     break
-        if tm_idx is None:            
-            return False        
-        
-
-        # ---------- Step-3: 当日相对前一日跌幅 ----------
-        close_today, close_prev = hist["close"].iloc[-1], hist["close"].iloc[-2]
-        if close_prev <= 0 or (close_prev - close_today) / close_prev < self.price_drop_pct:            
-            return False
-
-        # ---------- Step-4: J 值极低 ----------
-        if "J" not in hist.columns:
-            hist = compute_kdj(hist)
-        j_today = float(hist["J"].iloc[-1])
-        j_window = hist["J"].iloc[-self.lookback_n:].dropna()
-        j_q_val = float(j_window.quantile(self.j_q_threshold)) if not j_window.empty else np.nan
-        if not (j_today < self.j_threshold or j_today <= j_q_val):
+        if tm_idx is None:
             return False
 
         return True
@@ -389,11 +407,22 @@ class PeakKDJSelector:
         self.j_q_threshold = j_q_threshold
 
     # ---------- 单支股票过滤 ---------- #
-        # ---------- 单支股票过滤 ---------- #
     def _passes_filters(self, hist: pd.DataFrame) -> bool:
         if hist.empty:
             return False
 
+        # ---- 快速 KDJ 检查（便宜标量检查，提前执行）----
+        if "J" not in hist.columns:
+            hist = compute_kdj(hist)
+        j_today = float(hist["J"].iloc[-1])
+        j_window = hist["J"].tail(self.max_window).dropna()
+        if j_window.empty:
+            return False
+        j_quantile = float(j_window.quantile(self.j_q_threshold))
+        if not (j_today < self.j_threshold or j_today <= j_quantile):
+            return False
+
+        # ---- 以下为昂贵的 peak 检测操作 ----
         hist = hist.copy().sort_values("date")
         hist["oc_max"] = hist[["open", "close"]].max(axis=1)
 
@@ -404,11 +433,11 @@ class PeakKDJSelector:
             distance=6,
             prominence=0.5,
         )
-        
-        # 至少两个峰      
+
+        # 至少两个峰
         date_today = hist.iloc[-1]["date"]
         peaks_df = peaks_df[peaks_df["date"] < date_today]
-        if len(peaks_df) < 2:               
+        if len(peaks_df) < 2:
             return False
 
         peak_t = peaks_df.iloc[-1]          # 最新一个峰
@@ -417,14 +446,14 @@ class PeakKDJSelector:
         total_peaks = len(peaks_list)
 
         # 2. 回溯寻找 peak_(t-n)
-        target_peak = None        
+        target_peak = None
         for idx in range(total_peaks - 2, -1, -1):
             peak_prev = peaks_list.loc[idx]
             oc_prev = peak_prev.oc_max
             if oc_t <= oc_prev:             # 要求 peak_t > peak_(t-n)
                 continue
 
-            # 只有当“总峰数 ≥ 3”时才检查区间内其他峰 oc_max
+            # 只有当"总峰数 ≥ 3"时才检查区间内其他峰 oc_max
             if total_peaks >= 3 and idx < total_peaks - 2:
                 inter_oc = peaks_list.loc[idx + 1 : total_peaks - 2, "oc_max"]
                 if not (inter_oc < oc_prev).all():
@@ -440,7 +469,7 @@ class PeakKDJSelector:
                 continue
 
             target_peak = peak_prev
-            
+
             break
 
         if target_peak is None:
@@ -450,17 +479,6 @@ class PeakKDJSelector:
         close_today = hist.iloc[-1]["close"]
         fluc_pct = abs(close_today - target_peak.close) / target_peak.close
         if fluc_pct > self.fluc_threshold:
-            return False
-
-        # 4. KDJ 过滤
-        if "J" not in hist.columns:
-            hist = compute_kdj(hist)
-        j_today = float(hist.iloc[-1]["J"])
-        j_window = hist["J"].tail(self.max_window).dropna()
-        if j_window.empty:
-            return False
-        j_quantile = float(j_window.quantile(self.j_q_threshold))
-        if not (j_today < self.j_threshold or j_today <= j_quantile):
             return False
 
         return True
@@ -506,11 +524,18 @@ class BBIShortLongSelector:
 
     # ---------- 单支股票过滤 ---------- #
     def _passes_filters(self, hist: pd.DataFrame) -> bool:
-        hist = hist.copy()
+        # ---- 快速标量检查：DIF > 0（便宜检查，提前执行）----
+        if "DIF" not in hist.columns:
+            hist = hist.copy()
+            hist["DIF"] = compute_dif(hist)
+        if hist["DIF"].iloc[-1] <= 0:
+            return False
+
+        # ---- BBI 上升（允许部分回撤）----
         if "BBI" not in hist.columns:
+            hist = hist.copy() if not hasattr(hist, '_bbi_set') else hist
             hist["BBI"] = compute_bbi(hist)
 
-        # 1. BBI 上升（允许部分回撤）
         if not bbi_deriv_uptrend(
             hist["BBI"],
             min_window=self.bbi_min_window,
@@ -519,8 +544,8 @@ class BBIShortLongSelector:
         ):
             return False
 
-        # 2. 计算短/长期 RSV -----------------
-        # RSV参数因策略而异，不做预计算guard
+        # ---- RSV 条件（需要 copy 来添加列）----
+        hist = hist.copy()
         hist["RSV_short"] = compute_rsv(hist, self.n_short)
         hist["RSV_long"] = compute_rsv(hist, self.n_long)
 
@@ -539,10 +564,7 @@ class BBIShortLongSelector:
         if not (long_ok and short_start_end_ok and short_has_below_20):
             return False
 
-        # 3. MACD：DIF > 0 -------------------
-        if "DIF" not in hist.columns:
-            hist["DIF"] = compute_dif(hist)
-        return hist["DIF"].iloc[-1] > 0
+        return True
 
     # ---------- 多股票批量 ---------- #
     def select(
@@ -831,7 +853,7 @@ class MA60CrossVolumeWaveSelector:
         j_today = float(hist["J"].iloc[-1])
 
         # 计算J值分位数（最近max_window根K线）
-        j_window = kdj["J"].tail(self.max_window).dropna()
+        j_window = hist["J"].tail(self.max_window).dropna()
         if j_window.empty:
             return False
         j_quantile = float(j_window.quantile(self.j_q_threshold))
@@ -1121,34 +1143,59 @@ def precompute_indicators(data: Dict[str, pd.DataFrame], target_date: pd.Timesta
 
     Args:
         data: {code: DataFrame} 字典，每个 DF 含 date/open/high/low/close/volume
+              如果已经预截断（所有行 <= target_date），则跳过日期过滤
         target_date: 目标日期（用于截取有效数据范围）
     """
     for code, df in data.items():
-        hist = df[df["date"] <= target_date]
-        if len(hist) < 20:
+        if len(df) < 20:
             continue
 
-        # BBI
-        if "BBI" not in hist.columns:
-            df.loc[hist.index, "BBI"] = compute_bbi(hist).values
+        # 如果数据已预截断，直接使用（快速路径）；否则过滤
+        pre_truncated = df["date"].iloc[-1] <= target_date
+        if pre_truncated:
+            hist = df
+        else:
+            hist = df[df["date"] <= target_date]
+            if len(hist) < 20:
+                continue
 
-        # KDJ
-        if "K" not in hist.columns or "D" not in hist.columns or "J" not in hist.columns:
-            kdj = compute_kdj(hist)
-            df.loc[hist.index, "K"] = kdj["K"].values
-            df.loc[hist.index, "D"] = kdj["D"].values
-            df.loc[hist.index, "J"] = kdj["J"].values
-
-        # DIF (MACD)
-        if "DIF" not in hist.columns:
-            df.loc[hist.index, "DIF"] = compute_dif(hist).values
-
-        # 知行线
-        if "ZXDQ" not in hist.columns or "ZXDKX" not in hist.columns:
-            zxdq, zxdkx = compute_zx_lines(hist)
-            df.loc[hist.index, "ZXDQ"] = zxdq.values
-            df.loc[hist.index, "ZXDKX"] = zxdkx.values
-
-        # MA60
-        if "MA60" not in hist.columns:
-            df.loc[hist.index, "MA60"] = hist["close"].rolling(window=60, min_periods=60).mean().values
+        if pre_truncated:
+            # 快速路径：直接赋值列，跳过 .loc 索引对齐（快 ~2x）
+            if "BBI" not in df.columns:
+                df["BBI"] = compute_bbi(df)
+            if "K" not in df.columns:
+                kdj = compute_kdj(df)
+                df["K"] = kdj["K"].values
+                df["D"] = kdj["D"].values
+                df["J"] = kdj["J"].values
+            if "DIF" not in df.columns:
+                df["DIF"] = compute_dif(df)
+            if "ZXDQ" not in df.columns:
+                zxdq, zxdkx = compute_zx_lines(df)
+                df["ZXDQ"] = zxdq.values
+                df["ZXDKX"] = zxdkx.values
+            if "MA60" not in df.columns:
+                df["MA60"] = df["close"].rolling(window=60, min_periods=60).mean()
+        else:
+            # 慢速路径：需要 .loc 索引对齐
+            if "BBI" not in df.columns:
+                df["BBI"] = np.nan
+                df.loc[hist.index, "BBI"] = compute_bbi(hist).values
+            if "K" not in df.columns or "D" not in df.columns or "J" not in df.columns:
+                kdj = compute_kdj(hist)
+                for col in ("K", "D", "J"):
+                    if col not in df.columns:
+                        df[col] = np.nan
+                    df.loc[hist.index, col] = kdj[col].values
+            if "DIF" not in df.columns:
+                df["DIF"] = np.nan
+                df.loc[hist.index, "DIF"] = compute_dif(hist).values
+            if "ZXDQ" not in df.columns or "ZXDKX" not in df.columns:
+                zxdq, zxdkx = compute_zx_lines(hist)
+                for col, vals in (("ZXDQ", zxdq), ("ZXDKX", zxdkx)):
+                    if col not in df.columns:
+                        df[col] = np.nan
+                    df.loc[hist.index, col] = vals.values
+            if "MA60" not in df.columns:
+                df["MA60"] = np.nan
+                df.loc[hist.index, "MA60"] = hist["close"].rolling(window=60, min_periods=60).mean().values

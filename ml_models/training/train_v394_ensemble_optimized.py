@@ -14,6 +14,7 @@ V3.9.4 三层Ensemble训练脚本 - 优化版
 创建时间: 2025-12-14
 """
 
+import sys
 import numpy as np
 import pandas as pd
 import sqlite3

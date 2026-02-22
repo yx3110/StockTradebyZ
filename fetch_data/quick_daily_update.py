@@ -630,6 +630,46 @@ def update_squeeze_momentum_indicators(date_str: str):
         logger.warning(f"⚠️ 挤压动量指标更新异常: {e}")
         return 0
 
+def update_sw_index_daily(date_str: str):
+    """更新申万行业指数日线数据"""
+    logger.info(f"开始更新 {date_str} 的申万行业指数数据...")
+
+    try:
+        from fetch_data.sw_daily_fetcher import SWDailyFetcher
+
+        fetcher = SWDailyFetcher()
+        count = fetcher.fetch_single_date(date_str)
+        if count > 0:
+            logger.info(f"申万行业指数更新完成: {count} 条")
+        else:
+            logger.info("申万行业指数: 无数据 (可能非交易日)")
+        return count
+
+    except Exception as e:
+        logger.warning(f"申万行业指数更新异常: {e}")
+        return 0
+
+
+def update_hsgt_daily(date_str: str):
+    """更新沪深港通资金流向数据"""
+    logger.info(f"开始更新 {date_str} 的北向资金数据...")
+
+    try:
+        from fetch_data.hsgt_daily_fetcher import HSGTDailyFetcher
+
+        fetcher = HSGTDailyFetcher()
+        count = fetcher.fetch_single_date(date_str)
+        if count > 0:
+            logger.info(f"北向资金数据更新完成: {count} 条")
+        else:
+            logger.info("北向资金: 无数据 (可能非交易日)")
+        return count
+
+    except Exception as e:
+        logger.warning(f"北向资金更新异常: {e}")
+        return 0
+
+
 def check_sw_industry(date_str: str):
     """检查并更新申万行业分类 (月度更新)"""
     logger.info("检查申万行业分类数据...")
@@ -667,6 +707,8 @@ def quick_daily_update(date: str = None, skip_financial: bool = True):
         'indices': 0,
         'basic': 0,
         'sw_industry': 0,
+        'sw_index': 0,      # 申万行业指数日线
+        'hsgt': 0,           # 北向资金
         'financial': 0,
         'technical': 0,
         'squeeze_momentum': 0,
@@ -675,56 +717,66 @@ def quick_daily_update(date: str = None, skip_financial: bool = True):
     }
 
     # 1. 批量更新市场行情（A股）
-    logger.info("【步骤1/10】更新A股市场行情...")
+    logger.info("【步骤1/12】更新A股市场行情...")
     stats['quotes'] += batch_update_stocks(date)
 
     # 短暂休息避免API限制
     time.sleep(2)
 
     # 2. 批量更新ETF/基金
-    logger.info("【步骤2/10】更新ETF/基金行情...")
+    logger.info("【步骤2/12】更新ETF/基金行情...")
     stats['quotes'] += batch_update_funds(date)
 
     # 3. 更新大盘指数数据
     time.sleep(2)
-    logger.info("【步骤3/10】更新大盘指数数据...")
+    logger.info("【步骤3/12】更新大盘指数数据...")
     stats['indices'] = update_market_indices(date)
 
     # 4. 更新基本面指标
     time.sleep(2)
-    logger.info("【步骤4/10】更新基本面指标...")
+    logger.info("【步骤4/12】更新基本面指标...")
     stats['basic'] = update_daily_basic(date)
 
-    # 4.5. 检查申万行业分类 (月度更新)
-    logger.info("【步骤5/10】检查申万行业分类 (月度更新)...")
+    # 5. 检查申万行业分类 (月度更新)
+    logger.info("【步骤5/12】检查申万行业分类 (月度更新)...")
     stats['sw_industry'] = check_sw_industry(date)
 
-    # 5. 更新财务指标（如果有）
+    # 6. 更新申万行业指数日线
+    time.sleep(1)
+    logger.info("【步骤6/12】更新申万行业指数日线...")
+    stats['sw_index'] = update_sw_index_daily(date)
+
+    # 7. 更新北向资金数据
+    time.sleep(1)
+    logger.info("【步骤7/12】更新北向资金数据...")
+    stats['hsgt'] = update_hsgt_daily(date)
+
+    # 8. 更新财务指标（如果有）
     if not skip_financial:
         time.sleep(2)
-        logger.info("【步骤6/10】检查财务指标更新...")
+        logger.info("【步骤8/12】检查财务指标更新...")
         stats['financial'] = update_financial_indicators(date)
     else:
-        logger.info("【步骤6/10】跳过财务指标更新...")
+        logger.info("【步骤8/12】跳过财务指标更新...")
         stats['financial'] = 0
 
-    # 6. 计算技术指标
-    logger.info("【步骤7/10】计算技术指标...")
+    # 9. 计算技术指标
+    logger.info("【步骤9/12】计算技术指标...")
     stats['technical'] = calculate_technical_indicators(date)
 
-    # 7. 更新挤压动量指标 (v3.2新增)
+    # 10. 更新挤压动量指标 (v3.2新增)
     time.sleep(1)
-    logger.info("【步骤8/10】更新挤压动量指标...")
+    logger.info("【步骤10/12】更新挤压动量指标...")
     stats['squeeze_momentum'] = update_squeeze_momentum_indicators(date)
 
-    # 8. 更新V3.9.4活跃市值特征
+    # 11. 更新V3.9.4活跃市值特征
     time.sleep(1)
-    logger.info("【步骤9/10】更新V3.9.4活跃市值特征...")
+    logger.info("【步骤11/12】更新V3.9.4活跃市值特征...")
     stats['active_mv'] = update_active_mv_features(date)
 
-    # 9. 更新V3.9/V3.95特征缓存 (ML评分系统)
+    # 12. 更新V3.9/V3.95特征缓存 (ML评分系统)
     time.sleep(1)
-    logger.info("【步骤10/10】更新V3.9/V3.95特征缓存...")
+    logger.info("【步骤12/12】更新V3.9/V3.95特征缓存...")
     stats['v39_cache'] = update_v39_feature_cache(date)
 
     end_time = time.time()
@@ -747,6 +799,8 @@ def quick_daily_update(date: str = None, skip_financial: bool = True):
     logger.info(f"大盘指数: {stats['indices']:,} 条")
     logger.info(f"基本面指标: {stats['basic']:,} 条")
     logger.info(f"申万行业分类: {stats['sw_industry']:,} 条")
+    logger.info(f"申万行业指数: {stats['sw_index']:,} 条")
+    logger.info(f"北向资金: {stats['hsgt']:,} 条")
     logger.info(f"财务指标: {stats['financial']:,} 条")
     logger.info(f"技术指标: {stats['technical']:,} 条")
     logger.info(f"挤压动量指标: {stats['squeeze_momentum']:,} 只股票")

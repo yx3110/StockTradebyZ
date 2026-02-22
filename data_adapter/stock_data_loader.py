@@ -167,6 +167,74 @@ class StockDataLoader:
         logger.info(f"[逐只模式] 成功加载 {len(data)} 只证券的数据, 总耗时 {t1-t0:.2f}秒")
         return data
     
+    def load_all_stock_data_wide(self, start_date: str, end_date: str,
+                                 lookback_days: int = 200,
+                                 security_types: Optional[List[str]] = None) -> Dict[str, pd.DataFrame]:
+        """
+        加载宽日期范围的股票数据（用于批量报告生成）
+
+        一次SQL查询加载 [start_date - lookback_days, end_date] 全部数据，
+        避免每个日期重复查询。
+
+        Args:
+            start_date: 报告起始日期 YYYY-MM-DD
+            end_date: 报告结束日期 YYYY-MM-DD
+            lookback_days: 每个日期需要的历史回看天数
+            security_types: 证券类型列表
+
+        Returns:
+            {stock_code: DataFrame} 字典
+        """
+        if security_types is None:
+            security_types = ['A股']
+
+        data_start = datetime.strptime(start_date, '%Y-%m-%d').date() - timedelta(days=lookback_days)
+        data_end = datetime.strptime(end_date, '%Y-%m-%d').date()
+
+        t0 = time.time()
+        logger.info(f"[宽范围模式] 加载 {data_start} 到 {data_end} 的数据...")
+
+        with self.db_manager.get_connection() as conn:
+            type_placeholders = ','.join(['?' for _ in security_types])
+
+            query = f"""
+            SELECT
+                s.code,
+                dq.trade_date as date,
+                dq.open,
+                dq.high,
+                dq.low,
+                dq.close,
+                dq.volume
+            FROM daily_quotes dq
+            JOIN securities s ON dq.security_id = s.id
+            WHERE s.is_active = 1
+                AND s.type IN ({type_placeholders})
+                AND dq.trade_date >= ?
+                AND dq.trade_date <= ?
+            ORDER BY s.code, dq.trade_date
+            """
+
+            params = list(security_types) + [str(data_start), str(data_end)]
+
+            t1 = time.time()
+            all_df = pd.read_sql_query(query, conn, params=params, parse_dates=['date'])
+            t2 = time.time()
+            logger.info(f"[宽范围模式] SQL查询完成: {len(all_df)} 行, 耗时 {t2-t1:.2f}秒")
+
+        if all_df.empty:
+            logger.warning("[宽范围模式] 未查询到任何数据")
+            return {}
+
+        data = {}
+        for code, group_df in all_df.groupby('code'):
+            if len(group_df) >= 20:
+                data[code] = group_df.drop(columns=['code']).reset_index(drop=True)
+
+        t3 = time.time()
+        logger.info(f"[宽范围模式] 成功加载 {len(data)} 只证券的数据, 总耗时 {t3-t0:.2f}秒")
+        return data
+
     def load_securities_info(self) -> Dict[str, Dict]:
         """加载证券基本信息"""
         securities_info = {}

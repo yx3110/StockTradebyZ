@@ -11,11 +11,13 @@
 创建时间: 2025-11-28
 """
 
+import sys
 import numpy as np
 import pandas as pd
 import sqlite3
 from datetime import datetime
 import logging
+from pathlib import Path
 from tqdm import tqdm
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent

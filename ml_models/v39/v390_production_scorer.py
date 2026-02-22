@@ -11,6 +11,7 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 import pickle
+import json
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
@@ -63,22 +64,139 @@ class V390ProductionScorer:
         logger.info(f"   评分: {self.model_info.get('evaluation', {}).get('综合评分', 'N/A')}/100")
 
     def _load_model(self):
-        """加载训练好的模型"""
+        """加载训练好的模型（支持新旧两种格式）"""
         if not Path(self.model_path).exists():
             raise FileNotFoundError(f"模型文件不存在: {self.model_path}")
 
         with open(self.model_path, 'rb') as f:
             model_data = pickle.load(f)
 
-        self.model = model_data['model']
-        self.feature_names = model_data['feature_names']
-        self.n_features = model_data['n_features']
-        self.model_info = model_data
+        if 'base_models' in model_data:
+            # 新格式: train_v390_from_cache.py 产出的 ensemble 模型
+            self.base_models = model_data['base_models']  # {name: model}
+            self.meta_model = model_data['meta_model']    # GradientBoostingRegressor
+            self.model = None  # 标记为 ensemble 模式
+            # 从第一个基础模型推断特征名
+            first_model = list(self.base_models.values())[0]
+            if hasattr(first_model, 'feature_name_'):
+                self.feature_names = first_model.feature_name_
+            elif hasattr(first_model, 'feature_names_in_'):
+                self.feature_names = list(first_model.feature_names_in_)
+            else:
+                self.feature_names = None
+            self.n_features = len(self.feature_names) if self.feature_names else 0
+            self.model_info = model_data
+            self._ensemble_mode = True
+            logger.info(f"✅ 加载Ensemble模型成功: {self.model_path}")
+            logger.info(f"   基础模型: {list(self.base_models.keys())}")
+            logger.info(f"   元模型: {type(self.meta_model).__name__}")
+            logger.info(f"   特征数: {self.n_features}")
+        else:
+            # 旧格式: 单一模型
+            self.model = model_data['model']
+            self.feature_names = model_data['feature_names']
+            self.n_features = model_data['n_features']
+            self.model_info = model_data
+            self._ensemble_mode = False
+            self.base_models = None
+            self.meta_model = None
+            logger.info(f"✅ 加载模型成功: {self.model_path}")
+            logger.info(f"   版本: {model_data.get('version', 'v3.9.0')}")
+            logger.info(f"   训练样本: {model_data.get('train_samples', 'N/A'):,}")
+            logger.info(f"   测试样本: {model_data.get('test_samples', 'N/A'):,}")
 
-        logger.info(f"✅ 加载模型成功: {self.model_path}")
-        logger.info(f"   版本: {model_data.get('version', 'v3.9.0')}")
-        logger.info(f"   训练样本: {model_data.get('train_samples', 'N/A'):,}")
-        logger.info(f"   测试样本: {model_data.get('test_samples', 'N/A'):,}")
+    def _predict(self, features):
+        """统一预测接口，支持 ensemble 和单模型两种模式"""
+        if self._ensemble_mode:
+            # Ensemble: 每个基础模型预测 → stack → 元模型预测
+            base_preds = np.column_stack([
+                model.predict(features) for model in self.base_models.values()
+            ])
+            return self.meta_model.predict(base_preds)
+        else:
+            return self.model.predict(features)
+
+    def _get_features_from_cache(self, code: str, trade_date: str) -> Optional[pd.DataFrame]:
+        """
+        从 v39_feature_cache 读取预计算特征（与训练一致）
+
+        Args:
+            code: 股票代码
+            trade_date: 交易日期 YYYY-MM-DD
+
+        Returns:
+            特征 DataFrame (1行) 或 None
+        """
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cursor = conn.execute("""
+                SELECT features_json FROM v39_feature_cache
+                WHERE code = ? AND trade_date = ?
+            """, (code, trade_date))
+            row = cursor.fetchone()
+            if not row or not row[0]:
+                return None
+
+            features_dict = json.loads(row[0])
+            feature_df = pd.DataFrame([features_dict])
+
+            # 确保列顺序和训练时一致
+            if self.feature_names:
+                # 添加缺失的列（填0），删除多余的列
+                for col in self.feature_names:
+                    if col not in feature_df.columns:
+                        feature_df[col] = 0
+                feature_df = feature_df[self.feature_names]
+
+            return feature_df
+
+        except Exception as e:
+            logger.debug(f"从缓存读取特征失败 {code}: {e}")
+            return None
+        finally:
+            conn.close()
+
+    def _get_features_from_cache_batch(self, codes: List[str], trade_date: str) -> Dict[str, Optional[pd.DataFrame]]:
+        """
+        批量从 v39_feature_cache 读取特征
+
+        Args:
+            codes: 股票代码列表
+            trade_date: 交易日期
+
+        Returns:
+            {code: feature_DataFrame 或 None}
+        """
+        result = {code: None for code in codes}
+        conn = sqlite3.connect(self.db_path)
+        try:
+            placeholders = ','.join(['?' for _ in codes])
+            cursor = conn.execute(f"""
+                SELECT code, features_json FROM v39_feature_cache
+                WHERE code IN ({placeholders}) AND trade_date = ?
+            """, codes + [trade_date])
+
+            for code, features_json in cursor.fetchall():
+                try:
+                    features_dict = json.loads(features_json)
+                    feature_df = pd.DataFrame([features_dict])
+
+                    if self.feature_names:
+                        for col in self.feature_names:
+                            if col not in feature_df.columns:
+                                feature_df[col] = 0
+                        feature_df = feature_df[self.feature_names]
+
+                    result[code] = feature_df
+                except Exception as e:
+                    logger.debug(f"解析缓存特征失败 {code}: {e}")
+
+        except Exception as e:
+            logger.warning(f"批量缓存读取失败: {e}")
+        finally:
+            conn.close()
+
+        return result
 
     def extract_features(self, code: str, trade_date: str) -> Optional[pd.DataFrame]:
         """
@@ -512,6 +630,9 @@ class V390ProductionScorer:
         """
         预测单只股票的评分
 
+        优先从 v39_feature_cache 读取特征（与训练一致），
+        缓存无数据时 fallback 到 extract_features()。
+
         Args:
             code: 股票代码
             trade_date: 交易日期
@@ -519,8 +640,12 @@ class V390ProductionScorer:
         Returns:
             评分结果字典
         """
-        # 提取特征
-        features = self.extract_features(code, trade_date)
+        # 优先从缓存读取特征（与训练数据一致）
+        features = self._get_features_from_cache(code, trade_date)
+
+        # 缓存无数据时 fallback 到原始特征计算
+        if features is None:
+            features = self.extract_features(code, trade_date)
 
         if features is None:
             logger.warning(f"无法提取特征: {code}，尝试使用备用评分")
@@ -532,7 +657,7 @@ class V390ProductionScorer:
 
         # 预测
         try:
-            prediction = self.model.predict(features)[0]
+            prediction = self._predict(features)[0]
 
             # 转换为0-100评分
             # prediction是5日收益率预测，需要映射到评分
@@ -569,12 +694,19 @@ class V390ProductionScorer:
         if not codes:
             return {}
 
-        # 尝试批量提取特征
-        try:
-            batch_features = self._extract_features_batch(codes, trade_date)
-        except Exception as e:
-            logger.warning(f"批量特征提取失败，回退到逐只提取: {e}")
-            batch_features = {}
+        # 优先从缓存批量读取特征（与训练一致）
+        batch_features = self._get_features_from_cache_batch(codes, trade_date)
+
+        # 找出缓存中没有的股票，用原始方法补充
+        missing_codes = [c for c in codes if batch_features.get(c) is None]
+        if missing_codes:
+            logger.info(f"缓存命中 {len(codes)-len(missing_codes)}/{len(codes)}, "
+                        f"回退提取 {len(missing_codes)} 只")
+            try:
+                fallback_features = self._extract_features_batch(missing_codes, trade_date)
+                batch_features.update(fallback_features)
+            except Exception as e:
+                logger.warning(f"批量特征提取失败，回退到逐只提取: {e}")
 
         results = {}
 
@@ -596,7 +728,7 @@ class V390ProductionScorer:
                     all_features = all_features.fillna(all_features.median())
 
                     # 批量预测
-                    predictions = self.model.predict(all_features)
+                    predictions = self._predict(all_features)
 
                     for i, code in enumerate(valid_codes):
                         pred = predictions[i]
@@ -750,6 +882,138 @@ class V390ProductionScorer:
             if conn:
                 conn.close()
             raise
+
+    def preload_feature_cache(self, dates: List[str]) -> Dict[str, pd.DataFrame]:
+        """
+        批量预加载多个日期的特征缓存（用于批量报告生成）
+
+        一条 SQL + pd.read_sql_query 批量加载，按日期分组返回 DataFrame。
+        与 V3.95 共用相同的返回格式: {date: DataFrame_with_code_column}
+
+        Args:
+            dates: 日期列表 ['YYYY-MM-DD', ...]
+
+        Returns:
+            {date: features_DataFrame} 字典，每个 DataFrame 含 code 列和特征列
+        """
+        result = {d: None for d in dates}
+        if not dates:
+            return result
+
+        conn = sqlite3.connect(self.db_path)
+        try:
+            placeholders = ','.join(['?' for _ in dates])
+            df = pd.read_sql_query(f"""
+                SELECT code, trade_date, features_json FROM v39_feature_cache
+                WHERE trade_date IN ({placeholders})
+            """, conn, params=dates)
+            conn.close()
+
+            if df.empty:
+                return result
+
+            # 按日期分组，批量解析 JSON
+            for date, date_df in df.groupby('trade_date'):
+                features_list = []
+                valid_codes = []
+
+                for _, row in date_df.iterrows():
+                    try:
+                        features = json.loads(row['features_json'])
+                        features_list.append(features)
+                        valid_codes.append(row['code'])
+                    except (json.JSONDecodeError, TypeError):
+                        continue
+
+                if not features_list:
+                    continue
+
+                features_df = pd.DataFrame(features_list)
+                features_df['code'] = valid_codes
+
+                # 对齐特征列
+                if self.feature_names:
+                    for col in self.feature_names:
+                        if col not in features_df.columns:
+                            features_df[col] = 0
+
+                result[date] = features_df
+
+            total = sum(len(v) for v in result.values() if v is not None)
+            logger.info(f"✅ V3.9特征缓存预加载完成: {len(dates)}天, {total}条记录")
+
+        except Exception as e:
+            logger.warning(f"特征缓存预加载失败: {e}")
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+        return result
+
+    def predict_scores_from_preloaded(self, codes: List[str], trade_date: str,
+                                       preloaded_features) -> Dict[str, Dict]:
+        """
+        使用预加载的特征进行批量预测（跳过SQL查询）
+
+        Args:
+            codes: 股票代码列表
+            trade_date: 交易日期
+            preloaded_features: DataFrame（含 code 列）或 None
+
+        Returns:
+            {code: 评分结果} 字典
+        """
+        if not codes:
+            return {}
+
+        results = {}
+
+        # 从 DataFrame 中过滤出请求的股票
+        if preloaded_features is not None and len(preloaded_features) > 0:
+            mask = preloaded_features['code'].isin(codes)
+            filtered_df = preloaded_features[mask].copy()
+
+            if len(filtered_df) > 0:
+                try:
+                    valid_codes = filtered_df['code'].tolist()
+
+                    # 准备特征矩阵
+                    if self.feature_names:
+                        feature_cols = self.feature_names
+                    else:
+                        feature_cols = [c for c in filtered_df.columns if c != 'code']
+
+                    all_features = filtered_df[feature_cols].fillna(filtered_df[feature_cols].median())
+                    predictions = self._predict(all_features)
+
+                    for i, code in enumerate(valid_codes):
+                        pred = predictions[i]
+                        score = self._convert_prediction_to_score(pred)
+                        feat_row = filtered_df.iloc[[i]][feature_cols]
+                        results[code] = {
+                            'code': code,
+                            'trade_date': trade_date,
+                            'score': score,
+                            'predicted_return_5d': pred,
+                            'confidence': self._calculate_confidence(feat_row, pred),
+                            'recommendation': self._get_recommendation(score),
+                            'scoring_method': 'V3.9.0_Production',
+                            'model_grade': 'A',
+                            'model_accuracy': 0.6730,
+                            'model_ic': 0.4892
+                        }
+                except Exception as e:
+                    logger.error(f"预加载特征批量predict失败: {e}")
+
+        # 对缺失特征的股票走单只 fallback
+        for code in codes:
+            if code not in results:
+                result = self.predict_score(code, trade_date)
+                if result:
+                    results[code] = result
+
+        return results
 
     def _convert_prediction_to_score(self, prediction: float) -> float:
         """

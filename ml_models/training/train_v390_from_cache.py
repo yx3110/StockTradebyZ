@@ -55,18 +55,31 @@ class V390CachedTrainer:
 
         conn = sqlite3.connect(self.db_path)
 
-        # 查询所有有效样本（按时间排序）
+        # 查询有效样本：
+        # 1. label_5d 非空
+        # 2. 排除停牌日 (base_date volume=0)
+        # 3. 排除交易日 <30 天的低历史股票
         query = """
-            SELECT code, trade_date, features_json, label_5d
-            FROM v39_feature_cache
-            WHERE label_5d IS NOT NULL
-            ORDER BY trade_date, code
+            SELECT v.code, v.trade_date, v.features_json, v.label_5d
+            FROM v39_feature_cache v
+            JOIN securities s ON v.code = s.code
+            JOIN daily_quotes q ON q.security_id = s.id AND q.trade_date = v.trade_date
+            WHERE v.label_5d IS NOT NULL
+              AND q.volume > 0
+              AND v.code IN (
+                  SELECT s2.code FROM daily_quotes q2
+                  JOIN securities s2 ON q2.security_id = s2.id
+                  WHERE s2.type = 'A股'
+                  GROUP BY s2.code
+                  HAVING COUNT(*) >= 30
+              )
+            ORDER BY v.trade_date, v.code
         """
 
         df = pd.read_sql_query(query, conn)
         conn.close()
 
-        logger.info(f"✅ 加载 {len(df):,} 个样本")
+        logger.info(f"✅ 加载 {len(df):,} 个样本 (已过滤停牌日+低历史股票)")
 
         if len(df) < min_samples:
             raise ValueError(f"样本数不足！需要至少{min_samples}个，实际{len(df)}个")
@@ -341,7 +354,10 @@ class V390CachedTrainer:
         # 4. 训练元模型（在验证集OOF预测上训练，测试集上评估）
         self.train_meta_model(X_val, y_val, X_test, y_test)
 
-        # 5. 保存模型
+        # 5. 输出特征重要性
+        self._log_feature_importance(X_train.columns.tolist())
+
+        # 6. 保存模型
         model_path = self.save_model()
 
         logger.info("\n" + "="*80)
@@ -349,6 +365,64 @@ class V390CachedTrainer:
         logger.info("="*80)
 
         return model_path
+
+    def _log_feature_importance(self, feature_names: list, top_n: int = 20):
+        """
+        提取并打印各模型的特征重要性 Top N，保存到 JSON 文件
+
+        Args:
+            feature_names: 特征名称列表
+            top_n: 打印的前 N 个特征
+        """
+        logger.info("\n" + "="*80)
+        logger.info("📊 特征重要性分析")
+        logger.info("="*80)
+
+        all_importances = {}
+
+        for name, model in self.models.items():
+            importance = None
+            try:
+                if hasattr(model, 'feature_importances_'):
+                    importance = model.feature_importances_
+                elif hasattr(model, 'feature_importance'):
+                    importance = model.feature_importance()
+            except Exception as e:
+                logger.debug(f"  {name} 无法提取特征重要性: {e}")
+                continue
+
+            if importance is None:
+                continue
+
+            # 构建 (feature, importance) 对并排序
+            feat_imp = sorted(zip(feature_names, importance), key=lambda x: x[1], reverse=True)
+            all_importances[name] = {f: float(v) for f, v in feat_imp}
+
+            logger.info(f"\n🔹 {name} Top {top_n} 特征:")
+            for rank, (feat, imp) in enumerate(feat_imp[:top_n], 1):
+                logger.info(f"  {rank:2d}. {feat:<35s} {imp:.4f}")
+
+        # 计算平均重要性
+        if all_importances:
+            avg_importance = {}
+            for feat in feature_names:
+                values = [imp.get(feat, 0) for imp in all_importances.values()]
+                avg_importance[feat] = float(np.mean(values))
+            avg_sorted = sorted(avg_importance.items(), key=lambda x: x[1], reverse=True)
+
+            logger.info(f"\n🔹 平均特征重要性 Top {top_n}:")
+            for rank, (feat, imp) in enumerate(avg_sorted[:top_n], 1):
+                logger.info(f"  {rank:2d}. {feat:<35s} {imp:.4f}")
+
+            all_importances['average'] = dict(avg_sorted)
+
+        # 保存到 JSON
+        output_dir = Path(PROJECT_ROOT / 'ml_models' / 'trained_models' / 'v39')
+        output_dir.mkdir(parents=True, exist_ok=True)
+        importance_path = output_dir / f"v390_feature_importance_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        with open(importance_path, 'w', encoding='utf-8') as f:
+            json.dump(all_importances, f, indent=2, ensure_ascii=False)
+        logger.info(f"\n💾 特征重要性已保存: {importance_path}")
 
 
 def main():

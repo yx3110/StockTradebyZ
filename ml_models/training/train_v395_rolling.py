@@ -58,11 +58,11 @@ class V395RollingTrainer:
         }
 
         # 模型目录
-        self.model_dir = Path(__file__).parent.parent / 'ml_models' / 'trained_models' / 'v395'
+        self.model_dir = PROJECT_ROOT / 'ml_models' / 'trained_models' / 'v395'
         self.model_dir.mkdir(parents=True, exist_ok=True)
 
         # 数据库路径
-        self.db_path = Path(__file__).parent / 'data_adapter' / 'stock_data.db'
+        self.db_path = PROJECT_ROOT / 'data_adapter' / 'stock_data.db'
 
         # 特征列表（从v39_feature_cache）
         self.feature_cols = None

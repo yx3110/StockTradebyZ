@@ -10,6 +10,7 @@
 创建时间: 2025-11-28
 """
 
+import sys
 import pandas as pd
 import tushare as ts
 import sqlite3
@@ -17,6 +18,7 @@ import json
 import time
 import logging
 from datetime import datetime, timedelta
+from pathlib import Path
 from tqdm import tqdm
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
