@@ -673,6 +673,7 @@ class V40FeatureCacheUpdater:
                    COUNT(*) as total
             FROM daily_quotes q JOIN securities s ON q.security_id = s.id
             WHERE s.type = 'A股' AND q.trade_date <= ?
+            GROUP BY q.trade_date
             ORDER BY q.trade_date DESC LIMIT 5
         """, conn, params=(date,))
         conn.close()
