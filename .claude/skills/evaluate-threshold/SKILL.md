@@ -1,58 +1,47 @@
 ---
 name: evaluate-threshold
-description: "Evaluate ML model score thresholds for V3.9/V3.95 to find optimal stock filtering cutoffs based on 3d/5d/10d expected returns"
+description: "Evaluate ML model score thresholds to find optimal stock filtering cutoffs based on 3d/5d/10d expected returns. Supports any model version (v3.9, v3.95, v4.0, etc.)"
 disable-model-invocation: true
-argument-hint: "[target daily count, default 10] [--v39-csv path] [--v395-csv path]"
+argument-hint: "[--models v3.9 v3.95 v4.0] [--target 10] [--csv model=path ...]"
 allowed-tools: Bash(python3 *), Read, Glob, Grep
 ---
 
 # Evaluate ML Score Thresholds
 
-Analyze V3.9 and V3.95 model scores to find optimal thresholds that filter stocks for next-day watchlist. The threshold is calibrated so that stocks scoring above it have the best 3d/5d/10d expected returns while keeping the daily count manageable.
+Analyze any ML model version's scores to find optimal thresholds that filter stocks for next-day watchlist. The threshold is calibrated so that stocks scoring above it have the best 3d/5d/10d expected returns while keeping the daily count manageable.
 
 ## Arguments
 
-- `$ARGUMENTS`: Optional arguments passed directly to the evaluation script. Common options:
+- `$ARGUMENTS`: Passed directly to the evaluation script. Key options:
+  - `--models v3.9 v3.95 v4.0`: Model versions to analyze (default: auto-discover all available)
   - `--target N`: Target daily stock count (default: 10)
-  - `--v39-csv <path>`: Specify V3.9 picks CSV file
-  - `--v395-csv <path>`: Specify V3.95 picks CSV file
-  - `--v39-dir <path>`: V3.9 report directory (generates picks first)
-  - `--v395-dir <path>`: V3.95 report directory (generates picks first)
-  - `--regenerate`: Regenerate picks data using backtest_report_based.py before analysis
-  - `--no-dual`: Skip dual-model cross analysis
+  - `--csv model=path`: Manually specify CSV file per model (e.g., `v4.0=reports/backtest/some_picks.csv`)
+  - `--dirs model=dir`: Report directory per model, generates picks first
+  - `--regenerate`: Regenerate all picks data before analysis
+  - `--no-cross`: Skip dual-model cross analysis
 
 ## Execution Steps
 
 ### Step 1: Check for existing picks data
 
-Look for recent picks CSV files in `reports/backtest/`:
-
 ```bash
 python3 -c "
 from glob import glob
 import os
+from datetime import datetime
 search_dir = '/Users/yangxu/StockTradebyZ/reports/backtest'
-patterns = [
-    'report_backtest_*v39*_picks.csv',
-    'report_backtest_*v395*_picks.csv',
-    'ml_backtest_v39_*_picks.csv',
-    'ml_backtest_v395_*_picks.csv',
-]
-for p in patterns:
-    files = sorted(glob(os.path.join(search_dir, p)), key=os.path.getmtime, reverse=True)
-    if files:
-        f = files[0]
-        mtime = os.path.getmtime(f)
-        from datetime import datetime
-        dt = datetime.fromtimestamp(mtime).strftime('%Y-%m-%d %H:%M')
+for pattern in ['report_backtest_*_picks.csv', 'ml_backtest_*_picks.csv']:
+    files = sorted(glob(os.path.join(search_dir, pattern)), key=os.path.getmtime, reverse=True)
+    for f in files[:5]:
+        dt = datetime.fromtimestamp(os.path.getmtime(f)).strftime('%Y-%m-%d %H:%M')
         size = os.path.getsize(f) / 1024
         print(f'{dt} ({size:.0f}KB) {os.path.basename(f)}')
 "
 ```
 
-If no picks CSV files exist, inform the user they need to generate them first:
+If no picks CSV files exist for the requested models, inform the user they need to generate them first:
 ```bash
-python3 /Users/yangxu/StockTradebyZ/backtest/backtest_report_based.py --all
+python3 /Users/yangxu/StockTradebyZ/backtest/backtest_report_based.py --report-dir <报告目录> --label <标签>
 ```
 
 ### Step 2: Run threshold evaluation
@@ -61,31 +50,46 @@ python3 /Users/yangxu/StockTradebyZ/backtest/backtest_report_based.py --all
 python3 /Users/yangxu/StockTradebyZ/backtest/evaluate_score_threshold.py $ARGUMENTS
 ```
 
-If `$ARGUMENTS` is empty, runs with defaults (auto-find latest CSVs, target ≤10 stocks/day).
+If `$ARGUMENTS` is empty, runs with defaults (auto-discover all available model CSVs, target <=10 stocks/day).
 
 ### Step 3: Read and present the report
 
 The report is saved to `reports/backtest/阈值评估报告_YYYYMMDD.md`.
 
 Read the generated report and present a concise summary:
-- Recommended thresholds for V3.95 and V3.9
+- Recommended thresholds per model
 - Key metrics: daily count, 5d/10d average return and win rate
 - Score distribution overview
-- Practical trading guidance
+- Cross-model comparison if multiple models analyzed
 
 ### Step 4: Practical interpretation
 
 After presenting the analysis, provide actionable advice:
-- Which threshold to use for daily screening
+- Which threshold to use for daily screening per model
 - Expected number of stocks per day at the recommended threshold
 - Confidence level based on win rate and sample size
-- Whether to use V3.95 alone or combine with V3.9
+- Which model performs best for the user's target holding period
+
+## Examples
+
+```bash
+# Analyze all available models
+/evaluate-threshold
+
+# Only v4.0
+/evaluate-threshold --models v4.0
+
+# Compare v3.95 and v4.0, target 5 stocks/day
+/evaluate-threshold --models v3.95 v4.0 --target 5
+
+# Use specific CSV file for a new model
+/evaluate-threshold --csv v4.1=reports/backtest/v41_picks.csv
+```
 
 ## Notes
 
-- V3.95 typically has much stronger predictive power than V3.9 (higher IC/ICIR)
-- V3.95 scores range 30-90 with std ~17; V3.9 scores range 35-87 with std ~3.5
-- V3.95 advantage is most pronounced at 10d/15d holding periods
-- The picks CSV files are generated by `backtest/backtest_report_based.py`
+- Auto-discovery searches `reports/backtest/` for `report_backtest_*_picks.csv` and `ml_backtest_*_picks.csv`
+- Known models with auto-discovery: v3.9, v3.95, v4.0 (extensible via MODEL_SEARCH_PATTERNS dict)
+- For unknown model versions, use `--csv model=path` to specify the CSV file manually
+- The picks CSV must have columns: date, code, score, return_3d, return_5d, return_10d (return_1d, return_15d optional)
 - Returns are calculated as: buy at open on next trading day, sell at close N days later
-- Win rate > 55% with positive average return is generally a good signal
