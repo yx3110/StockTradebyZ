@@ -70,7 +70,7 @@ class V400CrossSectionalTrainer:
     }
 
     def __init__(self, db_path=None, meta_model_type='ridge',
-                 market_scale=0.3, industry_scale=0.5):
+                 market_scale=0.3, industry_scale=0.5, skip_rf=False):
         self.db_path = db_path or str(PROJECT_ROOT / 'data_adapter' / 'stock_data.db')
         self.models = {}
         self.meta_model = None
@@ -79,6 +79,7 @@ class V400CrossSectionalTrainer:
         self.winsorize_bounds = None
         self.market_scale = market_scale
         self.industry_scale = industry_scale
+        self.skip_rf = skip_rf
 
         # 多目标权重
         self.target_weights = {
@@ -274,7 +275,10 @@ class V400CrossSectionalTrainer:
                 n_jobs=-1,
                 verbosity=0
             ),
-            'random_forest': RandomForestRegressor(
+        }
+
+        if not self.skip_rf:
+            models_config['random_forest'] = RandomForestRegressor(
                 n_estimators=200,
                 max_depth=8,
                 min_samples_split=20,
@@ -283,7 +287,8 @@ class V400CrossSectionalTrainer:
                 random_state=42,
                 n_jobs=-1
             )
-        }
+        else:
+            logger.info("  ⏭️ 跳过 Random Forest (--skip-rf)")
 
         if HAS_CATBOOST:
             models_config['catboost'] = CatBoostRegressor(
@@ -749,6 +754,8 @@ def main():
                         help='市场特征缩放因子 (默认0.3)')
     parser.add_argument('--industry-scale', type=float, default=0.5,
                         help='行业特征缩放因子 (默认0.5)')
+    parser.add_argument('--skip-rf', action='store_true',
+                        help='跳过Random Forest (训练慢且IC不稳定)')
 
     args = parser.parse_args()
 
@@ -771,6 +778,7 @@ def main():
         meta_model_type=args.meta_model,
         market_scale=args.market_scale,
         industry_scale=args.industry_scale,
+        skip_rf=args.skip_rf,
     )
     model_path = trainer.train(
         val_ratio=args.val_ratio,
