@@ -3747,18 +3747,26 @@ def is_trading_day(date_str: str) -> bool:
         except Exception as e:
             logger.debug(f"API查询交易日失败: {e}")
         
-        # 如果API查询失败，使用简单规则判断（周一到周五，排除明显的节假日）
+        # 如果API查询失败，先检查数据库中是否有该日期的数据
+        try:
+            import sqlite3
+            db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data_adapter', 'stock_data.db')
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM daily_quotes WHERE trade_date = ?", (date_str,))
+            count = cursor.fetchone()[0]
+            conn.close()
+            if count > 100:  # 有足够多的行情数据，说明是交易日
+                return True
+        except Exception:
+            pass
+
+        # 最后使用简单规则判断（周一到周五）
         weekday = datetime.strptime(date_str, '%Y-%m-%d').weekday()
         if weekday >= 5:  # 周六周日
             return False
-            
-        # 排除明显的节假日
-        month_day = date_str[5:]
-        holidays = ['01-01', '01-02', '01-03', '02-09', '02-10', '02-11', '02-12', '02-13', '02-14', '02-15', '02-16', '02-17',
-                   '04-04', '04-05', '04-06', '05-01', '05-02', '05-03', '06-10', '09-15', '09-16', '09-17', '10-01', '10-02', 
-                   '10-03', '10-04', '10-05', '10-06', '10-07']
-        
-        return month_day not in holidays
+
+        return True
             
     except Exception as e:
         logger.warning(f"交易日检查失败: {e}")
@@ -4076,10 +4084,11 @@ if __name__ == "__main__":
     parser.add_argument('--scoring-version', '-v',
                        choices=['v2', 'v3', 'v3.1', 'v3.2', 'v3.3', 'v3.4', 'v3.41',
                                 'v3.5', 'v3.51', 'v3.52', 'v3.53', 'v3.6', 'v3.7',
-                                'v3.8', 'v3.81', 'v3.9', 'v3.94', 'v3.95', 'v4'],
+                                'v3.8', 'v3.81', 'v3.9', 'v3.94', 'v3.95', 'v4', 'v4.0'],
                        default='v3.9',
                        help='评分版本 (默认v3.9)。'
-                            '活跃版本: v3.9(生产A级,42特征), v3.95(多目标预测,3d/5d/10d滚动训练)。'
+                            '活跃版本: v3.9(生产A级,42特征), v3.95(多目标预测,3d/5d/10d滚动训练), '
+                            'v4.0(Cross-Sectional Alpha,超额收益预测)。'
                             '已弃用: v2-v3.81, v3.94, v4 (仍可使用但不推荐)')
     parser.add_argument('--stocks-only', '-s', action='store_true',
                        help='只考虑A股股票，不包括ETF基金等')
