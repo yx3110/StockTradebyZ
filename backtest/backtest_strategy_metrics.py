@@ -827,8 +827,9 @@ def main():
     daily_picks_for_overlap = {}
 
     for i, tday in enumerate(trading_days):
-        if i % 50 == 0:
-            logger.info(f"进度: {i+1}/{n_trading_days} ({tday.strftime('%Y-%m-%d')})")
+        t_day_start = time.time()
+        if i % 5 == 0:
+            print(f"进度: {i+1}/{n_trading_days} ({tday.strftime('%Y-%m-%d')})", flush=True)
 
         results = run_strategies_one_day(selectors, data, tday)
 
@@ -840,7 +841,11 @@ def main():
 
         daily_picks_for_overlap[tday] = date_picks
 
-    logger.info(f"选股完成，耗时 {time.time()-t2:.1f}秒")
+        if i < 3:
+            print(f"  Day {i+1} took {time.time()-t_day_start:.1f}s", flush=True)
+
+    elapsed = time.time()-t2
+    print(f"选股完成，耗时 {elapsed:.1f}秒 ({elapsed/n_trading_days:.1f}秒/天)", flush=True)
     for name in STRATEGY_NAMES:
         logger.info(f"  {name}: {len(strategy_signals[name])} 个信号")
 
