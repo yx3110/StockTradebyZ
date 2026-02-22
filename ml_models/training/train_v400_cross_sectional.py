@@ -34,6 +34,7 @@ import logging
 import json
 import pickle
 from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
+from sklearn.linear_model import Ridge
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 from scipy.stats import spearmanr
 import lightgbm as lgb
@@ -54,12 +55,30 @@ logger = logging.getLogger(__name__)
 class V400CrossSectionalTrainer:
     """V4.0 Cross-Sectional Alpha Model 训练器"""
 
-    def __init__(self, db_path=None):
+    # 市场级特征 (训练时缩放以减少对共同因子的依赖)
+    MARKET_FEATURES = {
+        'market_regime', 'market_vol_regime', 'market_breadth_5d',
+        'northbound_flow_zscore', 'market_volume_regime', 'market_trend_strength'
+    }
+
+    # 行业级特征
+    INDUSTRY_FEATURES = {
+        'sw_l1_code', 'industry_breadth', 'industry_volume_change',
+        'industry_kdj_avg', 'industry_macd_bullish_pct',
+        'industry_concentration', 'industry_momentum_rank',
+        'industry_rotation_signal'
+    }
+
+    def __init__(self, db_path=None, meta_model_type='ridge',
+                 market_scale=0.3, industry_scale=0.5):
         self.db_path = db_path or str(PROJECT_ROOT / 'data_adapter' / 'stock_data.db')
         self.models = {}
         self.meta_model = None
+        self.meta_model_type = meta_model_type  # 'ridge', 'gbm', 'avg'
         self.feature_names = None
         self.winsorize_bounds = None
+        self.market_scale = market_scale
+        self.industry_scale = industry_scale
 
         # 多目标权重
         self.target_weights = {
@@ -165,6 +184,27 @@ class V400CrossSectionalTrainer:
             X_val[col] = X_val[col].clip(lower, upper)
             X_test[col] = X_test[col].clip(lower, upper)
 
+        return X_train, X_val, X_test
+
+    def scale_market_industry_features(self, X_train, X_val, X_test):
+        """缩放市场和行业特征，减少共同因子对模型的干扰"""
+        logger.info(f"📊 市场/行业特征缩放: market×{self.market_scale}, industry×{self.industry_scale}")
+
+        scaled_market = 0
+        scaled_industry = 0
+        for col in X_train.columns:
+            if col in self.MARKET_FEATURES:
+                X_train[col] = X_train[col] * self.market_scale
+                X_val[col] = X_val[col] * self.market_scale
+                X_test[col] = X_test[col] * self.market_scale
+                scaled_market += 1
+            elif col in self.INDUSTRY_FEATURES:
+                X_train[col] = X_train[col] * self.industry_scale
+                X_val[col] = X_val[col] * self.industry_scale
+                X_test[col] = X_test[col] * self.industry_scale
+                scaled_industry += 1
+
+        logger.info(f"  缩放了 {scaled_market} 个市场特征, {scaled_industry} 个行业特征")
         return X_train, X_val, X_test
 
     def temporal_split(self, X, y, y_5d, dates, codes,
@@ -274,38 +314,110 @@ class V400CrossSectionalTrainer:
         return self.models
 
     def train_meta_model(self, X_val, y_val, X_test=None, y_test=None):
-        """训练元模型 (Stacking)"""
+        """训练元模型 (Stacking) - 支持 Ridge/GBM/Average"""
         logger.info("\n" + "=" * 80)
-        logger.info("🔧 训练元模型 (Stacking)...")
+        logger.info(f"🔧 训练元模型 (Stacking, type={self.meta_model_type})...")
         logger.info("=" * 80)
 
+        model_names = list(self.models.keys())
         meta_features_val = np.column_stack([
             model.predict(X_val) for model in self.models.values()
         ])
 
-        self.meta_model = GradientBoostingRegressor(
-            n_estimators=100,
-            learning_rate=0.1,
-            max_depth=3,
-            random_state=42
-        )
+        # 诊断 base model 在 val 上的预测分布
+        self._diagnose_base_predictions(meta_features_val, y_val, model_names, "验证集")
 
-        self.meta_model.fit(meta_features_val, y_val)
+        if self.meta_model_type == 'ridge':
+            # Ridge: 线性模型，4个输入不会过拟合
+            self.meta_model = Ridge(alpha=1.0)
+            self.meta_model.fit(meta_features_val, y_val)
+
+            # 记录 Ridge 系数 (应全为正值)
+            logger.info(f"  Ridge 系数:")
+            for name, coef in zip(model_names, self.meta_model.coef_):
+                sign = "✅" if coef > 0 else "⚠️ 负值!"
+                logger.info(f"    {name}: {coef:.6f} {sign}")
+            logger.info(f"    intercept: {self.meta_model.intercept_:.6f}")
+
+        elif self.meta_model_type == 'gbm':
+            # 保留 GBM 选项 (已知过拟合风险)
+            logger.warning("⚠️ GBM meta-model 有过拟合风险，建议使用 ridge")
+            self.meta_model = GradientBoostingRegressor(
+                n_estimators=100, learning_rate=0.1, max_depth=3, random_state=42
+            )
+            self.meta_model.fit(meta_features_val, y_val)
+
+        elif self.meta_model_type == 'avg':
+            # Simple average: 不训练，只保存权重
+            self.meta_model = None  # predict 时直接取均值
+            logger.info("  使用 Simple Average (等权) - 无需训练")
+
+        else:
+            raise ValueError(f"不支持的 meta_model_type: {self.meta_model_type}")
+
+        # Simple average baseline 对比
+        avg_pred_val = np.mean(meta_features_val, axis=1)
+        avg_ic, _ = spearmanr(avg_pred_val, y_val)
+        logger.info(f"\n  📊 Simple Average baseline IC (val): {avg_ic:.4f}")
 
         if X_test is not None and y_test is not None:
             meta_features_test = np.column_stack([
                 model.predict(X_test) for model in self.models.values()
             ])
-            y_pred = self.meta_model.predict(meta_features_test)
+
+            # 诊断 base model 在 test 上的预测分布
+            self._diagnose_base_predictions(meta_features_test, y_test, model_names, "测试集")
+
+            # 检测 val→test 分布偏移
+            self._diagnose_distribution_shift(meta_features_val, meta_features_test, model_names)
+
+            # Meta-model 预测
+            if self.meta_model is not None:
+                y_pred = self.meta_model.predict(meta_features_test)
+            else:
+                y_pred = np.mean(meta_features_test, axis=1)
+
             mse = mean_squared_error(y_test, y_pred)
             mae = mean_absolute_error(y_test, y_pred)
             ic, _ = spearmanr(y_pred, y_test)
             direction_acc = np.mean((y_pred > 0) == (y_test > 0))
 
-            logger.info(f"✅ 元模型 (测试集): MSE={mse:.6f}, MAE={mae:.6f}")
+            logger.info(f"\n✅ 元模型 (测试集): MSE={mse:.6f}, MAE={mae:.6f}")
             logger.info(f"  IC={ic:.4f}, 超额方向准确率={direction_acc:.4f}")
 
+            # 对比 simple average
+            avg_pred_test = np.mean(meta_features_test, axis=1)
+            avg_ic_test, _ = spearmanr(avg_pred_test, y_test)
+            logger.info(f"  📊 Simple Average IC (test): {avg_ic_test:.4f}")
+
+            # 检查正负分布
+            pos_pct = np.mean(y_pred > 0) * 100
+            logger.info(f"  预测正值比例: {pos_pct:.1f}%  (base models均值: {np.mean(meta_features_test):.6f})")
+
         return self.meta_model
+
+    def _diagnose_base_predictions(self, meta_features, y_true, model_names, dataset_name):
+        """诊断每个 base model 的预测分布"""
+        logger.info(f"\n  📊 Base Model 预测分布 ({dataset_name}):")
+        for i, name in enumerate(model_names):
+            preds = meta_features[:, i]
+            ic, _ = spearmanr(preds, y_true)
+            pos_pct = np.mean(preds > 0) * 100
+            logger.info(f"    {name}: mean={np.mean(preds):.6f}, std={np.std(preds):.6f}, "
+                         f"pos%={pos_pct:.1f}%, IC={ic:.4f}")
+
+    def _diagnose_distribution_shift(self, meta_val, meta_test, model_names):
+        """检测 val→test 的预测分布偏移"""
+        logger.info(f"\n  📊 Val→Test 分布偏移诊断:")
+        for i, name in enumerate(model_names):
+            val_mean = np.mean(meta_val[:, i])
+            val_std = np.std(meta_val[:, i])
+            test_mean = np.mean(meta_test[:, i])
+
+            shift_sigma = abs(test_mean - val_mean) / val_std if val_std > 0 else 0
+            status = "⚠️ WARNING" if shift_sigma > 2.0 else "✅ OK"
+            logger.info(f"    {name}: val_mean={val_mean:.6f}, test_mean={test_mean:.6f}, "
+                         f"shift={shift_sigma:.2f}σ {status}")
 
     def evaluate_cross_sectional(self, X_test, y_test, y5d_test, dates_test, codes_test):
         """
@@ -324,7 +436,21 @@ class V400CrossSectionalTrainer:
         meta_features = np.column_stack([
             model.predict(X_test) for model in self.models.values()
         ])
-        y_pred = self.meta_model.predict(meta_features)
+        if self.meta_model is not None:
+            y_pred = self.meta_model.predict(meta_features)
+        else:
+            y_pred = np.mean(meta_features, axis=1)
+
+        # Cross-Sectional Demean: 每天减去当日均值，隔离选股能力
+        logger.info("  📊 对预测值进行 Cross-Sectional Demean...")
+        y_pred_demeaned = y_pred.copy()
+        for date in np.unique(dates_test):
+            mask = dates_test == date
+            if mask.sum() > 1:
+                y_pred_demeaned[mask] -= np.mean(y_pred[mask])
+
+        # 使用 demeaned 预测进行评估
+        y_pred = y_pred_demeaned
 
         # 按日期分组计算 Daily IC
         unique_dates = np.unique(dates_test)
@@ -508,8 +634,11 @@ class V400CrossSectionalTrainer:
             'target_weights': self.target_weights,
             'winsorize_bounds': {k: (float(v[0]), float(v[1])) for k, v in self.winsorize_bounds.items()} if self.winsorize_bounds else None,
             'model_names': list(self.models.keys()),
+            'meta_model_type': self.meta_model_type,
+            'market_scale': self.market_scale,
+            'industry_scale': self.industry_scale,
             'timestamp': timestamp,
-            'version': 'v4.0.0',
+            'version': 'v4.0.1',
         }
         weights_path = output_dir / f"v400_weights_{timestamp}.json"
         with open(weights_path, 'w') as f:
@@ -523,8 +652,11 @@ class V400CrossSectionalTrainer:
             'feature_names': self.feature_names,
             'winsorize_bounds': self.winsorize_bounds,
             'target_weights': self.target_weights,
+            'meta_model_type': self.meta_model_type,
+            'market_scale': self.market_scale,
+            'industry_scale': self.industry_scale,
             'timestamp': timestamp,
-            'version': 'v4.0.0',
+            'version': 'v4.0.1',
         }
         full_path = output_dir / f"v400_full_system_{timestamp}.pkl"
         with open(full_path, 'wb') as f:
@@ -556,6 +688,10 @@ class V400CrossSectionalTrainer:
 
         # 3. Winsorization
         split['X_train'], split['X_val'], split['X_test'] = self.winsorize_features(
+            split['X_train'], split['X_val'], split['X_test'])
+
+        # 3.5 市场/行业特征缩放
+        split['X_train'], split['X_val'], split['X_test'] = self.scale_market_industry_features(
             split['X_train'], split['X_val'], split['X_test'])
 
         # 4. 训练基础模型
@@ -606,21 +742,36 @@ def main():
     parser.add_argument('--test-ratio', type=float, default=0.15, help='测试集比例')
     parser.add_argument('--purge-days', type=int, default=10,
                         help='Purge gap天数 (应>=标签前瞻天数)')
+    parser.add_argument('--meta-model', type=str, default='ridge',
+                        choices=['ridge', 'gbm', 'avg'],
+                        help='元模型类型: ridge(默认), gbm(已知过拟合), avg(等权平均)')
+    parser.add_argument('--market-scale', type=float, default=0.3,
+                        help='市场特征缩放因子 (默认0.3)')
+    parser.add_argument('--industry-scale', type=float, default=0.5,
+                        help='行业特征缩放因子 (默认0.5)')
 
     args = parser.parse_args()
 
     logger.info("=" * 80)
-    logger.info("🚀 V4.0 Cross-Sectional Alpha Model 训练")
+    logger.info("🚀 V4.0.1 Cross-Sectional Alpha Model 训练")
     logger.info("   目标: 学习个股相对强势信号，而非大盘方向")
     logger.info("   标签: 超额收益 (个股 - 沪深300)")
     logger.info("   特征: ~55个 cross-sectional 排名特征")
     logger.info("=" * 80)
     logger.info(f"数据库: {args.db_path}")
+    logger.info(f"元模型: {args.meta_model}")
+    logger.info(f"市场特征缩放: {args.market_scale}")
+    logger.info(f"行业特征缩放: {args.industry_scale}")
     logger.info(f"验证集比例: {args.val_ratio}")
     logger.info(f"测试集比例: {args.test_ratio}")
     logger.info(f"Purge gap: {args.purge_days} 天")
 
-    trainer = V400CrossSectionalTrainer(db_path=args.db_path)
+    trainer = V400CrossSectionalTrainer(
+        db_path=args.db_path,
+        meta_model_type=args.meta_model,
+        market_scale=args.market_scale,
+        industry_scale=args.industry_scale,
+    )
     model_path = trainer.train(
         val_ratio=args.val_ratio,
         test_ratio=args.test_ratio,

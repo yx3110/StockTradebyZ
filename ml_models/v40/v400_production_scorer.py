@@ -30,6 +30,20 @@ logger = logging.getLogger(__name__)
 class V400ProductionScorer:
     """V4.0 Cross-Sectional Alpha Model 生产评分器"""
 
+    # 市场级特征 (推理时应用缩放)
+    MARKET_FEATURES = {
+        'market_regime', 'market_vol_regime', 'market_breadth_5d',
+        'northbound_flow_zscore', 'market_volume_regime', 'market_trend_strength'
+    }
+
+    # 行业级特征
+    INDUSTRY_FEATURES = {
+        'sw_l1_code', 'industry_breadth', 'industry_volume_change',
+        'industry_kdj_avg', 'industry_macd_bullish_pct',
+        'industry_concentration', 'industry_momentum_rank',
+        'industry_rotation_signal'
+    }
+
     def __init__(self, model_path: str = None, db_path: str = None):
         self.project_root = Path(__file__).parent.parent.parent
 
@@ -67,6 +81,11 @@ class V400ProductionScorer:
         self.feature_names = model_data.get('feature_names')
         self.winsorize_bounds = model_data.get('winsorize_bounds')
 
+        # v4.0.1 新字段 (向后兼容旧模型)
+        self.meta_model_type = model_data.get('meta_model_type', 'gbm')
+        self.market_scale = model_data.get('market_scale', 1.0)
+        self.industry_scale = model_data.get('industry_scale', 1.0)
+
         # 从第一个基础模型推断特征名
         if self.feature_names is None:
             first_model = list(self.base_models.values())[0]
@@ -77,15 +96,38 @@ class V400ProductionScorer:
 
         self.n_features = len(self.feature_names) if self.feature_names else 0
 
-        logger.info(f"✅ 加载V4.0模型: {list(self.base_models.keys())}, "
-                     f"特征数={self.n_features}")
+        version = model_data.get('version', 'unknown')
+        logger.info(f"✅ 加载V4.0模型 (version={version}): {list(self.base_models.keys())}, "
+                     f"特征数={self.n_features}, meta={self.meta_model_type}, "
+                     f"market_scale={self.market_scale}, industry_scale={self.industry_scale}")
+
+    def _apply_feature_scaling(self, features):
+        """应用市场/行业特征缩放 (与训练时一致)"""
+        if self.market_scale == 1.0 and self.industry_scale == 1.0:
+            return features
+
+        features = features.copy()
+        for col in features.columns:
+            if col in self.MARKET_FEATURES:
+                features[col] = features[col] * self.market_scale
+            elif col in self.INDUSTRY_FEATURES:
+                features[col] = features[col] * self.industry_scale
+        return features
 
     def _predict_raw(self, features):
         """内部预测: 返回原始超额收益预测值"""
+        # 应用市场/行业特征缩放
+        features = self._apply_feature_scaling(features)
+
         base_preds = np.column_stack([
             model.predict(features) for model in self.base_models.values()
         ])
-        return self.meta_model.predict(base_preds)
+
+        # 根据 meta_model_type 选择预测方式
+        if self.meta_model_type == 'avg' or self.meta_model is None:
+            return np.mean(base_preds, axis=1)
+        else:
+            return self.meta_model.predict(base_preds)
 
     def _get_features_from_cache(self, code: str, trade_date: str) -> Optional[pd.DataFrame]:
         """从 v40_feature_cache 读取预计算特征"""
