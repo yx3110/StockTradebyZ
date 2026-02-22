@@ -292,7 +292,45 @@ class TechnicalIndicatorCalculator:
             except:
                 indicators['volume_ma5'] = indicators['volume_ma10'] = indicators['volume_ratio'] = None
             
-            # 7. 计算知行策略所需指标
+            # 7. 计算CCI指标 (Commodity Channel Index, 14日)
+            try:
+                if len(close) >= 14:
+                    typical_price = (high + low + close) / 3
+                    tp_series = pd.Series(typical_price)
+                    tp_sma = tp_series.rolling(window=14).mean().values
+                    tp_mad = tp_series.rolling(window=14).apply(
+                        lambda x: np.mean(np.abs(x - np.mean(x))), raw=True
+                    ).values
+                    if tp_mad[-1] != 0:
+                        indicators['cci_14'] = float((typical_price[-1] - tp_sma[-1]) / (0.015 * tp_mad[-1]))
+                    else:
+                        indicators['cci_14'] = 0.0
+                else:
+                    indicators['cci_14'] = None
+            except:
+                indicators['cci_14'] = None
+
+            # 8. 计算ATR指标 (Average True Range, 14日)
+            try:
+                if len(close) >= 15:  # 需要prev_close，所以至少15天
+                    prev_close = np.roll(close, 1)
+                    prev_close[0] = close[0]
+                    tr = np.maximum(
+                        high - low,
+                        np.maximum(
+                            np.abs(high - prev_close),
+                            np.abs(low - prev_close)
+                        )
+                    )
+                    # 用EMA平滑
+                    atr_series = pd.Series(tr).ewm(span=14, adjust=False).mean().values
+                    indicators['atr_14'] = float(atr_series[-1])
+                else:
+                    indicators['atr_14'] = None
+            except:
+                indicators['atr_14'] = None
+
+            # 9. 计算知行策略所需指标
             try:
                 # 知行短期趋势线：EMA(EMA(CLOSE, 10), 10)
                 ema10 = self.ema(close, 10)
@@ -439,10 +477,11 @@ class TechnicalIndicatorCalculator:
             boll_upper, boll_middle, boll_lower,
             bbi, volume_ma5, volume_ma10, volume_ratio,
             zhixing_short_trend, zhixing_multi_kong, ma14, ma28, ma57, ma114,
+            cci_14, atr_14,
             created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
-        
+
         values = [
             security_id, trade_date,
             indicators.get('kdj_k'), indicators.get('kdj_d'), indicators.get('kdj_j'),
@@ -450,8 +489,9 @@ class TechnicalIndicatorCalculator:
             indicators.get('rsi6'), indicators.get('rsi12'), indicators.get('rsi24'),
             indicators.get('boll_upper'), indicators.get('boll_middle'), indicators.get('boll_lower'),
             indicators.get('bbi'), indicators.get('volume_ma5'), indicators.get('volume_ma10'), indicators.get('volume_ratio'),
-            indicators.get('zhixing_short_trend'), indicators.get('zhixing_multi_kong'), 
+            indicators.get('zhixing_short_trend'), indicators.get('zhixing_multi_kong'),
             indicators.get('ma14'), indicators.get('ma28'), indicators.get('ma57'), indicators.get('ma114'),
+            indicators.get('cci_14'), indicators.get('atr_14'),
             datetime.now()
         ]
         

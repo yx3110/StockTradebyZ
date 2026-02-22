@@ -5,6 +5,7 @@ V3.9策略回测分析
 """
 
 import os
+import sys
 import re
 import glob
 import sqlite3
@@ -55,9 +56,11 @@ STRATEGY_CHINESE = {
 class V39StrategyBacktester:
     """V3.9策略回测器"""
 
-    def __init__(self, db_path: str = "stock_data.db"):
+    def __init__(self, db_path: str = None):
+        if db_path is None:
+            db_path = str(PROJECT_ROOT / "data_adapter" / "stock_data.db")
         self.db_path = db_path
-        self.reports_dir = "reports/daily_selection_v3.9"
+        self.reports_dir = str(PROJECT_ROOT / "reports" / "daily_selection_v3.9")
         self.holding_periods = [1, 3, 5, 10, 15]
 
     def get_db_connection(self):
@@ -385,7 +388,7 @@ def main():
         return
 
     # 保存原始数据
-    output_dir = Path("reports/backtest")
+    output_dir = PROJECT_ROOT / "reports" / "backtest"
     output_dir.mkdir(parents=True, exist_ok=True)
 
     csv_path = output_dir / f"v39_strategy_backtest_data_{datetime.now().strftime('%Y%m%d')}.csv"
