@@ -22,6 +22,11 @@ def get_trading_dates(start_date, end_date):
     return dates
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--force', action='store_true', help='强制重新生成所有报告')
+    args = parser.parse_args()
+
     start_date = '2025-09-01'
     end_date = '2026-02-13'
 
@@ -31,14 +36,18 @@ def main():
     report_dir = PROJECT_ROOT / 'reports' / 'daily_selection_v4.0'
     report_dir.mkdir(parents=True, exist_ok=True)
 
-    # 检查已有报告
-    existing = set()
-    for f in report_dir.glob('选股分析报告_*.md'):
-        date_str = f.stem.split('_')[-1]
-        existing.add(f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}")
+    if args.force:
+        remaining = dates
+        print(f"⚠️ 强制重新生成所有 {len(remaining)} 天报告")
+    else:
+        # 检查已有报告
+        existing = set()
+        for f in report_dir.glob('选股分析报告_*.md'):
+            date_str = f.stem.split('_')[-1]
+            existing.add(f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}")
 
-    remaining = [d for d in dates if d not in existing]
-    print(f"✅ 已有报告: {len(existing)}, 待生成: {len(remaining)}")
+        remaining = [d for d in dates if d not in existing]
+        print(f"✅ 已有报告: {len(existing)}, 待生成: {len(remaining)}")
 
     if not remaining:
         print("所有报告已生成!")

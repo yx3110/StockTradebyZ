@@ -1,23 +1,23 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-V4.0 Cross-Sectional Alpha Model 训练脚本
+V4.1 Cross-Sectional Alpha Model 训练脚本
 
-核心改进:
-1. 训练标签: 超额收益 (个股收益 - 沪深300收益)
-2. 特征: ~55个 cross-sectional 排名特征 + 技术指标
-3. 多目标训练: 3d/5d/10d 超额收益，加权融合
-4. Cross-Sectional 评估指标: Daily IC, IC_IR, Top-10% Precision/Excess Return
-5. 更强正则化: max_depth=5, min_child_samples=50, reg_alpha=0.3
+V4.1 改进 (基于 V4.0/V4.0.1 回测分析):
+1. 排名标签 (--rank-label): 将超额收益转为当日cross-sectional rank (0-1)
+   - 分布稳定(uniform)，不受牛熊市影响
+   - 与排名特征在同一空间，模型更容易学习
+2. 标签中性化 (--neutralize-label): 回归残差法去除行业+市值因子
+   - 模型只学习行业/市值无法解释的alpha
+3. IC-based特征筛选 (--feature-select): 删除IC不稳定或均值为负的特征
+4. 全市场percentile排名 (scorer修复): 使用全市场4000+只而非选出的30只
 
-沿用 V3.90 的:
+沿用 V4.0.1 的:
 - Temporal split + 10天 purge gap
-- 4模型 Ensemble: LightGBM + XGBoost + CatBoost + RandomForest
-- GradientBoosting Meta-Model (Stacking)
-
-沿用 V3.95 的:
-- 多目标训练
+- LightGBM + XGBoost + CatBoost Ensemble (跳过RF)
+- Ridge/Average Meta-Model
 - Per-feature winsorization (1st-99th percentile)
+- 市场/行业特征缩放
 """
 
 import sys
@@ -70,7 +70,8 @@ class V400CrossSectionalTrainer:
     }
 
     def __init__(self, db_path=None, meta_model_type='ridge',
-                 market_scale=0.3, industry_scale=0.5, skip_rf=False):
+                 market_scale=0.3, industry_scale=0.5, skip_rf=False,
+                 rank_label=False, neutralize_label=False, feature_select=False):
         self.db_path = db_path or str(PROJECT_ROOT / 'data_adapter' / 'stock_data.db')
         self.models = {}
         self.meta_model = None
@@ -80,6 +81,10 @@ class V400CrossSectionalTrainer:
         self.market_scale = market_scale
         self.industry_scale = industry_scale
         self.skip_rf = skip_rf
+        self.rank_label = rank_label
+        self.neutralize_label = neutralize_label
+        self.feature_select = feature_select
+        self.selected_features = None  # IC筛选后的特征列表
 
         # 多目标权重
         self.target_weights = {
@@ -170,7 +175,115 @@ class V400CrossSectionalTrainer:
 
         self.feature_names = X.columns.tolist()
 
-        return X, y, y_5d, dates, codes
+        # 保留原始5d超额收益用于评估 (即使rank-transform了训练标签)
+        y_5d_raw = y_5d.copy()
+
+        # B2: 排名标签转换
+        if self.rank_label:
+            y, y_5d = self._convert_to_rank_labels(y, y_5d, dates)
+
+        # B3: 标签中性化 (行业+市值)
+        if self.neutralize_label:
+            y = self._neutralize_labels(y, dates, codes, X)
+
+        return X, y, y_5d, y_5d_raw, dates, codes
+
+    def _convert_to_rank_labels(self, y, y_5d, dates):
+        """
+        B2: 将超额收益标签转为当日cross-sectional排名 (0-1)
+
+        排名标签优势:
+        - 分布稳定 (uniform)，不受牛熊市大幅波动影响
+        - 与排名特征在同一空间
+        - 模型只需预测相对排序，降低绝对值预测难度
+        """
+        logger.info("\n📊 B2: 转换为Cross-Sectional排名标签...")
+
+        y_ranked = y.copy()
+        y_5d_ranked = y_5d.copy()
+
+        unique_dates = np.unique(dates)
+        for date in unique_dates:
+            mask = dates == date
+            n = mask.sum()
+            if n < 10:
+                continue
+
+            # 使用排名 / N 转为 0-1 uniform分布
+            # 加0.5使rank居中: rank(1..N) -> (0.5/N, ..., (N-0.5)/N)
+            day_y = y[mask]
+            ranks = pd.Series(day_y).rank(method='average').values
+            y_ranked[mask] = (ranks - 0.5) / n
+
+            day_y5d = y_5d[mask]
+            ranks_5d = pd.Series(day_y5d).rank(method='average').values
+            y_5d_ranked[mask] = (ranks_5d - 0.5) / n
+
+        logger.info(f"  ✅ 排名标签: mean={np.mean(y_ranked):.4f}, "
+                     f"std={np.std(y_ranked):.4f}, "
+                     f"min={np.min(y_ranked):.4f}, max={np.max(y_ranked):.4f}")
+        logger.info(f"  原始标签: mean={np.mean(y):.6f}, std={np.std(y):.6f}")
+
+        return y_ranked, y_5d_ranked
+
+    def _neutralize_labels(self, y, dates, codes, X):
+        """
+        B3: 标签行业+市值中性化 (回归残差法)
+
+        对每日标签做: y_neutral = y - beta_ind * industry_dummy - beta_size * log_mcap
+        模型只学习行业/市值无法解释的alpha
+        """
+        from sklearn.linear_model import LinearRegression
+        logger.info("\n📊 B3: 标签中性化 (行业+市值)...")
+
+        y_neutral = y.copy()
+
+        # 获取行业和市值信息
+        has_industry = 'sw_l1_code' in X.columns
+        has_mcap = 'xs_market_cap_rank' in X.columns
+
+        if not has_industry and not has_mcap:
+            logger.warning("  ⚠️ 无行业/市值特征，跳过中性化")
+            return y
+
+        unique_dates = np.unique(dates)
+        neutralized_count = 0
+
+        for date in unique_dates:
+            mask = dates == date
+            n = mask.sum()
+            if n < 30:
+                continue
+
+            # 构建中性化因子矩阵
+            factors = []
+            if has_industry:
+                # 行业哑变量
+                ind_codes = X.loc[mask, 'sw_l1_code'].values
+                unique_inds = np.unique(ind_codes)
+                if len(unique_inds) > 1:
+                    ind_dummies = np.zeros((n, len(unique_inds) - 1))
+                    for i, ind in enumerate(unique_inds[1:]):
+                        ind_dummies[:, i] = (ind_codes == ind).astype(float)
+                    factors.append(ind_dummies)
+
+            if has_mcap:
+                # 市值排名作为size因子
+                mcap = X.loc[mask, 'xs_market_cap_rank'].values.reshape(-1, 1)
+                factors.append(mcap)
+
+            if factors:
+                Z = np.hstack(factors)
+                reg = LinearRegression(fit_intercept=True)
+                reg.fit(Z, y[mask])
+                y_neutral[mask] = y[mask] - reg.predict(Z)
+                neutralized_count += 1
+
+        logger.info(f"  ✅ 中性化完成: {neutralized_count}/{len(unique_dates)} 天")
+        logger.info(f"  中性化后: mean={np.mean(y_neutral):.6f}, std={np.std(y_neutral):.6f}")
+        logger.info(f"  原始标签: mean={np.mean(y):.6f}, std={np.std(y):.6f}")
+
+        return y_neutral
 
     def winsorize_features(self, X_train, X_val, X_test):
         """Per-feature winsorization (1st-99th percentile)"""
@@ -208,7 +321,90 @@ class V400CrossSectionalTrainer:
         logger.info(f"  缩放了 {scaled_market} 个市场特征, {scaled_industry} 个行业特征")
         return X_train, X_val, X_test
 
-    def temporal_split(self, X, y, y_5d, dates, codes,
+    def ic_feature_selection(self, X, y, dates, min_ic=0.005, min_ic_positive_pct=0.45):
+        """
+        B4: IC-based特征筛选
+
+        对每个特征计算:
+        1. 历史平均Daily IC (Spearman与标签的秩相关)
+        2. IC > 0 的日期占比
+        3. 移除 IC均值 < min_ic 或 IC>0占比 < min_ic_positive_pct 的特征
+
+        Args:
+            X: 特征矩阵
+            y: 标签
+            dates: 日期数组
+            min_ic: 最低IC均值阈值
+            min_ic_positive_pct: IC>0天数最低占比
+        """
+        logger.info("\n" + "=" * 80)
+        logger.info(f"📊 B4: IC-based特征筛选 (min_ic={min_ic}, min_pos%={min_ic_positive_pct:.0%})")
+        logger.info("=" * 80)
+
+        unique_dates = np.unique(dates)
+        feature_ics = {col: [] for col in X.columns}
+
+        for date in unique_dates:
+            mask = dates == date
+            if mask.sum() < 50:
+                continue
+
+            y_day = y[mask]
+            for col in X.columns:
+                x_day = X.loc[mask, col].values
+                # 跳过常数特征
+                if np.std(x_day) < 1e-10:
+                    continue
+                ic, _ = spearmanr(x_day, y_day)
+                if not np.isnan(ic):
+                    feature_ics[col].append(ic)
+
+        # 计算每个特征的IC统计
+        feature_stats = []
+        for col in X.columns:
+            ics = feature_ics[col]
+            if len(ics) < 20:
+                feature_stats.append((col, 0.0, 0.0, len(ics), False))
+                continue
+
+            mean_ic = np.mean(ics)
+            ic_pos_pct = np.mean(np.array(ics) > 0)
+            ic_ir = mean_ic / np.std(ics) if np.std(ics) > 0 else 0
+
+            keep = abs(mean_ic) >= min_ic and ic_pos_pct >= min_ic_positive_pct
+            feature_stats.append((col, mean_ic, ic_pos_pct, len(ics), keep))
+
+        # 排序显示
+        feature_stats.sort(key=lambda x: abs(x[1]), reverse=True)
+
+        kept = [f for f in feature_stats if f[4]]
+        removed = [f for f in feature_stats if not f[4]]
+
+        logger.info(f"\n  保留特征 ({len(kept)}):")
+        for col, mean_ic, pos_pct, n_days, _ in kept[:30]:
+            logger.info(f"    ✅ {col:<40s} IC={mean_ic:+.4f}, IC>0={pos_pct:.1%}")
+
+        logger.info(f"\n  移除特征 ({len(removed)}):")
+        for col, mean_ic, pos_pct, n_days, _ in removed:
+            logger.info(f"    ❌ {col:<40s} IC={mean_ic:+.4f}, IC>0={pos_pct:.1%}")
+
+        kept_cols = [f[0] for f in kept]
+        if len(kept_cols) < 10:
+            logger.warning(f"  ⚠️ 筛选后只剩 {len(kept_cols)} 个特征，太少! 放宽阈值...")
+            # 取abs(IC)最大的前30个
+            feature_stats.sort(key=lambda x: abs(x[1]), reverse=True)
+            kept_cols = [f[0] for f in feature_stats[:30]]
+            logger.info(f"  改为取IC绝对值最大的30个特征")
+
+        self.selected_features = kept_cols
+        self.feature_names = kept_cols
+
+        X_selected = X[kept_cols].copy()
+        logger.info(f"\n  ✅ 特征筛选: {X.shape[1]} → {X_selected.shape[1]} 个特征")
+
+        return X_selected
+
+    def temporal_split(self, X, y, y_5d, y_5d_raw, dates, codes,
                        val_ratio=0.15, test_ratio=0.15, purge_days=10):
         """时序划分 + purge gap (10天避免超额收益标签窗口重叠)"""
         unique_dates = np.sort(np.unique(dates))
@@ -231,6 +427,7 @@ class V400CrossSectionalTrainer:
             result[f'X_{name}'] = X.loc[mask].reset_index(drop=True)
             result[f'y_{name}'] = y[mask]
             result[f'y5d_{name}'] = y_5d[mask]
+            result[f'y5d_raw_{name}'] = y_5d_raw[mask]
             result[f'dates_{name}'] = dates[mask]
             result[f'codes_{name}'] = codes[mask]
 
@@ -643,7 +840,10 @@ class V400CrossSectionalTrainer:
             'market_scale': self.market_scale,
             'industry_scale': self.industry_scale,
             'timestamp': timestamp,
-            'version': 'v4.0.1',
+            'version': 'v4.1',
+            'rank_label': self.rank_label,
+            'neutralize_label': self.neutralize_label,
+            'selected_features': self.selected_features,
         }
         weights_path = output_dir / f"v400_weights_{timestamp}.json"
         with open(weights_path, 'w') as f:
@@ -661,7 +861,10 @@ class V400CrossSectionalTrainer:
             'market_scale': self.market_scale,
             'industry_scale': self.industry_scale,
             'timestamp': timestamp,
-            'version': 'v4.0.1',
+            'version': 'v4.1',
+            'rank_label': self.rank_label,
+            'neutralize_label': self.neutralize_label,
+            'selected_features': self.selected_features,
         }
         full_path = output_dir / f"v400_full_system_{timestamp}.pkl"
         with open(full_path, 'wb') as f:
@@ -680,14 +883,18 @@ class V400CrossSectionalTrainer:
 
     def train(self, val_ratio=0.15, test_ratio=0.15, purge_days=10):
         """完整训练流程"""
-        # 1. 加载数据
-        X, y, y_5d, dates, codes = self.load_cached_features()
+        # 1. 加载数据 (含B2排名标签转换, B3标签中性化)
+        X, y, y_5d, y_5d_raw, dates, codes = self.load_cached_features()
+
+        # 1.5 B4: IC-based特征筛选 (在split前对全量数据计算IC)
+        if self.feature_select:
+            X = self.ic_feature_selection(X, y, dates)
 
         # 2. 时序划分
         logger.info("\n" + "=" * 80)
         logger.info("📊 时序划分 (purge_gap=10天)...")
         logger.info("=" * 80)
-        split = self.temporal_split(X, y, y_5d, dates, codes,
+        split = self.temporal_split(X, y, y_5d, y_5d_raw, dates, codes,
                                      val_ratio=val_ratio, test_ratio=test_ratio,
                                      purge_days=purge_days)
 
@@ -707,9 +914,9 @@ class V400CrossSectionalTrainer:
         self.train_meta_model(split['X_val'], split['y_val'],
                               split['X_test'], split['y_test'])
 
-        # 6. Cross-Sectional评估
+        # 6. Cross-Sectional评估 (始终使用原始5d超额收益评估IC)
         metrics = self.evaluate_cross_sectional(
-            split['X_test'], split['y_test'], split['y5d_test'],
+            split['X_test'], split['y_test'], split['y5d_raw_test'],
             split['dates_test'], split['codes_test'])
 
         # 7. 特征重要性
@@ -756,19 +963,27 @@ def main():
                         help='行业特征缩放因子 (默认0.5)')
     parser.add_argument('--skip-rf', action='store_true',
                         help='跳过Random Forest (训练慢且IC不稳定)')
+    parser.add_argument('--rank-label', action='store_true',
+                        help='B2: 将标签转为当日cross-sectional排名 (0-1)')
+    parser.add_argument('--neutralize-label', action='store_true',
+                        help='B3: 标签行业+市值中性化')
+    parser.add_argument('--feature-select', action='store_true',
+                        help='B4: IC-based特征筛选')
 
     args = parser.parse_args()
 
     logger.info("=" * 80)
-    logger.info("🚀 V4.0.1 Cross-Sectional Alpha Model 训练")
+    logger.info("🚀 V4.1 Cross-Sectional Alpha Model 训练")
     logger.info("   目标: 学习个股相对强势信号，而非大盘方向")
-    logger.info("   标签: 超额收益 (个股 - 沪深300)")
-    logger.info("   特征: ~55个 cross-sectional 排名特征")
+    logger.info("   改进: 排名标签 + 中性化 + IC筛选 + 全市场排名")
     logger.info("=" * 80)
     logger.info(f"数据库: {args.db_path}")
     logger.info(f"元模型: {args.meta_model}")
     logger.info(f"市场特征缩放: {args.market_scale}")
     logger.info(f"行业特征缩放: {args.industry_scale}")
+    logger.info(f"排名标签(B2): {args.rank_label}")
+    logger.info(f"标签中性化(B3): {args.neutralize_label}")
+    logger.info(f"特征筛选(B4): {args.feature_select}")
     logger.info(f"验证集比例: {args.val_ratio}")
     logger.info(f"测试集比例: {args.test_ratio}")
     logger.info(f"Purge gap: {args.purge_days} 天")
@@ -779,6 +994,9 @@ def main():
         market_scale=args.market_scale,
         industry_scale=args.industry_scale,
         skip_rf=args.skip_rf,
+        rank_label=args.rank_label,
+        neutralize_label=args.neutralize_label,
+        feature_select=args.feature_select,
     )
     model_path = trainer.train(
         val_ratio=args.val_ratio,

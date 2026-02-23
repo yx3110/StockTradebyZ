@@ -247,18 +247,133 @@ class V400ProductionScorer:
             logger.error(f"V4.0预测错误 {code}: {e}")
             return None
 
+    def _load_all_features_for_date(self, trade_date: str) -> Optional[pd.DataFrame]:
+        """
+        加载当天全市场所有股票的特征 (用于计算全市场percentile rank)
+
+        Returns:
+            DataFrame with columns: code + feature columns, or None
+        """
+        conn = sqlite3.connect(self.db_path)
+        try:
+            df = pd.read_sql_query("""
+                SELECT code, features_json FROM v40_feature_cache
+                WHERE trade_date = ?
+            """, conn, params=(trade_date,))
+
+            if df.empty:
+                logger.warning(f"V4.0 cache无当天数据: {trade_date}")
+                return None
+
+            features_list = []
+            valid_codes = []
+            for _, row in df.iterrows():
+                try:
+                    features_dict = json.loads(row['features_json'])
+                    features_list.append(features_dict)
+                    valid_codes.append(row['code'])
+                except (json.JSONDecodeError, TypeError):
+                    continue
+
+            if not features_list:
+                return None
+
+            features_df = pd.DataFrame(features_list)
+            features_df.insert(0, 'code', valid_codes)
+
+            # 对齐列顺序 + winsorize
+            if self.feature_names:
+                for col in self.feature_names:
+                    if col not in features_df.columns:
+                        features_df[col] = 0
+
+            if self.winsorize_bounds:
+                for col, (lower, upper) in self.winsorize_bounds.items():
+                    if col in features_df.columns:
+                        features_df[col] = features_df[col].clip(lower, upper)
+
+            logger.info(f"✅ V4.0全市场特征加载: {len(features_df)} 只股票 ({trade_date})")
+            return features_df
+
+        except Exception as e:
+            logger.warning(f"V4.0全市场特征加载失败: {e}")
+            return None
+        finally:
+            conn.close()
+
     def predict_scores(self, codes: List[str], trade_date: str) -> Dict[str, Dict]:
         """
-        批量预测 (使用percentile rank评分)
+        批量预测 (使用全市场percentile rank评分)
 
-        先批量预测所有股票的原始值，再用percentile映射为分数
+        关键改进: 先对全市场所有股票预测，再用全市场percentile rank映射分数
+        这确保排名含义与训练时一致 (全市场4000+只股票的相对位置)
         """
         if not codes:
             return {}
 
+        # 加载全市场特征 (不仅仅是请求的codes)
+        all_market_features = self._load_all_features_for_date(trade_date)
+
+        if all_market_features is None or len(all_market_features) == 0:
+            # 回退: 只使用请求的codes
+            logger.warning("V4.0全市场特征加载失败，回退到局部排名模式")
+            return self._predict_scores_local(codes, trade_date)
+
+        try:
+            market_codes = all_market_features['code'].values
+            feature_cols = self.feature_names if self.feature_names else [
+                c for c in all_market_features.columns if c != 'code']
+            X_all = all_market_features[feature_cols].fillna(0)
+
+            # 全市场预测
+            all_predictions = self._predict_raw(X_all)
+            logger.info(f"  全市场预测完成: {len(all_predictions)} 只, "
+                        f"均值={np.mean(all_predictions):.5f}, "
+                        f"std={np.std(all_predictions):.5f}")
+
+            # 构建 code -> prediction 映射
+            pred_map = dict(zip(market_codes, all_predictions))
+
+            # 对请求的codes提取结果，使用全市场percentile rank
+            results = {}
+            for code in codes:
+                if code not in pred_map:
+                    continue
+
+                pred = pred_map[code]
+                score = self._convert_prediction_to_score(pred, all_predictions)
+
+                # 从缓存的features构建confidence
+                code_idx = np.where(market_codes == code)[0]
+                if len(code_idx) > 0:
+                    feat_row = all_market_features.iloc[[code_idx[0]]][feature_cols]
+                    confidence = self._calculate_confidence(feat_row, pred)
+                else:
+                    confidence = 0.5
+
+                results[code] = {
+                    'code': code,
+                    'trade_date': trade_date,
+                    'score': score,
+                    'predicted_excess_return_5d': float(pred),
+                    'confidence': confidence,
+                    'recommendation': self._get_recommendation(score),
+                    'scoring_method': 'V4.0_CrossSectional',
+                    'model_grade': 'TBD',
+                }
+
+            logger.info(f"  返回 {len(results)}/{len(codes)} 只请求股票的评分 "
+                        f"(全市场 {len(all_predictions)} 只参与排名)")
+            return results
+
+        except Exception as e:
+            logger.error(f"V4.0全市场predict失败: {e}")
+            return self._predict_scores_local(codes, trade_date)
+
+    def _predict_scores_local(self, codes: List[str], trade_date: str) -> Dict[str, Dict]:
+        """局部排名模式回退 (仅在全市场加载失败时使用)"""
         batch_features = self._get_features_from_cache_batch(codes, trade_date)
 
-        # 收集有效特征
         valid_codes = []
         feature_rows = []
         for code in codes:
@@ -273,11 +388,8 @@ class V400ProductionScorer:
         try:
             all_features = pd.concat(feature_rows, ignore_index=True)
             all_features = all_features.fillna(0)
-
-            # 批量预测
             predictions = self._predict_raw(all_features)
 
-            # 使用percentile rank映射分数
             results = {}
             for i, code in enumerate(valid_codes):
                 pred = predictions[i]
@@ -292,11 +404,9 @@ class V400ProductionScorer:
                     'scoring_method': 'V4.0_CrossSectional',
                     'model_grade': 'TBD',
                 }
-
             return results
-
         except Exception as e:
-            logger.error(f"V4.0批量predict失败: {e}")
+            logger.error(f"V4.0局部predict失败: {e}")
             return {}
 
     def preload_feature_cache(self, dates: List[str]) -> Dict[str, pd.DataFrame]:
@@ -366,44 +476,61 @@ class V400ProductionScorer:
 
     def predict_scores_from_preloaded(self, codes: List[str], trade_date: str,
                                        preloaded_features) -> Dict[str, Dict]:
-        """使用预加载的特征进行批量预测"""
+        """
+        使用预加载的特征进行批量预测
+
+        关键改进: 对preloaded_features中的全部股票做预测(而非仅codes),
+        然后用全市场percentile rank映射分数
+        """
         if not codes:
             return {}
 
         results = {}
 
         if preloaded_features is not None and len(preloaded_features) > 0:
-            mask = preloaded_features['code'].isin(codes)
-            filtered_df = preloaded_features[mask].copy()
+            try:
+                if self.feature_names:
+                    feature_cols = self.feature_names
+                else:
+                    feature_cols = [c for c in preloaded_features.columns if c != 'code']
 
-            if len(filtered_df) > 0:
-                try:
-                    valid_codes = filtered_df['code'].tolist()
+                # 对全部预加载股票做预测 (用于全市场percentile rank)
+                all_features = preloaded_features[feature_cols].fillna(0)
+                all_predictions = self._predict_raw(all_features)
+                all_codes = preloaded_features['code'].values
 
-                    if self.feature_names:
-                        feature_cols = self.feature_names
-                    else:
-                        feature_cols = [c for c in filtered_df.columns if c != 'code']
+                logger.info(f"  预加载全市场预测: {len(all_predictions)} 只, "
+                            f"均值={np.mean(all_predictions):.5f}")
 
-                    all_features = filtered_df[feature_cols].fillna(0)
-                    predictions = self._predict_raw(all_features)
+                # 构建映射
+                pred_map = dict(zip(all_codes, all_predictions))
 
-                    for i, code in enumerate(valid_codes):
-                        pred = predictions[i]
-                        score = self._convert_prediction_to_score(pred, predictions)
+                # 对请求的codes提取结果
+                for code in codes:
+                    if code in pred_map:
+                        pred = pred_map[code]
+                        score = self._convert_prediction_to_score(pred, all_predictions)
+
+                        code_mask = preloaded_features['code'] == code
+                        if code_mask.any():
+                            feat_row = preloaded_features.loc[code_mask, feature_cols].iloc[[0]]
+                            confidence = self._calculate_confidence(feat_row, pred)
+                        else:
+                            confidence = 0.5
+
                         results[code] = {
                             'code': code,
                             'trade_date': trade_date,
                             'score': score,
                             'predicted_excess_return_5d': float(pred),
-                            'confidence': self._calculate_confidence(
-                                filtered_df.iloc[[i]][feature_cols], pred),
+                            'confidence': confidence,
                             'recommendation': self._get_recommendation(score),
                             'scoring_method': 'V4.0_CrossSectional',
                             'model_grade': 'TBD',
                         }
-                except Exception as e:
-                    logger.error(f"V4.0预加载批量predict失败: {e}")
+
+            except Exception as e:
+                logger.error(f"V4.0预加载批量predict失败: {e}")
 
         # 对缺失特征的股票走单只 fallback
         for code in codes:
