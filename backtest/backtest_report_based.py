@@ -50,7 +50,7 @@ from backtest.north_star_metrics import (
 
 DB_PATH = os.path.join(PROJECT_ROOT, 'data_adapter', 'stock_data.db')
 
-HOLDING_DAYS = [1, 3, 5, 10, 15]
+HOLDING_DAYS = [1, 3, 5, 7, 10, 15]
 
 
 def load_reports(report_dir):
@@ -256,13 +256,18 @@ def _compute_period_risk_metrics(period_returns: pd.Series, holding_days: int,
     losses = period_rf - returns[returns <= period_rf]
     omega = gains.sum() / losses.sum() if losses.sum() > 1e-8 else float('inf')
 
-    # 月度统计 (约 252/holding_days/12 个period一月)
-    periods_per_month = max(1, int(periods_per_year / 12))
-    monthly_returns = []
-    for i in range(0, n_periods, periods_per_month):
-        chunk = returns.iloc[i:i+periods_per_month]
-        monthly_returns.append((1 + chunk).prod() - 1)
-    monthly_returns = pd.Series(monthly_returns)
+    # 月度统计 (按实际日历月份分组，比固定chunk更准确)
+    if isinstance(returns.index, pd.DatetimeIndex):
+        monthly_groups = returns.groupby(returns.index.to_period('M'))
+        monthly_returns = monthly_groups.apply(lambda x: (1 + x).prod() - 1)
+    else:
+        # 回退到固定chunk方式
+        periods_per_month = max(1, int(periods_per_year / 12))
+        monthly_returns_list = []
+        for i in range(0, n_periods, periods_per_month):
+            chunk = returns.iloc[i:i+periods_per_month]
+            monthly_returns_list.append((1 + chunk).prod() - 1)
+        monthly_returns = pd.Series(monthly_returns_list)
 
     monthly_win_rate = (monthly_returns > 0).mean() * 100 if len(monthly_returns) > 0 else 0
     worst_month = monthly_returns.min() if len(monthly_returns) > 0 else 0
@@ -333,22 +338,43 @@ def _aggregate_benchmark_to_periods(benchmark_daily: pd.Series,
 
 
 def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
-                        focus_days=10):
-    """运行单个报告目录的回测（含北极星指标）"""
+                        focus_days=10, retention_bonus=0.0):
+    """运行单个报告目录的回测（含北极星指标）
+
+    Args:
+        retention_bonus: 0.0-1.0, 持仓保留加分比例。>0时已持有股票得到分数加成,
+                        减少换手率。0.0=无加成(默认), 0.3=30%加成
+    """
     print(f"\n{'='*80}")
     print(f"  报告回测: {label}")
     print(f"  报告天数: {len(reports)}, Top N: {top_n}")
+    if retention_bonus > 0:
+        print(f"  持仓保留加分: {retention_bonus:.0%}")
     print(f"{'='*80}\n")
 
     daily_results = []
     all_picks = []
     holdings_by_date = {}  # 用于换手率计算
     skipped = 0
+    prev_top_codes = set()
 
     dates = sorted(reports.keys())
     for i, date in enumerate(dates):
         stocks = reports[date]
-        top_stocks = stocks[:top_n]
+
+        # 持仓保留加分: 已持有股票的score乘以(1+bonus)
+        if retention_bonus > 0 and prev_top_codes:
+            adjusted_stocks = []
+            for s in stocks:
+                s_copy = dict(s)
+                if s['code'] in prev_top_codes:
+                    s_copy['score'] = s['score'] * (1 + retention_bonus)
+                adjusted_stocks.append(s_copy)
+            adjusted_stocks.sort(key=lambda x: x['score'], reverse=True)
+            top_stocks = adjusted_stocks[:top_n]
+        else:
+            top_stocks = stocks[:top_n]
+
         bottom_stocks = stocks[-top_n:] if len(stocks) >= top_n * 2 else stocks[-(len(stocks)//2):]
 
         # 买入日 = 报告日的下一个交易日
@@ -361,6 +387,7 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
         bottom_codes = [s['code'] for s in bottom_stocks]
         # 记录持仓（用于换手率）
         holdings_by_date[date] = top_codes
+        prev_top_codes = set(top_codes)
 
         # 查询所有候选股票的收益（用于逐日IC计算）
         all_codes = list(set([s['code'] for s in stocks]))

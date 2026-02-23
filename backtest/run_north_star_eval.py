@@ -96,7 +96,8 @@ def generate_reports(scoring_version='v3.95', start_date='2025-09-01', end_date=
     print(f"\n  报告生成完成 ({done} 份)")
 
 
-def run_backtest(report_dir, label, top_n=20, benchmark='000905.SH', focus_days=10):
+def run_backtest(report_dir, label, top_n=20, benchmark='000905.SH', focus_days=10,
+                 retention_bonus=0.0):
     """运行单个模型的回测"""
     from backtest import backtest_report_based as brb
     from backtest import north_star_metrics as nsm
@@ -112,7 +113,8 @@ def run_backtest(report_dir, label, top_n=20, benchmark='000905.SH', focus_days=
 
     result = brb.run_single_backtest(
         reports, label, top_n=top_n,
-        benchmark_code=benchmark, focus_days=focus_days
+        benchmark_code=benchmark, focus_days=focus_days,
+        retention_bonus=retention_bonus
     )
     return result
 
@@ -183,6 +185,8 @@ def main():
     parser.add_argument('--start-date', type=str, default='2025-09-01', help='开始日期')
     parser.add_argument('--end-date', type=str, default='2026-02-13', help='结束日期')
     parser.add_argument('--scoring-version', type=str, default='v3.95', help='评分版本')
+    parser.add_argument('--retention-bonus', type=float, default=0.0,
+                        help='持仓保留加分比例 (0.0-1.0)')
     args = parser.parse_args()
 
     if args.generate_reports:
@@ -190,11 +194,13 @@ def main():
 
     if args.backtest:
         if args.report_dir:
-            run_backtest(args.report_dir, args.label, args.top_n, args.benchmark, args.focus_days)
+            run_backtest(args.report_dir, args.label, args.top_n, args.benchmark,
+                        args.focus_days, args.retention_bonus)
         else:
             # 默认回测v3.95 RobustZScore
             default_dir = str(PROJECT_ROOT / 'reports' / 'daily_selection_v3.95_robust_zscore')
-            run_backtest(default_dir, 'v3.95-RZ', args.top_n, args.benchmark, args.focus_days)
+            run_backtest(default_dir, 'v3.95-RZ', args.top_n, args.benchmark,
+                        args.focus_days, args.retention_bonus)
 
     if args.compare:
         run_comparison(args.top_n, args.benchmark, args.focus_days)
