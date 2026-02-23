@@ -566,6 +566,27 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
         # --- 风险指标（非重叠period收益，正确年化）---
         risk = _compute_period_risk_metrics(period_ret_series, days)
 
+        # --- 多偏移量鲁棒月度胜率（消除起始偏移artifact）---
+        # 单一偏移量的月度胜率受起始点影响大，改为平均所有可能的偏移量
+        if days > 1 and len(sub) > days * 3:
+            all_monthly = []
+            for offset in range(min(days, len(sub))):
+                offset_sub = sub.iloc[offset::days]
+                if len(offset_sub) < 3:
+                    continue
+                offset_rets = offset_sub.set_index('date')['avg_top_return']
+                offset_rets.index = pd.to_datetime(offset_rets.index)
+                monthly = offset_rets.groupby(offset_rets.index.to_period('M')).apply(
+                    lambda x: (1 + x).prod() - 1)
+                all_monthly.append(monthly)
+            if all_monthly:
+                combined = pd.concat(all_monthly, axis=1)
+                avg_monthly = combined.mean(axis=1)
+                robust_win_rate = (avg_monthly > 0).mean() * 100
+                risk['monthly_win_rate'] = robust_win_rate
+                risk['worst_month'] = avg_monthly.min()
+                risk['best_month'] = avg_monthly.max()
+
         # --- 换手率（仅在调仓日之间计算）---
         rebal_dates = non_overlap['date'].tolist()
         rebal_holdings = {d: holdings_by_date.get(d, []) for d in rebal_dates
