@@ -427,7 +427,7 @@ def get_reports():
 
         # 获取报告列表
         reports = []
-        json_files = list(reports_dir.glob('selection_*.json'))
+        json_files = list(reports_dir.glob('analysis_data_*.json'))
         json_files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
 
         for jf in json_files[:limit]:
@@ -435,8 +435,12 @@ def get_reports():
                 with open(jf, 'r', encoding='utf-8') as f:
                     data = json.load(f)
 
-                # 从文件名提取日期
-                date_str = jf.stem.replace('selection_', '')
+                # 从文件名提取日期 (YYYYMMDD -> YYYY-MM-DD)
+                raw_date = jf.stem.replace('analysis_data_', '')
+                if len(raw_date) == 8:
+                    date_str = f'{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:]}'
+                else:
+                    date_str = raw_date
 
                 reports.append({
                     'date': date_str,
@@ -457,6 +461,35 @@ def get_reports():
 
     except Exception as e:
         logger.error(f'获取报告列表失败: {e}', exc_info=True)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@daily_tasks_bp.route('/market-indices', methods=['GET'])
+def get_market_indices():
+    """
+    获取大盘指数最新数据
+
+    Returns:
+        {
+            "success": True,
+            "indices": [{code, name, close, price_change_pct, ...}]
+        }
+    """
+    try:
+        db_manager = get_db_manager()
+        indices = db_manager.get_market_indices()
+
+        # 获取每个指数的30日趋势
+        for idx in indices:
+            history = db_manager.get_index_history(idx['code'], days=30)
+            idx['trend'] = [h['close'] for h in history]
+
+        return jsonify({
+            'success': True,
+            'indices': indices
+        })
+    except Exception as e:
+        logger.error(f'获取大盘指数失败: {e}', exc_info=True)
         return jsonify({'success': False, 'error': str(e)}), 500
 
 

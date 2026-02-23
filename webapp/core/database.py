@@ -389,6 +389,142 @@ class DatabaseManager:
             rows = cursor.fetchall()
             return [dict(row) for row in rows]
 
+    # ==================== 大盘指数方法 ====================
+
+    def get_market_indices(self) -> List[Dict]:
+        """获取主要大盘指数最新数据（含涨跌幅）"""
+        with self.get_stock_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT s.code, s.name,
+                       dq.trade_date, dq.open, dq.high, dq.low, dq.close, dq.volume,
+                       dq.price_change_pct
+                FROM securities s
+                JOIN daily_quotes dq ON dq.security_id = s.id
+                WHERE s.type = '指数'
+                AND dq.trade_date = (
+                    SELECT MAX(dq2.trade_date) FROM daily_quotes dq2
+                    JOIN securities s2 ON dq2.security_id = s2.id
+                    WHERE s2.code = '000001.SH'
+                )
+                ORDER BY s.code
+            """)
+            return [dict(row) for row in cursor.fetchall()]
+
+    def get_index_history(self, code: str, days: int = 30) -> List[Dict]:
+        """获取指数历史数据"""
+        with self.get_stock_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT dq.trade_date, dq.close
+                FROM daily_quotes dq
+                JOIN securities s ON dq.security_id = s.id
+                WHERE s.code = ?
+                ORDER BY dq.trade_date DESC
+                LIMIT ?
+            """, (code, days))
+            rows = cursor.fetchall()
+            return [dict(row) for row in reversed(rows)]
+
+    # ==================== 个股数据方法 ====================
+
+    def search_stocks(self, query: str, limit: int = 20) -> List[Dict]:
+        """搜索股票（代码/名称模糊匹配）"""
+        with self.get_stock_db_connection() as conn:
+            cursor = conn.cursor()
+            like_query = f'%{query}%'
+            cursor.execute("""
+                SELECT code, name, type FROM securities
+                WHERE (code LIKE ? OR name LIKE ?)
+                AND type IN ('A股', 'ETF_基金')
+                LIMIT ?
+            """, (like_query, like_query, limit))
+            return [dict(row) for row in cursor.fetchall()]
+
+    def get_stock_kline(self, code: str, days: int = 120) -> List[Dict]:
+        """获取K线数据（OHLCV + MA）"""
+        code = self._normalize_code(code)
+        # 获取更多数据用于计算MA
+        extra_days = days + 60
+        with self.get_stock_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT dq.trade_date, dq.open, dq.high, dq.low, dq.close, dq.volume,
+                       dq.price_change_pct
+                FROM daily_quotes dq
+                JOIN securities s ON dq.security_id = s.id
+                WHERE s.code = ?
+                ORDER BY dq.trade_date DESC
+                LIMIT ?
+            """, (code, extra_days))
+            rows = cursor.fetchall()
+            all_data = [dict(row) for row in reversed(rows)]
+
+        # 计算MA
+        closes = [d['close'] for d in all_data]
+        for i, d in enumerate(all_data):
+            d['ma5'] = round(sum(closes[max(0,i-4):i+1]) / min(5, i+1), 2) if i >= 4 else None
+            d['ma10'] = round(sum(closes[max(0,i-9):i+1]) / min(10, i+1), 2) if i >= 9 else None
+            d['ma20'] = round(sum(closes[max(0,i-19):i+1]) / min(20, i+1), 2) if i >= 19 else None
+            d['ma60'] = round(sum(closes[max(0,i-59):i+1]) / min(60, i+1), 2) if i >= 59 else None
+
+        # 只返回请求的天数
+        return all_data[-days:] if len(all_data) > days else all_data
+
+    def get_stock_technical(self, code: str, days: int = 120) -> List[Dict]:
+        """获取技术指标（KDJ/MACD/RSI/BOLL）"""
+        code = self._normalize_code(code)
+        with self.get_stock_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT ti.trade_date,
+                       ti.kdj_k, ti.kdj_d, ti.kdj_j,
+                       ti.macd_dif, ti.macd_dea,
+                       ti.macd_macd as macd_hist,
+                       ti.rsi6 as rsi_6, ti.rsi12 as rsi_12, ti.rsi24 as rsi_24,
+                       ti.boll_upper, ti.boll_middle as boll_mid, ti.boll_lower
+                FROM technical_indicators ti
+                JOIN securities s ON ti.security_id = s.id
+                WHERE s.code = ?
+                ORDER BY ti.trade_date DESC
+                LIMIT ?
+            """, (code, days))
+            rows = cursor.fetchall()
+            return [dict(row) for row in reversed(rows)]
+
+    def get_stock_fundamental(self, code: str) -> Optional[Dict]:
+        """获取最新基本面数据（PE/PB/市值/换手率）"""
+        code = self._normalize_code(code)
+        with self.get_stock_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT db.trade_date, db.pe_ttm, db.pb, db.ps_ttm,
+                       db.total_mv, db.circ_mv, db.turnover_rate
+                FROM daily_basic db
+                JOIN securities s ON db.security_id = s.id
+                WHERE s.code = ?
+                ORDER BY db.trade_date DESC
+                LIMIT 1
+            """, (code,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+    def get_stock_info(self, code: str) -> Optional[Dict]:
+        """获取公司信息（合并securities和stock_basic_info）"""
+        code = self._normalize_code(code)
+        with self.get_stock_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT s.code, s.name, s.type, s.exchange,
+                       s.industry, s.area, s.list_date,
+                       sbi.fullname, sbi.market, sbi.main_business
+                FROM securities s
+                LEFT JOIN stock_basic_info sbi ON sbi.security_id = s.id
+                WHERE s.code = ?
+            """, (code,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
     # ==================== Web应用数据库方法 ====================
 
     def save_training_job(

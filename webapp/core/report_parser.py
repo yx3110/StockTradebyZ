@@ -411,6 +411,10 @@ class ReportParser:
                     'kdj_d': stock.get('kdj_d', 0),
                     'kdj_j': stock.get('kdj_j', 0),
                     'bbi': stock.get('bbi', 0),
+                    'predicted_return_5d': stock.get('predicted_return_5d'),
+                    'detailed_scoring': stock.get('detailed_scoring', {}),
+                    'volume': stock.get('volume', 0),
+                    'suggested_buy_price': stock.get('suggested_buy_price', 0),
                 })
 
             return {

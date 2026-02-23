@@ -10,6 +10,25 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 WEBAPP_DIR = Path(__file__).resolve().parent
 
 
+def scan_report_directories(reports_dir: Path) -> dict:
+    """
+    自动扫描报告目录，发现所有 daily_selection_* 目录
+
+    Returns:
+        dict: {版本标签: 目录路径} 例如 {'v3.9': Path(...), 'v3.95_robust_zscore': Path(...)}
+    """
+    report_dirs = {}
+    if not reports_dir.exists():
+        return report_dirs
+
+    for item in sorted(reports_dir.iterdir()):
+        if item.is_dir() and item.name.startswith('daily_selection_'):
+            suffix = item.name.replace('daily_selection_', '')
+            report_dirs[suffix] = item
+
+    return report_dirs
+
+
 def scan_model_directories(models_dir: Path) -> dict:
     """
     自动扫描模型目录，发现所有可用的模型版本
@@ -94,15 +113,8 @@ class Config:
 
     # 报告目录配置
     REPORTS_DIR = BASE_DIR / 'reports'
-    DAILY_SELECTION_DIRS = {
-        'v3.0': REPORTS_DIR / 'daily_selection_v3',
-        'v3.7': REPORTS_DIR / 'daily_selection_v3.7',
-        'v3.8': REPORTS_DIR / 'daily_selection_v3.8',
-        'v3.81': REPORTS_DIR / 'daily_selection_v3.81',
-        'v3.9': REPORTS_DIR / 'daily_selection_v3.9',
-        'v3.94': REPORTS_DIR / 'daily_selection_v3.94',
-        'v3.95': REPORTS_DIR / 'daily_selection_v3.95',
-    }
+    # 自动扫描报告目录
+    DAILY_SELECTION_DIRS = scan_report_directories(REPORTS_DIR)
     AI_ENHANCED_DIR = REPORTS_DIR / 'ai_enhanced'
     BACKTEST_DIR = REPORTS_DIR / 'backtest'
 

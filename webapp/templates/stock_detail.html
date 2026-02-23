@@ -1,0 +1,400 @@
+{% extends "base.html" %}
+
+{% block title %}{{ stock_code }} - 个股详情{% endblock %}
+
+{% block extra_css %}
+<style>
+    .price-up { color: #dc3545; }
+    .price-down { color: #198754; }
+    .price-flat { color: #6c757d; }
+    .info-label { color: #6c757d; font-size: 0.85rem; }
+    .info-value { font-weight: 600; font-size: 1.1rem; }
+    .indicator-tab { cursor: pointer; }
+    .indicator-tab.active { border-bottom: 3px solid #0d6efd; }
+    #kline-chart { min-height: 450px; }
+    #volume-chart { min-height: 120px; }
+    .sub-indicator-chart { min-height: 200px; }
+    .fundamental-card { border-left: 3px solid #0d6efd; }
+    .back-link { text-decoration: none; }
+    .back-link:hover { text-decoration: underline; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="row mb-3">
+    <div class="col-12">
+        <a href="{{ url_for('daily_tasks') }}" class="back-link text-muted">
+            <i class="bi bi-arrow-left"></i> 返回
+        </a>
+    </div>
+</div>
+
+<!-- 股票头部信息 -->
+<div class="row mb-3">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-body py-3">
+                <div class="row align-items-center">
+                    <div class="col-auto">
+                        <h3 class="mb-0" id="stock-name">
+                            <span class="text-muted">{{ stock_code }}</span>
+                        </h3>
+                    </div>
+                    <div class="col-auto" id="stock-price-info">
+                        <span class="fs-2 fw-bold" id="stock-price">--</span>
+                        <span class="fs-5 ms-2" id="stock-change">--</span>
+                    </div>
+                    <div class="col">
+                        <div class="row text-center" id="stock-ohlv">
+                            <div class="col"><span class="info-label">开盘</span><br><span class="info-value" id="val-open">--</span></div>
+                            <div class="col"><span class="info-label">最高</span><br><span class="info-value" id="val-high">--</span></div>
+                            <div class="col"><span class="info-label">最低</span><br><span class="info-value" id="val-low">--</span></div>
+                            <div class="col"><span class="info-label">成交量</span><br><span class="info-value" id="val-volume">--</span></div>
+                            <div class="col"><span class="info-label">行业</span><br><span class="info-value" id="val-industry">--</span></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- K线图 + 成交量 -->
+<div class="row mb-3">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="mb-0"><i class="bi bi-bar-chart-line"></i> K线图</h5>
+                <div class="btn-group btn-group-sm" role="group">
+                    <button class="btn btn-outline-primary active" onclick="changeKlinePeriod(60, this)">60日</button>
+                    <button class="btn btn-outline-primary" onclick="changeKlinePeriod(120, this)">120日</button>
+                    <button class="btn btn-outline-primary" onclick="changeKlinePeriod(250, this)">250日</button>
+                </div>
+            </div>
+            <div class="card-body p-2">
+                <div id="kline-chart"></div>
+                <div id="volume-chart"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 技术指标 -->
+<div class="row mb-3">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header">
+                <ul class="nav nav-tabs card-header-tabs" id="indicator-tabs">
+                    <li class="nav-item">
+                        <a class="nav-link active" data-bs-toggle="tab" href="#tab-kdj">KDJ</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" data-bs-toggle="tab" href="#tab-macd">MACD</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" data-bs-toggle="tab" href="#tab-rsi">RSI</a>
+                    </li>
+                </ul>
+            </div>
+            <div class="card-body p-2">
+                <div class="tab-content">
+                    <div class="tab-pane fade show active" id="tab-kdj">
+                        <div id="kdj-chart" class="sub-indicator-chart"></div>
+                    </div>
+                    <div class="tab-pane fade" id="tab-macd">
+                        <div id="macd-chart" class="sub-indicator-chart"></div>
+                    </div>
+                    <div class="tab-pane fade" id="tab-rsi">
+                        <div id="rsi-chart" class="sub-indicator-chart"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 基本面 -->
+<div class="row">
+    <div class="col-lg-6">
+        <div class="card mb-3">
+            <div class="card-header"><h5 class="mb-0"><i class="bi bi-clipboard-data"></i> 基本面数据</h5></div>
+            <div class="card-body">
+                <div class="row g-3">
+                    <div class="col-6"><div class="fundamental-card p-2 rounded bg-light"><span class="info-label">PE(TTM)</span><br><span class="info-value" id="val-pe">--</span></div></div>
+                    <div class="col-6"><div class="fundamental-card p-2 rounded bg-light"><span class="info-label">PB</span><br><span class="info-value" id="val-pb">--</span></div></div>
+                    <div class="col-6"><div class="fundamental-card p-2 rounded bg-light"><span class="info-label">总市值</span><br><span class="info-value" id="val-mv">--</span></div></div>
+                    <div class="col-6"><div class="fundamental-card p-2 rounded bg-light"><span class="info-label">流通市值</span><br><span class="info-value" id="val-circ-mv">--</span></div></div>
+                    <div class="col-6"><div class="fundamental-card p-2 rounded bg-light"><span class="info-label">换手率</span><br><span class="info-value" id="val-turnover">--</span></div></div>
+                    <div class="col-6"><div class="fundamental-card p-2 rounded bg-light"><span class="info-label">PS(TTM)</span><br><span class="info-value" id="val-ps">--</span></div></div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="col-lg-6">
+        <div class="card mb-3">
+            <div class="card-header"><h5 class="mb-0"><i class="bi bi-building"></i> 公司信息</h5></div>
+            <div class="card-body">
+                <table class="table table-borderless mb-0" id="company-info">
+                    <tr><th width="100">代码</th><td>{{ stock_code }}</td></tr>
+                    <tr><th>名称</th><td id="info-name">--</td></tr>
+                    <tr><th>行业</th><td id="info-industry">--</td></tr>
+                    <tr><th>地区</th><td id="info-area">--</td></tr>
+                    <tr><th>上市日期</th><td id="info-list-date">--</td></tr>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+const STOCK_CODE = '{{ stock_code }}';
+let klineChart = null;
+let volumeChart = null;
+let kdjChart = null;
+let macdChart = null;
+let rsiChart = null;
+let currentDays = 120;
+
+$(document).ready(function() {
+    loadStockData(currentDays);
+    loadFundamental();
+    loadCompanyInfo();
+
+    // 当切换技术指标tab时，重新渲染图表
+    $('a[data-bs-toggle="tab"]').on('shown.bs.tab', function(e) {
+        const target = $(e.target).attr('href');
+        if (target === '#tab-macd' && macdChart) macdChart.render();
+        if (target === '#tab-rsi' && rsiChart) rsiChart.render();
+    });
+});
+
+function changeKlinePeriod(days, btn) {
+    currentDays = days;
+    $(btn).closest('.btn-group').find('.btn').removeClass('active');
+    $(btn).addClass('active');
+    loadStockData(days);
+}
+
+function loadStockData(days) {
+    // 并行加载K线和技术指标
+    $.when(
+        $.ajax({ url: `/api/stock/${STOCK_CODE}/kline?days=${days}` }),
+        $.ajax({ url: `/api/stock/${STOCK_CODE}/technical?days=${days}` })
+    ).done(function(klineRes, techRes) {
+        const kdata = klineRes[0];
+        const tdata = techRes[0];
+
+        if (kdata.success && kdata.data.length > 0) {
+            renderKlineChart(kdata.data);
+            updateHeaderInfo(kdata.data);
+        }
+        if (tdata.success && tdata.data.length > 0) {
+            renderTechnicalCharts(tdata.data);
+        }
+    });
+}
+
+function updateHeaderInfo(data) {
+    const latest = data[data.length - 1];
+    const pct = latest.price_change_pct || 0;
+    const isUp = pct >= 0;
+    const colorClass = isUp ? 'price-up' : 'price-down';
+    const arrow = isUp ? '▲' : '▼';
+
+    $('#stock-price').text(latest.close?.toFixed(2) || '--').removeClass('price-up price-down').addClass(colorClass);
+    $('#stock-change').html(`<span class="${colorClass}">${arrow} ${Math.abs(pct).toFixed(2)}%</span>`);
+    $('#val-open').text(latest.open?.toFixed(2) || '--');
+    $('#val-high').text(latest.high?.toFixed(2) || '--');
+    $('#val-low').text(latest.low?.toFixed(2) || '--');
+    $('#val-volume').text(latest.volume ? formatVol(latest.volume) : '--');
+}
+
+function formatVol(v) {
+    if (v >= 100000000) return (v / 100000000).toFixed(2) + '亿';
+    if (v >= 10000) return (v / 10000).toFixed(1) + '万';
+    return v.toString();
+}
+
+function formatMV(v) {
+    // v is in 万元
+    if (!v) return '--';
+    if (v >= 10000) return (v / 10000).toFixed(1) + '亿';
+    return v.toFixed(1) + '万';
+}
+
+function renderKlineChart(data) {
+    const dates = data.map(d => d.trade_date);
+    const ohlc = data.map(d => [d.open, d.high, d.low, d.close]);
+    const volumes = data.map(d => d.volume || 0);
+    const colors = data.map(d => (d.price_change_pct || 0) >= 0 ? '#dc3545' : '#198754');
+
+    // MA系列
+    const ma5 = data.map(d => d.ma5);
+    const ma10 = data.map(d => d.ma10);
+    const ma20 = data.map(d => d.ma20);
+    const ma60 = data.map(d => d.ma60);
+
+    // K线图
+    if (klineChart) klineChart.destroy();
+    const klineOpts = {
+        series: [
+            { name: 'K线', type: 'candlestick', data: dates.map((d, i) => ({ x: d, y: ohlc[i] })) },
+            { name: 'MA5', type: 'line', data: dates.map((d, i) => ({ x: d, y: ma5[i] })) },
+            { name: 'MA10', type: 'line', data: dates.map((d, i) => ({ x: d, y: ma10[i] })) },
+            { name: 'MA20', type: 'line', data: dates.map((d, i) => ({ x: d, y: ma20[i] })) },
+            { name: 'MA60', type: 'line', data: dates.map((d, i) => ({ x: d, y: ma60[i] })) },
+        ],
+        chart: {
+            type: 'candlestick',
+            height: 450,
+            id: 'kline',
+            group: 'stock',
+            toolbar: { show: true, tools: { download: true, selection: true, zoom: true, zoomin: true, zoomout: true, pan: true, reset: true } },
+        },
+        plotOptions: {
+            candlestick: {
+                colors: { upward: '#dc3545', downward: '#198754' },
+                wick: { useFillColor: true }
+            }
+        },
+        stroke: { width: [1, 1.5, 1.5, 1.5, 1.5] },
+        colors: ['#333', '#f0ad4e', '#0dcaf0', '#6f42c1', '#198754'],
+        xaxis: { type: 'category', labels: { rotate: -45, style: { fontSize: '10px' } }, tickAmount: 10 },
+        yaxis: { tooltip: { enabled: true }, labels: { formatter: v => v?.toFixed(2) } },
+        legend: { show: true, position: 'top' },
+        tooltip: { shared: true },
+        grid: { borderColor: '#f1f1f1' },
+    };
+    klineChart = new ApexCharts(document.querySelector('#kline-chart'), klineOpts);
+    klineChart.render();
+
+    // 成交量图
+    if (volumeChart) volumeChart.destroy();
+    const volOpts = {
+        series: [{ name: '成交量', data: dates.map((d, i) => ({ x: d, y: volumes[i] })) }],
+        chart: { type: 'bar', height: 120, id: 'volume', group: 'stock', toolbar: { show: false }, brush: { target: 'kline', enabled: false } },
+        plotOptions: { bar: { columnWidth: '80%', colors: { ranges: [] } } },
+        colors: ['#adb5bd'],
+        xaxis: { type: 'category', labels: { show: false } },
+        yaxis: { labels: { formatter: v => formatVol(v), style: { fontSize: '10px' } } },
+        grid: { borderColor: '#f1f1f1' },
+        tooltip: { y: { formatter: v => formatVol(v) } },
+    };
+    // 颜色跟随涨跌
+    volOpts.series[0].data = dates.map((d, i) => ({
+        x: d, y: volumes[i],
+        fillColor: colors[i]
+    }));
+    volumeChart = new ApexCharts(document.querySelector('#volume-chart'), volOpts);
+    volumeChart.render();
+}
+
+function renderTechnicalCharts(data) {
+    const dates = data.map(d => d.trade_date);
+
+    // KDJ
+    if (kdjChart) kdjChart.destroy();
+    kdjChart = new ApexCharts(document.querySelector('#kdj-chart'), {
+        series: [
+            { name: 'K', data: dates.map((d, i) => ({ x: d, y: data[i].kdj_k })) },
+            { name: 'D', data: dates.map((d, i) => ({ x: d, y: data[i].kdj_d })) },
+            { name: 'J', data: dates.map((d, i) => ({ x: d, y: data[i].kdj_j })) },
+        ],
+        chart: { type: 'line', height: 200, toolbar: { show: false } },
+        stroke: { width: 1.5, curve: 'smooth' },
+        colors: ['#dc3545', '#0d6efd', '#f0ad4e'],
+        xaxis: { type: 'category', labels: { rotate: -45, style: { fontSize: '10px' } }, tickAmount: 8 },
+        yaxis: { labels: { formatter: v => v?.toFixed(0) } },
+        legend: { show: true, position: 'top' },
+        annotations: {
+            yaxis: [
+                { y: 80, borderColor: '#dc3545', strokeDashArray: 3, label: { text: '超买', style: { fontSize: '10px' } } },
+                { y: 20, borderColor: '#198754', strokeDashArray: 3, label: { text: '超卖', style: { fontSize: '10px' } } },
+            ]
+        },
+        grid: { borderColor: '#f1f1f1' },
+    });
+    kdjChart.render();
+
+    // MACD
+    if (macdChart) macdChart.destroy();
+    const macdHist = data.map(d => d.macd_hist || 0);
+    macdChart = new ApexCharts(document.querySelector('#macd-chart'), {
+        series: [
+            { name: 'DIF', type: 'line', data: dates.map((d, i) => ({ x: d, y: data[i].macd_dif })) },
+            { name: 'DEA', type: 'line', data: dates.map((d, i) => ({ x: d, y: data[i].macd_dea })) },
+            { name: 'MACD', type: 'bar', data: dates.map((d, i) => ({ x: d, y: macdHist[i], fillColor: macdHist[i] >= 0 ? '#dc3545' : '#198754' })) },
+        ],
+        chart: { type: 'line', height: 200, toolbar: { show: false } },
+        stroke: { width: [1.5, 1.5, 0] },
+        colors: ['#0d6efd', '#f0ad4e', '#adb5bd'],
+        xaxis: { type: 'category', labels: { rotate: -45, style: { fontSize: '10px' } }, tickAmount: 8 },
+        yaxis: { labels: { formatter: v => v?.toFixed(3) } },
+        legend: { show: true, position: 'top' },
+        grid: { borderColor: '#f1f1f1' },
+    });
+    macdChart.render();
+
+    // RSI
+    if (rsiChart) rsiChart.destroy();
+    rsiChart = new ApexCharts(document.querySelector('#rsi-chart'), {
+        series: [
+            { name: 'RSI6', data: dates.map((d, i) => ({ x: d, y: data[i].rsi_6 })) },
+            { name: 'RSI12', data: dates.map((d, i) => ({ x: d, y: data[i].rsi_12 })) },
+            { name: 'RSI24', data: dates.map((d, i) => ({ x: d, y: data[i].rsi_24 })) },
+        ],
+        chart: { type: 'line', height: 200, toolbar: { show: false } },
+        stroke: { width: 1.5, curve: 'smooth' },
+        colors: ['#dc3545', '#0d6efd', '#f0ad4e'],
+        xaxis: { type: 'category', labels: { rotate: -45, style: { fontSize: '10px' } }, tickAmount: 8 },
+        yaxis: { min: 0, max: 100, labels: { formatter: v => v?.toFixed(0) } },
+        legend: { show: true, position: 'top' },
+        annotations: {
+            yaxis: [
+                { y: 70, borderColor: '#dc3545', strokeDashArray: 3, label: { text: '超买', style: { fontSize: '10px' } } },
+                { y: 30, borderColor: '#198754', strokeDashArray: 3, label: { text: '超卖', style: { fontSize: '10px' } } },
+            ]
+        },
+        grid: { borderColor: '#f1f1f1' },
+    });
+    rsiChart.render();
+}
+
+function loadFundamental() {
+    $.ajax({
+        url: `/api/stock/${STOCK_CODE}/fundamental`,
+        success: function(response) {
+            if (response.success && response.data) {
+                const d = response.data;
+                $('#val-pe').text(d.pe_ttm ? d.pe_ttm.toFixed(1) : '--');
+                $('#val-pb').text(d.pb ? d.pb.toFixed(2) : '--');
+                $('#val-ps').text(d.ps_ttm ? d.ps_ttm.toFixed(1) : '--');
+                $('#val-mv').text(formatMV(d.total_mv));
+                $('#val-circ-mv').text(formatMV(d.circ_mv));
+                $('#val-turnover').text(d.turnover_rate ? d.turnover_rate.toFixed(2) + '%' : '--');
+            }
+        }
+    });
+}
+
+function loadCompanyInfo() {
+    $.ajax({
+        url: `/api/stock/${STOCK_CODE}/info`,
+        success: function(response) {
+            if (response.success && response.data) {
+                const d = response.data;
+                const name = d.name || '';
+                $('#stock-name').html(`${name} <span class="text-muted fs-5">{{ stock_code }}</span>`);
+                $('#info-name').text(name);
+                $('#info-industry').text(d.industry || '--');
+                $('#info-area').text(d.area || '--');
+                $('#info-list-date').text(d.list_date || '--');
+                $('#val-industry').text(d.industry || '--');
+            }
+        }
+    });
+}
+</script>
+{% endblock %}

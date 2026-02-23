@@ -72,6 +72,15 @@
                 </ul>
 
                 <div class="d-flex align-items-center text-white">
+                    <!-- 股票搜索框 -->
+                    <div class="position-relative me-3" style="width: 220px;">
+                        <div class="input-group input-group-sm">
+                            <span class="input-group-text bg-white border-end-0"><i class="bi bi-search"></i></span>
+                            <input type="text" class="form-control border-start-0" id="stock-search-input"
+                                   placeholder="搜索股票代码/名称..." autocomplete="off">
+                        </div>
+                        <div id="stock-search-dropdown" class="dropdown-menu w-100 shadow" style="display:none; position:absolute; top:100%; z-index:1050; max-height:300px; overflow-y:auto;"></div>
+                    </div>
                     <span class="me-3">
                         <i class="bi bi-clock"></i>
                         <span id="current-time">{{ now.strftime('%H:%M:%S') }}</span>
@@ -147,6 +156,53 @@
             const timeStr = now.toLocaleTimeString('zh-CN', { hour12: false });
             document.getElementById('current-time').textContent = timeStr;
         }, 1000);
+
+        // 股票搜索自动补全
+        (function() {
+            let searchTimer = null;
+            const input = document.getElementById('stock-search-input');
+            const dropdown = document.getElementById('stock-search-dropdown');
+
+            input.addEventListener('input', function() {
+                clearTimeout(searchTimer);
+                const q = this.value.trim();
+                if (q.length < 1) { dropdown.style.display = 'none'; return; }
+                searchTimer = setTimeout(function() {
+                    fetch('/api/stock/search?q=' + encodeURIComponent(q) + '&limit=15')
+                        .then(r => r.json())
+                        .then(data => {
+                            if (data.success && data.results.length > 0) {
+                                dropdown.innerHTML = data.results.map(s =>
+                                    `<a class="dropdown-item py-1" href="/stock/${s.code}">
+                                        <code>${s.code}</code> <span>${s.name}</span>
+                                        <small class="text-muted float-end">${s.type || ''}</small>
+                                    </a>`
+                                ).join('');
+                                dropdown.style.display = 'block';
+                            } else {
+                                dropdown.innerHTML = '<span class="dropdown-item text-muted">无结果</span>';
+                                dropdown.style.display = 'block';
+                            }
+                        });
+                }, 250);
+            });
+
+            input.addEventListener('keydown', function(e) {
+                if (e.key === 'Enter') {
+                    const q = this.value.trim();
+                    if (/^\d{6}/.test(q)) {
+                        window.location.href = '/stock/' + q;
+                    }
+                }
+            });
+
+            // 点击外部关闭
+            document.addEventListener('click', function(e) {
+                if (!input.contains(e.target) && !dropdown.contains(e.target)) {
+                    dropdown.style.display = 'none';
+                }
+            });
+        })();
 
         // 全局Toast通知函数
         window.showToast = function(message, type = 'info', title = null) {

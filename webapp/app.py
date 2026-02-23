@@ -65,6 +65,11 @@ def create_app(config_name='default'):
         """数据管理页面"""
         return render_template('data_management.html')
 
+    @app.route('/stock/<code>')
+    def stock_detail(code):
+        """个股详情页"""
+        return render_template('stock_detail.html', stock_code=code)
+
     # 健康检查端点
     @app.route('/api/health')
     def health_check():
@@ -123,6 +128,7 @@ def register_blueprints(app):
     from api.tasks import tasks_bp
     from api.portfolio import portfolio_bp
     from api.data_management import data_management_bp
+    from api.stock import stock_bp
 
     app.register_blueprint(daily_tasks_bp, url_prefix='/api/daily')
     app.register_blueprint(model_training_bp, url_prefix='/api/models')
@@ -130,6 +136,7 @@ def register_blueprints(app):
     app.register_blueprint(tasks_bp, url_prefix='/api/tasks')
     app.register_blueprint(portfolio_bp, url_prefix='/api/portfolio')
     app.register_blueprint(data_management_bp, url_prefix='/api/data')
+    app.register_blueprint(stock_bp, url_prefix='/api/stock')
 
 
 def register_error_handlers(app):
@@ -162,10 +169,14 @@ def register_context_processors(app):
     @app.context_processor
     def inject_globals():
         """注入全局变量到模板"""
+        # 动态获取所有报告版本
+        selection_dirs = app.config.get('DAILY_SELECTION_DIRS', {})
+        versions = sorted(selection_dirs.keys())
         return {
             'now': datetime.now(),
             'app_name': 'StockTradebyZ Web',
-            'app_version': '1.0.0'
+            'app_version': '1.0.0',
+            'selection_versions': versions,
         }
 
 

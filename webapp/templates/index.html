@@ -132,6 +132,26 @@
     </div>
 </div>
 
+<!-- 大盘指数概况 -->
+<div class="row mb-4">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header bg-dark text-white d-flex justify-content-between align-items-center">
+                <h5 class="mb-0"><i class="bi bi-globe"></i> 大盘指数</h5>
+                <small id="market-date" class="opacity-75"></small>
+            </div>
+            <div class="card-body">
+                <div class="row g-3" id="market-indices">
+                    <div class="text-center py-3">
+                        <div class="spinner-border spinner-border-sm" role="status"></div>
+                        <small class="text-muted d-block mt-1">加载中...</small>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
 <!-- 快速操作 -->
 <div class="row mb-4">
     <div class="col-12">
@@ -363,13 +383,11 @@
                         <td>SQLite (stock_data.db)</td>
                     </tr>
                     <tr>
-                        <th>ML评分版本</th>
+                        <th>选股报告版本</th>
                         <td>
-                            <span class="badge bg-secondary me-1 version-badge">v3.6</span>
-                            <span class="badge bg-secondary me-1 version-badge">v3.7</span>
-                            <span class="badge bg-secondary me-1 version-badge">v3.8</span>
-                            <span class="badge bg-info me-1 version-badge">v3.81</span>
-                            <span class="badge bg-success version-badge">v3.9</span>
+                            {% for v in selection_versions %}
+                            <span class="badge bg-{{ 'success' if v == selection_versions[-1] else 'secondary' }} me-1 version-badge">{{ v }}</span>
+                            {% endfor %}
                         </td>
                     </tr>
                     <tr>
@@ -403,6 +421,7 @@ $(document).ready(function() {
     loadBacktestSummary();
     loadRecentSelections();
     loadRunningTasks();
+    loadMarketIndices();
 
     // 每5秒刷新任务状态
     setInterval(loadRunningTasks, 5000);
@@ -736,6 +755,75 @@ function renderTasksTable(tasks) {
                 <td><small>${duration}</small></td>
             </tr>
         `);
+    });
+}
+
+function loadMarketIndices() {
+    $.ajax({
+        url: '/api/daily/market-indices',
+        method: 'GET',
+        success: function(response) {
+            if (response.success && response.indices.length > 0) {
+                const container = $('#market-indices');
+                container.empty();
+
+                // 显示交易日期
+                $('#market-date').text(response.indices[0].trade_date || '');
+
+                // 重点指数顺序
+                const order = ['000001.SH', '399001.SZ', '399006.SZ', '000688.SH',
+                               '000016.SH', '000300.SH', '000905.SH', '000852.SH',
+                               '932000.CSI', '000985.SH'];
+                const sorted = [];
+                order.forEach(code => {
+                    const idx = response.indices.find(i => i.code === code);
+                    if (idx) sorted.push(idx);
+                });
+                // 追加不在列表中的
+                response.indices.forEach(idx => {
+                    if (!order.includes(idx.code)) sorted.push(idx);
+                });
+
+                sorted.forEach(function(idx) {
+                    const pct = idx.price_change_pct || 0;
+                    const isUp = pct >= 0;
+                    const colorClass = isUp ? 'text-danger' : 'text-success';
+                    const bgClass = isUp ? 'border-danger' : 'border-success';
+                    const arrow = isUp ? '▲' : '▼';
+                    const sparkId = 'spark-' + idx.code.replace('.', '-');
+
+                    container.append(`
+                        <div class="col-lg-2 col-md-3 col-sm-4 col-6">
+                            <div class="border rounded p-2 h-100 ${bgClass}" style="border-width:2px!important;">
+                                <div class="d-flex justify-content-between align-items-start mb-1">
+                                    <small class="fw-bold text-truncate" style="max-width:70%;">${idx.name}</small>
+                                    <small class="${colorClass} fw-bold">${arrow} ${Math.abs(pct).toFixed(2)}%</small>
+                                </div>
+                                <div class="${colorClass} fs-6 fw-bold">${idx.close?.toFixed(2) || '-'}</div>
+                                <div id="${sparkId}" style="height:30px;"></div>
+                            </div>
+                        </div>
+                    `);
+
+                    // 渲染迷你趋势图
+                    if (idx.trend && idx.trend.length > 0) {
+                        const sparkOpts = {
+                            series: [{ data: idx.trend }],
+                            chart: { type: 'line', height: 30, sparkline: { enabled: true } },
+                            stroke: { width: 1.5, curve: 'smooth' },
+                            colors: [isUp ? '#dc3545' : '#198754'],
+                            tooltip: { enabled: false }
+                        };
+                        new ApexCharts(document.getElementById(sparkId), sparkOpts).render();
+                    }
+                });
+            } else {
+                $('#market-indices').html('<p class="text-muted text-center">暂无大盘数据</p>');
+            }
+        },
+        error: function() {
+            $('#market-indices').html('<p class="text-danger text-center">加载失败</p>');
+        }
     });
 }
 

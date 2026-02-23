@@ -88,12 +88,10 @@
                         <select id="date-select" class="form-select form-select-sm" style="width: 150px;">
                             <option value="">选择日期...</option>
                         </select>
-                        <select id="version-select" class="form-select form-select-sm" style="width: 120px;">
-                            <option value="v3.0" selected>V3.0</option>
-                            <option value="v3.7">V3.7</option>
-                            <option value="v3.8">V3.8</option>
-                            <option value="v3.81">V3.81</option>
-                            <option value="v3.9">V3.9</option>
+                        <select id="version-select" class="form-select form-select-sm" style="width: 200px;">
+                            {% for v in selection_versions %}
+                            <option value="{{ v }}" {{ 'selected' if v == 'v3.9' }}>{{ v }}</option>
+                            {% endfor %}
                         </select>
                         <button id="btn-export" class="btn btn-light btn-sm" disabled>
                             <i class="bi bi-download"></i> 导出CSV
@@ -138,9 +136,9 @@
                                     <th>评分</th>
                                     <th>置信度</th>
                                     <th>策略</th>
+                                    <th>预测5d收益</th>
+                                    <th>建议买入价</th>
                                     <th>风险回报比</th>
-                                    <th>止损价</th>
-                                    <th>止盈价</th>
                                 </tr>
                             </thead>
                             <tbody></tbody>
@@ -298,20 +296,34 @@ function displayStocksTable(stocks) {
     stocks.forEach(function(stock) {
         const changeClass = stock.price_change_pct >= 0 ? 'text-danger' : 'text-success';
         const changeIcon = stock.price_change_pct >= 0 ? '▲' : '▼';
+        const confBadge = stock.confidence === '高' || stock.confidence === 'high' ? 'bg-success' : (stock.confidence === 'medium' ? 'bg-warning' : 'bg-secondary');
+
+        // 预测收益
+        const predReturn = stock.predicted_return_5d;
+        const predHtml = predReturn != null ? `<small class="${predReturn >= 0 ? 'text-danger' : 'text-success'}">${(predReturn*100).toFixed(2)}%</small>` : '-';
+
+        // 建议买入价
+        const buyPrice = stock.suggested_buy_price?.toFixed(2) || '-';
+
+        // 评分详情 tooltip
+        const scoring = stock.detailed_scoring || {};
+        const scoreTip = scoring.final_score != null
+            ? `评分: ${scoring.final_score?.toFixed(1)} | 置信: ${(scoring.confidence_score*100)?.toFixed(0)}%`
+            : '';
 
         tbody.append(`
             <tr>
-                <td><code>${stock.code}</code></td>
-                <td>${stock.name}</td>
+                <td><a href="/stock/${stock.code}" class="text-decoration-none"><code>${stock.code}</code></a></td>
+                <td><a href="/stock/${stock.code}" class="text-decoration-none text-dark">${stock.name}</a></td>
                 <td><span class="badge bg-secondary">${stock.industry || '-'}</span></td>
                 <td>${stock.close_price?.toFixed(2) || '-'}</td>
                 <td class="${changeClass}">${changeIcon} ${stock.price_change_pct?.toFixed(2) || 0}%</td>
-                <td><strong>${stock.score?.toFixed(1) || '-'}</strong></td>
-                <td><span class="badge ${stock.confidence === '高' ? 'bg-success' : 'bg-warning'}">${stock.confidence || '-'}</span></td>
+                <td title="${scoreTip}"><strong>${stock.score?.toFixed(1) || '-'}</strong></td>
+                <td><span class="badge ${confBadge}">${stock.confidence || '-'}</span></td>
                 <td>${(stock.strategies || []).join(', ')}</td>
+                <td>${predHtml}</td>
+                <td>${buyPrice}</td>
                 <td>${stock.risk_reward_ratio?.toFixed(2) || '-'}</td>
-                <td class="text-success">${stock.stop_loss_price?.toFixed(2) || '-'}</td>
-                <td class="text-danger">${stock.take_profit_price?.toFixed(2) || '-'}</td>
             </tr>
         `);
     });
