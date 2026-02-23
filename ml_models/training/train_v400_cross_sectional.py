@@ -1,21 +1,20 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-V4.1 Cross-Sectional Alpha Model 训练脚本
+V4.2 Hybrid Alpha Model 训练脚本
 
-V4.1 改进 (基于 V4.0/V4.0.1 回测分析):
-1. 排名标签 (--rank-label): 将超额收益转为当日cross-sectional rank (0-1)
-   - 分布稳定(uniform)，不受牛熊市影响
-   - 与排名特征在同一空间，模型更容易学习
-2. 标签中性化 (--neutralize-label): 回归残差法去除行业+市值因子
-   - 模型只学习行业/市值无法解释的alpha
-3. IC-based特征筛选 (--feature-select): 删除IC不稳定或均值为负的特征
-4. 全市场percentile排名 (scorer修复): 使用全市场4000+只而非选出的30只
+V4.2 改进 (基于 V4.1 vs V3.96 回测分析):
+1. 行业超额标签 (--industry-excess-label): label -= 行业中位数，去除行业beta
+2. Robust Z-Score特征归一化 (--robust-zscore-features): 保留幅度信息(vs rank丢失)
+3. Robust Z-Score标签归一化 (--robust-zscore-labels): 稳健去除每日标签尺度差异
+4. V39市场特征注入 (--join-v39-market): 从v39_feature_cache加载12个连续市场特征
+5. 5模型Ensemble (--add-hgb): +RF+HistGradientBoosting
+6. 超参数优化: 1000棵+early stopping, depth=6, learning_rate=0.03
+
+--v42 总开关: 自动激活所有改进
 
 沿用 V4.0.1 的:
 - Temporal split + 10天 purge gap
-- LightGBM + XGBoost + CatBoost Ensemble (跳过RF)
-- Ridge/Average Meta-Model
 - Per-feature winsorization (1st-99th percentile)
 - 市场/行业特征缩放
 """
@@ -33,7 +32,7 @@ from datetime import datetime
 import logging
 import json
 import pickle
-from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
+from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor, HistGradientBoostingRegressor
 from sklearn.linear_model import Ridge
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 from scipy.stats import spearmanr
@@ -69,9 +68,21 @@ class V400CrossSectionalTrainer:
         'industry_rotation_signal'
     }
 
+    # V39市场特征名 (从v39_feature_cache加载)
+    V39_MARKET_FEATURES = [
+        'v39_market_return_5d', 'v39_market_return_10d', 'v39_market_return_20d',
+        'v39_market_volatility_10d', 'v39_market_volatility_20d',
+        'v39_market_up_ratio_10d', 'v39_market_up_ratio_20d',
+        'v39_market_drawdown_20d', 'v39_market_volume_ratio',
+        'v39_market_position_20d', 'v39_market_momentum_5d', 'v39_market_momentum_20d',
+    ]
+
     def __init__(self, db_path=None, meta_model_type='ridge',
                  market_scale=0.3, industry_scale=0.5, skip_rf=False,
-                 rank_label=False, neutralize_label=False, feature_select=False):
+                 rank_label=False, neutralize_label=False, feature_select=False,
+                 v42_mode=False, industry_excess_label=False,
+                 robust_zscore_features=False, robust_zscore_labels=False,
+                 join_v39_market=False, add_hgb=False):
         self.db_path = db_path or str(PROJECT_ROOT / 'data_adapter' / 'stock_data.db')
         self.models = {}
         self.meta_model = None
@@ -85,6 +96,29 @@ class V400CrossSectionalTrainer:
         self.neutralize_label = neutralize_label
         self.feature_select = feature_select
         self.selected_features = None  # IC筛选后的特征列表
+
+        # V4.2 参数
+        self.v42_mode = v42_mode
+        self.industry_excess_label = industry_excess_label
+        self.robust_zscore_features = robust_zscore_features
+        self.robust_zscore_labels = robust_zscore_labels
+        self.join_v39_market = join_v39_market
+        self.add_hgb = add_hgb
+        self.v39_market_feature_names = []  # 实际加载的v39特征名
+
+        # V4.2 总开关: 自动激活所有改进
+        if self.v42_mode:
+            self.industry_excess_label = True
+            self.robust_zscore_features = True
+            self.robust_zscore_labels = True
+            self.join_v39_market = True
+            self.add_hgb = True
+            self.skip_rf = False
+            self.rank_label = False
+            self.neutralize_label = False
+            self.meta_model_type = 'avg'
+            self.market_scale = 0.5
+            logger.info("🔧 V4.2模式: 自动激活全部改进 (行业超额标签+RobustZScore+V39市场特征+5模型+超参优化)")
 
         # 多目标权重
         self.target_weights = {
@@ -151,21 +185,17 @@ class V400CrossSectionalTrainer:
         dates = np.array(dates)
         codes = np.array(codes)
 
-        # 计算加权融合标签
-        y = (self.target_weights['label_3d_excess'] * y_3d +
-             self.target_weights['label_5d_excess'] * y_5d +
-             self.target_weights['label_10d_excess'] * y_10d)
-
-        # 处理NaN
-        valid_mask = ~(np.isnan(y) | np.isnan(y_3d) | np.isnan(y_5d))
+        # 处理NaN (先用原始标签过滤)
+        valid_mask = ~(np.isnan(y_3d) | np.isnan(y_5d) | np.isnan(y_10d))
         X = X.loc[valid_mask].reset_index(drop=True)
-        y = y[valid_mask]
+        y_3d = y_3d[valid_mask]
         y_5d = y_5d[valid_mask]
+        y_10d = y_10d[valid_mask]
         dates = dates[valid_mask]
         codes = codes[valid_mask]
 
         logger.info(f"✅ 特征矩阵: {X.shape}")
-        logger.info(f"✅ 有效样本: {len(y):,}")
+        logger.info(f"✅ 有效样本: {len(y_3d):,}")
         logger.info(f"✅ 日期范围: {dates[0]} ~ {dates[-1]}")
 
         # 缺失值填0
@@ -173,16 +203,51 @@ class V400CrossSectionalTrainer:
             logger.warning("⚠️ 检测到缺失值，使用0填充")
             X = X.fillna(0)
 
+        # V4.2: 加载V39市场特征并合并
+        if self.join_v39_market:
+            v39_market_df = self._load_v39_market_features()
+            if v39_market_df is not None:
+                # 按trade_date合并
+                X['_trade_date'] = dates
+                X = X.merge(v39_market_df, left_on='_trade_date', right_on='trade_date', how='left')
+                X = X.drop(columns=['_trade_date', 'trade_date'], errors='ignore')
+                X[self.v39_market_feature_names] = X[self.v39_market_feature_names].fillna(0)
+
+                # 删除V40的6个分类市场特征 (用V39的连续特征替代)
+                v40_market_cat = ['market_regime', 'market_vol_regime', 'market_breadth_5d',
+                                  'northbound_flow_zscore', 'market_volume_regime', 'market_trend_strength']
+                dropped = [c for c in v40_market_cat if c in X.columns]
+                if dropped:
+                    X = X.drop(columns=dropped)
+                    logger.info(f"  删除V40分类市场特征: {dropped}")
+
+                logger.info(f"  ✅ 合并V39市场特征后: {X.shape}")
+
         self.feature_names = X.columns.tolist()
 
-        # 保留原始5d超额收益用于评估 (即使rank-transform了训练标签)
+        # V4.2: 行业超额标签 (在加权融合之前)
+        if self.industry_excess_label:
+            y_3d, y_5d, y_10d = self._compute_industry_excess_labels(
+                y_3d, y_5d, y_10d, dates, X)
+
+        # 计算加权融合标签
+        y = (self.target_weights['label_3d_excess'] * y_3d +
+             self.target_weights['label_5d_excess'] * y_5d +
+             self.target_weights['label_10d_excess'] * y_10d)
+
+        # 保留原始5d超额收益用于评估 (即使transform了训练标签)
         y_5d_raw = y_5d.copy()
 
-        # B2: 排名标签转换
+        # V4.2: Robust Z-Score标签归一化
+        if self.robust_zscore_labels:
+            y = self._robust_zscore_labels(y, dates)
+            y_5d = self._robust_zscore_labels(y_5d, dates)
+
+        # B2: 排名标签转换 (V4.2模式下自动跳过)
         if self.rank_label:
             y, y_5d = self._convert_to_rank_labels(y, y_5d, dates)
 
-        # B3: 标签中性化 (行业+市值)
+        # B3: 标签中性化 (V4.2模式下自动跳过)
         if self.neutralize_label:
             y = self._neutralize_labels(y, dates, codes, X)
 
@@ -285,6 +350,184 @@ class V400CrossSectionalTrainer:
 
         return y_neutral
 
+    def _load_v39_market_features(self):
+        """
+        从v39_feature_cache加载12个连续市场特征 (去重per date)
+
+        V39的市场特征是连续值(return, volatility等)，比V40的分类变量(regime=0/1/2)信息量更大。
+        """
+        logger.info("\n📊 V4.2: 加载V39连续市场特征...")
+
+        conn = sqlite3.connect(self.db_path)
+
+        # v39_feature_cache的市场特征是per-date的列，每天所有股票共享同一值
+        # 只需每天取1行即可
+        v39_cols = [
+            'market_return_5d', 'market_return_10d', 'market_return_20d',
+            'market_volatility_10d', 'market_volatility_20d',
+            'market_up_ratio_10d', 'market_up_ratio_20d',
+            'market_drawdown_20d', 'market_volume_ratio',
+            'market_position_20d', 'market_momentum_5d', 'market_momentum_20d',
+        ]
+        cols_sql = ', '.join(v39_cols)
+
+        query = f"""
+            SELECT trade_date, {cols_sql}
+            FROM v39_feature_cache
+            GROUP BY trade_date
+        """
+        df = pd.read_sql_query(query, conn)
+        conn.close()
+
+        if df.empty:
+            logger.warning("  ⚠️ v39_feature_cache无数据，跳过V39市场特征注入")
+            return None
+
+        # 重命名: 加v39_前缀以区分
+        rename_map = {col: f'v39_{col}' for col in v39_cols}
+        df = df.rename(columns=rename_map)
+
+        self.v39_market_feature_names = [f'v39_{col}' for col in v39_cols]
+        logger.info(f"  ✅ 加载V39市场特征: {len(df)} 天, {len(self.v39_market_feature_names)} 个特征")
+        logger.info(f"  特征: {self.v39_market_feature_names}")
+
+        return df
+
+    def _compute_industry_excess_labels(self, y_3d, y_5d, y_10d, dates, X):
+        """
+        V4.2: 行业超额标签 (label -= 行业中位数)
+
+        比HS300-excess更精细：去除行业beta而非大盘beta
+        每个标签独立处理
+        """
+        logger.info("\n📊 V4.2: 计算行业超额收益标签...")
+
+        if 'sw_l1_code' not in X.columns:
+            logger.warning("  ⚠️ 无sw_l1_code列，跳过行业超额")
+            return y_3d, y_5d, y_10d
+
+        sw_codes = X['sw_l1_code'].values
+        unique_dates = np.unique(dates)
+
+        y_3d_new = y_3d.copy()
+        y_5d_new = y_5d.copy()
+        y_10d_new = y_10d.copy()
+
+        adjusted_count = 0
+        for date in unique_dates:
+            mask = dates == date
+            n = mask.sum()
+            if n < 20:
+                continue
+
+            day_sw = sw_codes[mask]
+            unique_inds = np.unique(day_sw)
+
+            for ind in unique_inds:
+                ind_mask_in_day = day_sw == ind
+                # 在全局mask中定位
+                day_indices = np.where(mask)[0]
+                ind_indices = day_indices[ind_mask_in_day]
+
+                if len(ind_indices) < 3:
+                    continue
+
+                # 各标签减去行业中位数
+                y_3d_new[ind_indices] -= np.median(y_3d[ind_indices])
+                y_5d_new[ind_indices] -= np.median(y_5d[ind_indices])
+                y_10d_new[ind_indices] -= np.median(y_10d[ind_indices])
+
+            adjusted_count += 1
+
+        logger.info(f"  ✅ 行业超额标签: {adjusted_count}/{len(unique_dates)} 天")
+        logger.info(f"  3d标签: mean {np.mean(y_3d):.6f} → {np.mean(y_3d_new):.6f}")
+        logger.info(f"  5d标签: mean {np.mean(y_5d):.6f} → {np.mean(y_5d_new):.6f}")
+        logger.info(f"  10d标签: mean {np.mean(y_10d):.6f} → {np.mean(y_10d_new):.6f}")
+
+        return y_3d_new, y_5d_new, y_10d_new
+
+    def _robust_zscore_labels(self, y, dates):
+        """
+        V4.2: Robust Z-Score标签归一化
+
+        z = (y - median) / (1.4826 * MAD), clip [-3, 3]
+        稳健去除每日标签尺度差异，抗极端值
+        """
+        logger.info("\n📊 V4.2: Robust Z-Score标签归一化...")
+
+        y_new = y.copy()
+        unique_dates = np.unique(dates)
+        transformed_count = 0
+
+        for date in unique_dates:
+            mask = dates == date
+            n = mask.sum()
+            if n < 20:
+                continue
+
+            day_y = y[mask]
+            median = np.median(day_y)
+            mad = np.median(np.abs(day_y - median))
+            scale = 1.4826 * mad  # MAD to std conversion
+
+            if scale < 1e-10:
+                y_new[mask] = 0.0
+            else:
+                y_new[mask] = np.clip((day_y - median) / scale, -3, 3)
+
+            transformed_count += 1
+
+        logger.info(f"  ✅ Robust Z-Score标签: {transformed_count}/{len(unique_dates)} 天")
+        logger.info(f"  归一化后: mean={np.mean(y_new):.6f}, std={np.std(y_new):.6f}, "
+                     f"min={np.min(y_new):.4f}, max={np.max(y_new):.4f}")
+
+        return y_new
+
+    def _robust_zscore_features(self, X_train, X_val, X_test,
+                                 dates_train, dates_val, dates_test):
+        """
+        V4.2: Cross-Sectional Robust Z-Score特征归一化
+
+        对每个(split, date, feature)做: z = (x - median) / (1.4826 * MAD), clip [-3, 3]
+        排除sw_l1_code（分类变量）
+        各split独立归一化
+        """
+        logger.info("\n📊 V4.2: Cross-Sectional Robust Z-Score特征归一化...")
+
+        categorical_cols = {'sw_l1_code'}
+        numeric_cols = [c for c in X_train.columns if c not in categorical_cols]
+
+        total_transformed = 0
+        for split_name, X_split, dates_split in [
+            ('train', X_train, dates_train),
+            ('val', X_val, dates_val),
+            ('test', X_test, dates_test),
+        ]:
+            unique_dates = np.unique(dates_split)
+            for date in unique_dates:
+                mask = dates_split == date
+                n = mask.sum()
+                if n < 10:
+                    continue
+
+                for col in numeric_cols:
+                    vals = X_split.loc[mask, col].values
+                    median = np.median(vals)
+                    mad = np.median(np.abs(vals - median))
+                    scale = 1.4826 * mad
+
+                    if scale < 1e-10:
+                        X_split.loc[mask, col] = 0.0
+                    else:
+                        X_split.loc[mask, col] = np.clip((vals - median) / scale, -3, 3)
+
+                total_transformed += 1
+
+        logger.info(f"  ✅ 特征Robust Z-Score: {total_transformed} 个(split×date)组, "
+                     f"{len(numeric_cols)} 个特征")
+
+        return X_train, X_val, X_test
+
     def winsorize_features(self, X_train, X_val, X_test):
         """Per-feature winsorization (1st-99th percentile)"""
         logger.info("📊 特征Winsorization (1st-99th percentile)...")
@@ -304,10 +547,15 @@ class V400CrossSectionalTrainer:
         """缩放市场和行业特征，减少共同因子对模型的干扰"""
         logger.info(f"📊 市场/行业特征缩放: market×{self.market_scale}, industry×{self.industry_scale}")
 
+        # 动态扩展市场特征集合 (包含v39_*特征)
+        market_features = set(self.MARKET_FEATURES)
+        if self.v39_market_feature_names:
+            market_features.update(self.v39_market_feature_names)
+
         scaled_market = 0
         scaled_industry = 0
         for col in X_train.columns:
-            if col in self.MARKET_FEATURES:
+            if col in market_features:
                 X_train[col] = X_train[col] * self.market_scale
                 X_val[col] = X_val[col] * self.market_scale
                 X_test[col] = X_test[col] * self.market_scale
@@ -439,38 +687,64 @@ class V400CrossSectionalTrainer:
         return result
 
     def train_base_models(self, X_train, y_train, X_val, y_val):
-        """训练4个基础模型 (更强正则化)"""
+        """训练基础模型 (V4.2: 5模型+early stopping+超参优化)"""
         logger.info("\n" + "=" * 80)
-        logger.info("🔧 训练基础模型 (更强正则化)...")
+        if self.v42_mode:
+            logger.info("🔧 V4.2: 训练5个基础模型 (1000棵+early stopping+depth=6)...")
+        else:
+            logger.info("🔧 训练基础模型 (更强正则化)...")
         logger.info("=" * 80)
+
+        # V4.2 超参数优化
+        if self.v42_mode:
+            n_est = 1000
+            lr = 0.03
+            depth = 6
+            n_leaves = 50
+            min_child = 30
+            subsample = 0.8
+            colsample = 0.7
+            reg_a = 0.1
+            reg_l = 0.1
+        else:
+            n_est = 300
+            lr = 0.03
+            depth = 5
+            n_leaves = 25
+            min_child = 50
+            subsample = 0.7
+            colsample = 0.7
+            reg_a = 0.3
+            reg_l = 0.3
 
         models_config = {
             'lightgbm': lgb.LGBMRegressor(
-                n_estimators=300,
-                learning_rate=0.03,
-                max_depth=5,
-                num_leaves=25,
-                min_child_samples=50,
-                subsample=0.7,
-                colsample_bytree=0.7,
-                reg_alpha=0.3,
-                reg_lambda=0.3,
+                n_estimators=n_est,
+                learning_rate=lr,
+                max_depth=depth,
+                num_leaves=n_leaves,
+                min_child_samples=min_child,
+                subsample=subsample,
+                colsample_bytree=colsample,
+                reg_alpha=reg_a,
+                reg_lambda=reg_l,
                 random_state=42,
                 n_jobs=-1,
                 verbosity=-1
             ),
             'xgboost': xgb.XGBRegressor(
-                n_estimators=300,
-                learning_rate=0.03,
-                max_depth=5,
-                min_child_weight=50,
-                subsample=0.7,
-                colsample_bytree=0.7,
-                reg_alpha=0.3,
-                reg_lambda=0.3,
+                n_estimators=n_est,
+                learning_rate=lr,
+                max_depth=depth,
+                min_child_weight=min_child,
+                subsample=subsample,
+                colsample_bytree=colsample,
+                reg_alpha=reg_a,
+                reg_lambda=reg_l,
                 random_state=42,
                 n_jobs=-1,
-                verbosity=0
+                verbosity=0,
+                early_stopping_rounds=50 if self.v42_mode else None,
             ),
         }
 
@@ -481,6 +755,7 @@ class V400CrossSectionalTrainer:
                 min_samples_split=20,
                 min_samples_leaf=10,
                 max_features=0.6,
+                max_samples=200000,
                 random_state=42,
                 n_jobs=-1
             )
@@ -489,19 +764,49 @@ class V400CrossSectionalTrainer:
 
         if HAS_CATBOOST:
             models_config['catboost'] = CatBoostRegressor(
-                iterations=300,
-                learning_rate=0.03,
-                depth=5,
+                iterations=n_est,
+                learning_rate=lr,
+                depth=min(depth, 6),
                 l2_leaf_reg=5,
-                min_data_in_leaf=50,
+                min_data_in_leaf=min_child,
                 random_state=42,
-                verbose=False
+                verbose=False,
+                early_stopping_rounds=50 if self.v42_mode else None,
+            )
+
+        # V4.2: 新增 HistGradientBoosting
+        if self.add_hgb:
+            models_config['hist_gradient_boosting'] = HistGradientBoostingRegressor(
+                max_iter=1000,
+                learning_rate=lr,
+                max_depth=depth,
+                min_samples_leaf=min_child,
+                l2_regularization=reg_l,
+                early_stopping=True,
+                n_iter_no_change=50,
+                validation_fraction=0.1,
+                random_state=42,
             )
 
         for name, model in models_config.items():
             logger.info(f"\n🔹 训练 {name}...")
             start_time = datetime.now()
-            model.fit(X_train, y_train)
+
+            # V4.2: early stopping for LGB/XGB/CatBoost
+            if self.v42_mode and name == 'lightgbm':
+                model.fit(X_train, y_train,
+                          eval_set=[(X_val, y_val)],
+                          callbacks=[lgb.early_stopping(50, verbose=False),
+                                     lgb.log_evaluation(0)])
+            elif self.v42_mode and name == 'xgboost':
+                model.fit(X_train, y_train,
+                          eval_set=[(X_val, y_val)],
+                          verbose=False)
+            elif self.v42_mode and name == 'catboost':
+                model.fit(X_train, y_train,
+                          eval_set=(X_val, y_val))
+            else:
+                model.fit(X_train, y_train)
 
             y_pred = model.predict(X_val)
             mse = mean_squared_error(y_val, y_pred)
@@ -510,6 +815,15 @@ class V400CrossSectionalTrainer:
 
             elapsed = (datetime.now() - start_time).total_seconds()
             logger.info(f"  ✅ {name}: MSE={mse:.6f}, MAE={mae:.6f}, IC={ic:.4f}, 耗时={elapsed:.1f}秒")
+
+            # Log early stopping iterations if applicable
+            if self.v42_mode:
+                if name == 'lightgbm' and hasattr(model, 'best_iteration_'):
+                    logger.info(f"     Early stopped at iteration {model.best_iteration_}")
+                elif name == 'xgboost' and hasattr(model, 'best_iteration'):
+                    logger.info(f"     Early stopped at iteration {model.best_iteration}")
+                elif name == 'hist_gradient_boosting' and hasattr(model, 'n_iter_'):
+                    logger.info(f"     Stopped at iteration {model.n_iter_}")
 
             self.models[name] = model
 
@@ -735,12 +1049,11 @@ class V400CrossSectionalTrainer:
 
         logger.info("\n📊 特征来源占比分析:")
 
-        market_features = {'market_regime', 'market_vol_regime', 'market_breadth_5d',
-                           'northbound_flow_zscore', 'market_volume_regime', 'market_trend_strength'}
-        industry_features = {'sw_l1_code', 'industry_breadth', 'industry_volume_change',
-                             'industry_kdj_avg', 'industry_macd_bullish_pct',
-                             'industry_concentration', 'industry_momentum_rank',
-                             'industry_rotation_signal'}
+        market_features = set(self.MARKET_FEATURES)
+        # 动态添加v39市场特征
+        if self.v39_market_feature_names:
+            market_features.update(self.v39_market_feature_names)
+        industry_features = set(self.INDUSTRY_FEATURES)
 
         for name, model in self.models.items():
             importance = None
@@ -830,6 +1143,8 @@ class V400CrossSectionalTrainer:
             pickle.dump(self.meta_model, f)
         logger.info(f"  ✅ 元模型: {meta_path}")
 
+        version = 'v4.2' if self.v42_mode else 'v4.1'
+
         # 保存权重和配置
         weights = {
             'feature_names': self.feature_names,
@@ -840,10 +1155,16 @@ class V400CrossSectionalTrainer:
             'market_scale': self.market_scale,
             'industry_scale': self.industry_scale,
             'timestamp': timestamp,
-            'version': 'v4.1',
+            'version': version,
             'rank_label': self.rank_label,
             'neutralize_label': self.neutralize_label,
             'selected_features': self.selected_features,
+            'v42_mode': self.v42_mode,
+            'industry_excess_label': self.industry_excess_label,
+            'robust_zscore_features': self.robust_zscore_features,
+            'robust_zscore_labels': self.robust_zscore_labels,
+            'join_v39_market': self.join_v39_market,
+            'v39_market_feature_names': self.v39_market_feature_names,
         }
         weights_path = output_dir / f"v400_weights_{timestamp}.json"
         with open(weights_path, 'w') as f:
@@ -861,10 +1182,16 @@ class V400CrossSectionalTrainer:
             'market_scale': self.market_scale,
             'industry_scale': self.industry_scale,
             'timestamp': timestamp,
-            'version': 'v4.1',
+            'version': version,
             'rank_label': self.rank_label,
             'neutralize_label': self.neutralize_label,
             'selected_features': self.selected_features,
+            'v42_mode': self.v42_mode,
+            'industry_excess_label': self.industry_excess_label,
+            'robust_zscore_features': self.robust_zscore_features,
+            'robust_zscore_labels': self.robust_zscore_labels,
+            'join_v39_market': self.join_v39_market,
+            'v39_market_feature_names': self.v39_market_feature_names,
         }
         full_path = output_dir / f"v400_full_system_{timestamp}.pkl"
         with open(full_path, 'wb') as f:
@@ -883,7 +1210,11 @@ class V400CrossSectionalTrainer:
 
     def train(self, val_ratio=0.15, test_ratio=0.15, purge_days=10):
         """完整训练流程"""
-        # 1. 加载数据 (含B2排名标签转换, B3标签中性化)
+        # 0. V4.2: 动态扩展MARKET_FEATURES以包含v39_*特征
+        if self.v39_market_feature_names:
+            self.MARKET_FEATURES = set(self.MARKET_FEATURES) | set(self.v39_market_feature_names)
+
+        # 1. 加载数据 (含V4.2行业超额标签, Robust Z-Score标签)
         X, y, y_5d, y_5d_raw, dates, codes = self.load_cached_features()
 
         # 1.5 B4: IC-based特征筛选 (在split前对全量数据计算IC)
@@ -898,9 +1229,24 @@ class V400CrossSectionalTrainer:
                                      val_ratio=val_ratio, test_ratio=test_ratio,
                                      purge_days=purge_days)
 
-        # 3. Winsorization
-        split['X_train'], split['X_val'], split['X_test'] = self.winsorize_features(
-            split['X_train'], split['X_val'], split['X_test'])
+        # 3. Winsorization (V4.2 robust z-score模式下跳过，因为z-score已经归一化)
+        if not self.robust_zscore_features:
+            split['X_train'], split['X_val'], split['X_test'] = self.winsorize_features(
+                split['X_train'], split['X_val'], split['X_test'])
+        else:
+            logger.info("📊 V4.2: 跳过Winsorization (将使用Robust Z-Score归一化)")
+            # 仍然记录winsorize_bounds用于scorer的winsorize逻辑
+            self.winsorize_bounds = {}
+            for col in split['X_train'].columns:
+                lower = split['X_train'][col].quantile(0.01)
+                upper = split['X_train'][col].quantile(0.99)
+                self.winsorize_bounds[col] = (lower, upper)
+
+        # 3.2 V4.2: Cross-Sectional Robust Z-Score特征归一化
+        if self.robust_zscore_features:
+            split['X_train'], split['X_val'], split['X_test'] = self._robust_zscore_features(
+                split['X_train'], split['X_val'], split['X_test'],
+                split['dates_train'], split['dates_val'], split['dates_test'])
 
         # 3.5 市场/行业特征缩放
         split['X_train'], split['X_val'], split['X_test'] = self.scale_market_industry_features(
@@ -928,8 +1274,9 @@ class V400CrossSectionalTrainer:
         # 9. 保存评估报告
         self._save_evaluation_report(metrics)
 
+        version_str = "V4.2 Hybrid Alpha" if self.v42_mode else "V4.0 Cross-Sectional Alpha"
         logger.info("\n" + "=" * 80)
-        logger.info("🎉 V4.0 Cross-Sectional Alpha Model 训练完成!")
+        logger.info(f"🎉 {version_str} Model 训练完成!")
         logger.info("=" * 80)
 
         return model_path
@@ -946,7 +1293,7 @@ class V400CrossSectionalTrainer:
 
 
 def main():
-    parser = argparse.ArgumentParser(description='V4.0 Cross-Sectional Alpha Model 训练')
+    parser = argparse.ArgumentParser(description='V4.0/V4.2 Cross-Sectional Alpha Model 训练')
     parser.add_argument('--db-path', type=str,
                         default=str(PROJECT_ROOT / 'data_adapter' / 'stock_data.db'),
                         help='数据库路径')
@@ -970,20 +1317,55 @@ def main():
     parser.add_argument('--feature-select', action='store_true',
                         help='B4: IC-based特征筛选')
 
+    # V4.2 新增参数
+    parser.add_argument('--v42', action='store_true',
+                        help='V4.2模式: 自动激活全部改进 (行业超额+RobustZScore+V39市场+5模型+超参)')
+    parser.add_argument('--industry-excess-label', action='store_true',
+                        help='V4.2: 行业超额标签 (label -= 行业中位数)')
+    parser.add_argument('--robust-zscore-features', action='store_true',
+                        help='V4.2: Robust Z-Score特征归一化 (cross-sectional per date)')
+    parser.add_argument('--robust-zscore-labels', action='store_true',
+                        help='V4.2: Robust Z-Score标签归一化')
+    parser.add_argument('--join-v39-market', action='store_true',
+                        help='V4.2: 从v39_feature_cache加载12个连续市场特征')
+    parser.add_argument('--add-hgb', action='store_true',
+                        help='V4.2: 添加HistGradientBoosting到模型Ensemble')
+
     args = parser.parse_args()
 
+    # V4.2总开关覆盖冲突选项
+    if args.v42:
+        args.meta_model = 'avg'
+        args.market_scale = 0.5
+        args.skip_rf = False
+        args.rank_label = False
+        args.neutralize_label = False
+
+    is_v42 = args.v42
+
     logger.info("=" * 80)
-    logger.info("🚀 V4.1 Cross-Sectional Alpha Model 训练")
-    logger.info("   目标: 学习个股相对强势信号，而非大盘方向")
-    logger.info("   改进: 排名标签 + 中性化 + IC筛选 + 全市场排名")
+    if is_v42:
+        logger.info("🚀 V4.2 Hybrid Alpha Model 训练")
+        logger.info("   改进: 行业超额标签 + RobustZScore + V39市场特征 + 5模型Ensemble + 超参优化")
+    else:
+        logger.info("🚀 V4.1 Cross-Sectional Alpha Model 训练")
+        logger.info("   目标: 学习个股相对强势信号，而非大盘方向")
     logger.info("=" * 80)
     logger.info(f"数据库: {args.db_path}")
     logger.info(f"元模型: {args.meta_model}")
     logger.info(f"市场特征缩放: {args.market_scale}")
     logger.info(f"行业特征缩放: {args.industry_scale}")
-    logger.info(f"排名标签(B2): {args.rank_label}")
-    logger.info(f"标签中性化(B3): {args.neutralize_label}")
-    logger.info(f"特征筛选(B4): {args.feature_select}")
+    if is_v42:
+        logger.info(f"V4.2模式: ✅")
+        logger.info(f"行业超额标签: {args.industry_excess_label or args.v42}")
+        logger.info(f"RobustZScore特征: {args.robust_zscore_features or args.v42}")
+        logger.info(f"RobustZScore标签: {args.robust_zscore_labels or args.v42}")
+        logger.info(f"V39市场特征: {args.join_v39_market or args.v42}")
+        logger.info(f"HGB模型: {args.add_hgb or args.v42}")
+    else:
+        logger.info(f"排名标签(B2): {args.rank_label}")
+        logger.info(f"标签中性化(B3): {args.neutralize_label}")
+        logger.info(f"特征筛选(B4): {args.feature_select}")
     logger.info(f"验证集比例: {args.val_ratio}")
     logger.info(f"测试集比例: {args.test_ratio}")
     logger.info(f"Purge gap: {args.purge_days} 天")
@@ -997,6 +1379,12 @@ def main():
         rank_label=args.rank_label,
         neutralize_label=args.neutralize_label,
         feature_select=args.feature_select,
+        v42_mode=args.v42,
+        industry_excess_label=args.industry_excess_label,
+        robust_zscore_features=args.robust_zscore_features,
+        robust_zscore_labels=args.robust_zscore_labels,
+        join_v39_market=args.join_v39_market,
+        add_hgb=args.add_hgb,
     )
     model_path = trainer.train(
         val_ratio=args.val_ratio,

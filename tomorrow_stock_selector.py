@@ -43,7 +43,7 @@ logger = logging.getLogger("tomorrow_selector")
 DEPRECATED_VERSIONS = {'v2', 'v3', 'v3.1', 'v3.2', 'v3.3', 'v3.4', 'v3.41',
                        'v3.5', 'v3.51', 'v3.52', 'v3.53', 'v3.6', 'v3.7',
                        'v3.8', 'v3.81', 'v3.94', 'v4'}
-ACTIVE_VERSIONS = {'v3.9', 'v3.95', 'v3.96', 'v4.0'}
+ACTIVE_VERSIONS = {'v3.9', 'v3.95', 'v3.96', 'v4.0', 'v4.2'}
 
 
 class TomorrowStockSelector:
@@ -79,7 +79,12 @@ class TomorrowStockSelector:
         self.data_loader = StockDataLoader()
         
         # 根据版本初始化评分引擎
-        if scoring_version == "v4.0":
+        if scoring_version == "v4.2":
+            # 初始化v4.2 Hybrid Alpha评分系统 (同一个scorer class, 自动检测v42模型)
+            from ml_models.v40.v400_production_scorer import V400ProductionScorer
+            self.scoring_engine_v40 = V400ProductionScorer()
+            logger.info("🔬 已初始化V4.2 Hybrid Alpha评分系统（行业超额+RobustZScore+V39市场+5模型）")
+        elif scoring_version == "v4.0":
             # 初始化v4.0 Cross-Sectional Alpha评分系统
             from ml_models.v40.v400_production_scorer import V400ProductionScorer
             self.scoring_engine_v40 = V400ProductionScorer()
@@ -1479,7 +1484,7 @@ class TomorrowStockSelector:
                     
             else:  # 单策略
                 # 单策略需要更高标准，但v3.41、v3.81、v3.9和v3.94需要特殊处理
-                if hasattr(self, 'scoring_version') and self.scoring_version in ["v3.9", "v3.94", "v3.95", "v3.96", "v4.0"]:
+                if hasattr(self, 'scoring_version') and self.scoring_version in ["v3.9", "v3.94", "v3.95", "v3.96", "v4.0", "v4.2"]:
                     # 🏆 v3.9/v3.94/v3.95生产版：完全信任ML模型的评分和建议，不做单策略惩罚
                     # v3.9/v3.94/v3.95是经过充分训练的A/A+级模型，其评分本身已包含质量判断
                     recommendation = base_recommendation
@@ -1738,8 +1743,8 @@ class TomorrowStockSelector:
             if trade_date is None:
                 trade_date = datetime.now().strftime('%Y-%m-%d')
 
-            if self.scoring_version == "v4.0":
-                # 使用v4.0 Cross-Sectional Alpha评分系统
+            if self.scoring_version in ("v4.0", "v4.2"):
+                # 使用v4.0/v4.2 Cross-Sectional Alpha评分系统
                 try:
                     if stock_code in self.v40_batch_cache:
                         result = self.v40_batch_cache[stock_code]
@@ -1768,15 +1773,16 @@ class TomorrowStockSelector:
                         'risk_level': 'medium',
                         'recommendation': recommendation,
                         'confidence': 'high' if confidence_score > 0.7 else 'medium',
-                        'scoring_method': 'V4.0_CrossSectional_Alpha',
+                        'scoring_method': result.get('scoring_method', 'V4.0_CrossSectional_Alpha'),
                         'model_grade': result.get('model_grade', 'TBD'),
                     }
 
                     return final_score, detailed_info
 
                 except Exception as e:
-                    logger.error(f"v4.0评分系统错误 {stock_code}: {str(e)}")
-                    return 45, {'error': f'系统错误: {str(e)}', 'scoring_method': 'V4.0_CrossSectional'}
+                    logger.error(f"v4.0/v4.2评分系统错误 {stock_code}: {str(e)}")
+                    method = 'V4.2_HybridAlpha' if self.scoring_version == 'v4.2' else 'V4.0_CrossSectional'
+                    return 45, {'error': f'系统错误: {str(e)}', 'scoring_method': method}
 
             elif self.scoring_version == "v3.96":
                 # 使用v3.96 Robust Z-Score评分系统
@@ -2972,7 +2978,7 @@ class TomorrowStockSelector:
         stock_with_scores = []
 
         # 🔬 V4.0批量cross-sectional评分预计算
-        if hasattr(self, 'scoring_version') and self.scoring_version == "v4.0" and all_stocks:
+        if hasattr(self, 'scoring_version') and self.scoring_version in ("v4.0", "v4.2") and all_stocks:
             if self.v40_batch_cache:
                 logger.info(f"✅ V4.0使用预填充缓存：{len(self.v40_batch_cache)}只股票")
             else:
@@ -3141,7 +3147,7 @@ class TomorrowStockSelector:
                 return 1
         
         # 按推荐等级和内部评分排序
-        if hasattr(self, 'scoring_version') and self.scoring_version in ["v3.9", "v3.94", "v3.95", "v3.96", "v4.0"]:
+        if hasattr(self, 'scoring_version') and self.scoring_version in ["v3.9", "v3.94", "v3.95", "v3.96", "v4.0", "v4.2"]:
             # 🏆 V3.9x ML评分系统：以评分为主要排序依据
             # 失败的股票（置信度0或有error）排在最后
             def v39_sort_key(x):
@@ -3164,7 +3170,7 @@ class TomorrowStockSelector:
         single_strategy_stocks = [stock for stock in stock_with_scores if stock["selected_by_strategies"] == 1]
         
         # 多策略股票按被选中次数和推荐等级排序
-        if hasattr(self, 'scoring_version') and self.scoring_version in ["v3.9", "v3.94", "v3.95", "v3.96", "v4.0"]:
+        if hasattr(self, 'scoring_version') and self.scoring_version in ["v3.9", "v3.94", "v3.95", "v3.96", "v4.0", "v4.2"]:
             # 🏆 V3.9x ML评分系统：以评分为主要排序依据，失败的排最后
             multi_strategy_stocks.sort(key=v39_sort_key, reverse=True)
         elif hasattr(self, 'scoring_version') and self.scoring_version == "v3.41":
@@ -3175,7 +3181,7 @@ class TomorrowStockSelector:
             multi_strategy_stocks.sort(key=lambda x: (x["selected_by_strategies"], get_recommendation_weight(x), x.get('score', 0)), reverse=True)
 
         # 单策略股票按评分排序（用于选取前20只）
-        if hasattr(self, 'scoring_version') and self.scoring_version in ["v3.9", "v3.94", "v3.95", "v3.96", "v4.0"]:
+        if hasattr(self, 'scoring_version') and self.scoring_version in ["v3.9", "v3.94", "v3.95", "v3.96", "v4.0", "v4.2"]:
             # 🏆 V3.9x ML评分系统：以评分为主要排序依据，失败的排最后
             single_strategy_stocks.sort(key=v39_sort_key, reverse=True)
         elif hasattr(self, 'scoring_version') and self.scoring_version == "v3.41":
@@ -3417,7 +3423,7 @@ class TomorrowStockSelector:
         elif hasattr(self, 'scoring_version') and self.scoring_version == "v3.5":
             report += "| 排名 | 股票代码 | 股票名称 | 选中策略 | 量化评分 | 投资建议 | 技术 | 基本 | 表现 | 市场 | 知行 | 知行信号 |\n"
             report += "|------|----------|----------|----------|----------|----------|------|------|------|------|------|----------|\n"
-        elif hasattr(self, 'scoring_version') and self.scoring_version in ["v3.9", "v3.94", "v3.95", "v3.96", "v4.0"]:
+        elif hasattr(self, 'scoring_version') and self.scoring_version in ["v3.9", "v3.94", "v3.95", "v3.96", "v4.0", "v4.2"]:
             # 🏆 V3.9.x A/A+ Grade Production Model - 简化表头（类似v3.8格式）
             report += "| 排名 | 股票代码 | 股票名称 | 选中策略 | 综合评分 | 投资建议 | 预测收益 | 置信度 | 风险等级 |\n"
             report += "|------|----------|----------|----------|----------|----------|---------|--------|----------|\n"
@@ -3506,7 +3512,7 @@ class TomorrowStockSelector:
             factor_scores = stock.get('factor_scores', {})
             
             # 根据评分系统版本处理不同的因子评分
-            if hasattr(self, 'scoring_version') and self.scoring_version in ["v3.9", "v3.94", "v3.95", "v3.96", "v4.0"]:
+            if hasattr(self, 'scoring_version') and self.scoring_version in ["v3.9", "v3.94", "v3.95", "v3.96", "v4.0", "v4.2"]:
                 # 🏆 V3.9.x A/A+ Grade Production Model的专用字段
                 predicted_return = stock.get('predicted_return_5d', stock.get('pred_5d', 0.0))  # 预测5日收益率
                 confidence_score = stock.get('confidence_score', 0.0)   # 置信度
@@ -3650,7 +3656,7 @@ class TomorrowStockSelector:
                 market_regime_score = 0  # v2/v3没有市场环境分
             
             # 根据评分系统版本输出不同格式
-            if hasattr(self, 'scoring_version') and self.scoring_version in ["v3.9", "v3.94", "v3.95", "v3.96", "v4.0"]:
+            if hasattr(self, 'scoring_version') and self.scoring_version in ["v3.9", "v3.94", "v3.95", "v3.96", "v4.0", "v4.2"]:
                 # 🏆 V3.9.x A/A+ Grade Production Model
                 predicted_return_pct = predicted_return * 100  # 转换为百分比
                 confidence_pct = confidence_score * 100  # 转换为百分比
@@ -3853,7 +3859,7 @@ def main(target_date: str = None, scoring_version: str = "v3", stocks_only: bool
         stocks_only: 是否只考虑股票，不包括ETF基金，默认False
     """
     # v3.6、v3.7、v3.8、v3.9、v3.94、v3.95版本应该只评价股票，因为ETF等因子无法与股票直接对比
-    if scoring_version in ["v3.6", "v3.7", "v3.8", "v3.81", "v3.9", "v3.94", "v3.95", "v3.96", "v4.0"] and not stocks_only:
+    if scoring_version in ["v3.6", "v3.7", "v3.8", "v3.81", "v3.9", "v3.94", "v3.95", "v3.96", "v4.0", "v4.2"] and not stocks_only:
         stocks_only = True
         logger.info(f"🔍 {scoring_version}机器学习版本自动开启仅股票模式（ETF等因子与股票不可比）")
     
@@ -4075,7 +4081,9 @@ def main(target_date: str = None, scoring_version: str = "v3", stocks_only: bool
     report = selector.generate_report(analysis, latest_date)
     
     # 根据评分版本选择不同的报告目录
-    if scoring_version == "v4.0":
+    if scoring_version == "v4.2":
+        report_dir = Path("reports/daily_selection_v4.2")
+    elif scoring_version == "v4.0":
         report_dir = Path("reports/daily_selection_v4.0")
     elif scoring_version == "v4":
         report_dir = Path("reports/daily_selection_v4")
@@ -4153,11 +4161,12 @@ if __name__ == "__main__":
     parser.add_argument('--scoring-version', '-v',
                        choices=['v2', 'v3', 'v3.1', 'v3.2', 'v3.3', 'v3.4', 'v3.41',
                                 'v3.5', 'v3.51', 'v3.52', 'v3.53', 'v3.6', 'v3.7',
-                                'v3.8', 'v3.81', 'v3.9', 'v3.94', 'v3.95', 'v3.96', 'v4', 'v4.0'],
+                                'v3.8', 'v3.81', 'v3.9', 'v3.94', 'v3.95', 'v3.96', 'v4', 'v4.0', 'v4.2'],
                        default='v3.9',
                        help='评分版本 (默认v3.9)。'
-                            '活跃版本: v3.9(生产A级,42特征), v3.96(Robust Z-Score,ICIR全周期>0.2), '
-                            'v3.95(多目标预测,3d/5d/10d), v4.0(Cross-Sectional Alpha)。'
+                            '活跃版本: v3.9(生产A级,42特征), v3.95(多目标预测,3d/5d/10d滚动训练), '
+                            'v3.96(Robust Z-Score,ICIR全周期>0.2), v4.0(Cross-Sectional Alpha), '
+                            'v4.2(Hybrid Alpha,行业超额+RobustZScore+V39市场)。'
                             '已弃用: v2-v3.81, v3.94, v4 (仍可使用但不推荐)')
     parser.add_argument('--stocks-only', '-s', action='store_true',
                        help='只考虑A股股票，不包括ETF基金等')

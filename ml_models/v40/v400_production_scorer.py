@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-V4.0 Cross-Sectional Alpha Model 生产评分器
+V4.0/V4.2 Cross-Sectional Alpha Model 生产评分器
 
 核心改进:
 - 从 v40_feature_cache 读取 cross-sectional 排名特征
 - 使用当天全部已评分股票的 percentile rank 映射到 30-90 分
 - 预测超额收益 (个股 - 沪深300)
 - 接口与 V390ProductionScorer 完全一致
+
+V4.2 新增:
+- 自动检测v42模型，启用v39市场特征注入 + robust z-score归一化
+- 动态扩展MARKET_FEATURES以包含v39_*特征
 """
 
 import sys
@@ -62,11 +66,20 @@ class V400ProductionScorer:
         self.winsorize_bounds = None
         self.n_features = 0
 
+        # V4.2 字段
+        self.v42_mode = False
+        self.join_v39_market = False
+        self.robust_zscore_features = False
+        self.v39_market_feature_names = []
+
         self._load_model()
 
-        logger.info("✅ V4.0 Cross-Sectional评分系统初始化完成")
+        version_str = "V4.2 Hybrid Alpha" if self.v42_mode else "V4.0 Cross-Sectional"
+        logger.info(f"✅ {version_str}评分系统初始化完成")
         logger.info(f"   模型: {model_path}")
         logger.info(f"   特征数: {self.n_features}")
+        if self.v42_mode:
+            logger.info(f"   V4.2: v39市场特征={self.join_v39_market}, robust_zscore={self.robust_zscore_features}")
 
     def _load_model(self):
         """加载训练好的模型"""
@@ -86,6 +99,16 @@ class V400ProductionScorer:
         self.market_scale = model_data.get('market_scale', 1.0)
         self.industry_scale = model_data.get('industry_scale', 1.0)
 
+        # V4.2 字段检测
+        self.v42_mode = model_data.get('v42_mode', False)
+        self.join_v39_market = model_data.get('join_v39_market', False)
+        self.robust_zscore_features = model_data.get('robust_zscore_features', False)
+        self.v39_market_feature_names = model_data.get('v39_market_feature_names', [])
+
+        # V4.2: 动态扩展MARKET_FEATURES
+        if self.v39_market_feature_names:
+            self.MARKET_FEATURES = set(self.MARKET_FEATURES) | set(self.v39_market_feature_names)
+
         # 从第一个基础模型推断特征名
         if self.feature_names is None:
             first_model = list(self.base_models.values())[0]
@@ -100,6 +123,155 @@ class V400ProductionScorer:
         logger.info(f"✅ 加载V4.0模型 (version={version}): {list(self.base_models.keys())}, "
                      f"特征数={self.n_features}, meta={self.meta_model_type}, "
                      f"market_scale={self.market_scale}, industry_scale={self.industry_scale}")
+        if self.v42_mode:
+            logger.info(f"   V4.2模式: v39_market={self.join_v39_market}, "
+                         f"robust_zscore={self.robust_zscore_features}, "
+                         f"v39特征={len(self.v39_market_feature_names)}个")
+
+    def _load_v39_market_for_date(self, trade_date: str) -> Optional[Dict]:
+        """
+        V4.2: 从v39_feature_cache加载1行市场特征
+
+        Returns:
+            dict {v39_market_return_5d: ..., ...} or None
+        """
+        if not self.join_v39_market or not self.v39_market_feature_names:
+            return None
+
+        conn = sqlite3.connect(self.db_path)
+        try:
+            v39_cols_raw = [name.replace('v39_', '') for name in self.v39_market_feature_names]
+            cols_sql = ', '.join(v39_cols_raw)
+
+            cursor = conn.execute(f"""
+                SELECT {cols_sql} FROM v39_feature_cache
+                WHERE trade_date = ?
+                LIMIT 1
+            """, (trade_date,))
+            row = cursor.fetchone()
+            if not row:
+                return None
+
+            result = {}
+            for i, col_raw in enumerate(v39_cols_raw):
+                result[f'v39_{col_raw}'] = float(row[i]) if row[i] is not None else 0.0
+            return result
+        except Exception as e:
+            logger.debug(f"V4.2加载v39市场特征失败 {trade_date}: {e}")
+            return None
+        finally:
+            conn.close()
+
+    def _load_v39_market_batch(self, dates: List[str]) -> Dict[str, Dict]:
+        """
+        V4.2: 批量加载多日期的v39市场特征
+
+        Returns:
+            {date: {v39_market_return_5d: ..., ...}}
+        """
+        if not self.join_v39_market or not self.v39_market_feature_names:
+            return {}
+
+        conn = sqlite3.connect(self.db_path)
+        try:
+            v39_cols_raw = [name.replace('v39_', '') for name in self.v39_market_feature_names]
+            cols_sql = ', '.join(v39_cols_raw)
+            placeholders = ','.join(['?' for _ in dates])
+
+            df = pd.read_sql_query(f"""
+                SELECT trade_date, {cols_sql} FROM v39_feature_cache
+                WHERE trade_date IN ({placeholders})
+                GROUP BY trade_date
+            """, conn, params=dates)
+            conn.close()
+
+            result = {}
+            for _, row in df.iterrows():
+                date = row['trade_date']
+                result[date] = {}
+                for col_raw in v39_cols_raw:
+                    val = row[col_raw]
+                    result[date][f'v39_{col_raw}'] = float(val) if val is not None else 0.0
+
+            return result
+        except Exception as e:
+            logger.debug(f"V4.2批量加载v39市场特征失败: {e}")
+            try:
+                conn.close()
+            except Exception:
+                pass
+            return {}
+
+    def _inject_v39_market_features(self, features_df: pd.DataFrame, trade_date: str,
+                                      v39_cache: Dict = None) -> pd.DataFrame:
+        """
+        V4.2: 向特征DataFrame注入v39市场特征，删除旧V40分类市场特征
+
+        Args:
+            features_df: 含code列+特征列的DataFrame
+            trade_date: 交易日期
+            v39_cache: 可选的预加载缓存 {date: {feat: val}}
+        """
+        if not self.join_v39_market:
+            return features_df
+
+        # 获取v39市场特征
+        if v39_cache and trade_date in v39_cache:
+            v39_data = v39_cache[trade_date]
+        else:
+            v39_data = self._load_v39_market_for_date(trade_date)
+
+        if not v39_data:
+            # 填0
+            for col in self.v39_market_feature_names:
+                if col not in features_df.columns:
+                    features_df[col] = 0.0
+            return features_df
+
+        # 注入v39特征 (所有股票共享同一市场值)
+        for col, val in v39_data.items():
+            features_df[col] = val
+
+        # 删除V40分类市场特征
+        v40_market_cat = ['market_regime', 'market_vol_regime', 'market_breadth_5d',
+                          'northbound_flow_zscore', 'market_volume_regime', 'market_trend_strength']
+        for col in v40_market_cat:
+            if col in features_df.columns and col not in (self.feature_names or []):
+                features_df = features_df.drop(columns=[col], errors='ignore')
+
+        return features_df
+
+    def _apply_robust_zscore(self, features_df: pd.DataFrame) -> pd.DataFrame:
+        """
+        V4.2: 对当日全市场特征矩阵应用cross-sectional robust z-score
+
+        Args:
+            features_df: 特征DataFrame (不含code列)
+        """
+        if not self.robust_zscore_features:
+            return features_df
+
+        if len(features_df) < 10:
+            return features_df
+
+        categorical_cols = {'sw_l1_code'}
+        features_df = features_df.copy()
+
+        for col in features_df.columns:
+            if col in categorical_cols or col == 'code':
+                continue
+
+            vals = features_df[col].values
+            median = np.median(vals)
+            mad = np.median(np.abs(vals - median))
+            scale = 1.4826 * mad
+
+            if scale < 1e-10:
+                features_df[col] = 0.0
+            else:
+                features_df[col] = np.clip((vals - median) / scale, -3, 3)
+
+        return features_df
 
     def _apply_feature_scaling(self, features):
         """应用市场/行业特征缩放 (与训练时一致)"""
@@ -240,7 +412,7 @@ class V400ProductionScorer:
                 'predicted_excess_return_5d': float(prediction),
                 'confidence': self._calculate_confidence(features, prediction),
                 'recommendation': self._get_recommendation(score),
-                'scoring_method': 'V4.0_CrossSectional',
+                'scoring_method': 'V4.2_HybridAlpha' if self.v42_mode else 'V4.0_CrossSectional',
                 'model_grade': 'TBD',
             }
         except Exception as e:
@@ -287,10 +459,21 @@ class V400ProductionScorer:
                     if col not in features_df.columns:
                         features_df[col] = 0
 
-            if self.winsorize_bounds:
+            if self.winsorize_bounds and not self.robust_zscore_features:
                 for col, (lower, upper) in self.winsorize_bounds.items():
                     if col in features_df.columns:
                         features_df[col] = features_df[col].clip(lower, upper)
+
+            # V4.2: 注入v39市场特征
+            if self.v42_mode:
+                features_df = self._inject_v39_market_features(features_df, trade_date)
+
+            # V4.2: 全市场robust z-score
+            if self.robust_zscore_features:
+                code_col = features_df['code'].copy()
+                feat_cols = [c for c in features_df.columns if c != 'code']
+                features_df[feat_cols] = self._apply_robust_zscore(features_df[feat_cols])
+                features_df['code'] = code_col
 
             logger.info(f"✅ V4.0全市场特征加载: {len(features_df)} 只股票 ({trade_date})")
             return features_df
@@ -358,7 +541,7 @@ class V400ProductionScorer:
                     'predicted_excess_return_5d': float(pred),
                     'confidence': confidence,
                     'recommendation': self._get_recommendation(score),
-                    'scoring_method': 'V4.0_CrossSectional',
+                    'scoring_method': 'V4.2_HybridAlpha' if self.v42_mode else 'V4.0_CrossSectional',
                     'model_grade': 'TBD',
                 }
 
@@ -401,7 +584,7 @@ class V400ProductionScorer:
                     'predicted_excess_return_5d': float(pred),
                     'confidence': self._calculate_confidence(feature_rows[i], pred),
                     'recommendation': self._get_recommendation(score),
-                    'scoring_method': 'V4.0_CrossSectional',
+                    'scoring_method': 'V4.2_HybridAlpha' if self.v42_mode else 'V4.0_CrossSectional',
                     'model_grade': 'TBD',
                 }
             return results
@@ -455,12 +638,25 @@ class V400ProductionScorer:
                         if col not in features_df.columns:
                             features_df[col] = 0
 
-                if self.winsorize_bounds:
+                if self.winsorize_bounds and not self.robust_zscore_features:
                     for col, (lower, upper) in self.winsorize_bounds.items():
                         if col in features_df.columns:
                             features_df[col] = features_df[col].clip(lower, upper)
 
                 result[date] = features_df
+
+            # V4.2: 批量注入v39市场特征 + robust z-score
+            if self.v42_mode:
+                v39_cache = self._load_v39_market_batch(dates)
+                for date in dates:
+                    if result[date] is not None:
+                        result[date] = self._inject_v39_market_features(
+                            result[date], date, v39_cache)
+                        if self.robust_zscore_features:
+                            code_col = result[date]['code'].copy()
+                            feat_cols = [c for c in result[date].columns if c != 'code']
+                            result[date][feat_cols] = self._apply_robust_zscore(result[date][feat_cols])
+                            result[date]['code'] = code_col
 
             total = sum(len(v) for v in result.values() if v is not None)
             logger.info(f"✅ V4.0特征缓存预加载: {len(dates)}天, {total}条记录")
