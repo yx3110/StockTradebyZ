@@ -883,10 +883,33 @@ class ExtensibleBacktestEngine:
         }
 
     def _batch_load_stock_data(self, start_date: str, end_date: str):
-        """批量加载股票数据"""
-        from ml_models.v37.backtest_v37_engine_optimized import V37BacktestEngineOptimized
-        temp_engine = V37BacktestEngineOptimized()
-        self.data_cache = temp_engine.batch_load_stock_data(start_date, end_date)
+        """批量加载股票数据（直接从数据库）"""
+        import pandas as pd
+        query = """
+        SELECT s.code, dq.trade_date, dq.open, dq.high, dq.low, dq.close, dq.volume
+        FROM securities s
+        JOIN daily_quotes dq ON s.id = dq.security_id
+        WHERE s.type = 'A股'
+        AND dq.trade_date BETWEEN ? AND ?
+        AND dq.close > 0
+        ORDER BY s.code, dq.trade_date
+        """
+        try:
+            rows = self.db_manager.execute_query(query, [start_date, end_date])
+            if not rows:
+                self.data_cache = {}
+                return
+            df = pd.DataFrame(rows, columns=['code', 'trade_date', 'open', 'high', 'low', 'close', 'volume'])
+            df['trade_date'] = pd.to_datetime(df['trade_date'])
+            stock_data = {}
+            for code, group in df.groupby('code'):
+                stock_df = group.set_index('trade_date').sort_index()
+                stock_data[code] = stock_df
+            self.data_cache = {'all': stock_data}
+            logger.info(f"📊 批量加载 {len(stock_data)} 只股票数据")
+        except Exception as e:
+            logger.error(f"批量加载股票数据失败: {e}")
+            self.data_cache = {}
 
     def _get_stock_universe(self, start_date: str, end_date: str) -> List[str]:
         """获取股票池"""

@@ -1,0 +1,101 @@
+#!/usr/bin/env python3
+"""
+批量用 V3.96 (Robust Z-Score + Industry-Excess) 模型重新评分
+复用已有报告的策略选股结果，只替换ML分数
+"""
+import json
+import sys
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parent
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from ml_models.v39.v396_production_scorer import V396ProductionScorer
+
+
+def main():
+    # 源目录(已有策略选股) → 目标目录(v3.96分数)
+    src_dir = PROJECT_ROOT / 'reports' / 'daily_selection_v3.95_model20260221'
+    dst_dir = PROJECT_ROOT / 'reports' / 'daily_selection_v3.96'
+    dst_dir.mkdir(parents=True, exist_ok=True)
+
+    # 加载V3.96模型
+    print("加载V3.96模型...")
+    scorer = V396ProductionScorer(model_type='small_data')
+    print(f"  robust_zscore: {scorer.robust_zscore}")
+    print(f"  extra_features: {scorer.extra_features_from_daily_basic}")
+    print(f"  feature_cols: {len(scorer.feature_cols)}")
+
+    if not scorer.robust_zscore:
+        print("ERROR: 加载的模型不是robust_zscore类型!")
+        return
+
+    # 收集所有报告
+    json_files = sorted(src_dir.glob('analysis_data_*.json'))
+    print(f"找到 {len(json_files)} 份报告")
+
+    # 预加载特征缓存
+    dates = []
+    for f in json_files:
+        date_str = f.stem.replace('analysis_data_', '')
+        date = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
+        dates.append(date)
+
+    print(f"预加载 {len(dates)} 天特征缓存...")
+    cache = scorer.preload_feature_cache(dates)
+
+    # 逐日重新评分
+    success = 0
+    for json_file in json_files:
+        date_str = json_file.stem.replace('analysis_data_', '')
+        date = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
+
+        with open(json_file, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+
+        stocks = data.get('all_stocks_with_scores', [])
+        if not stocks:
+            continue
+
+        codes = [s['stock_code'] for s in stocks if s.get('stock_code')]
+        features_df = cache.get(date)
+        results = scorer.predict_scores_from_preloaded(codes, date, features_df)
+
+        for s in stocks:
+            code = s.get('stock_code', '')
+            if code in results:
+                r = results[code]
+                s['score'] = r['score']
+                s['predicted_return_5d'] = r['pred_5d']
+                s['pred_5d'] = r['pred_5d']
+                if 'detailed_scoring' in s:
+                    s['detailed_scoring']['final_score'] = r['score']
+                    s['detailed_scoring']['pred_3d'] = r['pred_3d']
+                    s['detailed_scoring']['pred_5d'] = r['pred_5d']
+                    s['detailed_scoring']['pred_10d'] = r['pred_10d']
+                    s['detailed_scoring']['scoring_method'] = 'V3.96_RobustZScore'
+                if 'factor_scores' in s:
+                    s['factor_scores']['predicted_return_5d'] = r['pred_5d']
+
+        stocks.sort(key=lambda x: x.get('score', 0), reverse=True)
+        data['all_stocks_with_scores'] = stocks
+
+        dst_json = dst_dir / json_file.name
+        with open(dst_json, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+
+        md_src = src_dir / f"选股分析报告_{date_str}.md"
+        if md_src.exists():
+            import shutil
+            shutil.copy2(md_src, dst_dir / md_src.name)
+
+        success += 1
+        if success % 20 == 0:
+            print(f"  已完成 {success}/{len(json_files)} ...")
+
+    print(f"\n完成! 成功重新评分 {success}/{len(json_files)} 份报告")
+    print(f"输出目录: {dst_dir}")
+
+
+if __name__ == '__main__':
+    main()

@@ -3,6 +3,7 @@
 
 活跃版本:
   - v3.9  (ml_models.v39) - V390ProductionScorer, V394ProductionScorer, V395ProductionScorer
+  - v3.96 (ml_models.v39) - V396ProductionScorer (Robust Z-Score + Industry-Excess)
 已弃用 (保留模型文件，代码仍可用):
   - v3.8  (ml_models.v38) - V380AdvancedIncrementalMLSystem
 已删除:
@@ -16,6 +17,7 @@
 from .v39.v390_production_scorer import V390ProductionScorer
 from .v39.v394_production_scorer import V394ProductionScorer
 from .v39.v395_production_scorer import V395ProductionScorer
+from .v39.v396_production_scorer import V396ProductionScorer
 
 # Deprecated versions (kept for backward compatibility)
 try:
@@ -28,6 +30,7 @@ __all__ = [
     'V390ProductionScorer',
     'V394ProductionScorer',
     'V395ProductionScorer',
+    'V396ProductionScorer',
     # Deprecated
     'V380AdvancedIncrementalMLSystem',
 ]

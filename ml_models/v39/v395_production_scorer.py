@@ -45,6 +45,24 @@ class V395ProductionScorer:
         self.market_feature_cols = None
         self.target_weights = {'label_3d': 0.4, 'label_5d': 0.35, 'label_10d': 0.25}
 
+        # 截面改进标志 (新模型会设置为True)
+        self.rank_normalized = False
+        self.cross_sectional_neutralization = False
+        self.stock_rank_cols = None  # 需要rank归一化的个股特征列表
+
+        # 双流特征标志 (dual_stream模型同时使用raw+rank特征)
+        self.dual_stream = False
+        self.stock_feature_cols_raw = None
+        self.stock_feature_cols_rank = None
+
+        # 级联Rank标志 (cascade模型顺序预测 3d→5d→10d)
+        self.cascade = False
+        self.cascade_feature_names = None
+
+        # Robust Z-Score标志 (v2模型: 保留幅度信息的截面归一化)
+        self.robust_zscore = False
+        self.extra_features_from_daily_basic = None
+
         self._load_models()
 
     def _load_models(self):
@@ -73,7 +91,7 @@ class V395ProductionScorer:
                 self.scaler = pickle.load(f)
 
         # 加载各目标的模型
-        model_names = ['lgb', 'xgb', 'cb', 'rf', 'gb']
+        model_names = ['lgb', 'xgb', 'cb', 'rf', 'hgb', 'gb']
         for target in ['3d', '5d', '10d']:
             self.models[target] = {}
             for name in model_names:
@@ -111,25 +129,153 @@ class V395ProductionScorer:
             self.market_feature_cols = model_data.get('market_features', model_data.get('market_feature_cols', []))
             self.target_weights = model_data.get('target_weights', self.target_weights)
 
-        print(f"V3.95 SmallData模型加载完成: {list(self.models.keys())}")
+            # 级联Rank元数据 (最新模型)
+            self.cascade = model_data.get('cascade', False)
+            self.cascade_feature_names = model_data.get('cascade_feature_names', None)
 
-    def _get_features(self, stock_codes: List[str], date: str) -> Optional[pd.DataFrame]:
+            # 双流特征元数据
+            self.dual_stream = model_data.get('dual_stream', False)
+            self.stock_feature_cols_raw = model_data.get('stock_feature_cols_raw', None)
+            self.stock_feature_cols_rank = model_data.get('stock_feature_cols_rank', None)
+
+            # 截面改进元数据 (旧模型兼容)
+            self.rank_normalized = model_data.get('rank_normalized', False)
+            self.cross_sectional_neutralization = model_data.get('cross_sectional_neutralization', False)
+            self.stock_rank_cols = model_data.get('stock_feature_cols', None)
+
+            # Robust Z-Score 元数据 (v2模型)
+            self.robust_zscore = model_data.get('robust_zscore', False)
+            self.extra_features_from_daily_basic = model_data.get('extra_features_from_daily_basic', None)
+
+        if self.robust_zscore:
+            suffix = " [robust_zscore+industry_excess]"
+        elif self.cascade:
+            suffix = " [cascade_rank]"
+        elif self.dual_stream:
+            suffix = " [dual_stream]"
+        elif self.rank_normalized:
+            suffix = " [rank_normalized]"
+        else:
+            suffix = ""
+        print(f"V3.95 SmallData模型加载完成: {list(self.models.keys())}{suffix}")
+
+    def _rank_normalize_features(self, features_df: pd.DataFrame) -> pd.DataFrame:
+        """对个股特征做截面Rank归一化（宏观特征保持原值）"""
+        if not self.stock_rank_cols:
+            return features_df
+        rank_cols = [c for c in self.stock_rank_cols if c in features_df.columns]
+        if rank_cols:
+            features_df[rank_cols] = features_df[rank_cols].rank(pct=True)
+            features_df[rank_cols] = features_df[rank_cols].fillna(0.5)
+        return features_df
+
+    def _robust_zscore_normalize_features(self, features_df: pd.DataFrame) -> pd.DataFrame:
+        """对个股特征做截面Robust Z-Score归一化 (保留幅度信息)
+
+        z = (x - median) / (MAD * 1.4826), clip[-3, 3]
+        优势 vs Rank: PE=5 和 PE=50 有不同的 z 值, 而 rank 只有序数差
+        """
+        if not self.stock_rank_cols:
+            return features_df
+        zscore_cols = [c for c in self.stock_rank_cols if c in features_df.columns]
+        if not zscore_cols:
+            return features_df
+
+        data = features_df[zscore_cols].values.copy()
+        for j in range(data.shape[1]):
+            col_data = data[:, j]
+            valid = col_data[~np.isnan(col_data)]
+            if len(valid) < 5:
+                data[:, j] = 0.0
+                continue
+            median = np.nanmedian(col_data)
+            mad = np.nanmedian(np.abs(col_data - median)) * 1.4826
+            if mad < 1e-8:
+                data[:, j] = 0.0
+            else:
+                data[:, j] = np.clip((col_data - median) / mad, -3, 3)
+        features_df[zscore_cols] = data
+        features_df[zscore_cols] = features_df[zscore_cols].fillna(0.0)
+        return features_df
+
+    def _load_daily_basic_features(self, features_df: pd.DataFrame, date: str) -> pd.DataFrame:
+        """从daily_basic加载额外特征 (pe_ttm, pb, ps_ttm, turnover_rate, log_market_cap)"""
+        if not self.extra_features_from_daily_basic:
+            return features_df
+
+        conn = sqlite3.connect(self.db_path)
+        try:
+            codes = features_df['code'].tolist()
+            codes_str = ','.join([f"'{c}'" for c in codes])
+            query = f"""
+            SELECT s.code, db.pe_ttm, db.pb, db.ps_ttm, db.turnover_rate, db.circ_mv
+            FROM daily_basic db
+            JOIN securities s ON db.security_id = s.id
+            WHERE s.code IN ({codes_str}) AND db.trade_date = '{date}'
+            """
+            df_basic = pd.read_sql_query(query, conn)
+        finally:
+            conn.close()
+
+        if len(df_basic) > 0:
+            features_df = features_df.merge(df_basic, on='code', how='left')
+            features_df['log_market_cap'] = np.log1p(features_df['circ_mv'].fillna(0))
+            features_df.drop(columns=['circ_mv'], inplace=True, errors='ignore')
+            for col in ['pe_ttm', 'pb', 'ps_ttm', 'turnover_rate', 'log_market_cap']:
+                if col in features_df.columns:
+                    features_df[col] = features_df[col].fillna(features_df[col].median())
+        else:
+            # 无daily_basic数据, 填0
+            for col in ['pe_ttm', 'pb', 'ps_ttm', 'turnover_rate', 'log_market_cap']:
+                features_df[col] = 0.0
+
+        return features_df
+
+    def _create_dual_stream_features(self, features_df: pd.DataFrame) -> pd.DataFrame:
+        """
+        双流特征: 保留原始值(raw) + 新增截面Rank列(_rank)
+
+        向后兼容: 仅当 self.dual_stream=True 且 stock_feature_cols_raw 存在时使用
+        """
+        if not self.stock_feature_cols_raw:
+            return features_df
+        for col in self.stock_feature_cols_raw:
+            rank_col = f"{col}_rank"
+            if col in features_df.columns:
+                features_df[rank_col] = features_df[col].rank(pct=True).fillna(0.5)
+        return features_df
+
+    def _get_features(self, stock_codes: Optional[List[str]], date: str,
+                      load_full_cross_section: bool = False) -> Optional[pd.DataFrame]:
         """获取股票特征"""
         conn = sqlite3.connect(self.db_path)
 
         # 构建查询
-        codes_str = ','.join([f"'{c}'" for c in stock_codes])
-        query = f"""
-        SELECT code, trade_date, features_json,
-               market_return_20d, market_return_10d, market_return_5d,
-               market_volatility_20d, market_volatility_10d,
-               market_up_ratio_20d, market_up_ratio_10d,
-               market_drawdown_20d, market_volume_ratio,
-               market_position_20d, market_momentum_20d, market_momentum_5d
-        FROM v39_feature_cache
-        WHERE code IN ({codes_str})
-          AND trade_date = '{date}'
-        """
+        if load_full_cross_section:
+            # 加载全截面数据 (用于rank归一化)
+            query = f"""
+            SELECT code, trade_date, features_json,
+                   market_return_20d, market_return_10d, market_return_5d,
+                   market_volatility_20d, market_volatility_10d,
+                   market_up_ratio_20d, market_up_ratio_10d,
+                   market_drawdown_20d, market_volume_ratio,
+                   market_position_20d, market_momentum_20d, market_momentum_5d
+            FROM v39_feature_cache
+            WHERE trade_date = '{date}'
+            """
+        else:
+            codes_str = ','.join([f"'{c}'" for c in stock_codes])
+            query = f"""
+            SELECT code, trade_date, features_json,
+                   market_return_20d, market_return_10d, market_return_5d,
+                   market_volatility_20d, market_volatility_10d,
+                   market_up_ratio_20d, market_up_ratio_10d,
+                   market_drawdown_20d, market_volume_ratio,
+                   market_position_20d, market_momentum_20d, market_momentum_5d
+            FROM v39_feature_cache
+            WHERE code IN ({codes_str})
+              AND trade_date = '{date}'
+            """
 
         df = pd.read_sql_query(query, conn)
         conn.close()
@@ -305,6 +451,37 @@ class V395ProductionScorer:
 
         return predictions
 
+    def _cascade_ensemble_predict(self, X_input, models, weights):
+        """
+        对单个目标的所有模型做加权集成预测
+
+        Args:
+            X_input: 特征矩阵
+            models: {model_name: model} 字典
+            weights: {model_name: weight} 字典
+
+        Returns:
+            (ensemble_pred, success): 集成预测结果和是否成功标志
+        """
+        target_pred = np.zeros(len(X_input))
+        total_weight = 0
+        success_count = 0
+
+        for name, model in models.items():
+            try:
+                pred = model.predict(X_input)
+                weight = weights.get(name, 0.2)
+                target_pred += weight * pred
+                total_weight += weight
+                success_count += 1
+            except Exception:
+                continue
+
+        if total_weight > 0:
+            target_pred /= total_weight
+            return target_pred, success_count > 0
+        return target_pred, False
+
     def predict_scores(self, stock_codes: List[str], date: str) -> Dict[str, Dict]:
         """
         预测股票评分
@@ -318,11 +495,27 @@ class V395ProductionScorer:
         """
         results = {}
 
-        # 获取特征
-        features_df = self._get_features(stock_codes, date)
+        # 获取特征 — 五种路径:
+        # 1. robust_zscore: 全截面加载 → z-score归一化 → 加载daily_basic → 过滤
+        # 2. cascade: 全截面加载 → rank替换 → 过滤 → 级联推理
+        # 3. dual_stream: 全截面加载 → 生成raw+rank双流特征 → 过滤
+        # 4. rank_normalized: 全截面加载 → rank替换 → 过滤
+        # 5. raw: 仅加载目标股票
+        if self.robust_zscore:
+            features_df = self._get_features(stock_codes, date, load_full_cross_section=True)
+            if features_df is not None and len(features_df) > 0:
+                features_df = self._robust_zscore_normalize_features(features_df)
+                features_df = self._load_daily_basic_features(features_df, date)
+                features_df = features_df[features_df['code'].isin(stock_codes)].copy()
+        elif self.cascade or self.rank_normalized:
+            features_df = self._get_features(stock_codes, date, load_full_cross_section=True)
+            if features_df is not None and len(features_df) > 0:
+                features_df = self._create_dual_stream_features(features_df)
+                features_df = features_df[features_df['code'].isin(stock_codes)].copy()
+        else:
+            features_df = self._get_features(stock_codes, date)
 
         if features_df is None or len(features_df) == 0:
-            # 返回默认分数
             for code in stock_codes:
                 results[code] = {'score': 50.0, 'pred_3d': 0, 'pred_5d': 0, 'pred_10d': 0}
             return results
@@ -330,7 +523,6 @@ class V395ProductionScorer:
         # 准备特征矩阵 - 使用模型训练时的特征列顺序
         exclude_cols = {'code', 'trade_date'}
         if self.feature_cols:
-            # 按训练时的特征顺序对齐，缺失列填0
             for col in self.feature_cols:
                 if col not in features_df.columns:
                     features_df[col] = 0
@@ -345,30 +537,58 @@ class V395ProductionScorer:
         model_predictions_success = False
         predictions = {'3d': np.zeros(len(X)), '5d': np.zeros(len(X)), '10d': np.zeros(len(X))}
 
-        for target in ['3d', '5d', '10d']:
-            if target not in self.models or not self.models[target]:
-                continue
+        if self.cascade:
+            # 级联推理: 3d → 5d → 10d (顺序预测, 前级预测作为后级输入)
+            # 1. 3d预测 (基础特征)
+            if '3d' in self.models and self.models['3d']:
+                w3d = self.weights.get('label_3d', self.weights.get('3d', {}))
+                if isinstance(w3d, dict):
+                    predictions['3d'], ok_3d = self._cascade_ensemble_predict(X, self.models['3d'], w3d)
+                    if ok_3d:
+                        model_predictions_success = True
 
-            # 集成预测
-            target_pred = np.zeros(len(X))
-            total_weight = 0
-            success_count = 0
+            # 2. 5d预测 (基础特征 + cascade_pred_3d)
+            if '5d' in self.models and self.models['5d']:
+                X_5d = np.column_stack([X, predictions['3d']])
+                w5d = self.weights.get('label_5d', self.weights.get('5d', {}))
+                if isinstance(w5d, dict):
+                    predictions['5d'], ok_5d = self._cascade_ensemble_predict(X_5d, self.models['5d'], w5d)
+                    if ok_5d:
+                        model_predictions_success = True
 
-            for name, model in self.models[target].items():
-                try:
-                    pred = model.predict(X)
-                    weight = self.weights.get(f'label_{target}', {}).get(name, 0.2)
-                    target_pred += weight * pred
-                    total_weight += weight
-                    success_count += 1
-                except Exception as e:
+            # 3. 10d预测 (基础特征 + cascade_pred_3d + cascade_pred_5d)
+            if '10d' in self.models and self.models['10d']:
+                X_10d = np.column_stack([X, predictions['3d'], predictions['5d']])
+                w10d = self.weights.get('label_10d', self.weights.get('10d', {}))
+                if isinstance(w10d, dict):
+                    predictions['10d'], ok_10d = self._cascade_ensemble_predict(X_10d, self.models['10d'], w10d)
+                    if ok_10d:
+                        model_predictions_success = True
+        else:
+            # 非级联: 独立预测各目标 (旧模型兼容)
+            for target in ['3d', '5d', '10d']:
+                if target not in self.models or not self.models[target]:
                     continue
 
-            if total_weight > 0:
-                target_pred /= total_weight
-                predictions[target] = target_pred
-                if success_count > 0:
-                    model_predictions_success = True
+                target_pred = np.zeros(len(X))
+                total_weight = 0
+                success_count = 0
+
+                for name, model in self.models[target].items():
+                    try:
+                        pred = model.predict(X)
+                        weight = self.weights.get(f'label_{target}', {}).get(name, 0.2)
+                        target_pred += weight * pred
+                        total_weight += weight
+                        success_count += 1
+                    except Exception:
+                        continue
+
+                if total_weight > 0:
+                    target_pred /= total_weight
+                    predictions[target] = target_pred
+                    if success_count > 0:
+                        model_predictions_success = True
 
         # 计算综合评分
         if model_predictions_success:
@@ -378,12 +598,7 @@ class V395ProductionScorer:
                 self.target_weights['label_10d'] * predictions['10d']
             )
         else:
-            # 备用方案: 使用缓存中实际存在的特征计算智能评分
-            # features_json包含: return_5d/10d/20d, volatility_10d/20d, volume_ratio/trend,
-            # price_position_20d, ma5/10/20_ratio, ma_cross, rsi_14, avg/max/min_pct_change_5d
             combined_pred = self._calculate_fallback_scores(features_df, available_cols)
-
-            # 同时基于特征估算预测收益
             predictions = self._estimate_predictions_from_features(features_df, available_cols)
 
         # 转换为百分制评分 (使用百分位排名)
@@ -391,7 +606,7 @@ class V395ProductionScorer:
             from scipy import stats
             ranks = stats.rankdata(combined_pred)
             percentiles = (ranks - 1) / (len(ranks) - 1) * 100
-            scores = 30 + percentiles * 0.6  # 映射到30-90分
+            scores = 30 + percentiles * 0.6
         else:
             scores = np.array([60.0])
 
@@ -405,7 +620,6 @@ class V395ProductionScorer:
                 'pred_10d': float(predictions['10d'][i]) if i < len(predictions['10d']) else 0
             }
 
-        # 对于没有特征的股票，返回默认分数
         for code in stock_codes:
             if code not in results:
                 results[code] = {'score': 50.0, 'pred_3d': 0, 'pred_5d': 0, 'pred_10d': 0}
@@ -505,6 +719,15 @@ class V395ProductionScorer:
                 results[code] = {'score': 50.0, 'pred_3d': 0, 'pred_5d': 0, 'pred_10d': 0}
             return results
 
+        # 五种路径: robust_zscore > cascade > dual_stream > rank_normalized > raw
+        if self.robust_zscore:
+            features_df = self._robust_zscore_normalize_features(features_df.copy())
+            features_df = self._load_daily_basic_features(features_df, date)
+        elif self.cascade or self.rank_normalized:
+            features_df = self._rank_normalize_features(features_df.copy())
+        elif self.dual_stream:
+            features_df = self._create_dual_stream_features(features_df.copy())
+
         # 过滤出请求的股票代码
         mask = features_df['code'].isin(stock_codes)
         filtered_df = features_df[mask].copy()
@@ -530,29 +753,55 @@ class V395ProductionScorer:
         model_predictions_success = False
         predictions = {'3d': np.zeros(len(X)), '5d': np.zeros(len(X)), '10d': np.zeros(len(X))}
 
-        for target in ['3d', '5d', '10d']:
-            if target not in self.models or not self.models[target]:
-                continue
+        if self.cascade:
+            # 级联推理: 3d → 5d → 10d
+            if '3d' in self.models and self.models['3d']:
+                w3d = self.weights.get('label_3d', self.weights.get('3d', {}))
+                if isinstance(w3d, dict):
+                    predictions['3d'], ok_3d = self._cascade_ensemble_predict(X, self.models['3d'], w3d)
+                    if ok_3d:
+                        model_predictions_success = True
 
-            target_pred = np.zeros(len(X))
-            total_weight = 0
-            success_count = 0
+            if '5d' in self.models and self.models['5d']:
+                X_5d = np.column_stack([X, predictions['3d']])
+                w5d = self.weights.get('label_5d', self.weights.get('5d', {}))
+                if isinstance(w5d, dict):
+                    predictions['5d'], ok_5d = self._cascade_ensemble_predict(X_5d, self.models['5d'], w5d)
+                    if ok_5d:
+                        model_predictions_success = True
 
-            for name, model in self.models[target].items():
-                try:
-                    pred = model.predict(X)
-                    weight = self.weights.get(f'label_{target}', {}).get(name, 0.2)
-                    target_pred += weight * pred
-                    total_weight += weight
-                    success_count += 1
-                except Exception:
+            if '10d' in self.models and self.models['10d']:
+                X_10d = np.column_stack([X, predictions['3d'], predictions['5d']])
+                w10d = self.weights.get('label_10d', self.weights.get('10d', {}))
+                if isinstance(w10d, dict):
+                    predictions['10d'], ok_10d = self._cascade_ensemble_predict(X_10d, self.models['10d'], w10d)
+                    if ok_10d:
+                        model_predictions_success = True
+        else:
+            # 非级联: 独立预测各目标
+            for target in ['3d', '5d', '10d']:
+                if target not in self.models or not self.models[target]:
                     continue
 
-            if total_weight > 0:
-                target_pred /= total_weight
-                predictions[target] = target_pred
-                if success_count > 0:
-                    model_predictions_success = True
+                target_pred = np.zeros(len(X))
+                total_weight = 0
+                success_count = 0
+
+                for name, model in self.models[target].items():
+                    try:
+                        pred = model.predict(X)
+                        weight = self.weights.get(f'label_{target}', {}).get(name, 0.2)
+                        target_pred += weight * pred
+                        total_weight += weight
+                        success_count += 1
+                    except Exception:
+                        continue
+
+                if total_weight > 0:
+                    target_pred /= total_weight
+                    predictions[target] = target_pred
+                    if success_count > 0:
+                        model_predictions_success = True
 
         if model_predictions_success:
             combined_pred = (
