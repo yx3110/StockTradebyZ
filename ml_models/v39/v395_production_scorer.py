@@ -127,7 +127,9 @@ class V395ProductionScorer:
             self.scaler = model_data.get('scaler')
             self.feature_cols = model_data.get('feature_names', model_data.get('feature_cols', []))
             self.market_feature_cols = model_data.get('market_features', model_data.get('market_feature_cols', []))
-            self.target_weights = model_data.get('target_weights', self.target_weights)
+            # Phase 2: 优先使用ICIR动态权重（如果模型中包含）
+            self.target_weights = model_data.get('dynamic_weights',
+                                                  model_data.get('target_weights', self.target_weights))
 
             # 级联Rank元数据 (最新模型)
             self.cascade = model_data.get('cascade', False)

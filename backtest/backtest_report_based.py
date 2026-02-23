@@ -1,7 +1,15 @@
 #!/usr/bin/env python3
 """
-基于报告的回测引擎
-读取选股报告JSON文件，提取Top N股票，计算实际收益，评估模型表现
+基于报告的回测引擎 (v2 — 北极星指标增强版)
+
+新增功能:
+- Sharpe / Sortino / Calmar 风险调整收益
+- 最大回撤 + 持续期 + 恢复时间
+- 年化收益率计算
+- 交易成本扣减 (佣金+印花税+滑点)
+- 换手率统计
+- 基准指数对比 (中证500/中证1000)
+- 北极星评分卡自动对比
 
 用法:
     # 回测新模型v3.9
@@ -13,14 +21,11 @@
         --compare-dir reports/daily_selection_v3.9 \
         --label "v3.9新模型" --compare-label "v3.9旧模型"
 
-    # 对比v3.9 vs v3.95 (新模型)
-    python3 backtest/backtest_report_based.py \
-        --report-dir reports/daily_selection_v3.9_model20260222 \
-        --compare-dir reports/daily_selection_v3.95_model20260221 \
-        --label "v3.9新模型" --compare-label "v3.95新模型"
-
     # 四模型全面对比
     python3 backtest/backtest_report_based.py --all
+
+    # 指定基准和持仓天数
+    python3 backtest/backtest_report_based.py --all --benchmark 000852.SH --focus-days 10
 """
 import sys
 import os
@@ -36,6 +41,12 @@ from scipy.stats import spearmanr
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
 os.chdir(PROJECT_ROOT)
+
+from backtest.north_star_metrics import (
+    NorthStarEvaluator, compute_risk_metrics, compute_transaction_costs,
+    compute_turnover, load_benchmark_returns, compute_benchmark_comparison,
+    compute_drawdown_series, NORTH_STAR_TARGETS, TRANSACTION_COST,
+)
 
 DB_PATH = os.path.join(PROJECT_ROOT, 'data_adapter', 'stock_data.db')
 
@@ -99,9 +110,9 @@ def get_next_trading_date(trade_date):
 
 
 def get_future_returns(codes, buy_date, holding_days_list=None):
+    """获取买入日买入后N天的实际收益率（以买入日开盘价买入，持仓N天后收盘价卖出）"""
     if holding_days_list is None:
         holding_days_list = HOLDING_DAYS
-    """获取买入日买入后N天的实际收益率（以买入日开盘价买入，持仓N天后收盘价卖出）"""
     conn = sqlite3.connect(DB_PATH)
 
     # 获取buy_date当天及之后的交易日
@@ -156,8 +167,174 @@ def get_future_returns(codes, buy_date, holding_days_list=None):
     return results
 
 
-def run_single_backtest(reports, label, top_n=20):
-    """运行单个报告目录的回测"""
+def _compute_period_risk_metrics(period_returns: pd.Series, holding_days: int,
+                                  risk_free_rate: float = 0.02) -> dict:
+    """
+    计算基于调仓期收益的风险指标（正确年化）
+
+    Args:
+        period_returns: 每个调仓期的收益率序列（每个值覆盖N天）
+        holding_days: 持仓天数
+        risk_free_rate: 年化无风险利率
+    """
+    if len(period_returns) < 5:
+        return {k: 0 for k in [
+            'annual_return', 'annual_volatility', 'downside_volatility',
+            'sharpe_ratio', 'sortino_ratio', 'calmar_ratio',
+            'max_drawdown', 'max_dd_duration_days', 'max_dd_recovery_days',
+            'var_95', 'cvar_95', 'omega_ratio',
+            'monthly_win_rate', 'worst_month', 'best_month',
+            'max_consecutive_loss_months', 'n_trading_days', 'positive_day_pct',
+        ]}
+
+    returns = period_returns.dropna()
+    n_periods = len(returns)
+    periods_per_year = 252 / holding_days  # 年化因子
+
+    # 累计收益 & 年化收益
+    cumulative_return = (1 + returns).prod() - 1
+    # 实际覆盖天数
+    total_days = n_periods * holding_days
+    annual_return = (1 + cumulative_return) ** (252 / total_days) - 1
+
+    # 波动率 (period-level std × sqrt(periods_per_year))
+    period_rf = (1 + risk_free_rate) ** (holding_days / 252) - 1
+    annual_volatility = returns.std() * np.sqrt(periods_per_year)
+
+    # 下行波动率
+    negative_returns = returns[returns < 0]
+    downside_vol = negative_returns.std() * np.sqrt(periods_per_year) if len(negative_returns) > 0 else 1e-8
+
+    # Sharpe = (annual_return - Rf) / annual_vol
+    sharpe = (annual_return - risk_free_rate) / annual_volatility if annual_volatility > 1e-8 else 0
+
+    # Sortino
+    sortino = (annual_return - risk_free_rate) / downside_vol if downside_vol > 1e-8 else 0
+
+    # 回撤
+    dd_series = compute_drawdown_series(returns)
+    max_dd = dd_series.min()
+
+    # 回撤持续期（用period数 × holding_days估算天数）
+    max_dd_periods = 0
+    current = 0
+    cumul = (1 + returns).cumprod()
+    running_max = cumul.cummax()
+    is_underwater = cumul < running_max
+    for uw in is_underwater:
+        if uw:
+            current += 1
+            max_dd_periods = max(max_dd_periods, current)
+        else:
+            current = 0
+
+    max_dd_duration_days = max_dd_periods * holding_days
+
+    # 恢复时间（使用位置索引避免非唯一DatetimeIndex的KeyError）
+    recovery_periods = 0
+    if not dd_series.empty:
+        min_pos = dd_series.values.argmin()
+        after_dd = cumul.iloc[min_pos:]
+        pre_dd_max_val = running_max.iloc[min_pos]
+        recovered = after_dd >= pre_dd_max_val
+        if recovered.any():
+            recovery_periods = recovered.values.argmax() + 1
+        else:
+            recovery_periods = len(after_dd)
+    recovery_days = recovery_periods * holding_days
+
+    # Calmar
+    calmar = annual_return / abs(max_dd) if abs(max_dd) > 1e-8 else 0
+
+    # VaR / CVaR (period-level)
+    var_95 = np.percentile(returns, 5)
+    tail = returns[returns <= var_95]
+    cvar_95 = tail.mean() if len(tail) > 0 else var_95
+
+    # Omega
+    gains = returns[returns > period_rf] - period_rf
+    losses = period_rf - returns[returns <= period_rf]
+    omega = gains.sum() / losses.sum() if losses.sum() > 1e-8 else float('inf')
+
+    # 月度统计 (约 252/holding_days/12 个period一月)
+    periods_per_month = max(1, int(periods_per_year / 12))
+    monthly_returns = []
+    for i in range(0, n_periods, periods_per_month):
+        chunk = returns.iloc[i:i+periods_per_month]
+        monthly_returns.append((1 + chunk).prod() - 1)
+    monthly_returns = pd.Series(monthly_returns)
+
+    monthly_win_rate = (monthly_returns > 0).mean() * 100 if len(monthly_returns) > 0 else 0
+    worst_month = monthly_returns.min() if len(monthly_returns) > 0 else 0
+    best_month = monthly_returns.max() if len(monthly_returns) > 0 else 0
+
+    # 连续亏损月
+    max_consec = 0
+    curr = 0
+    for r in monthly_returns:
+        if r < 0:
+            curr += 1
+            max_consec = max(max_consec, curr)
+        else:
+            curr = 0
+
+    # 日度胜率（period级别）
+    positive_pct = (returns > 0).mean() * 100
+
+    return {
+        'annual_return': annual_return,
+        'cumulative_return': cumulative_return,
+        'annual_volatility': annual_volatility,
+        'downside_volatility': downside_vol,
+        'sharpe_ratio': sharpe,
+        'sortino_ratio': sortino,
+        'calmar_ratio': calmar,
+        'max_drawdown': max_dd,
+        'max_dd_duration_days': max_dd_duration_days,
+        'max_dd_recovery_days': recovery_days,
+        'var_95': var_95,
+        'cvar_95': cvar_95,
+        'omega_ratio': omega,
+        'monthly_win_rate': monthly_win_rate,
+        'worst_month': worst_month,
+        'best_month': best_month,
+        'max_consecutive_loss_months': max_consec,
+        'n_trading_days': total_days,
+        'positive_day_pct': positive_pct,
+    }
+
+
+def _aggregate_benchmark_to_periods(benchmark_daily: pd.Series,
+                                     rebal_dates: list, holding_days: int) -> pd.Series:
+    """
+    将日度基准收益聚合到与调仓周期匹配的N日收益
+
+    Args:
+        benchmark_daily: 日度基准收益率 (DatetimeIndex)
+        rebal_dates: 调仓日期列表 (str YYYY-MM-DD)
+        holding_days: 持仓天数
+    """
+    bm = benchmark_daily.sort_index()
+    results = {}
+    for date_str in rebal_dates:
+        dt = pd.Timestamp(date_str)
+        # 取该日起的N个交易日的基准收益
+        mask = bm.index >= dt
+        period_bm = bm[mask].iloc[:holding_days]
+        if len(period_bm) >= max(1, holding_days // 2):
+            # N日累计收益
+            period_return = (1 + period_bm).prod() - 1
+            results[dt] = period_return
+    if not results:
+        return pd.Series(dtype=float)
+    s = pd.Series(results)
+    s.index = pd.DatetimeIndex(s.index)
+    return s
+
+
+def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
+                        focus_days=10):
+    """运行单个报告目录的回测（含北极星指标）"""
     print(f"\n{'='*80}")
     print(f"  报告回测: {label}")
     print(f"  报告天数: {len(reports)}, Top N: {top_n}")
@@ -165,6 +342,7 @@ def run_single_backtest(reports, label, top_n=20):
 
     daily_results = []
     all_picks = []
+    holdings_by_date = {}  # 用于换手率计算
     skipped = 0
 
     dates = sorted(reports.keys())
@@ -181,6 +359,9 @@ def run_single_backtest(reports, label, top_n=20):
 
         top_codes = [s['code'] for s in top_stocks]
         bottom_codes = [s['code'] for s in bottom_stocks]
+        # 记录持仓（用于换手率）
+        holdings_by_date[date] = top_codes
+
         # 查询所有候选股票的收益（用于逐日IC计算）
         all_codes = list(set([s['code'] for s in stocks]))
 
@@ -245,13 +426,15 @@ def run_single_backtest(reports, label, top_n=20):
     df = pd.DataFrame(daily_results)
     picks_df = pd.DataFrame(all_picks)
 
-    # 汇总打印
+    # ═══════════════════════════════════════════════════
+    # 基础IC/收益统计（保留原有逻辑）
+    # ═══════════════════════════════════════════════════
     print(f"\n{'─'*70}")
     print(f"  {label} 回测结果")
     print(f"{'─'*70}")
 
     summary = {}
-    daily_ic_series = {}  # {days: DataFrame with date, ic}
+    daily_ic_series = {}
 
     for days in HOLDING_DAYS:
         sub = df[df['days'] == days]
@@ -277,7 +460,8 @@ def run_single_backtest(reports, label, top_n=20):
             day_picks = picks_df[(picks_df['date'] == date) & (picks_df[f'return_{days}d'].notna())]
             if len(day_picks) >= 5:
                 day_ic, day_p = spearmanr(day_picks['score'], day_picks[f'return_{days}d'])
-                ic_records.append({'date': date, 'ic': day_ic, 'p_val': day_p, 'n_stocks': len(day_picks)})
+                if not np.isnan(day_ic):
+                    ic_records.append({'date': date, 'ic': day_ic, 'p_val': day_p, 'n_stocks': len(day_picks)})
 
         ic_df = pd.DataFrame(ic_records) if ic_records else pd.DataFrame()
         daily_ic_series[days] = ic_df
@@ -322,6 +506,146 @@ def run_single_backtest(reports, label, top_n=20):
         print(f"    ICIR:                 {icir:.4f}")
         print(f"    IC>0天数占比:         {ic_positive_pct:.1f}% ({len(ic_df)}天)")
 
+    # ═══════════════════════════════════════════════════
+    # 北极星增强: 风险指标 + 交易成本 + 基准对比
+    # ═══════════════════════════════════════════════════
+
+    north_star = {}  # 存储所有北极星指标
+
+    # 加载基准数据（一次性）
+    all_dates = df['date'].tolist()
+    start_d = min(all_dates)
+    end_d = max(all_dates)
+    benchmark_daily_ret = load_benchmark_returns(
+        benchmark_code, start_date=start_d, end_date=end_d
+    )
+
+    for days in HOLDING_DAYS:
+        sub = df[df['days'] == days].sort_values('date')
+        if len(sub) == 0:
+            continue
+
+        # 构建非重叠调仓期收益序列
+        # 对于N日持仓，每N天调仓一次（subsample every N rows）
+        # 1日持仓无重叠，直接使用全部数据
+        if days == 1:
+            non_overlap = sub
+        else:
+            non_overlap = sub.iloc[::days]
+
+        period_ret_series = non_overlap.set_index('date')['avg_top_return'].sort_index()
+        period_ret_series.index = pd.to_datetime(period_ret_series.index)
+
+        # --- 风险指标（非重叠period收益，正确年化）---
+        risk = _compute_period_risk_metrics(period_ret_series, days)
+
+        # --- 换手率（仅在调仓日之间计算）---
+        rebal_dates = non_overlap['date'].tolist()
+        rebal_holdings = {d: holdings_by_date.get(d, []) for d in rebal_dates
+                          if d in holdings_by_date}
+        turnover_info = compute_turnover(rebal_holdings)
+        avg_turnover = turnover_info.get('avg_turnover', 0.5)
+        # 年化换手 = 单次换手(双边) × 年调仓次数
+        rebal_freq_annual = 252 / days
+        annual_turnover_val = avg_turnover * 2 * rebal_freq_annual
+
+        # --- 交易成本（基于已计算的毛年化收益）---
+        cost_info = compute_transaction_costs(
+            avg_turnover, days,
+            gross_annual_return=risk['annual_return']
+        )
+
+        # --- 基准对比（用buy_date对齐，避免日期偏移）---
+        benchmark_info = {}
+        buy_dates = non_overlap['buy_date'].tolist()
+        periods_per_year = 252 / days
+        if not benchmark_daily_ret.empty and days == 1:
+            # 1日持仓：用buy_date索引portfolio收益，与日度基准对齐
+            buy_ret = non_overlap.set_index('buy_date')['avg_top_return'].sort_index()
+            buy_ret.index = pd.to_datetime(buy_ret.index)
+            benchmark_info = compute_benchmark_comparison(
+                buy_ret, benchmark_daily_ret, periods_per_year=252
+            )
+        elif not benchmark_daily_ret.empty and days > 1:
+            # N日持仓：聚合基准到N日收益，按buy_date匹配
+            bm_aligned = _aggregate_benchmark_to_periods(
+                benchmark_daily_ret, buy_dates, days
+            )
+            if len(bm_aligned) >= 3:
+                buy_ret = non_overlap.set_index('buy_date')['avg_top_return'].sort_index()
+                buy_ret.index = pd.to_datetime(buy_ret.index)
+                benchmark_info = compute_benchmark_comparison(
+                    buy_ret, bm_aligned, periods_per_year=periods_per_year
+                )
+
+        # 合并到summary
+        summary[days].update({
+            # 风险指标
+            'annual_return': risk['annual_return'],
+            'annual_volatility': risk['annual_volatility'],
+            'sharpe_ratio': risk['sharpe_ratio'],
+            'sortino_ratio': risk['sortino_ratio'],
+            'calmar_ratio': risk['calmar_ratio'],
+            'max_drawdown': risk['max_drawdown'],
+            'max_dd_duration_days': risk['max_dd_duration_days'],
+            'max_dd_recovery_days': risk['max_dd_recovery_days'],
+            'var_95': risk['var_95'],
+            'cvar_95': risk['cvar_95'],
+            'omega_ratio': risk['omega_ratio'],
+            'monthly_win_rate': risk['monthly_win_rate'],
+            'worst_month': risk['worst_month'],
+            'best_month': risk['best_month'],
+            'max_consecutive_loss_months': risk['max_consecutive_loss_months'],
+            # 交易成本
+            'annual_cost_drag': cost_info['annual_cost_drag'],
+            'net_annual_return': cost_info['net_annual_return'],
+            'gross_annual_return': cost_info['gross_annual_return'],
+            # 换手率
+            'avg_turnover': avg_turnover,
+            'annual_turnover': annual_turnover_val,
+            # 基准对比
+            'alpha': benchmark_info.get('alpha', 0),
+            'beta': benchmark_info.get('beta', 0),
+            'information_ratio': benchmark_info.get('information_ratio', 0),
+            'excess_annual_return': benchmark_info.get('excess_annual_return', 0),
+            'benchmark_annual': benchmark_info.get('benchmark_annual', 0),
+        })
+
+        north_star[days] = summary[days]
+
+        # 打印增强指标
+        n_rebal = len(non_overlap)
+        print(f"\n  🎯 {days}日持仓 北极星指标 ({n_rebal}个非重叠调仓期):")
+        print(f"    年化收益(毛):  {risk['annual_return']:.1%}")
+        print(f"    年化收益(净):  {cost_info['net_annual_return']:.1%}  (扣成本{cost_info['annual_cost_drag']:.1%}/年)")
+        print(f"    年化波动率:    {risk['annual_volatility']:.1%}")
+        print(f"    Sharpe:        {risk['sharpe_ratio']:.3f}")
+        print(f"    Sortino:       {risk['sortino_ratio']:.3f}")
+        print(f"    Calmar:        {risk['calmar_ratio']:.3f}")
+        print(f"    最大回撤:      {risk['max_drawdown']:.1%} (持续{risk['max_dd_duration_days']}天, 恢复{risk['max_dd_recovery_days']}天)")
+        print(f"    VaR(95%):      {risk['var_95']:.2%}")
+        print(f"    CVaR(95%):     {risk['cvar_95']:.2%}")
+        print(f"    Omega:         {risk['omega_ratio']:.3f}")
+        print(f"    月度胜率:      {risk['monthly_win_rate']:.1f}%")
+        print(f"    最差月:        {risk['worst_month']:.1%}")
+        print(f"    最佳月:        {risk['best_month']:.1%}")
+        print(f"    连续亏损月:    {risk['max_consecutive_loss_months']}月")
+        print(f"    换手率(单次):  {avg_turnover:.1%}")
+        print(f"    换手率(年化):  {annual_turnover_val:.1f}倍 (调仓{rebal_freq_annual:.0f}次/年)")
+        if benchmark_info:
+            print(f"    Alpha:         {benchmark_info.get('alpha', 0):.1%}")
+            print(f"    Beta:          {benchmark_info.get('beta', 0):.3f}")
+            print(f"    信息比率(IR):  {benchmark_info.get('information_ratio', 0):.3f}")
+            print(f"    超额年化:      {benchmark_info.get('excess_annual_return', 0):.1%}")
+
+    # ═══════════════════════════════════════════════════
+    # 北极星评分卡（focus_days）
+    # ═══════════════════════════════════════════════════
+
+    if focus_days in summary:
+        s = summary[focus_days]
+        _print_scorecard(s, label, focus_days)
+
     # 月度分解 (5日持仓)
     sub5 = df[df['days'] == 5].copy()
     if len(sub5) > 0:
@@ -353,11 +677,101 @@ def run_single_backtest(reports, label, top_n=20):
         'daily_results': df,
         'picks': picks_df,
         'daily_ic_series': daily_ic_series,
+        'holdings_by_date': holdings_by_date,
     }
 
 
-def compare_results(result_a, result_b):
-    """对比两个回测结果"""
+def _print_scorecard(s, label, days):
+    """打印北极星评分卡"""
+    print(f"\n  {'═'*60}")
+    print(f"  北极星评分卡: {label} ({days}日持仓)")
+    print(f"  {'═'*60}")
+    print(f"  {'指标':<18s} {'当前值':>10s} {'及格':>8s} {'目标':>8s} {'评级':>6s}")
+    print(f"  {'─'*54}")
+
+    scorecard_items = [
+        ('Daily IC',       s.get('ic_mean', 0),           'daily_ic'),
+        ('ICIR',           s.get('icir', 0),              'icir'),
+        ('IC>0%',          s.get('ic_positive_pct', 0),   'ic_positive_pct'),
+        ('年化收益(毛)',    s.get('annual_return', 0),     'annual_return'),
+        ('Sharpe',         s.get('sharpe_ratio', 0),      'sharpe_ratio'),
+        ('Sortino',        s.get('sortino_ratio', 0),     'sortino_ratio'),
+        ('Calmar',         s.get('calmar_ratio', 0),      'calmar_ratio'),
+        ('最大回撤',       s.get('max_drawdown', 0),      'max_drawdown'),
+        ('月度胜率%',      s.get('monthly_win_rate', 0),  'monthly_win_rate'),
+        ('年化成本',       s.get('annual_cost_drag', 0),  'annual_cost_drag'),
+        ('年化换手',       s.get('annual_turnover', 0),   'annual_turnover'),
+    ]
+
+    total_score = 0
+    max_score = 0
+
+    for name, current, target_key in scorecard_items:
+        tgt = NORTH_STAR_TARGETS.get(target_key)
+        if not tgt:
+            continue
+
+        target = tgt['target']
+        pass_val = tgt['pass']
+        good_val = tgt['good']
+        higher = tgt['direction'] == 'higher'
+
+        # 评级
+        if higher:
+            if current >= target:
+                grade, score = "★★★", 3
+            elif current >= good_val:
+                grade, score = "★★☆", 2
+            elif current >= pass_val:
+                grade, score = "★☆☆", 1
+            else:
+                grade, score = "☆☆☆", 0
+        else:
+            if current <= target:
+                grade, score = "★★★", 3
+            elif current <= good_val:
+                grade, score = "★★☆", 2
+            elif current <= pass_val:
+                grade, score = "★☆☆", 1
+            else:
+                grade, score = "☆☆☆", 0
+
+        total_score += score
+        max_score += 3
+
+        # 格式化
+        if target_key in ('max_drawdown', 'annual_return', 'annual_cost_drag'):
+            c_str = f"{current:.1%}"
+            t_str = f"{target:.1%}"
+            p_str = f"{pass_val:.1%}"
+        elif target_key in ('ic_positive_pct', 'monthly_win_rate', 'annual_turnover'):
+            c_str = f"{current:.1f}"
+            t_str = f"{target:.1f}"
+            p_str = f"{pass_val:.1f}"
+        else:
+            c_str = f"{current:.3f}"
+            t_str = f"{target:.3f}"
+            p_str = f"{pass_val:.3f}"
+
+        print(f"  {name:<18s} {c_str:>10s} {p_str:>8s} {t_str:>8s} {grade:>6s}")
+
+    if max_score > 0:
+        pct = total_score / max_score * 100
+        if pct >= 80:
+            grade_str = "A+"
+        elif pct >= 60:
+            grade_str = "A"
+        elif pct >= 40:
+            grade_str = "B"
+        else:
+            grade_str = "C"
+        print(f"\n  综合评分: {total_score}/{max_score} ({pct:.0f}%) → 等级 {grade_str}")
+
+    print(f"  {'═'*60}")
+
+
+def compare_results(result_a, result_b, focus_days=10):
+    """对比两个回测结果（含北极星指标）"""
     label_a = result_a['label']
     label_b = result_b['label']
 
@@ -379,32 +793,55 @@ def compare_results(result_a, result_b):
         print(f"  {sep}")
 
         metrics = [
-            ('日均收益', 'avg_top', '%', True),
-            ('多空价差', 'spread', '%', True),
-            ('盈利天数比', 'win_rate', '%', True),
-            ('盈利股占比', 'positive_pct', '%', True),
-            ('全局IC', 'ic', '', True),
-            ('逐日IC均值', 'ic_mean', '', True),
-            ('ICIR', 'icir', '', True),
-            ('IC>0占比', 'ic_positive_pct', '%', True),
-            ('累计收益', 'cumulative', '%', True),
+            ('日均收益',     'avg_top',          '%',  True,  '+.3f'),
+            ('多空价差',     'spread',           '%',  True,  '+.3f'),
+            ('盈利天数比',   'win_rate',         '%',  True,  '.1f'),
+            ('盈利股占比',   'positive_pct',     '%',  True,  '.1f'),
+            ('逐日IC均值',   'ic_mean',          '',   True,  '.4f'),
+            ('ICIR',         'icir',             '',   True,  '.4f'),
+            ('IC>0占比',     'ic_positive_pct',  '%',  True,  '.1f'),
+            ('累计收益',     'cumulative',       '%',  True,  '+.2f'),
+            ('年化收益(毛)', 'annual_return',    '',   True,  '.1%'),
+            ('年化收益(净)', 'net_annual_return', '',  True,  '.1%'),
+            ('Sharpe',       'sharpe_ratio',     '',   True,  '.3f'),
+            ('Sortino',      'sortino_ratio',    '',   True,  '.3f'),
+            ('Calmar',       'calmar_ratio',     '',   True,  '.3f'),
+            ('最大回撤',     'max_drawdown',     '',   True,  '.1%'),
+            ('月度胜率',     'monthly_win_rate', '%',  True,  '.1f'),
+            ('Alpha',        'alpha',            '',   True,  '.1%'),
+            ('信息比率',     'information_ratio', '',  True,  '.3f'),
         ]
 
-        for name, key, unit, higher_better in metrics:
-            va = sa[key]
-            vb = sb[key]
+        for name, key, unit, higher_better, fmt in metrics:
+            va = sa.get(key)
+            vb = sb.get(key)
+            if va is None or vb is None:
+                continue
+
             diff = va - vb
-            if higher_better:
+            if key == 'max_drawdown':
+                # 回撤越小越好（数值越大越好，因为是负数）
+                winner = label_a if va > vb else label_b if vb > va else "平"
+            elif higher_better:
                 winner = label_a if va > vb else label_b if vb > va else "平"
             else:
                 winner = label_a if va < vb else label_b if vb < va else "平"
 
-            fmt = '+.3f' if key in ('avg_top', 'spread', 'cumulative') else '.1f' if key in ('win_rate', 'positive_pct') else '.4f'
-            print(f"  | {name} | {va:{fmt}}{unit} | {vb:{fmt}}{unit} | {diff:+.3f} | {winner} |")
+            if '%' in fmt:
+                va_str = f"{va:{fmt}}"
+                vb_str = f"{vb:{fmt}}"
+                diff_str = f"{diff:+.2%}"
+            else:
+                va_str = f"{va:{fmt}}{unit}"
+                vb_str = f"{vb:{fmt}}{unit}"
+                diff_str = f"{diff:+.3f}"
+
+            print(f"  | {name} | {va_str} | {vb_str} | {diff_str} | {winner} |")
 
 
-def generate_report(results, output_dir='reports/backtest'):
-    """生成Markdown回测报告"""
+def generate_report(results, output_dir='reports/backtest', benchmark_code='000905.SH',
+                    focus_days=10):
+    """生成Markdown回测报告（含北极星指标）"""
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -413,9 +850,11 @@ def generate_report(results, output_dir='reports/backtest'):
     label_str = '_vs_'.join([l.replace(' ', '').replace('.', '') for l in labels])
 
     report_lines = [
-        f"# 选股报告回测对比",
+        f"# 选股报告回测对比 (北极星指标增强版)",
         f"",
         f"**回测时间**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        f"**基准指数**: {benchmark_code}",
+        f"**重点持仓期**: {focus_days}天",
         f"",
         f"## 回测参数",
         f"",
@@ -426,8 +865,69 @@ def generate_report(results, output_dir='reports/backtest'):
         n_days = summary.get(5, {}).get('n_days', 0) if summary else 0
         report_lines.append(f"- **{r['label']}**: {n_days} 交易日")
 
+    # ═══════════════════════════════════════
+    # 北极星评分卡
+    # ═══════════════════════════════════════
     report_lines.extend([
         f"",
+        f"## 北极星评分卡 ({focus_days}日持仓)",
+        f"",
+        f"| 指标 |" + " | ".join([r['label'] for r in results]) + " | 北极星目标 |",
+        f"|:-----|" + "|".join([":----------:" for _ in results]) + "|:----------:|",
+    ])
+
+    scorecard_rows = [
+        ('Daily IC',       'ic_mean',           '.4f',  ''),
+        ('ICIR',           'icir',              '.4f',  ''),
+        ('IC>0%',          'ic_positive_pct',   '.1f',  '%'),
+        ('年化收益(毛)',    'annual_return',     '.1%',  ''),
+        ('年化收益(净)',    'net_annual_return', '.1%',  ''),
+        ('Sharpe',         'sharpe_ratio',      '.3f',  ''),
+        ('Sortino',        'sortino_ratio',     '.3f',  ''),
+        ('Calmar',         'calmar_ratio',      '.3f',  ''),
+        ('最大回撤',       'max_drawdown',      '.1%',  ''),
+        ('月度胜率',       'monthly_win_rate',  '.1f',  '%'),
+        ('年化成本',       'annual_cost_drag',  '.1%',  ''),
+        ('Alpha',          'alpha',             '.1%',  ''),
+        ('信息比率(IR)',   'information_ratio', '.3f',  ''),
+    ]
+
+    for name, key, fmt, unit in scorecard_rows:
+        row = f"| {name} |"
+        for r in results:
+            val = r['summary'].get(focus_days, {}).get(key)
+            if val is not None:
+                if '%' in fmt:
+                    row += f" {val:{fmt}} |"
+                else:
+                    row += f" {val:{fmt}}{unit} |"
+            else:
+                row += " - |"
+        # 北极星目标
+        tgt = NORTH_STAR_TARGETS.get(key.replace('net_annual_return', 'annual_return')
+                                     .replace('alpha', 'annual_return'), {})
+        if tgt:
+            t = tgt.get('target', '-')
+            if isinstance(t, float):
+                if key in ('annual_return', 'net_annual_return', 'max_drawdown',
+                           'annual_cost_drag', 'alpha'):
+                    row += f" {t:.1%} |"
+                elif key in ('ic_positive_pct', 'monthly_win_rate', 'annual_turnover'):
+                    row += f" {t:.1f}{unit} |"
+                else:
+                    row += f" {t:.3f} |"
+            else:
+                row += f" {t} |"
+        else:
+            row += " - |"
+        report_lines.append(row)
+
+    report_lines.append("")
+
+    # ═══════════════════════════════════════
+    # 综合对比（保留原有表格）
+    # ═══════════════════════════════════════
+    report_lines.extend([
         f"## 综合对比",
         f"",
     ])
@@ -436,8 +936,8 @@ def generate_report(results, output_dir='reports/backtest'):
         report_lines.extend([
             f"### {days}日持仓",
             f"",
-            f"| 模型 | 日均收益 | 多空价差 | 盈利天数比 | 盈利股占比 | 全局IC | 逐日IC均值 | ICIR | IC>0占比 | 累计收益 |",
-            f"|:-----|:--------:|:--------:|:----------:|:----------:|:------:|:----------:|:----:|:--------:|:--------:|",
+            f"| 模型 | 日均收益 | 多空价差 | 盈利天数比 | ICIR | 累计收益 | Sharpe | MaxDD | 年化(净) |",
+            f"|:-----|:--------:|:--------:|:----------:|:----:|:--------:|:------:|:-----:|:--------:|",
         ])
 
         for r in results:
@@ -445,17 +945,21 @@ def generate_report(results, output_dir='reports/backtest'):
             if not s:
                 continue
             report_lines.append(
-                f"| {r['label']} | {s['avg_top']:+.3f}% | {s['spread']:+.3f}% | "
-                f"{s['win_rate']:.1f}% | {s['positive_pct']:.1f}% | "
-                f"{s['ic']:.4f} | {s.get('ic_mean', 0):.4f}±{s.get('ic_std', 0):.4f} | "
-                f"{s.get('icir', 0):.4f} | {s.get('ic_positive_pct', 0):.1f}% | "
-                f"{s['cumulative']:+.2f}% |"
+                f"| {r['label']} "
+                f"| {s['avg_top']:+.3f}% "
+                f"| {s['spread']:+.3f}% "
+                f"| {s['win_rate']:.1f}% "
+                f"| {s.get('icir', 0):.4f} "
+                f"| {s['cumulative']:+.2f}% "
+                f"| {s.get('sharpe_ratio', 0):.3f} "
+                f"| {s.get('max_drawdown', 0):.1%} "
+                f"| {s.get('net_annual_return', 0):.1%} |"
             )
         report_lines.append("")
 
-    # 月度对比 (5日持仓)
+    # 月度对比 (focus_days持仓)
     report_lines.extend([
-        f"## 月度收益对比 (5日持仓)",
+        f"## 月度收益对比 ({focus_days}日持仓)",
         f"",
     ])
 
@@ -467,15 +971,14 @@ def generate_report(results, output_dir='reports/backtest'):
     report_lines.append(months_header)
     report_lines.append(months_sep)
 
-    # 收集所有月份
     all_months = set()
     monthly_data = {}
     for r in results:
-        df = r['daily_results']
-        sub5 = df[df['days'] == 5].copy()
-        if len(sub5) > 0:
-            sub5['month'] = pd.to_datetime(sub5['date']).dt.to_period('M')
-            for month, group in sub5.groupby('month'):
+        df_r = r['daily_results']
+        sub = df_r[df_r['days'] == focus_days].copy()
+        if len(sub) > 0:
+            sub['month'] = pd.to_datetime(sub['date']).dt.to_period('M')
+            for month, group in sub.groupby('month'):
                 all_months.add(month)
                 if month not in monthly_data:
                     monthly_data[month] = {}
@@ -508,17 +1011,20 @@ def generate_report(results, output_dir='reports/backtest'):
 
 
 def main():
-    parser = argparse.ArgumentParser(description='基于报告的回测引擎')
+    parser = argparse.ArgumentParser(description='基于报告的回测引擎 (北极星指标增强版)')
     parser.add_argument('--report-dir', help='主报告目录')
     parser.add_argument('--compare-dir', help='对比报告目录')
     parser.add_argument('--label', default='模型A', help='主报告标签')
     parser.add_argument('--compare-label', default='模型B', help='对比报告标签')
     parser.add_argument('--top-n', type=int, default=20, help='每日选取Top N只 (default: 20)')
+    parser.add_argument('--benchmark', default='000905.SH',
+                        help='基准指数代码 (default: 000905.SH 中证500)')
+    parser.add_argument('--focus-days', type=int, default=10,
+                        help='重点评估的持仓天数 (default: 10)')
     parser.add_argument('--all', action='store_true', help='四模型全面对比')
     args = parser.parse_args()
 
     if args.all:
-        # 四模型全面对比
         configs = [
             ('reports/daily_selection_v3.9', 'v3.9旧模型'),
             ('reports/daily_selection_v3.9_model20260222', 'v3.9新模型'),
@@ -533,41 +1039,46 @@ def main():
                 continue
             reports = load_reports(dir_path)
             print(f"加载 {label}: {len(reports)} 天报告")
-            result = run_single_backtest(reports, label, args.top_n)
+            result = run_single_backtest(reports, label, args.top_n,
+                                        args.benchmark, args.focus_days)
             if result:
                 results.append(result)
 
         if len(results) >= 2:
-            # 两两对比
             for i in range(len(results)):
                 for j in range(i + 1, len(results)):
-                    compare_results(results[i], results[j])
+                    compare_results(results[i], results[j], args.focus_days)
 
-            generate_report(results)
+            generate_report(results, benchmark_code=args.benchmark,
+                          focus_days=args.focus_days)
 
     elif args.report_dir:
         reports_a = load_reports(args.report_dir)
         print(f"加载 {args.label}: {len(reports_a)} 天报告")
 
-        result_a = run_single_backtest(reports_a, args.label, args.top_n)
+        result_a = run_single_backtest(reports_a, args.label, args.top_n,
+                                       args.benchmark, args.focus_days)
 
         results = [result_a] if result_a else []
 
         if args.compare_dir:
             reports_b = load_reports(args.compare_dir)
             print(f"加载 {args.compare_label}: {len(reports_b)} 天报告")
-            result_b = run_single_backtest(reports_b, args.compare_label, args.top_n)
+            result_b = run_single_backtest(reports_b, args.compare_label, args.top_n,
+                                           args.benchmark, args.focus_days)
 
             if result_a and result_b:
                 results.append(result_b)
-                compare_results(result_a, result_b)
+                compare_results(result_a, result_b, args.focus_days)
 
         if results:
-            generate_report(results)
+            generate_report(results, benchmark_code=args.benchmark,
+                          focus_days=args.focus_days)
     else:
         parser.print_help()
         print("\n示例:")
         print("  python3 backtest/backtest_report_based.py --all")
+        print("  python3 backtest/backtest_report_based.py --all --benchmark 000852.SH --focus-days 10")
         print("  python3 backtest/backtest_report_based.py --report-dir reports/daily_selection_v3.9_model20260222 --label 'v3.9新模型'")
 
 

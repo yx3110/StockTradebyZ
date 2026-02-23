@@ -235,11 +235,52 @@ class V390CachedTrainer:
             mse = mean_squared_error(y_test, y_pred)
             mae = mean_absolute_error(y_test, y_pred)
             r2 = r2_score(y_test, y_pred)
-            ic, _ = spearmanr(y_pred, y_test)
+            ic_global, _ = spearmanr(y_pred, y_test)
             direction_acc = np.mean((y_pred > 0) == (y_test > 0))
 
             logger.info(f"✅ 元模型 (测试集): MSE={mse:.6f}, MAE={mae:.6f}, R²={r2:.4f}")
-            logger.info(f"  IC={ic:.4f}, 方向准确率={direction_acc:.4f}")
+            logger.info(f"  全局IC={ic_global:.4f}  ⚠️ single-shot, 仅供参考")
+            logger.info(f"  方向准确率={direction_acc:.4f}")
+
+            # 北极星: Daily IC / ICIR / IC>0%
+            test_dates = getattr(self, '_test_dates', None)
+            if test_dates is not None:
+                daily_ics = []
+                for date in np.unique(test_dates):
+                    mask = test_dates == date
+                    n = mask.sum()
+                    if n < 20:
+                        continue
+                    day_ic, _ = spearmanr(y_pred[mask], y_test[mask])
+                    if not np.isnan(day_ic):
+                        daily_ics.append(day_ic)
+
+                if daily_ics:
+                    daily_ic_mean = np.mean(daily_ics)
+                    daily_ic_std = np.std(daily_ics)
+                    daily_icir = daily_ic_mean / daily_ic_std if daily_ic_std > 1e-8 else 0
+                    daily_ic_pos = np.mean(np.array(daily_ics) > 0) * 100
+
+                    logger.info(f"  ── 北极星 Daily IC ──")
+                    logger.info(f"  Daily IC均值: {daily_ic_mean:.4f} ± {daily_ic_std:.4f}  ({len(daily_ics)}天)")
+                    logger.info(f"  ICIR:         {daily_icir:.4f}")
+                    logger.info(f"  IC>0占比:     {daily_ic_pos:.1f}%")
+                    logger.info(f"  ────────────────────")
+
+                    # 北极星达标评估
+                    status_ic = "✅" if daily_ic_mean >= 0.03 else "❌"
+                    status_icir = "✅" if daily_icir >= 0.30 else "❌"
+                    logger.info(f"  达标: DailyIC={daily_ic_mean:.4f} {status_ic}(≥0.03) | ICIR={daily_icir:.4f} {status_icir}(≥0.30)")
+
+                    self._north_star_metrics = {
+                        'daily_ic_mean': daily_ic_mean,
+                        'daily_ic_std': daily_ic_std,
+                        'daily_icir': daily_icir,
+                        'daily_ic_positive_pct': daily_ic_pos,
+                        'ic_global': ic_global,
+                    }
+            else:
+                logger.info(f"  ⚠️ 无test_dates, 无法计算Daily IC (需temporal_split)")
 
         return self.meta_model
 
@@ -317,6 +358,9 @@ class V390CachedTrainer:
         y_val = y[val_mask]
         X_test = X.loc[test_mask].reset_index(drop=True)
         y_test = y[test_mask]
+
+        # 保存test_dates用于Daily IC计算
+        self._test_dates = dates[test_mask]
 
         logger.info(f"  时序划分 (purge_gap={purge_days}天):")
         logger.info(f"  训练集: {len(X_train):,} 样本, {train_date_end} 及之前")

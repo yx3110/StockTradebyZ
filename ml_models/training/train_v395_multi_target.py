@@ -147,6 +147,8 @@ class V395MultiTargetTrainer:
             'label_5d': 0.35,  # 中期收益
             'label_10d': 0.25  # 长期收益
         }
+        # Phase 2: 风险调整标签融合比例 (0=纯收益, 0.3=推荐, 1=纯Sharpe)
+        self.sharpe_label_blend = 0.3
 
     def load_data(self, start_date: str = None, end_date: str = None) -> pd.DataFrame:
         """加载训练数据"""
@@ -300,6 +302,31 @@ class V395MultiTargetTrainer:
             n_clipped = ((df_features[label_col] < lo) | (df_features[label_col] > hi)).sum()
             df_features[label_col] = df_features[label_col].clip(lo, hi)
             logger.info(f"  标签winsorize {label_col}: [{lo:.4f}, {hi:.4f}], 裁剪{n_clipped:,}个")
+
+        # ===== Phase 2: 风险调整标签融合 =====
+        # 混合原始收益标签与Sharpe-adjusted标签 (70%原始 + 30%风险调整)
+        # 目的: 让模型学习"稳定收益"优于"高波动收益"，提升Sharpe
+        if self.sharpe_label_blend > 0:
+            logger.info(f"  风险调整标签融合 (blend={self.sharpe_label_blend:.0%})...")
+            for label_col in ['label_3d', 'label_5d', 'label_10d']:
+                # 每日截面内的收益波动率作为风险度量
+                daily_vol = df_features.groupby('trade_date')[label_col].transform('std')
+                daily_vol = daily_vol.fillna(0)  # 单样本日期std=NaN, 填0跳过风险调整
+                # Sharpe-adjusted label: 收益/波动 (截面内标准化)
+                sharpe_label = df_features[label_col] / (daily_vol + 1e-6)
+                # 标准化sharpe_label到原始标签的尺度
+                orig_std = df_features[label_col].std()
+                sharpe_std = sharpe_label.std()
+                if sharpe_std > 1e-8:
+                    sharpe_label = sharpe_label * orig_std / sharpe_std
+                else:
+                    sharpe_label = df_features[label_col].copy()
+                sharpe_label = sharpe_label.fillna(df_features[label_col])  # NaN回退到原始值
+                # 融合
+                blended = (1 - self.sharpe_label_blend) * df_features[label_col] + \
+                          self.sharpe_label_blend * sharpe_label
+                df_features[label_col] = blended
+                logger.info(f"    {label_col}: 融合后均值={blended.mean():.6f}, std={blended.std():.6f}")
 
         return df_features
 
@@ -856,13 +883,14 @@ class V395MultiTargetTrainer:
             weights, rmses = self.calculate_ensemble_weights(pred_val, y_va)
             all_results[target_key] = {'models': models, 'weights': weights, 'rmses': rmses}
 
-        # 5. 测试集评估 (独立推理)
+        # 5. 测试集评估 (独立推理 + 北极星Daily IC/ICIR)
         logger.info("\n" + "=" * 60)
-        logger.info("测试集评估 (独立推理)")
+        logger.info("测试集评估 (独立推理 + 北极星指标)")
         logger.info("=" * 60)
 
         final_metrics = {}
         ensemble_predictions = {}
+        test_dates = self.test_dates  # 用于Daily IC计算
 
         for target_key, y_tr, y_va, y_te, target_name in targets:
             pred_test = {}
@@ -877,48 +905,161 @@ class V395MultiTargetTrainer:
             ensemble_pred = self.ensemble_predict(pred_test, all_results[target_key]['weights'])
             ensemble_predictions[target_key] = ensemble_pred
 
-            rmse = np.sqrt(mean_squared_error(y_te, ensemble_pred))
-            ic, _ = spearmanr(ensemble_pred, y_te)
-            direction_acc = np.mean((ensemble_pred > 0) == (y_te > 0))
-            top10_idx = np.argsort(ensemble_pred)[-int(len(ensemble_pred)*0.1):]
-            top20_idx = np.argsort(ensemble_pred)[-int(len(ensemble_pred)*0.2):]
-            top10_return = np.mean(y_te[top10_idx])
-            top20_return = np.mean(y_te[top20_idx])
+            # 过滤NaN用于评估
+            valid_mask = ~(np.isnan(y_te) | np.isnan(ensemble_pred))
+            y_te_valid = y_te[valid_mask]
+            pred_valid = ensemble_pred[valid_mask]
+            if valid_mask.sum() < len(valid_mask):
+                logger.warning(f"  {target_key}: {(~valid_mask).sum()}个NaN值已跳过")
+
+            rmse = np.sqrt(mean_squared_error(y_te_valid, pred_valid))
+            ic_global, _ = spearmanr(pred_valid, y_te_valid)
+            direction_acc = np.mean((pred_valid > 0) == (y_te_valid > 0))
+            top10_idx = np.argsort(pred_valid)[-int(len(pred_valid)*0.1):]
+            top20_idx = np.argsort(pred_valid)[-int(len(pred_valid)*0.2):]
+            top10_return = np.mean(y_te_valid[top10_idx])
+            top20_return = np.mean(y_te_valid[top20_idx])
+
+            # 北极星: Daily IC / ICIR / IC>0%
+            daily_ics = []
+            unique_test_dates = np.unique(test_dates)
+            for date in unique_test_dates:
+                mask = test_dates == date
+                n = mask.sum()
+                if n < 20:  # 至少20只股票才有统计意义
+                    continue
+                day_ic, _ = spearmanr(ensemble_pred[mask], y_te[mask])
+                if not np.isnan(day_ic):
+                    daily_ics.append(day_ic)
+
+            if daily_ics:
+                daily_ic_mean = np.mean(daily_ics)
+                daily_ic_std = np.std(daily_ics)
+                daily_icir = daily_ic_mean / daily_ic_std if daily_ic_std > 1e-8 else 0
+                daily_ic_pos_pct = np.mean(np.array(daily_ics) > 0) * 100
+            else:
+                daily_ic_mean = daily_ic_std = daily_icir = daily_ic_pos_pct = 0
 
             logger.info(f"\n{target_key} 目标:")
             logger.info(f"  RMSE: {rmse:.4f}")
-            logger.info(f"  IC: {ic:.4f}")
+            logger.info(f"  全局IC (single-shot): {ic_global:.4f}  ⚠️ 仅供参考,易虚高")
+            logger.info(f"  ── 北极星 Daily IC ──")
+            logger.info(f"  Daily IC均值: {daily_ic_mean:.4f} ± {daily_ic_std:.4f}  ({len(daily_ics)}天)")
+            logger.info(f"  ICIR:         {daily_icir:.4f}")
+            logger.info(f"  IC>0占比:     {daily_ic_pos_pct:.1f}%")
+            logger.info(f"  ────────────────────")
             logger.info(f"  方向准确率: {direction_acc:.4f}")
             logger.info(f"  Top10收益: {top10_return:.4f}")
             logger.info(f"  Top20收益: {top20_return:.4f}")
 
             final_metrics[target_key] = {
-                'rmse': rmse, 'ic': ic,
+                'rmse': rmse,
+                'ic_global': ic_global,
+                'daily_ic_mean': daily_ic_mean,
+                'daily_ic_std': daily_ic_std,
+                'daily_icir': daily_icir,
+                'daily_ic_positive_pct': daily_ic_pos_pct,
                 'direction_accuracy': direction_acc,
                 'top10_return': top10_return,
-                'top20_return': top20_return
+                'top20_return': top20_return,
+                'n_ic_days': len(daily_ics),
             }
+            # 兼容旧字段
+            final_metrics[target_key]['ic'] = daily_ic_mean
 
-        # 6. 融合预测评估
+        # 6. Phase 2: 动态ICIR加权融合
+        # 用测试集上各目标的ICIR重新分配权重，偏向信号更稳定的目标
         logger.info("\n" + "=" * 60)
-        logger.info("融合预测评估 (加权平均)")
+        logger.info("融合预测评估 (ICIR动态加权 + 北极星指标)")
         logger.info("=" * 60)
 
+        # 计算ICIR-based权重
+        icir_map = {
+            'label_3d': max(final_metrics.get('3d', {}).get('daily_icir', 0), 0),
+            'label_5d': max(final_metrics.get('5d', {}).get('daily_icir', 0), 0),
+            'label_10d': max(final_metrics.get('10d', {}).get('daily_icir', 0), 0),
+        }
+        icir_total = sum(icir_map.values())
+        if icir_total > 0.01:
+            dynamic_weights = {k: v / icir_total for k, v in icir_map.items()}
+            # 混合: 50%静态 + 50%动态, 避免完全依赖样本内ICIR
+            blended_weights = {}
+            for k in self.target_weights:
+                blended_weights[k] = 0.5 * self.target_weights[k] + 0.5 * dynamic_weights[k]
+            logger.info(f"  静态权重: 3d={self.target_weights['label_3d']:.2f}, 5d={self.target_weights['label_5d']:.2f}, 10d={self.target_weights['label_10d']:.2f}")
+            logger.info(f"  ICIR权重:  3d={dynamic_weights['label_3d']:.2f}, 5d={dynamic_weights['label_5d']:.2f}, 10d={dynamic_weights['label_10d']:.2f}")
+            logger.info(f"  融合权重: 3d={blended_weights['label_3d']:.2f}, 5d={blended_weights['label_5d']:.2f}, 10d={blended_weights['label_10d']:.2f}")
+        else:
+            blended_weights = self.target_weights
+            logger.info("  ICIR全为0, 使用静态权重")
+
+        # 保存动态权重到模型（供生产scorer使用）
+        self.dynamic_weights = blended_weights
+
         fused_pred = (
-            self.target_weights['label_3d'] * ensemble_predictions['3d'] +
-            self.target_weights['label_5d'] * ensemble_predictions['5d'] +
-            self.target_weights['label_10d'] * ensemble_predictions['10d']
+            blended_weights['label_3d'] * ensemble_predictions['3d'] +
+            blended_weights['label_5d'] * ensemble_predictions['5d'] +
+            blended_weights['label_10d'] * ensemble_predictions['10d']
         )
 
-        # 对5天收益评估
-        rmse = np.sqrt(mean_squared_error(y_5d_test, fused_pred))
-        ic, _ = spearmanr(fused_pred, y_5d_test)
-        direction_acc = np.mean((fused_pred > 0) == (y_5d_test > 0))
+        # 对5天收益评估 (过滤NaN)
+        fused_valid = ~(np.isnan(y_5d_test) | np.isnan(fused_pred))
+        rmse = np.sqrt(mean_squared_error(y_5d_test[fused_valid], fused_pred[fused_valid]))
+        ic_global, _ = spearmanr(fused_pred[fused_valid], y_5d_test[fused_valid])
+        direction_acc = np.mean((fused_pred[fused_valid] > 0) == (y_5d_test[fused_valid] > 0))
 
-        logger.info(f"融合预测 (5天收益):")
+        # 融合预测的Daily IC
+        fused_daily_ics = []
+        for date in unique_test_dates:
+            mask = test_dates == date
+            n = mask.sum()
+            if n < 20:
+                continue
+            day_ic, _ = spearmanr(fused_pred[mask], y_5d_test[mask])
+            if not np.isnan(day_ic):
+                fused_daily_ics.append(day_ic)
+
+        if fused_daily_ics:
+            fused_ic_mean = np.mean(fused_daily_ics)
+            fused_ic_std = np.std(fused_daily_ics)
+            fused_icir = fused_ic_mean / fused_ic_std if fused_ic_std > 1e-8 else 0
+            fused_ic_pos = np.mean(np.array(fused_daily_ics) > 0) * 100
+        else:
+            fused_ic_mean = fused_ic_std = fused_icir = fused_ic_pos = 0
+
+        logger.info(f"融合预测 → 5天收益:")
         logger.info(f"  RMSE: {rmse:.4f}")
-        logger.info(f"  IC: {ic:.4f}")
+        logger.info(f"  全局IC: {ic_global:.4f}  ⚠️ 仅供参考")
+        logger.info(f"  ── 北极星 Daily IC ──")
+        logger.info(f"  Daily IC均值: {fused_ic_mean:.4f} ± {fused_ic_std:.4f}  ({len(fused_daily_ics)}天)")
+        logger.info(f"  ICIR:         {fused_icir:.4f}")
+        logger.info(f"  IC>0占比:     {fused_ic_pos:.1f}%")
+        logger.info(f"  ────────────────────")
         logger.info(f"  方向准确率: {direction_acc:.4f}")
+
+        # 北极星达标评估
+        logger.info("\n" + "=" * 60)
+        logger.info("北极星目标达标评估")
+        logger.info("=" * 60)
+        for target_key in ['3d', '5d', '10d']:
+            m = final_metrics[target_key]
+            icir = m['daily_icir']
+            ic = m['daily_ic_mean']
+            status_ic = "✅" if ic >= 0.03 else "❌"
+            status_icir = "✅" if icir >= 0.30 else "❌"
+            logger.info(f"  {target_key}: DailyIC={ic:.4f} {status_ic}(≥0.03) | ICIR={icir:.4f} {status_icir}(≥0.30)")
+        logger.info(f"  融合(5d): DailyIC={fused_ic_mean:.4f} {'✅' if fused_ic_mean >= 0.03 else '❌'}(≥0.03) | "
+                    f"ICIR={fused_icir:.4f} {'✅' if fused_icir >= 0.30 else '❌'}(≥0.30)")
+
+        final_metrics['fused'] = {
+            'daily_ic_mean': fused_ic_mean,
+            'daily_ic_std': fused_ic_std,
+            'daily_icir': fused_icir,
+            'daily_ic_positive_pct': fused_ic_pos,
+            'ic_global': ic_global,
+            'direction_accuracy': direction_acc,
+            'rmse': rmse,
+        }
 
         # 7. 特征重要性分析
         self._log_feature_importance(all_results)
@@ -936,6 +1077,8 @@ class V395MultiTargetTrainer:
             'models': all_results,
             'feature_names': self.feature_names,
             'target_weights': self.target_weights,
+            'dynamic_weights': getattr(self, 'dynamic_weights', self.target_weights),
+            'sharpe_label_blend': self.sharpe_label_blend,
             'market_features': list(self.market_calculator.market_features.columns[1:]),
             'winsorize_bounds': getattr(self, 'winsorize_bounds', None),
             # 模型类型标识 (v2: Robust Z-Score + Industry-Excess)
@@ -954,7 +1097,7 @@ class V395MultiTargetTrainer:
         joblib.dump(model_data, model_path)
         logger.info(f"\n模型已保存: {model_path}")
 
-        # 保存训练历史
+        # 保存训练历史 (含北极星指标)
         history = {
             'version': 'v3.95-robust-zscore-industry-excess',
             'start_time': start_time.isoformat(),
@@ -967,9 +1110,33 @@ class V395MultiTargetTrainer:
                 'test_samples': len(X_test),
                 'feature_count': len(self.feature_names),
                 'market_feature_count': len(self.market_calculator.market_features.columns) - 1,
-                'final_metrics': final_metrics
+                'final_metrics': final_metrics,
+            },
+            'north_star_metrics': {
+                '3d': {
+                    'daily_ic': final_metrics.get('3d', {}).get('daily_ic_mean', 0),
+                    'icir': final_metrics.get('3d', {}).get('daily_icir', 0),
+                    'ic_positive_pct': final_metrics.get('3d', {}).get('daily_ic_positive_pct', 0),
+                },
+                '5d': {
+                    'daily_ic': final_metrics.get('5d', {}).get('daily_ic_mean', 0),
+                    'icir': final_metrics.get('5d', {}).get('daily_icir', 0),
+                    'ic_positive_pct': final_metrics.get('5d', {}).get('daily_ic_positive_pct', 0),
+                },
+                '10d': {
+                    'daily_ic': final_metrics.get('10d', {}).get('daily_ic_mean', 0),
+                    'icir': final_metrics.get('10d', {}).get('daily_icir', 0),
+                    'ic_positive_pct': final_metrics.get('10d', {}).get('daily_ic_positive_pct', 0),
+                },
+                'fused_5d': {
+                    'daily_ic': final_metrics.get('fused', {}).get('daily_ic_mean', 0),
+                    'icir': final_metrics.get('fused', {}).get('daily_icir', 0),
+                    'ic_positive_pct': final_metrics.get('fused', {}).get('daily_ic_positive_pct', 0),
+                },
             },
             'target_weights': self.target_weights,
+            'dynamic_weights': getattr(self, 'dynamic_weights', self.target_weights),
+            'sharpe_label_blend': self.sharpe_label_blend,
             'ensemble_weights': {
                 '3d': all_results['3d']['weights'],
                 '5d': all_results['5d']['weights'],
@@ -1684,7 +1851,8 @@ def main():
     parser = argparse.ArgumentParser(description='V3.95/V4.3 多目标训练')
     parser.add_argument('--start-date', type=str, default='2020-01-01', help='训练开始日期')
     parser.add_argument('--end-date', type=str, default=None, help='训练结束日期')
-    parser.add_argument('--purge-days', type=int, default=10, help='Purge gap天数')
+    parser.add_argument('--purge-days', type=int, default=10, help='Purge gap天数 (应>=最大标签前瞻天数, label_10d需要10天)')
+    parser.add_argument('--sharpe-blend', type=float, default=0.3, help='Sharpe标签融合比例 (0=纯收益, 0.3=推荐, 1=纯Sharpe)')
     parser.add_argument('--v43', action='store_true', help='V4.3: 扩展特征+强正则+Walk-Forward')
     args = parser.parse_args()
 
@@ -1695,6 +1863,7 @@ def main():
             purge_days=max(args.purge_days, 15))  # V4.3 需要 15d purge gap
     else:
         trainer = V395MultiTargetTrainer()
+        trainer.sharpe_label_blend = args.sharpe_blend
         trainer.train(start_date=args.start_date, end_date=args.end_date, purge_days=args.purge_days)
 
 
