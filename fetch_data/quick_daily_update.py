@@ -717,6 +717,36 @@ def check_sw_industry(date_str: str):
         return 0
 
 
+def update_neural_embeddings(date_str: str):
+    """更新GRU神经网络嵌入缓存 (V5.0用)"""
+    logger.info(f"开始更新 {date_str} 的GRU嵌入缓存...")
+
+    try:
+        from ml_models.neural.backfill_neural_embeddings import daily_update_embeddings
+
+        # 转换日期格式
+        date_dash = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
+
+        count = daily_update_embeddings(date_dash)
+
+        if count > 0:
+            logger.info(f"✅ GRU嵌入缓存更新成功: {count} 条")
+        else:
+            logger.info("✅ GRU嵌入缓存更新完成 (无模型或无新数据)")
+
+        return count
+
+    except ImportError:
+        logger.info("⏭️ GRU嵌入模块未安装 (torch未安装)，跳过")
+        return 0
+    except FileNotFoundError:
+        logger.info("⏭️ GRU模型未训练，跳过嵌入更新")
+        return 0
+    except Exception as e:
+        logger.warning(f"⚠️ GRU嵌入更新异常: {e}")
+        return 0
+
+
 def quick_daily_update(date: str = None, skip_financial: bool = True):
     """快速每日更新 - 包含市场行情、基本面、财务和技术指标"""
     if date is None:
@@ -738,76 +768,81 @@ def quick_daily_update(date: str = None, skip_financial: bool = True):
         'technical': 0,
         'squeeze_momentum': 0,
         'active_mv': 0,  # V3.9.4 活跃市值特征
-        'v39_cache': 0   # V3.9/V3.95 特征缓存
+        'v39_cache': 0,  # V3.9/V3.95 特征缓存
+        'neural_embed': 0  # GRU神经网络嵌入 (V5.0)
     }
 
     # 1. 批量更新市场行情（A股）
-    logger.info("【步骤1/13】更新A股市场行情...")
+    logger.info("【步骤1/14】更新A股市场行情...")
     stats['quotes'] += batch_update_stocks(date)
 
     # 短暂休息避免API限制
     time.sleep(2)
 
     # 2. 批量更新ETF/基金
-    logger.info("【步骤2/13】更新ETF/基金行情...")
+    logger.info("【步骤2/14】更新ETF/基金行情...")
     stats['quotes'] += batch_update_funds(date)
 
     # 3. 更新大盘指数数据
     time.sleep(2)
-    logger.info("【步骤3/13】更新大盘指数数据...")
+    logger.info("【步骤3/14】更新大盘指数数据...")
     stats['indices'] = update_market_indices(date)
 
     # 4. 更新基本面指标
     time.sleep(2)
-    logger.info("【步骤4/13】更新基本面指标...")
+    logger.info("【步骤4/14】更新基本面指标...")
     stats['basic'] = update_daily_basic(date)
 
     # 5. 检查申万行业分类 (月度更新)
-    logger.info("【步骤5/13】检查申万行业分类 (月度更新)...")
+    logger.info("【步骤5/14】检查申万行业分类 (月度更新)...")
     stats['sw_industry'] = check_sw_industry(date)
 
     # 6. 更新申万行业指数日线
     time.sleep(1)
-    logger.info("【步骤6/13】更新申万行业指数日线...")
+    logger.info("【步骤6/14】更新申万行业指数日线...")
     stats['sw_index'] = update_sw_index_daily(date)
 
     # 7. 更新北向资金数据
     time.sleep(1)
-    logger.info("【步骤7/13】更新北向资金数据...")
+    logger.info("【步骤7/14】更新北向资金数据...")
     stats['hsgt'] = update_hsgt_daily(date)
 
     # 8. 更新财务指标（如果有）
     if not skip_financial:
         time.sleep(2)
-        logger.info("【步骤8/13】检查财务指标更新...")
+        logger.info("【步骤8/14】检查财务指标更新...")
         stats['financial'] = update_financial_indicators(date)
     else:
-        logger.info("【步骤8/13】跳过财务指标更新...")
+        logger.info("【步骤8/14】跳过财务指标更新...")
         stats['financial'] = 0
 
     # 9. 计算技术指标
-    logger.info("【步骤9/13】计算技术指标...")
+    logger.info("【步骤9/14】计算技术指标...")
     stats['technical'] = calculate_technical_indicators(date)
 
     # 10. 更新挤压动量指标 (v3.2新增)
     time.sleep(1)
-    logger.info("【步骤10/13】更新挤压动量指标...")
+    logger.info("【步骤10/14】更新挤压动量指标...")
     stats['squeeze_momentum'] = update_squeeze_momentum_indicators(date)
 
     # 11. 更新V3.9.4活跃市值特征
     time.sleep(1)
-    logger.info("【步骤11/13】更新V3.9.4活跃市值特征...")
+    logger.info("【步骤11/14】更新V3.9.4活跃市值特征...")
     stats['active_mv'] = update_active_mv_features(date)
 
     # 12. 更新V3.9/V3.95特征缓存 (ML评分系统)
     time.sleep(1)
-    logger.info("【步骤12/13】更新V3.9/V3.95特征缓存...")
+    logger.info("【步骤12/14】更新V3.9/V3.95特征缓存...")
     stats['v39_cache'] = update_v39_feature_cache(date)
 
     # 13. 更新V4.0 Cross-Sectional特征缓存
     time.sleep(1)
-    logger.info("【步骤13/13】更新V4.0 Cross-Sectional特征缓存...")
+    logger.info("【步骤13/14】更新V4.0 Cross-Sectional特征缓存...")
     stats['v40_cache'] = update_v40_feature_cache(date)
+
+    # 14. 更新GRU神经网络嵌入缓存 (V5.0)
+    logger.info("【步骤14/14】更新GRU神经网络嵌入缓存...")
+    stats['neural_embed'] = update_neural_embeddings(date)
 
     end_time = time.time()
     duration = end_time - start_time
@@ -836,6 +871,7 @@ def quick_daily_update(date: str = None, skip_financial: bool = True):
     logger.info(f"挤压动量指标: {stats['squeeze_momentum']:,} 只股票")
     logger.info(f"V3.9.4活跃市值特征: {stats['active_mv']:,} 条")
     logger.info(f"V3.9/V3.95特征缓存: {stats['v39_cache']:,} 条")
+    logger.info(f"GRU神经网络嵌入: {stats['neural_embed']:,} 条")
     logger.info(f"总耗时: {duration:.1f} 秒")
     if stats['quotes'] > 0:
         logger.info(f"平均速度: {stats['quotes']/duration:.1f} 只/秒")

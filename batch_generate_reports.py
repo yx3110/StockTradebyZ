@@ -117,6 +117,9 @@ def generate_report_batch(dates: List[str], version: str, force: bool = False, s
     if version == 'v3.9':
         from ml_models.v39.v390_production_scorer import V390ProductionScorer
         scorer = V390ProductionScorer()
+    elif version == 'v5.0':
+        from ml_models.v39.v500_production_scorer import V500ProductionScorer
+        scorer = V500ProductionScorer(model_type='small_data')
     else:
         from ml_models.v39.v395_production_scorer import V395ProductionScorer
         scorer = V395ProductionScorer(model_type='small_data')
@@ -188,6 +191,8 @@ def generate_report_batch(dates: List[str], version: str, force: bool = False, s
             if version == 'v3.9':
                 selector.v39_batch_cache = batch_results
                 selector.v395_batch_cache = {}
+            elif version == 'v5.0':
+                selector.v500_batch_cache = batch_results
             else:
                 selector.v395_batch_cache = batch_results
                 selector.v39_batch_cache = {}
@@ -215,6 +220,8 @@ def generate_report_batch(dates: List[str], version: str, force: bool = False, s
             # 清空批处理缓存，为下一天准备
             selector.v39_batch_cache = {}
             selector.v395_batch_cache = {}
+            if hasattr(selector, 'v500_batch_cache'):
+                selector.v500_batch_cache = {}
 
             elapsed_day = time.time() - t_day
             n_picks = len(all_picks_list)
@@ -254,7 +261,7 @@ def main():
     parser = argparse.ArgumentParser(description='批量生成选股报告（优化版）')
     parser.add_argument('--start-date', default='2025-09-01', help='开始日期 YYYY-MM-DD')
     parser.add_argument('--end-date', default='2026-02-13', help='结束日期 YYYY-MM-DD')
-    parser.add_argument('--version', default='v3.9', choices=['v3.9', 'v3.95', 'both'],
+    parser.add_argument('--version', default='v3.9', choices=['v3.9', 'v3.95', 'v5.0', 'both'],
                        help='评分版本')
     parser.add_argument('--force', action='store_true', help='强制覆盖已有报告')
     parser.add_argument('--suffix', default='', help='报告目录后缀，如 model20260222')

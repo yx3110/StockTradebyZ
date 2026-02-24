@@ -20,17 +20,19 @@ V3.9 增强特征机器学习系统
     score = scorer_v394.predict_score('000001', '2025-11-03')
 """
 
-__version__ = '3.9.4'
+__version__ = '5.0.0'
 __author__ = 'Claude Code'
 
 # 导入核心系统
 from .v390_enhanced_feature_ml_system import V390EnhancedFeatureMLSystem
 from .v390_production_scorer import V390ProductionScorer
 from .v394_production_scorer import V394ProductionScorer
+from .v500_production_scorer import V500ProductionScorer
 
 # 导出
 __all__ = [
     'V390EnhancedFeatureMLSystem',
     'V390ProductionScorer',
     'V394ProductionScorer',
+    'V500ProductionScorer',
 ]
