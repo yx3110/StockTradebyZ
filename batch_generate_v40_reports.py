@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""批量生成V4.0选股报告 (2025-09-01 ~ 2026-02-13)"""
+"""批量生成选股报告 (支持 v4.0 / v4.3 等版本)"""
 
 import sys
 import sqlite3
@@ -10,11 +10,25 @@ from datetime import datetime
 PROJECT_ROOT = Path(__file__).resolve().parent
 DB_PATH = PROJECT_ROOT / 'data_adapter' / 'stock_data.db'
 
-def get_trading_dates(start_date, end_date):
-    """从v40_feature_cache获取交易日列表"""
+# 各版本使用的 feature_cache 表
+VERSION_CACHE_TABLE = {
+    'v4.0': 'v40_feature_cache',
+    'v4.2': 'v40_feature_cache',
+    'v4.3': 'v39_feature_cache',  # V4.3 基于 v39 特征 + 技术指标
+}
+
+VERSION_REPORT_DIR = {
+    'v4.0': 'daily_selection_v4.0',
+    'v4.2': 'daily_selection_v4.2',
+    'v4.3': 'daily_selection_v4.3',
+}
+
+
+def get_trading_dates(start_date, end_date, cache_table='v39_feature_cache'):
+    """从 feature_cache 获取交易日列表"""
     conn = sqlite3.connect(str(DB_PATH))
-    dates = [r[0] for r in conn.execute("""
-        SELECT DISTINCT trade_date FROM v40_feature_cache
+    dates = [r[0] for r in conn.execute(f"""
+        SELECT DISTINCT trade_date FROM {cache_table}
         WHERE trade_date >= ? AND trade_date <= ?
         ORDER BY trade_date
     """, (start_date, end_date)).fetchall()]
@@ -23,17 +37,26 @@ def get_trading_dates(start_date, end_date):
 
 def main():
     import argparse
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description='批量生成选股报告')
     parser.add_argument('--force', action='store_true', help='强制重新生成所有报告')
+    parser.add_argument('--version', default='v4.0', choices=['v4.0', 'v4.2', 'v4.3'],
+                        help='评分版本 (默认v4.0)')
+    parser.add_argument('--start-date', default='2025-09-01', help='开始日期')
+    parser.add_argument('--end-date', default='2026-02-13', help='结束日期')
     args = parser.parse_args()
 
-    start_date = '2025-09-01'
-    end_date = '2026-02-13'
+    version = args.version
+    cache_table = VERSION_CACHE_TABLE.get(version, 'v39_feature_cache')
+    report_subdir = VERSION_REPORT_DIR.get(version, f'daily_selection_{version}')
 
-    dates = get_trading_dates(start_date, end_date)
-    print(f"📋 待生成报告: {len(dates)} 天 ({dates[0]} ~ {dates[-1]})")
+    dates = get_trading_dates(args.start_date, args.end_date, cache_table)
+    if not dates:
+        print(f"未找到 {args.start_date} ~ {args.end_date} 的交易日数据")
+        return
 
-    report_dir = PROJECT_ROOT / 'reports' / 'daily_selection_v4.0'
+    print(f"📋 {version} 待生成报告: {len(dates)} 天 ({dates[0]} ~ {dates[-1]})")
+
+    report_dir = PROJECT_ROOT / 'reports' / report_subdir
     report_dir.mkdir(parents=True, exist_ok=True)
 
     if args.force:
@@ -61,7 +84,7 @@ def main():
         try:
             result = subprocess.run(
                 [sys.executable, str(PROJECT_ROOT / 'tomorrow_stock_selector.py'),
-                 date, '--scoring-version', 'v4.0'],
+                 date, '--scoring-version', version],
                 capture_output=True, text=True, timeout=300,
                 cwd=str(PROJECT_ROOT)
             )
@@ -92,7 +115,7 @@ def main():
 
     total_time = (datetime.now() - start_time).total_seconds()
     print(f"\n{'='*60}")
-    print(f"📊 批量生成完成!")
+    print(f"📊 {version} 批量生成完成!")
     print(f"  成功: {success}, 失败: {failed}")
     print(f"  总耗时: {total_time:.0f}秒 ({total_time/60:.1f}分钟)")
     print(f"  平均: {total_time/max(success+failed,1):.1f}秒/天")
