@@ -302,7 +302,8 @@ class V395ProductionScorer:
             return None
 
         features_df = pd.DataFrame(parsed[valid_mask].tolist())
-        features_df['code'] = df.loc[valid_mask, 'code'].values
+        valid_codes = df.loc[valid_mask, 'code'].values
+        features_df['code'] = valid_codes
 
         # 添加市场特征
         market_cols = [c for c in df.columns if c.startswith('market_')]
