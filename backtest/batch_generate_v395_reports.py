@@ -258,13 +258,10 @@ def score_all_stocks_from_preloaded(
     X = df[available_cols].fillna(0).values
     X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
 
-    # 模型预测
+    # 模型预测 (动态支持3d/5d/10d/15d)
     model_predictions_success = False
-    predictions = {
-        '3d': np.zeros(len(X)),
-        '5d': np.zeros(len(X)),
-        '10d': np.zeros(len(X)),
-    }
+    all_targets = sorted(scorer.models.keys()) if hasattr(scorer, 'models') else ['3d', '5d', '10d']
+    predictions = {t: np.zeros(len(X)) for t in all_targets}
 
     if getattr(scorer, 'cascade', False):
         # 级联推理 3d -> 5d -> 10d
@@ -289,8 +286,8 @@ def score_all_stocks_from_preloaded(
                 if ok:
                     model_predictions_success = True
     else:
-        # 非级联: 独立预测各目标
-        for target in ['3d', '5d', '10d']:
+        # 非级联: 独立预测各目标 (含15d)
+        for target in all_targets:
             if target not in scorer.models or not scorer.models[target]:
                 continue
             target_pred = np.zeros(len(X))
@@ -311,14 +308,14 @@ def score_all_stocks_from_preloaded(
                 if success_count > 0:
                     model_predictions_success = True
 
-    # 计算综合分数
+    # 计算综合分数 (动态target_weights)
     if model_predictions_success:
         tw = scorer.target_weights
-        combined_pred = (
-            tw['label_3d'] * predictions['3d'] +
-            tw['label_5d'] * predictions['5d'] +
-            tw['label_10d'] * predictions['10d']
-        )
+        combined_pred = np.zeros(len(X))
+        for t in all_targets:
+            w = tw.get(f'label_{t}', 0)
+            if w > 0 and t in predictions:
+                combined_pred += w * predictions[t]
     else:
         combined_pred = scorer._calculate_fallback_scores(df, available_cols)
         predictions = scorer._estimate_predictions_from_features(df, available_cols)
@@ -463,7 +460,7 @@ def main():
     parser.add_argument('--output-dir', default=None,
                         help='输出目录 (default: reports/daily_selection_v{version}_fast)')
     parser.add_argument('--version', default='v3.95',
-                        choices=['v3.9', 'v3.95'],
+                        choices=['v3.9', 'v3.95', 'v4.3', 'v5.0'],
                         help='评分版本 (default: v3.95)')
     parser.add_argument('--force', action='store_true',
                         help='强制覆盖已有报告')
@@ -521,6 +518,12 @@ def main():
     if args.version == 'v3.9':
         from ml_models.v39.v390_production_scorer import V390ProductionScorer
         scorer = V390ProductionScorer()
+    elif args.version == 'v4.3':
+        from ml_models.v39.v43_production_scorer import V43ProductionScorer
+        scorer = V43ProductionScorer()
+    elif args.version == 'v5.0':
+        from ml_models.v39.v500_production_scorer import V500ProductionScorer
+        scorer = V500ProductionScorer()
     else:
         from ml_models.v39.v395_production_scorer import V395ProductionScorer
         scorer = V395ProductionScorer(model_type='small_data')

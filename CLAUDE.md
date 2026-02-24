@@ -249,6 +249,10 @@ incremental_learning/
 - **`strategy/`**: Conservative, Balanced, Aggressive strategies
 - **`backtest/`**: Comprehensive backtesting engine + all backtest scripts
 - **`backtest/extensible_backtest_engine.py`**: 支持多版本的统一回测框架
+- **`backtest/backtest_report_based.py`**: 基于报告的多模型对比回测 + 北极星V1/V2双评分卡
+- **`backtest/north_star_metrics.py`**: 北极星指标计算模块 (V1: 11项/33分, V2: 21项/105分/6档)
+- **`backtest/run_north_star_eval.py`**: CLI评估工具 (--extended扩展窗口, --regime-analysis市况分析)
+- **`backtest/batch_generate_v395_reports.py`**: 快速批量报告生成器 (v3.9/v3.95/v4.3/v5.0)
 
 #### 9. **Archive** (`archive/`)
 ```
@@ -476,6 +480,30 @@ python3 backtest/extensible_backtest_engine.py --ml-version v3.9 --start-date 20
 
 # 4. Analyze results
 cat reports/backtest/回测结果_YYYYMMDD.md
+```
+
+### 🎯 北极星评估 (North Star V2)
+```bash
+# 短窗口V2评估 (112天, ~1分钟)
+python3 backtest/run_north_star_eval.py --backtest \
+    --report-dir reports/daily_selection_v4.3 \
+    --label "V4.3" --top-n 10 --focus-days 10
+
+# 扩展窗口V2评估 (~520天, ~3分钟)
+python3 backtest/run_north_star_eval.py --extended \
+    --report-dir reports/daily_selection_v4.3 \
+    --extended-dir reports/daily_selection_v4.3_extended \
+    --label "V4.3" --top-n 10 --focus-days 10
+
+# 市况分析 (牛/熊/震荡分别计算IC)
+python3 backtest/run_north_star_eval.py --regime-analysis \
+    --report-dir reports/daily_selection_v4.3 \
+    --label "V4.3" --top-n 10 --focus-days 10
+
+# 批量生成扩展报告 (支持 v3.9/v3.95/v4.3/v5.0)
+python3 backtest/batch_generate_v395_reports.py \
+    --version v4.3 --start-date 2024-01-01 --end-date 2025-08-31 \
+    --output-dir reports/daily_selection_v4.3_extended
 ```
 
 ### Training ML Models

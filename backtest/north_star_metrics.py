@@ -49,6 +49,154 @@ NORTH_STAR_TARGETS = {
     'annual_cost_drag': {'target': 0.08, 'pass': 0.15, 'good': 0.10, 'direction': 'lower'},
 }
 
+# ═══════════════════════════════════════════════════════
+# V2 北极星目标 (21项指标, 6档评分 0-5, 满分105)
+# ═══════════════════════════════════════════════════════
+
+NORTH_STAR_TARGETS_V2 = {
+    # Layer 1: 信号质量 (6项)
+    'daily_ic': {
+        'pass': 0.03, 'ok': 0.04, 'good': 0.05, 'great': 0.06, 'target': 0.08,
+        'direction': 'higher', 'layer': 1, 'display': 'Daily IC',
+    },
+    'icir': {
+        'pass': 0.25, 'ok': 0.35, 'good': 0.45, 'great': 0.55, 'target': 0.70,
+        'direction': 'higher', 'layer': 1, 'display': 'ICIR',
+    },
+    'ic_positive_pct': {
+        'pass': 55, 'ok': 57, 'good': 60, 'great': 63, 'target': 68,
+        'direction': 'higher', 'layer': 1, 'display': 'IC>0%',
+    },
+    'ic_monotonicity': {
+        'pass': 2.5, 'ok': 3.0, 'good': 3.5, 'great': 4.0, 'target': 4.5,
+        'direction': 'higher', 'layer': 1, 'display': 'IC单调性',
+    },
+    'ic_time_stability': {
+        'pass': 2.0, 'ok': 1.5, 'good': 1.0, 'great': 0.8, 'target': 0.6,
+        'direction': 'lower', 'layer': 1, 'display': 'IC稳定性(CV)',
+    },
+    'signal_half_life': {
+        'pass': 4, 'ok': 6, 'good': 8, 'great': 10, 'target': 12,
+        'direction': 'higher', 'layer': 1, 'display': '信号半衰期(天)',
+    },
+
+    # Layer 2: 组合效率 (5项)
+    'annual_turnover': {
+        'pass': 45, 'ok': 35, 'good': 30, 'great': 25, 'target': 20,
+        'direction': 'lower', 'layer': 2, 'display': '年化换手',
+    },
+    'annual_cost_drag': {
+        'pass': 0.13, 'ok': 0.10, 'good': 0.08, 'great': 0.07, 'target': 0.05,
+        'direction': 'lower', 'layer': 2, 'display': '年化成本',
+    },
+    'net_gross_ratio': {
+        'pass': 0.60, 'ok': 0.70, 'good': 0.75, 'great': 0.80, 'target': 0.85,
+        'direction': 'higher', 'layer': 2, 'display': '净/毛收益比',
+    },
+    'limit_up_fail_rate': {
+        'pass': 0.15, 'ok': 0.10, 'good': 0.08, 'great': 0.05, 'target': 0.02,
+        'direction': 'lower', 'layer': 2, 'display': '涨停失败率',
+    },
+    'liquidity_coverage': {
+        'pass': 0.70, 'ok': 0.80, 'good': 0.85, 'great': 0.90, 'target': 0.95,
+        'direction': 'higher', 'layer': 2, 'display': '流动性覆盖',
+    },
+
+    # Layer 3: 风险控制 (5项)
+    'max_drawdown': {
+        'pass': -0.25, 'ok': -0.18, 'good': -0.12, 'great': -0.10, 'target': -0.08,
+        'direction': 'higher', 'layer': 3, 'display': '最大回撤',
+    },
+    'sharpe_ratio': {
+        'pass': 1.0, 'ok': 1.5, 'good': 2.0, 'great': 2.5, 'target': 3.0,
+        'direction': 'higher', 'layer': 3, 'display': 'Sharpe',
+    },
+    'sortino_ratio': {
+        'pass': 1.5, 'ok': 2.0, 'good': 2.5, 'great': 3.0, 'target': 4.0,
+        'direction': 'higher', 'layer': 3, 'display': 'Sortino',
+    },
+    'calmar_ratio': {
+        'pass': 1.0, 'ok': 2.0, 'good': 2.5, 'great': 3.0, 'target': 4.0,
+        'direction': 'higher', 'layer': 3, 'display': 'Calmar',
+    },
+    'worst_rolling_60d_icir': {
+        'pass': -0.10, 'ok': 0.0, 'good': 0.10, 'great': 0.20, 'target': 0.30,
+        'direction': 'higher', 'layer': 3, 'display': '最差60日ICIR',
+    },
+
+    # Layer 4: 盈利与鲁棒性 (5项)
+    'annual_return': {
+        'pass': 0.15, 'ok': 0.20, 'good': 0.30, 'great': 0.40, 'target': 0.50,
+        'direction': 'higher', 'layer': 4, 'display': '年化收益',
+    },
+    'monthly_win_rate': {
+        'pass': 55, 'ok': 60, 'good': 67, 'great': 75, 'target': 83,
+        'direction': 'higher', 'layer': 4, 'display': '月度胜率%',
+    },
+    'half_period_consistency': {
+        'pass': 0.35, 'ok': 0.50, 'good': 0.60, 'great': 0.70, 'target': 0.80,
+        'direction': 'higher', 'layer': 4, 'display': '前后半段一致性',
+    },
+    'small_cap_bias_ratio': {
+        'pass': 0.3, 'ok': 0.4, 'good': 0.5, 'great': 0.6, 'target': 0.8,
+        'direction': 'higher', 'layer': 4, 'display': '小盘偏好比',
+    },
+    'median_market_cap_bn': {
+        'pass': 2.0, 'ok': 3.0, 'good': 5.0, 'great': 8.0, 'target': 10.0,
+        'direction': 'higher', 'layer': 4, 'display': '中位市值(亿)',
+    },
+}
+
+V2_LAYER_NAMES = {
+    1: '信号质量', 2: '组合效率', 3: '风险控制', 4: '盈利与鲁棒性',
+}
+
+V2_GRADE_THRESHOLDS = [
+    (80, 'S'), (70, 'A+'), (60, 'A'), (45, 'B'), (30, 'C'),
+]  # (pct_threshold, grade) — below 30% is D
+
+
+def score_metric_v2(current: float, target_info: dict) -> Tuple[int, str]:
+    """
+    V2 6档评分: 0-5
+
+    Args:
+        current: 当前值
+        target_info: dict with pass/ok/good/great/target/direction
+
+    Returns:
+        (score: 0-5, grade_str)
+    """
+    higher = target_info['direction'] == 'higher'
+    thresholds = [
+        (target_info['target'], 5, '★★★★★'),
+        (target_info['great'],  4, '★★★★☆'),
+        (target_info['good'],   3, '★★★☆☆'),
+        (target_info['ok'],     2, '★★☆☆☆'),
+        (target_info['pass'],   1, '★☆☆☆☆'),
+    ]
+
+    for threshold, score, grade_str in thresholds:
+        if higher:
+            if current >= threshold:
+                return score, grade_str
+        else:
+            if current <= threshold:
+                return score, grade_str
+
+    return 0, '☆☆☆☆☆'
+
+
+def compute_v2_grade(total_score: int, max_score: int = 105) -> str:
+    """计算V2等级: S/A+/A/B/C/D"""
+    if max_score <= 0:
+        return 'D'
+    pct = total_score / max_score * 100
+    for threshold, grade in V2_GRADE_THRESHOLDS:
+        if pct >= threshold:
+            return grade
+    return 'D'
+
 # A股交易成本参数（散户级别）
 TRANSACTION_COST = {
     'commission_rate': 0.00025,    # 佣金 0.025% 单边
@@ -154,6 +302,233 @@ def compute_monthly_ic(ic_df: pd.DataFrame) -> pd.DataFrame:
         })
 
     return pd.DataFrame(monthly)
+
+
+def compute_ic_monotonicity(scores: pd.Series, returns: pd.Series,
+                             dates: pd.Series, n_quantiles: int = 5,
+                             min_stocks: int = 20) -> float:
+    """
+    计算IC单调性: 按分数分N档，检查收益是否单调递增
+
+    Args:
+        scores: 预测分数
+        returns: 实际收益
+        dates: 日期
+        n_quantiles: 分位数量 (默认5)
+        min_stocks: 最少股票数
+
+    Returns:
+        float (0-5): 单调性分数，5.0=完美单调
+    """
+    monotonicity_scores = []
+
+    for date in sorted(dates.unique()):
+        mask = (dates == date) & scores.notna() & returns.notna()
+        day_scores = scores[mask]
+        day_returns = returns[mask]
+
+        if len(day_scores) < min_stocks:
+            continue
+
+        # 按分数分n_quantiles档
+        try:
+            quantile_labels = pd.qcut(day_scores, n_quantiles, labels=False, duplicates='drop')
+        except ValueError:
+            continue
+
+        # 各档平均收益
+        group_means = day_returns.groupby(quantile_labels).mean().sort_index()
+        if len(group_means) < 3:
+            continue
+
+        # 计算相邻档位的正确排序数 (higher quantile should have higher return)
+        n_pairs = len(group_means) - 1
+        correct = sum(1 for i in range(n_pairs) if group_means.iloc[i+1] > group_means.iloc[i])
+        # 缩放到0-5
+        mono_score = correct / n_pairs * 5.0
+        monotonicity_scores.append(mono_score)
+
+    return np.mean(monotonicity_scores) if monotonicity_scores else 0.0
+
+
+def compute_ic_time_stability(ic_df: pd.DataFrame, window: int = 60) -> Dict:
+    """
+    计算IC时间稳定性: 滚动ICIR的变异系数(CV)
+
+    Args:
+        ic_df: compute_daily_ic的输出 (columns: date, ic)
+        window: 滚动窗口大小
+
+    Returns:
+        dict{cv, rolling_icir_series, mean, std}
+        cv越低越好 (更稳定)
+    """
+    if ic_df.empty or len(ic_df) < window:
+        # 短窗口自适应
+        window = max(10, len(ic_df) // 2) if len(ic_df) >= 20 else len(ic_df)
+        if window < 10:
+            return {'cv': 999.0, 'mean': 0, 'std': 0, 'rolling_icir_series': pd.Series(dtype=float)}
+
+    ic_series = ic_df.set_index('date')['ic'].sort_index()
+    rolling_mean = ic_series.rolling(window, min_periods=max(10, window // 2)).mean()
+    rolling_std = ic_series.rolling(window, min_periods=max(10, window // 2)).std()
+    rolling_icir = (rolling_mean / rolling_std).dropna()
+    rolling_icir = rolling_icir.replace([np.inf, -np.inf], np.nan).dropna()
+
+    if len(rolling_icir) < 3:
+        return {'cv': 999.0, 'mean': 0, 'std': 0, 'rolling_icir_series': pd.Series(dtype=float)}
+
+    mean_icir = rolling_icir.mean()
+    std_icir = rolling_icir.std()
+    cv = abs(std_icir / mean_icir) if abs(mean_icir) > 1e-8 else 999.0
+
+    return {
+        'cv': cv,
+        'mean': mean_icir,
+        'std': std_icir,
+        'rolling_icir_series': rolling_icir,
+    }
+
+
+def compute_signal_half_life(icir_by_days: Dict[int, float]) -> float:
+    """
+    计算信号半衰期: ICIR从峰值降到50%的天数
+
+    Args:
+        icir_by_days: {holding_days: icir} e.g. {1: 0.42, 3: 0.40, 5: 0.45, 10: 0.61, 15: 0.65}
+
+    Returns:
+        float: 半衰期(天)。越大越好(信号持久)。
+        如果ICIR单调递增或从未降到50%，返回最大天数。
+    """
+    if not icir_by_days or len(icir_by_days) < 2:
+        return 0.0
+
+    sorted_days = sorted(icir_by_days.keys())
+    values = [icir_by_days[d] for d in sorted_days]
+
+    peak_val = max(values)
+    if peak_val <= 0:
+        return 0.0
+
+    peak_idx = values.index(peak_val)
+    half_val = peak_val * 0.5
+
+    # 从peak之后寻找降到50%的点
+    for i in range(peak_idx + 1, len(values)):
+        if values[i] < half_val:
+            # 线性插值
+            prev_day = sorted_days[i - 1]
+            curr_day = sorted_days[i]
+            prev_val = values[i - 1]
+            curr_val = values[i]
+            # 插值找精确点
+            if abs(prev_val - curr_val) > 1e-8:
+                frac = (prev_val - half_val) / (prev_val - curr_val)
+                half_life = prev_day + frac * (curr_day - prev_day)
+            else:
+                half_life = (prev_day + curr_day) / 2
+            return half_life
+
+    # 从未降到50%: 信号非常持久
+    return float(sorted_days[-1])
+
+
+def compute_half_period_consistency(period_returns: pd.Series,
+                                     holding_days: int) -> Dict:
+    """
+    前后半段Sharpe一致性
+
+    Args:
+        period_returns: 非重叠调仓期收益序列
+        holding_days: 持仓天数
+
+    Returns:
+        dict{ratio, sharpe_h1, sharpe_h2}
+        ratio = min(sharpe_h1, sharpe_h2) / max(sharpe_h1, sharpe_h2)
+    """
+    n = len(period_returns)
+    if n < 6:
+        return {'ratio': 0, 'sharpe_h1': 0, 'sharpe_h2': 0}
+
+    mid = n // 2
+    h1 = period_returns.iloc[:mid]
+    h2 = period_returns.iloc[mid:]
+
+    periods_per_year = 252 / holding_days
+
+    def _sharpe(rets):
+        if len(rets) < 3:
+            return 0
+        annual_ret = (1 + rets).prod() ** (periods_per_year / len(rets)) - 1
+        annual_vol = rets.std() * np.sqrt(periods_per_year)
+        return (annual_ret - 0.02) / annual_vol if annual_vol > 1e-8 else 0
+
+    s1 = _sharpe(h1)
+    s2 = _sharpe(h2)
+
+    # 如果两个Sharpe都为正，ratio = min/max
+    # 如果一正一负，ratio = 0 (不一致)
+    # 如果都为负，ratio也为0
+    if s1 > 0 and s2 > 0:
+        ratio = min(s1, s2) / max(s1, s2)
+    elif s1 <= 0 and s2 <= 0:
+        ratio = 0
+    else:
+        ratio = 0
+
+    return {'ratio': ratio, 'sharpe_h1': s1, 'sharpe_h2': s2}
+
+
+def compute_worst_rolling_icir(ic_df: pd.DataFrame, window: int = 60) -> Dict:
+    """
+    最差滚动ICIR: 在daily IC上滑动窗口找最差ICIR
+
+    Args:
+        ic_df: compute_daily_ic的输出
+        window: 滚动窗口
+
+    Returns:
+        dict{worst_icir, start_date, end_date}
+    """
+    if ic_df.empty or len(ic_df) < 10:
+        return {'worst_icir': -999, 'start_date': '', 'end_date': ''}
+
+    # 自适应窗口
+    window = min(window, len(ic_df) // 2)
+    if window < 10:
+        window = min(10, len(ic_df))
+
+    ic_series = ic_df.set_index('date')['ic'].sort_index()
+    rolling_mean = ic_series.rolling(window, min_periods=max(5, window // 2)).mean()
+    rolling_std = ic_series.rolling(window, min_periods=max(5, window // 2)).std()
+    rolling_icir = (rolling_mean / rolling_std).replace([np.inf, -np.inf], np.nan).dropna()
+
+    if rolling_icir.empty:
+        return {'worst_icir': -999, 'start_date': '', 'end_date': ''}
+
+    worst_idx = rolling_icir.idxmin()
+    worst_val = rolling_icir.min()
+
+    # 找窗口起始日
+    pos = ic_series.index.get_loc(worst_idx) if worst_idx in ic_series.index else 0
+    if isinstance(pos, slice):
+        pos = pos.start
+    start_pos = max(0, pos - window + 1)
+    start_date = str(ic_series.index[start_pos])
+
+    return {
+        'worst_icir': worst_val,
+        'start_date': start_date,
+        'end_date': str(worst_idx),
+    }
+
+
+def compute_net_gross_ratio(gross_annual: float, net_annual: float) -> float:
+    """净/毛收益比"""
+    if abs(gross_annual) < 1e-8:
+        return 0.0
+    return net_annual / gross_annual
 
 
 def compute_top_bottom_spread(scores: pd.Series, returns: pd.Series,
@@ -599,6 +974,288 @@ def compute_benchmark_comparison(portfolio_returns: pd.Series,
         'excess_win_rate': excess_win_rate,
         'n_common_periods': n_periods,
     }
+
+
+# ═══════════════════════════════════════════════════════
+# V2 批量数据加载 + 可执行性指标
+# ═══════════════════════════════════════════════════════
+
+def batch_load_market_cap_data(buy_dates: List[str], db_path: str = None) -> Dict[str, pd.DataFrame]:
+    """
+    批量加载市值和换手率数据
+
+    Args:
+        buy_dates: 买入日期列表 (YYYY-MM-DD)
+        db_path: 数据库路径
+
+    Returns:
+        {date_str: DataFrame[code, total_mv, turnover_rate]}
+        total_mv单位: 万元 (数据库原始单位)
+    """
+    if db_path is None:
+        db_path = DB_PATH
+
+    if not buy_dates:
+        return {}
+
+    conn = sqlite3.connect(db_path)
+    dates_str = ','.join([f"'{d}'" for d in buy_dates])
+    query = f"""
+        SELECT db.trade_date, s.code, db.total_mv, db.turnover_rate
+        FROM daily_basic db
+        JOIN securities s ON db.security_id = s.id
+        WHERE db.trade_date IN ({dates_str})
+          AND db.total_mv IS NOT NULL AND db.total_mv > 0
+    """
+    df = pd.read_sql_query(query, conn)
+    conn.close()
+
+    result = {}
+    for date, group in df.groupby('trade_date'):
+        result[date] = group[['code', 'total_mv', 'turnover_rate']].reset_index(drop=True)
+    return result
+
+
+def batch_load_limit_up_data(buy_dates: List[str], db_path: str = None) -> Dict[str, set]:
+    """
+    批量加载涨停股票数据
+
+    涨停判定: 主板≥9.5%, 创业板(30x)/科创板(688x)≥19.5%
+
+    Args:
+        buy_dates: 买入日期列表
+        db_path: 数据库路径
+
+    Returns:
+        {date_str: set(涨停codes)}
+    """
+    if db_path is None:
+        db_path = DB_PATH
+
+    if not buy_dates:
+        return {}
+
+    conn = sqlite3.connect(db_path)
+    dates_str = ','.join([f"'{d}'" for d in buy_dates])
+    query = f"""
+        SELECT dq.trade_date, s.code, dq.price_change_pct
+        FROM daily_quotes dq
+        JOIN securities s ON dq.security_id = s.id
+        WHERE dq.trade_date IN ({dates_str})
+          AND dq.price_change_pct IS NOT NULL
+          AND s.type = 'A股'
+    """
+    df = pd.read_sql_query(query, conn)
+    conn.close()
+
+    result = {}
+    for date, group in df.groupby('trade_date'):
+        limit_up_codes = set()
+        for _, row in group.iterrows():
+            code = row['code']
+            pct = row['price_change_pct']  # 小数形式, 0.095 = 9.5%
+            # 创业板(30x) 或 科创板(688x): 20%涨停
+            if code.startswith('30') or code.startswith('688'):
+                threshold = 0.195
+            else:
+                threshold = 0.095
+            if pct >= threshold:
+                limit_up_codes.add(code)
+        result[date] = limit_up_codes
+    return result
+
+
+def batch_load_universe_median_cap(buy_dates: List[str], db_path: str = None) -> Dict[str, float]:
+    """
+    批量加载全A股当日市值中位数
+
+    Args:
+        buy_dates: 买入日期列表
+
+    Returns:
+        {date_str: median_total_mv_万元}
+    """
+    if db_path is None:
+        db_path = DB_PATH
+
+    if not buy_dates:
+        return {}
+
+    conn = sqlite3.connect(db_path)
+    dates_str = ','.join([f"'{d}'" for d in buy_dates])
+    query = f"""
+        SELECT db.trade_date, db.total_mv
+        FROM daily_basic db
+        JOIN securities s ON db.security_id = s.id
+        WHERE db.trade_date IN ({dates_str})
+          AND db.total_mv IS NOT NULL AND db.total_mv > 0
+          AND s.type = 'A股'
+    """
+    df = pd.read_sql_query(query, conn)
+    conn.close()
+
+    result = {}
+    for date, group in df.groupby('trade_date'):
+        result[date] = group['total_mv'].median()
+    return result
+
+
+def compute_executability_metrics(holdings_by_date: Dict[str, List[str]],
+                                   market_cap_data: Dict[str, pd.DataFrame],
+                                   limit_up_data: Dict[str, set],
+                                   universe_median_cap: Dict[str, float]) -> Dict:
+    """
+    计算实盘可执行性指标
+
+    Args:
+        holdings_by_date: {date: [stock_codes]}
+        market_cap_data: batch_load_market_cap_data的输出
+        limit_up_data: batch_load_limit_up_data的输出
+        universe_median_cap: batch_load_universe_median_cap的输出
+
+    Returns:
+        dict{limit_up_fail_rate, liquidity_coverage, small_cap_bias_ratio, median_market_cap_bn}
+    """
+    total_picks = 0
+    limit_up_picks = 0
+    liquid_picks = 0  # 换手率>0.5%的股票
+    small_cap_picks = 0  # 市值小于全市场中位数的股票
+    all_market_caps = []
+
+    for date, codes in holdings_by_date.items():
+        if not codes:
+            continue
+
+        cap_df = market_cap_data.get(date, pd.DataFrame())
+        limit_up_set = limit_up_data.get(date, set())
+        median_cap = universe_median_cap.get(date, 0)
+
+        for code in codes:
+            total_picks += 1
+
+            # 涨停检测
+            if code in limit_up_set:
+                limit_up_picks += 1
+
+            # 市值和流动性
+            if not cap_df.empty:
+                stock_row = cap_df[cap_df['code'] == code]
+                if len(stock_row) > 0:
+                    mv = stock_row.iloc[0]['total_mv']
+                    tr = stock_row.iloc[0].get('turnover_rate', 0) or 0
+                    all_market_caps.append(mv)
+
+                    # 流动性: 换手率 > 0.5%
+                    if tr > 0.5:
+                        liquid_picks += 1
+
+                    # 小盘偏好: 市值 < 全市场中位数
+                    if median_cap > 0 and mv < median_cap:
+                        small_cap_picks += 1
+
+    if total_picks == 0:
+        return {
+            'limit_up_fail_rate': 0,
+            'liquidity_coverage': 1.0,
+            'small_cap_bias_ratio': 0.5,
+            'median_market_cap_bn': 0,
+        }
+
+    limit_up_rate = limit_up_picks / total_picks
+    liquidity_coverage = liquid_picks / total_picks if total_picks > 0 else 0
+    small_cap_ratio = small_cap_picks / total_picks if total_picks > 0 else 0
+
+    # 中位市值 (万元→亿元)
+    median_cap_bn = np.median(all_market_caps) / 10000 if all_market_caps else 0
+
+    return {
+        'limit_up_fail_rate': limit_up_rate,
+        'liquidity_coverage': liquidity_coverage,
+        'small_cap_bias_ratio': small_cap_ratio,
+        'median_market_cap_bn': median_cap_bn,
+    }
+
+
+# ═══════════════════════════════════════════════════════
+# 市况分类 + 条件IC (Phase 2)
+# ═══════════════════════════════════════════════════════
+
+def classify_market_regime(benchmark_returns: pd.Series,
+                            lookback: int = 60) -> pd.Series:
+    """
+    基于滚动收益分类市况
+
+    Args:
+        benchmark_returns: 日度基准收益率 (DatetimeIndex)
+        lookback: 回看天数
+
+    Returns:
+        Series of regime labels: 'bull', 'bear', 'neutral'
+    """
+    if benchmark_returns.empty or len(benchmark_returns) < lookback:
+        return pd.Series(dtype=str)
+
+    rolling_ret = benchmark_returns.rolling(lookback, min_periods=lookback // 2).apply(
+        lambda x: (1 + x).prod() - 1, raw=False
+    )
+
+    def _classify(r):
+        if pd.isna(r):
+            return 'neutral'
+        if r > 0.05:
+            return 'bull'
+        elif r < -0.05:
+            return 'bear'
+        return 'neutral'
+
+    return rolling_ret.map(_classify)
+
+
+def compute_regime_conditional_metrics(ic_df: pd.DataFrame,
+                                        regime_series: pd.Series) -> Dict:
+    """
+    分市况计算IC/ICIR
+
+    Args:
+        ic_df: compute_daily_ic的输出 (columns: date, ic)
+        regime_series: classify_market_regime的输出
+
+    Returns:
+        dict{bull: {ic, icir, n}, bear: {...}, neutral: {...}}
+    """
+    if ic_df.empty or regime_series.empty:
+        return {}
+
+    ic_with_date = ic_df.copy()
+    ic_with_date['date_dt'] = pd.to_datetime(ic_with_date['date'])
+    ic_with_date = ic_with_date.set_index('date_dt')
+
+    # 对齐regime到ic_df的日期
+    common_idx = ic_with_date.index.intersection(regime_series.index)
+    if len(common_idx) < 10:
+        return {}
+
+    result = {}
+    for regime in ['bull', 'bear', 'neutral']:
+        regime_dates = regime_series[regime_series == regime].index
+        regime_ic = ic_with_date.loc[ic_with_date.index.isin(regime_dates), 'ic']
+
+        if len(regime_ic) < 5:
+            result[regime] = {'ic': 0, 'icir': 0, 'n_days': 0}
+            continue
+
+        ic_mean = regime_ic.mean()
+        ic_std = regime_ic.std()
+        icir = ic_mean / ic_std if ic_std > 1e-8 else 0
+
+        result[regime] = {
+            'ic': ic_mean,
+            'icir': icir,
+            'n_days': len(regime_ic),
+            'ic_positive_pct': (regime_ic > 0).mean() * 100,
+        }
+
+    return result
 
 
 # ═══════════════════════════════════════════════════════

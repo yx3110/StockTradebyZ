@@ -46,6 +46,13 @@ from backtest.north_star_metrics import (
     NorthStarEvaluator, compute_risk_metrics, compute_transaction_costs,
     compute_turnover, load_benchmark_returns, compute_benchmark_comparison,
     compute_drawdown_series, NORTH_STAR_TARGETS, TRANSACTION_COST,
+    # V2 imports
+    NORTH_STAR_TARGETS_V2, V2_LAYER_NAMES, score_metric_v2, compute_v2_grade,
+    compute_ic_monotonicity, compute_ic_time_stability, compute_signal_half_life,
+    compute_half_period_consistency, compute_worst_rolling_icir, compute_net_gross_ratio,
+    batch_load_market_cap_data, batch_load_limit_up_data,
+    batch_load_universe_median_cap, compute_executability_metrics,
+    classify_market_regime, compute_regime_conditional_metrics,
 )
 
 DB_PATH = os.path.join(PROJECT_ROOT, 'data_adapter', 'stock_data.db')
@@ -547,6 +554,12 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
         benchmark_code, start_date=start_d, end_date=end_d
     )
 
+    # V2: 批量加载市值/涨停数据 (3个SQL调用覆盖所有日期)
+    all_buy_dates = sorted(set(df['buy_date'].tolist()))
+    market_cap_data = batch_load_market_cap_data(all_buy_dates)
+    limit_up_data = batch_load_limit_up_data(all_buy_dates)
+    universe_median_cap = batch_load_universe_median_cap(all_buy_dates)
+
     for days in HOLDING_DAYS:
         sub = df[df['days'] == days].sort_values('date')
         if len(sub) == 0:
@@ -626,6 +639,37 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
                     buy_ret, bm_aligned, periods_per_year=periods_per_year
                 )
 
+        # --- V2新增指标 ---
+        # IC单调性
+        ic_mono = 0
+        sub_picks_days = picks_df[picks_df[f'return_{days}d'].notna()]
+        if len(sub_picks_days) > 50:
+            ic_mono = compute_ic_monotonicity(
+                sub_picks_days['score'], sub_picks_days[f'return_{days}d'],
+                sub_picks_days['date']
+            )
+
+        # IC时间稳定性
+        ic_df_days = daily_ic_series.get(days, pd.DataFrame())
+        ic_stability = compute_ic_time_stability(ic_df_days)
+        ic_time_stability_cv = ic_stability.get('cv', 999.0)
+
+        # 最差滚动ICIR
+        worst_rolling = compute_worst_rolling_icir(ic_df_days)
+
+        # 前后半段一致性
+        half_consistency = compute_half_period_consistency(period_ret_series, days)
+
+        # 净/毛收益比
+        ngr = compute_net_gross_ratio(risk['annual_return'], cost_info['net_annual_return'])
+
+        # 可执行性指标 (使用非重叠调仓期的持仓)
+        rebal_holdings_for_exec = {d: holdings_by_date.get(d, []) for d in rebal_dates
+                                    if d in holdings_by_date}
+        exec_metrics = compute_executability_metrics(
+            rebal_holdings_for_exec, market_cap_data, limit_up_data, universe_median_cap
+        )
+
         # 合并到summary
         summary[days].update({
             # 风险指标
@@ -657,6 +701,16 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
             'information_ratio': benchmark_info.get('information_ratio', 0),
             'excess_annual_return': benchmark_info.get('excess_annual_return', 0),
             'benchmark_annual': benchmark_info.get('benchmark_annual', 0),
+            # V2新增
+            'ic_monotonicity': ic_mono,
+            'ic_time_stability': ic_time_stability_cv,
+            'worst_rolling_60d_icir': worst_rolling.get('worst_icir', -999),
+            'half_period_consistency': half_consistency.get('ratio', 0),
+            'net_gross_ratio': ngr,
+            'limit_up_fail_rate': exec_metrics.get('limit_up_fail_rate', 0),
+            'liquidity_coverage': exec_metrics.get('liquidity_coverage', 0),
+            'small_cap_bias_ratio': exec_metrics.get('small_cap_bias_ratio', 0),
+            'median_market_cap_bn': exec_metrics.get('median_market_cap_bn', 0),
         })
 
         north_star[days] = summary[days]
@@ -680,11 +734,36 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
         print(f"    连续亏损月:    {risk['max_consecutive_loss_months']}月")
         print(f"    换手率(单次):  {avg_turnover:.1%}")
         print(f"    换手率(年化):  {annual_turnover_val:.1f}倍 (调仓{rebal_freq_annual:.0f}次/年)")
+        print(f"    IC单调性:      {ic_mono:.2f}/5.0")
+        print(f"    IC稳定性(CV):  {ic_time_stability_cv:.2f}")
+        print(f"    最差60日ICIR:  {worst_rolling.get('worst_icir', 0):.3f}")
+        print(f"    前后半段一致:  {half_consistency.get('ratio', 0):.2f}")
+        print(f"    净/毛收益比:   {ngr:.2f}")
+        print(f"    涨停失败率:    {exec_metrics.get('limit_up_fail_rate', 0):.1%}")
+        print(f"    流动性覆盖:    {exec_metrics.get('liquidity_coverage', 0):.1%}")
+        print(f"    中位市值:      {exec_metrics.get('median_market_cap_bn', 0):.1f}亿")
         if benchmark_info:
             print(f"    Alpha:         {benchmark_info.get('alpha', 0):.1%}")
             print(f"    Beta:          {benchmark_info.get('beta', 0):.3f}")
             print(f"    信息比率(IR):  {benchmark_info.get('information_ratio', 0):.3f}")
             print(f"    超额年化:      {benchmark_info.get('excess_annual_return', 0):.1%}")
+
+    # ═══════════════════════════════════════════════════
+    # V2: 信号半衰期 (需要所有持仓期的ICIR)
+    # ═══════════════════════════════════════════════════
+    icir_by_days = {}
+    for days in HOLDING_DAYS:
+        if days in summary and 'icir' in summary[days]:
+            icir_by_days[days] = summary[days]['icir']
+
+    signal_hl = compute_signal_half_life(icir_by_days)
+    # 写入所有持仓期的summary
+    for days in HOLDING_DAYS:
+        if days in summary:
+            summary[days]['signal_half_life'] = signal_hl
+
+    if signal_hl > 0:
+        print(f"\n  信号半衰期: {signal_hl:.1f}天")
 
     # ═══════════════════════════════════════════════════
     # 北极星评分卡（focus_days）
@@ -693,6 +772,7 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
     if focus_days in summary:
         s = summary[focus_days]
         _print_scorecard(s, label, focus_days)
+        _print_scorecard_v2(s, label, focus_days)
 
     # 月度分解 (5日持仓)
     sub5 = df[df['days'] == 5].copy()
@@ -818,6 +898,109 @@ def _print_scorecard(s, label, days):
     print(f"  {'═'*60}")
 
 
+def _print_scorecard_v2(s, label, days):
+    """打印V2北极星评分卡 (21项, 6档, /105)"""
+    print(f"\n  {'═'*70}")
+    print(f"  北极星评分卡 V2: {label} ({days}日持仓)")
+    print(f"  {'═'*70}")
+
+    # 映射 summary key → V2 target key
+    metric_value_map = {
+        'daily_ic':              s.get('ic_mean', 0),
+        'icir':                  s.get('icir', 0),
+        'ic_positive_pct':       s.get('ic_positive_pct', 0),
+        'ic_monotonicity':       s.get('ic_monotonicity', 0),
+        'ic_time_stability':     s.get('ic_time_stability', 999),
+        'signal_half_life':      s.get('signal_half_life', 0),
+        'annual_turnover':       s.get('annual_turnover', 0),
+        'annual_cost_drag':      s.get('annual_cost_drag', 0),
+        'net_gross_ratio':       s.get('net_gross_ratio', 0),
+        'limit_up_fail_rate':    s.get('limit_up_fail_rate', 0),
+        'liquidity_coverage':    s.get('liquidity_coverage', 0),
+        'max_drawdown':          s.get('max_drawdown', 0),
+        'sharpe_ratio':          s.get('sharpe_ratio', 0),
+        'sortino_ratio':         s.get('sortino_ratio', 0),
+        'calmar_ratio':          s.get('calmar_ratio', 0),
+        'worst_rolling_60d_icir': s.get('worst_rolling_60d_icir', -999),
+        'annual_return':         s.get('annual_return', 0),
+        'monthly_win_rate':      s.get('monthly_win_rate', 0),
+        'half_period_consistency': s.get('half_period_consistency', 0),
+        'small_cap_bias_ratio':  s.get('small_cap_bias_ratio', 0),
+        'median_market_cap_bn':  s.get('median_market_cap_bn', 0),
+    }
+
+    # 百分比格式化的指标
+    pct_fmt_keys = {'max_drawdown', 'annual_return', 'annual_cost_drag',
+                    'net_gross_ratio', 'limit_up_fail_rate', 'liquidity_coverage',
+                    'half_period_consistency', 'small_cap_bias_ratio'}
+    plain_fmt_keys = {'ic_positive_pct', 'monthly_win_rate', 'annual_turnover',
+                      'signal_half_life', 'median_market_cap_bn'}
+
+    total_score = 0
+    max_score = 0
+
+    for layer_id in sorted(V2_LAYER_NAMES.keys()):
+        layer_name = V2_LAYER_NAMES[layer_id]
+        # 获取属于此layer的指标
+        layer_metrics = [(k, v) for k, v in NORTH_STAR_TARGETS_V2.items() if v['layer'] == layer_id]
+        if not layer_metrics:
+            continue
+
+        print(f"\n  ┌─ Layer {layer_id}: {layer_name}")
+        print(f"  │ {'指标':<18s} {'当前值':>10s} {'及格':>8s} {'目标':>8s} {'分数':>4s} {'评级':>10s}")
+        print(f"  │ {'─'*58}")
+
+        for metric_key, target_info in layer_metrics:
+            current = metric_value_map.get(metric_key)
+            if current is None:
+                continue
+
+            score, grade_str = score_metric_v2(current, target_info)
+            total_score += score
+            max_score += 5
+
+            display = target_info['display']
+            target_val = target_info['target']
+            pass_val = target_info['pass']
+
+            # 格式化
+            if metric_key in pct_fmt_keys:
+                c_str = f"{current:.1%}" if abs(current) < 10 else f"{current:.0%}"
+                t_str = f"{target_val:.1%}" if abs(target_val) < 10 else f"{target_val:.0%}"
+                p_str = f"{pass_val:.1%}" if abs(pass_val) < 10 else f"{pass_val:.0%}"
+            elif metric_key in plain_fmt_keys:
+                c_str = f"{current:.1f}"
+                t_str = f"{target_val:.1f}"
+                p_str = f"{pass_val:.1f}"
+            else:
+                c_str = f"{current:.3f}"
+                t_str = f"{target_val:.3f}"
+                p_str = f"{pass_val:.3f}"
+
+            print(f"  │ {display:<18s} {c_str:>10s} {p_str:>8s} {t_str:>8s} {score}/5  {grade_str}")
+
+    # 总分
+    print(f"\n  {'─'*70}")
+    if max_score > 0:
+        pct = total_score / max_score * 100
+        grade = compute_v2_grade(total_score, max_score)
+        print(f"  综合评分: {total_score}/{max_score} ({pct:.0f}%) → 等级 {grade}")
+
+        # 分层小计
+        for layer_id in sorted(V2_LAYER_NAMES.keys()):
+            layer_metrics = [k for k, v in NORTH_STAR_TARGETS_V2.items() if v['layer'] == layer_id]
+            layer_score = sum(
+                score_metric_v2(metric_value_map.get(k, 0), NORTH_STAR_TARGETS_V2[k])[0]
+                for k in layer_metrics if k in metric_value_map
+            )
+            layer_max = len(layer_metrics) * 5
+            layer_pct = layer_score / layer_max * 100 if layer_max > 0 else 0
+            print(f"    Layer {layer_id} {V2_LAYER_NAMES[layer_id]}: "
+                  f"{layer_score}/{layer_max} ({layer_pct:.0f}%)")
+
+    print(f"  {'═'*70}")
+
+
 def compare_results(result_a, result_b, focus_days=10):
     """对比两个回测结果（含北极星指标）"""
     label_a = result_a['label']
@@ -848,14 +1031,21 @@ def compare_results(result_a, result_b, focus_days=10):
             ('逐日IC均值',   'ic_mean',          '',   True,  '.4f'),
             ('ICIR',         'icir',             '',   True,  '.4f'),
             ('IC>0占比',     'ic_positive_pct',  '%',  True,  '.1f'),
+            ('IC单调性',     'ic_monotonicity',  '',   True,  '.2f'),
             ('累计收益',     'cumulative',       '%',  True,  '+.2f'),
             ('年化收益(毛)', 'annual_return',    '',   True,  '.1%'),
             ('年化收益(净)', 'net_annual_return', '',  True,  '.1%'),
+            ('净/毛收益比',  'net_gross_ratio',  '',   True,  '.2f'),
             ('Sharpe',       'sharpe_ratio',     '',   True,  '.3f'),
             ('Sortino',      'sortino_ratio',    '',   True,  '.3f'),
             ('Calmar',       'calmar_ratio',     '',   True,  '.3f'),
             ('最大回撤',     'max_drawdown',     '',   True,  '.1%'),
             ('月度胜率',     'monthly_win_rate', '%',  True,  '.1f'),
+            ('前后半段一致', 'half_period_consistency', '', True, '.2f'),
+            ('最差60日ICIR', 'worst_rolling_60d_icir', '', True, '.3f'),
+            ('涨停失败率',   'limit_up_fail_rate', '', False, '.1%'),
+            ('流动性覆盖',   'liquidity_coverage', '', True, '.1%'),
+            ('中位市值(亿)', 'median_market_cap_bn', '', True, '.1f'),
             ('Alpha',        'alpha',            '',   True,  '.1%'),
             ('信息比率',     'information_ratio', '',  True,  '.3f'),
         ]
@@ -928,14 +1118,24 @@ def generate_report(results, output_dir='reports/backtest', benchmark_code='0009
         ('Daily IC',       'ic_mean',           '.4f',  ''),
         ('ICIR',           'icir',              '.4f',  ''),
         ('IC>0%',          'ic_positive_pct',   '.1f',  '%'),
+        ('IC单调性',       'ic_monotonicity',   '.2f',  ''),
+        ('IC稳定性(CV)',   'ic_time_stability', '.2f',  ''),
+        ('信号半衰期',     'signal_half_life',  '.1f',  '天'),
         ('年化收益(毛)',    'annual_return',     '.1%',  ''),
         ('年化收益(净)',    'net_annual_return', '.1%',  ''),
+        ('净/毛收益比',    'net_gross_ratio',   '.2f',  ''),
         ('Sharpe',         'sharpe_ratio',      '.3f',  ''),
         ('Sortino',        'sortino_ratio',     '.3f',  ''),
         ('Calmar',         'calmar_ratio',      '.3f',  ''),
         ('最大回撤',       'max_drawdown',      '.1%',  ''),
+        ('最差60日ICIR',   'worst_rolling_60d_icir', '.3f', ''),
         ('月度胜率',       'monthly_win_rate',  '.1f',  '%'),
+        ('前后半段一致性', 'half_period_consistency', '.2f', ''),
         ('年化成本',       'annual_cost_drag',  '.1%',  ''),
+        ('年化换手',       'annual_turnover',   '.1f',  ''),
+        ('涨停失败率',     'limit_up_fail_rate', '.1%', ''),
+        ('流动性覆盖',     'liquidity_coverage', '.1%', ''),
+        ('中位市值(亿)',   'median_market_cap_bn', '.1f', ''),
         ('Alpha',          'alpha',             '.1%',  ''),
         ('信息比率(IR)',   'information_ratio', '.3f',  ''),
     ]
@@ -951,16 +1151,21 @@ def generate_report(results, output_dir='reports/backtest', benchmark_code='0009
                     row += f" {val:{fmt}}{unit} |"
             else:
                 row += " - |"
-        # 北极星目标
-        tgt = NORTH_STAR_TARGETS.get(key.replace('net_annual_return', 'annual_return')
-                                     .replace('alpha', 'annual_return'), {})
+        # 北极星V2目标 (优先), fallback V1
+        lookup_key = key.replace('net_annual_return', 'annual_return')
+        tgt = NORTH_STAR_TARGETS_V2.get(lookup_key, NORTH_STAR_TARGETS.get(lookup_key, {}))
         if tgt:
             t = tgt.get('target', '-')
-            if isinstance(t, float):
-                if key in ('annual_return', 'net_annual_return', 'max_drawdown',
-                           'annual_cost_drag', 'alpha'):
+            if isinstance(t, (int, float)):
+                pct_keys = {'annual_return', 'net_annual_return', 'max_drawdown',
+                            'annual_cost_drag', 'alpha', 'net_gross_ratio',
+                            'limit_up_fail_rate', 'liquidity_coverage',
+                            'half_period_consistency', 'small_cap_bias_ratio'}
+                plain_keys = {'ic_positive_pct', 'monthly_win_rate', 'annual_turnover',
+                              'signal_half_life', 'median_market_cap_bn'}
+                if key in pct_keys:
                     row += f" {t:.1%} |"
-                elif key in ('ic_positive_pct', 'monthly_win_rate', 'annual_turnover'):
+                elif key in plain_keys:
                     row += f" {t:.1f}{unit} |"
                 else:
                     row += f" {t:.3f} |"
