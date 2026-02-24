@@ -223,10 +223,13 @@ class V394OptimizedEnsembleTrainer:
         logger.info("加载并合并特征数据...")
 
         date_filter = ""
+        date_params = []
         if min_date:
-            date_filter += f" AND v.trade_date >= '{min_date}'"
+            date_filter += " AND v.trade_date >= ?"
+            date_params.append(min_date)
         if max_date:
-            date_filter += f" AND v.trade_date <= '{max_date}'"
+            date_filter += " AND v.trade_date <= ?"
+            date_params.append(max_date)
 
         query = f"""
         SELECT
@@ -241,7 +244,7 @@ class V394OptimizedEnsembleTrainer:
         ORDER BY v.trade_date, v.code
         """
 
-        df = pd.read_sql(query, conn)
+        df = pd.read_sql(query, conn, params=date_params if date_params else None)
         logger.info(f"  合并数据: {len(df):,} 条")
         conn.close()
 

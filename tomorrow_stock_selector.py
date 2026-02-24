@@ -43,7 +43,7 @@ logger = logging.getLogger("tomorrow_selector")
 DEPRECATED_VERSIONS = {'v2', 'v3', 'v3.1', 'v3.2', 'v3.3', 'v3.4', 'v3.41',
                        'v3.5', 'v3.51', 'v3.52', 'v3.53', 'v3.6', 'v3.7',
                        'v3.8', 'v3.81', 'v3.94', 'v4'}
-ACTIVE_VERSIONS = {'v3.9', 'v3.95', 'v3.96', 'v4.0', 'v4.2', 'v4.3', 'v5.0'}
+ACTIVE_VERSIONS = {'v3.9', 'v3.95', 'v3.96', 'v4.0', 'v4.2', 'v4.3', 'v4.4', 'v5.0'}
 
 
 class TomorrowStockSelector:
@@ -75,10 +75,11 @@ class TomorrowStockSelector:
         self.v395_batch_cache = {}  # V3.95批处理结果缓存（多目标预测）
         self.v40_batch_cache = {}   # V4.0批处理结果缓存（cross-sectional alpha）
         self.v43_batch_cache = {}   # V4.3批处理结果缓存（扩展特征+强正则）
+        self.v44_batch_cache = {}   # V4.4批处理结果缓存（V4.3+6增强模块）
 
         # 初始化数据加载器
         self.data_loader = StockDataLoader()
-        
+
         # 根据版本初始化评分引擎
         if scoring_version == "v5.0":
             # V5.0 Unified Feature Fusion (v39+v40+neural)
@@ -88,6 +89,14 @@ class TomorrowStockSelector:
             from ml_models.v39.strategy_based_return_predictor import StrategyBasedReturnPredictor
             self.strategy_return_predictor = StrategyBasedReturnPredictor()
             logger.info("🔬 已初始化V5.0 Unified Feature Fusion评分系统 (v39+v40+neural)")
+        elif scoring_version == "v4.4":
+            # V4.4: V4.3信号底座 + 6增强模块
+            from ml_models.v39.v44_production_scorer import V44ProductionScorer
+            self.scoring_engine_v44 = V44ProductionScorer(model_type='small_data')
+            self.v44_batch_cache = {}
+            from ml_models.v39.strategy_based_return_predictor import StrategyBasedReturnPredictor
+            self.strategy_return_predictor = StrategyBasedReturnPredictor()
+            logger.info("🚀 已初始化V4.4评分系统 (V4.3信号+单调性校准+流动性+熊市专家+可执行性过滤)")
         elif scoring_version == "v4.3":
             # 初始化v4.3 扩展特征+强正则+等权+4目标 评分系统
             from ml_models.v39.v43_production_scorer import V43ProductionScorer
@@ -1760,7 +1769,52 @@ class TomorrowStockSelector:
             if trade_date is None:
                 trade_date = datetime.now().strftime('%Y-%m-%d')
 
-            if self.scoring_version == "v4.3":
+            if self.scoring_version == "v4.4":
+                # V4.4: V4.3信号+6增强模块
+                try:
+                    if stock_code in self.v44_batch_cache:
+                        result = self.v44_batch_cache[stock_code]
+                    else:
+                        results = self.scoring_engine_v44.predict_scores([stock_code], trade_date)
+                        result = results.get(stock_code, {'score': 50.0, 'pred_3d': 0, 'pred_5d': 0, 'pred_10d': 0, 'pred_15d': 0})
+
+                    if not result:
+                        return 45, {'error': '无法获取评分', 'scoring_method': 'V4.4_Enhanced'}
+
+                    final_score = result.get('score', 50.0)
+                    pred_3d = result.get('pred_3d', 0.0)
+                    pred_5d = result.get('pred_5d', 0.0)
+                    pred_10d = result.get('pred_10d', 0.0)
+                    pred_15d = result.get('pred_15d', 0.0)
+
+                    detailed_info = {
+                        'final_score': final_score,
+                        'confidence_score': 0.85,
+                        'confidence_level': 'high' if final_score >= 75 else 'medium' if final_score >= 55 else 'low',
+                        'short_term_score': final_score,
+                        'medium_term_score': final_score,
+                        'long_term_score': final_score,
+                        'predicted_return_5d': pred_5d,
+                        'pred_3d': pred_3d,
+                        'pred_5d': pred_5d,
+                        'pred_10d': pred_10d,
+                        'pred_15d': pred_15d,
+                        'overall_quality': 0.85,
+                        'quality_score': 0.85,
+                        'risk_level': 'medium',
+                        'recommendation': '买入' if final_score >= 75 else '观望' if final_score >= 55 else '回避',
+                        'confidence': 'high' if final_score >= 75 else 'medium',
+                        'scoring_method': 'V4.4_Enhanced_6Modules',
+                        'exec_filter': result.get('exec_filter', ''),
+                        'regime_info': result.get('regime_info', {}),
+                    }
+                    return final_score, detailed_info
+
+                except Exception as e:
+                    logger.error(f"v4.4评分系统错误 {stock_code}: {str(e)}")
+                    return 45, {'error': f'系统错误: {str(e)}', 'scoring_method': 'V4.4_Enhanced'}
+
+            elif self.scoring_version == "v4.3":
                 # 使用v4.3 扩展特征+强正则+4目标 评分系统
                 try:
                     if stock_code in self.v43_batch_cache:
@@ -3078,6 +3132,24 @@ class TomorrowStockSelector:
         all_stocks = [stock for stock, _ in sorted_stocks]  # 获取所有候选股票
         stock_with_scores = []
 
+        # 🚀 V4.4批量评分预计算
+        if hasattr(self, 'scoring_version') and self.scoring_version == "v4.4" and all_stocks:
+            if self.v44_batch_cache:
+                logger.info(f"✅ V4.4使用预填充缓存：{len(self.v44_batch_cache)}只股票")
+            else:
+                try:
+                    logger.info(f"🚀 V4.4批量评分预计算：{len(all_stocks)}只股票...")
+                    trade_date_str = target_date.strftime('%Y-%m-%d') if hasattr(target_date, 'strftime') else str(target_date)
+                    batch_results = self.scoring_engine_v44.predict_scores(all_stocks, trade_date_str)
+                    self.v44_batch_cache = batch_results
+                    if batch_results:
+                        scores = [r.get('score', 0) for r in batch_results.values()]
+                        if scores:
+                            logger.info(f"✅ V4.4批量预计算完成：{len(batch_results)}只股票，评分范围 {min(scores):.1f}-{max(scores):.1f}")
+                except Exception as e:
+                    logger.warning(f"⚠️ V4.4批量预计算失败，将使用单只评分: {e}")
+                    self.v44_batch_cache = {}
+
         # 🚀 V4.3批量评分预计算
         if hasattr(self, 'scoring_version') and self.scoring_version == "v4.3" and all_stocks:
             if self.v43_batch_cache:
@@ -4228,6 +4300,8 @@ def main(target_date: str = None, scoring_version: str = "v3", stocks_only: bool
     # 根据评分版本选择不同的报告目录
     if scoring_version == "v5.0":
         report_dir = Path("reports/daily_selection_v5.0")
+    elif scoring_version == "v4.4":
+        report_dir = Path("reports/daily_selection_v4.4")
     elif scoring_version == "v4.3":
         report_dir = Path("reports/daily_selection_v4.3")
     elif scoring_version == "v4.2":
@@ -4311,11 +4385,12 @@ if __name__ == "__main__":
                        choices=['v2', 'v3', 'v3.1', 'v3.2', 'v3.3', 'v3.4', 'v3.41',
                                 'v3.5', 'v3.51', 'v3.52', 'v3.53', 'v3.6', 'v3.7',
                                 'v3.8', 'v3.81', 'v3.9', 'v3.94', 'v3.95', 'v3.96',
-                                'v4', 'v4.0', 'v4.2', 'v4.3', 'v5.0'],
+                                'v4', 'v4.0', 'v4.2', 'v4.3', 'v4.4', 'v5.0'],
                        default='v3.9',
                        help='评分版本 (默认v3.9)。'
                             '活跃版本: v3.9(生产A级), v3.96(Robust Z-Score,ICIR>0.2), '
-                            'v4.3(Walk-Forward+强正则), v5.0(Unified Fusion,v39+v40+neural)。'
+                            'v4.3(Walk-Forward+强正则), v4.4(V4.3+6增强模块), '
+                            'v5.0(Unified Fusion,v39+v40+neural)。'
                             '已弃用: v2-v3.81, v3.94, v4 (仍可使用但不推荐)')
     parser.add_argument('--stocks-only', '-s', action='store_true',
                        help='只考虑A股股票，不包括ETF基金等')

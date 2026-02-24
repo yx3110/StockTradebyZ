@@ -22,6 +22,12 @@ warnings.filterwarnings('ignore')
 # 添加项目路径
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
+try:
+    from core.config import get_db_path as _get_db_path
+    _DEFAULT_DB_PATH = _get_db_path()
+except ImportError:
+    _DEFAULT_DB_PATH = Path(__file__).parent.parent.parent / 'data_adapter' / 'stock_data.db'
+
 
 class V395ProductionScorer:
     """V3.95 生产评分器"""
@@ -35,7 +41,7 @@ class V395ProductionScorer:
         """
         self.model_type = model_type
         self.model_dir = Path(__file__).parent.parent.parent / 'ml_models' / 'trained_models' / 'v395'
-        self.db_path = Path(__file__).parent.parent.parent / 'data_adapter' / 'stock_data.db'
+        self.db_path = _DEFAULT_DB_PATH
 
         # 加载模型配置
         self.models = {}
@@ -208,14 +214,14 @@ class V395ProductionScorer:
         conn = sqlite3.connect(self.db_path)
         try:
             codes = features_df['code'].tolist()
-            codes_str = ','.join([f"'{c}'" for c in codes])
+            placeholders = ','.join(['?' for _ in codes])
             query = f"""
             SELECT s.code, db.pe_ttm, db.pb, db.ps_ttm, db.turnover_rate, db.circ_mv
             FROM daily_basic db
             JOIN securities s ON db.security_id = s.id
-            WHERE s.code IN ({codes_str}) AND db.trade_date = '{date}'
+            WHERE s.code IN ({placeholders}) AND db.trade_date = ?
             """
-            df_basic = pd.read_sql_query(query, conn)
+            df_basic = pd.read_sql_query(query, conn, params=codes + [date])
         finally:
             conn.close()
 
@@ -255,7 +261,7 @@ class V395ProductionScorer:
         # 构建查询
         if load_full_cross_section:
             # 加载全截面数据 (用于rank归一化)
-            query = f"""
+            query = """
             SELECT code, trade_date, features_json,
                    market_return_20d, market_return_10d, market_return_5d,
                    market_volatility_20d, market_volatility_10d,
@@ -263,10 +269,11 @@ class V395ProductionScorer:
                    market_drawdown_20d, market_volume_ratio,
                    market_position_20d, market_momentum_20d, market_momentum_5d
             FROM v39_feature_cache
-            WHERE trade_date = '{date}'
+            WHERE trade_date = ?
             """
+            params = [date]
         else:
-            codes_str = ','.join([f"'{c}'" for c in stock_codes])
+            placeholders = ','.join(['?' for _ in stock_codes])
             query = f"""
             SELECT code, trade_date, features_json,
                    market_return_20d, market_return_10d, market_return_5d,
@@ -275,34 +282,27 @@ class V395ProductionScorer:
                    market_drawdown_20d, market_volume_ratio,
                    market_position_20d, market_momentum_20d, market_momentum_5d
             FROM v39_feature_cache
-            WHERE code IN ({codes_str})
-              AND trade_date = '{date}'
+            WHERE code IN ({placeholders})
+              AND trade_date = ?
             """
+            params = list(stock_codes) + [date]
 
-        df = pd.read_sql_query(query, conn)
+        df = pd.read_sql_query(query, conn, params=params)
         conn.close()
 
         if len(df) == 0:
             return None
 
-        # 解析features_json
-        features_list = []
-        valid_codes = []
-
-        for _, row in df.iterrows():
-            try:
-                features = json.loads(row['features_json'])
-                features_list.append(features)
-                valid_codes.append(row['code'])
-            except (json.JSONDecodeError, TypeError):
-                continue
-
-        if not features_list:
+        # 解析features_json (向量化)
+        parsed = df['features_json'].apply(
+            lambda s: json.loads(s) if isinstance(s, str) else None
+        )
+        valid_mask = parsed.notna()
+        if not valid_mask.any():
             return None
 
-        # 创建特征DataFrame
-        features_df = pd.DataFrame(features_list)
-        features_df['code'] = valid_codes
+        features_df = pd.DataFrame(parsed[valid_mask].tolist())
+        features_df['code'] = df.loc[valid_mask, 'code'].values
 
         # 添加市场特征
         market_cols = [c for c in df.columns if c.startswith('market_')]
@@ -490,12 +490,19 @@ class V395ProductionScorer:
 
         Args:
             stock_codes: 股票代码列表
-            date: 交易日期 (YYYY-MM-DD)
+            date: 交易日期 (YYYY-MM-DD 或 YYYYMMDD)
 
         Returns:
             Dict[股票代码, {score, pred_3d, pred_5d, pred_10d}]
         """
         results = {}
+
+        if not stock_codes:
+            return results
+
+        # 日期格式标准化
+        if isinstance(date, str) and len(date) == 8 and date.isdigit():
+            date = f"{date[:4]}-{date[4:6]}-{date[6:]}"
 
         # 获取特征 — 五种路径:
         # 1. robust_zscore: 全截面加载 → z-score归一化 → 加载daily_basic → 过滤
@@ -525,8 +532,11 @@ class V395ProductionScorer:
         # 准备特征矩阵 - 使用模型训练时的特征列顺序
         exclude_cols = {'code', 'trade_date'}
         if self.feature_cols:
-            for col in self.feature_cols:
-                if col not in features_df.columns:
+            missing = [c for c in self.feature_cols if c not in features_df.columns]
+            if missing:
+                if len(missing) > len(self.feature_cols) * 0.3:
+                    logger.warning(f"⚠️ {len(missing)}/{len(self.feature_cols)} 特征缺失, 预测质量可能下降: {missing[:5]}...")
+                for col in missing:
                     features_df[col] = 0
             available_cols = self.feature_cols
         else:
@@ -667,20 +677,15 @@ class V395ProductionScorer:
             # 按日期分组处理
             for date, date_df in df.groupby('trade_date'):
                 features_list = []
-                valid_codes = []
-
-                for _, row in date_df.iterrows():
-                    try:
-                        features = json.loads(row['features_json'])
-                        features_list.append(features)
-                        valid_codes.append(row['code'])
-                    except (json.JSONDecodeError, TypeError):
-                        continue
-
-                if not features_list:
+                parsed = date_df['features_json'].apply(
+                    lambda s: json.loads(s) if isinstance(s, str) else None
+                )
+                valid_mask = parsed.notna()
+                if not valid_mask.any():
                     continue
 
-                features_df = pd.DataFrame(features_list)
+                features_df = pd.DataFrame(parsed[valid_mask].tolist())
+                valid_codes = date_df.loc[valid_mask, 'code'].values
                 features_df['code'] = valid_codes
 
                 # 添加市场特征

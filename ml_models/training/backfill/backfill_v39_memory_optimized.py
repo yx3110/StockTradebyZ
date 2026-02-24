@@ -75,7 +75,7 @@ class FullV39FeatureComputer:
 
         # 1. 加载日线行情数据
         logger.info(f"📈 加载日线行情 ({buffer_start} ~ {end_date})...")
-        self.daily_quotes = pd.read_sql(f"""
+        self.daily_quotes = pd.read_sql("""
             SELECT
                 s.code, dq.trade_date,
                 dq.open, dq.high, dq.low, dq.close, dq.volume,
@@ -83,23 +83,23 @@ class FullV39FeatureComputer:
             FROM daily_quotes dq
             JOIN securities s ON dq.security_id = s.id
             WHERE s.type = 'A股'
-            AND dq.trade_date BETWEEN '{buffer_start}' AND '{end_date}'
+            AND dq.trade_date BETWEEN ? AND ?
             ORDER BY s.code, dq.trade_date
-        """, conn)
+        """, conn, params=[buffer_start, end_date])
         logger.info(f"   ✓ 加载 {len(self.daily_quotes):,} 条行情记录")
 
         # 2. 加载每日基本面数据
         logger.info(f"💰 加载每日基本面 ({buffer_start} ~ {end_date})...")
-        self.daily_basic = pd.read_sql(f"""
+        self.daily_basic = pd.read_sql("""
             SELECT
                 s.code, db.trade_date,
                 db.pe_ttm, db.pb, db.ps_ttm, db.turnover_rate, db.circ_mv
             FROM daily_basic db
             JOIN securities s ON db.security_id = s.id
             WHERE s.type = 'A股'
-            AND db.trade_date BETWEEN '{buffer_start}' AND '{end_date}'
+            AND db.trade_date BETWEEN ? AND ?
             ORDER BY s.code, db.trade_date
-        """, conn)
+        """, conn, params=[buffer_start, end_date])
         logger.info(f"   ✓ 加载 {len(self.daily_basic):,} 条基本面记录")
 
         # 3. 加载财务指标数据

@@ -158,10 +158,13 @@ class V395MultiTargetTrainer:
 
         # 构建日期过滤
         date_filter = ""
+        date_params = []
         if start_date:
-            date_filter += f" AND v.trade_date >= '{start_date}'"
+            date_filter += " AND v.trade_date >= ?"
+            date_params.append(start_date)
         if end_date:
-            date_filter += f" AND v.trade_date <= '{end_date}'"
+            date_filter += " AND v.trade_date <= ?"
+            date_params.append(end_date)
 
         # 过滤:
         # 1. 三个标签都非空
@@ -189,7 +192,7 @@ class V395MultiTargetTrainer:
         ORDER BY v.trade_date, v.code
         """
 
-        df = pd.read_sql(query, conn)
+        df = pd.read_sql(query, conn, params=date_params if date_params else None)
         conn.close()
 
         logger.info(f"  原始记录: {len(df):,} (已过滤停牌日+低历史股票)")
@@ -254,14 +257,14 @@ class V395MultiTargetTrainer:
         conn2 = sqlite3.connect(self.db_path)
         date_min = df_features['trade_date'].min()
         date_max = df_features['trade_date'].max()
-        query_basic = f"""
+        query_basic = """
         SELECT s.code, db.trade_date,
                db.pe_ttm, db.pb, db.ps_ttm, db.turnover_rate, db.circ_mv
         FROM daily_basic db
         JOIN securities s ON db.security_id = s.id
-        WHERE db.trade_date >= '{date_min}' AND db.trade_date <= '{date_max}'
+        WHERE db.trade_date >= ? AND db.trade_date <= ?
         """
-        df_basic = pd.read_sql(query_basic, conn2)
+        df_basic = pd.read_sql(query_basic, conn2, params=[date_min, date_max])
         conn2.close()
         logger.info(f"    daily_basic 记录: {len(df_basic):,}")
 
@@ -295,38 +298,13 @@ class V395MultiTargetTrainer:
         else:
             logger.warning("  sw_l1_code 列不存在, 跳过行业超额标签")
 
-        # ===== 新增: 标签 Winsorization (每列1%/99%) =====
-        for label_col in ['label_3d', 'label_5d', 'label_10d']:
-            lo = df_features[label_col].quantile(0.01)
-            hi = df_features[label_col].quantile(0.99)
-            n_clipped = ((df_features[label_col] < lo) | (df_features[label_col] > hi)).sum()
-            df_features[label_col] = df_features[label_col].clip(lo, hi)
-            logger.info(f"  标签winsorize {label_col}: [{lo:.4f}, {hi:.4f}], 裁剪{n_clipped:,}个")
-
-        # ===== Phase 2: 风险调整标签融合 =====
-        # 混合原始收益标签与Sharpe-adjusted标签 (70%原始 + 30%风险调整)
-        # 目的: 让模型学习"稳定收益"优于"高波动收益"，提升Sharpe
-        if self.sharpe_label_blend > 0:
-            logger.info(f"  风险调整标签融合 (blend={self.sharpe_label_blend:.0%})...")
-            for label_col in ['label_3d', 'label_5d', 'label_10d']:
-                # 每日截面内的收益波动率作为风险度量
-                daily_vol = df_features.groupby('trade_date')[label_col].transform('std')
-                daily_vol = daily_vol.fillna(0)  # 单样本日期std=NaN, 填0跳过风险调整
-                # Sharpe-adjusted label: 收益/波动 (截面内标准化)
-                sharpe_label = df_features[label_col] / (daily_vol + 1e-6)
-                # 标准化sharpe_label到原始标签的尺度
-                orig_std = df_features[label_col].std()
-                sharpe_std = sharpe_label.std()
-                if sharpe_std > 1e-8:
-                    sharpe_label = sharpe_label * orig_std / sharpe_std
-                else:
-                    sharpe_label = df_features[label_col].copy()
-                sharpe_label = sharpe_label.fillna(df_features[label_col])  # NaN回退到原始值
-                # 融合
-                blended = (1 - self.sharpe_label_blend) * df_features[label_col] + \
-                          self.sharpe_label_blend * sharpe_label
-                df_features[label_col] = blended
-                logger.info(f"    {label_col}: 融合后均值={blended.mean():.6f}, std={blended.std():.6f}")
+        # ===== 标签 Winsorization + Sharpe融合 延迟到 split_data() 后执行 =====
+        # 原因: 在全量数据上计算quantile/std会导致test集信息泄漏到训练集
+        # 正确做法: 仅在训练集上计算统计量，再应用到val/test
+        # 标记: 这些步骤将在 _apply_label_transforms() 中执行
+        self._pending_label_winsorize = True
+        self._pending_sharpe_blend = self.sharpe_label_blend > 0
+        logger.info(f"  标签Winsorization和Sharpe融合将在train/val/test分割后执行(防止数据泄漏)")
 
         return df_features
 
@@ -471,6 +449,63 @@ class V395MultiTargetTrainer:
         # 保存验证集/测试集日期 (用于IC-based权重计算)
         self.val_dates = dates[val_mask]
         self.test_dates = dates[test_mask]
+        self.train_dates = dates[train_mask]
+
+        # ===== 在split后应用标签变换(仅用训练集统计量，防止数据泄漏) =====
+        label_sets = [
+            (y_3d_train, y_3d_val, y_3d_test, 'label_3d'),
+            (y_5d_train, y_5d_val, y_5d_test, 'label_5d'),
+            (y_10d_train, y_10d_val, y_10d_test, 'label_10d'),
+        ]
+
+        if getattr(self, '_pending_label_winsorize', False):
+            logger.info("  标签Winsorization (仅用训练集统计量)...")
+            for y_tr, y_va, y_te, name in label_sets:
+                lo = np.percentile(y_tr, 1)
+                hi = np.percentile(y_tr, 99)
+                n_clipped_tr = int(((y_tr < lo) | (y_tr > hi)).sum())
+                y_tr[:] = np.clip(y_tr, lo, hi)
+                y_va[:] = np.clip(y_va, lo, hi)
+                y_te[:] = np.clip(y_te, lo, hi)
+                logger.info(f"    {name}: [{lo:.4f}, {hi:.4f}], 训练集裁剪{n_clipped_tr:,}个")
+
+        if getattr(self, '_pending_sharpe_blend', False):
+            logger.info(f"  风险调整标签融合 (blend={self.sharpe_label_blend:.0%}, 仅用训练集统计量)...")
+            for y_tr, y_va, y_te, name in label_sets:
+                train_dates_arr = self.train_dates
+                # 每日截面内的收益波动率 (仅训练集)
+                unique_train_dates = np.unique(train_dates_arr)
+                daily_vol_tr = np.zeros_like(y_tr)
+                for d in unique_train_dates:
+                    mask_d = train_dates_arr == d
+                    std_d = np.std(y_tr[mask_d])
+                    daily_vol_tr[mask_d] = std_d if std_d > 0 else 0
+                # Sharpe-adjusted: 收益/波动
+                sharpe_tr = y_tr / (daily_vol_tr + 1e-6)
+                # 标准化尺度 (仅用训练集std)
+                orig_std = np.std(y_tr)
+                sharpe_std = np.std(sharpe_tr)
+                if sharpe_std > 1e-8:
+                    scale = orig_std / sharpe_std
+                else:
+                    scale = 1.0
+                # 对训练集应用融合
+                y_tr[:] = (1 - self.sharpe_label_blend) * y_tr + self.sharpe_label_blend * sharpe_tr * scale
+
+                # 对val/test用相同scale (不重新计算统计量)
+                for y_set, dates_set in [(y_va, self.val_dates), (y_te, self.test_dates)]:
+                    if len(y_set) == 0:
+                        continue
+                    unique_d = np.unique(dates_set)
+                    daily_vol_set = np.zeros_like(y_set)
+                    for d in unique_d:
+                        mask_d = dates_set == d
+                        std_d = np.std(y_set[mask_d])
+                        daily_vol_set[mask_d] = std_d if std_d > 0 else 0
+                    sharpe_set = y_set / (daily_vol_set + 1e-6)
+                    y_set[:] = (1 - self.sharpe_label_blend) * y_set + self.sharpe_label_blend * sharpe_set * scale
+
+                logger.info(f"    {name}: 训练集融合后std={np.std(y_tr):.6f}")
 
         return (X_train, X_val, X_test,
                 y_3d_train, y_3d_val, y_3d_test,
@@ -1205,13 +1240,13 @@ class V43Trainer(V395MultiTargetTrainer):
         cache_cols = [row[1] for row in cursor.fetchall()]
 
         if 'label_15d' in cache_cols:
-            query_15d = f"""
+            query_15d = """
             SELECT code, trade_date, label_15d
             FROM v39_feature_cache
-            WHERE trade_date >= '{date_min}' AND trade_date <= '{date_max}'
+            WHERE trade_date >= ? AND trade_date <= ?
               AND label_15d IS NOT NULL
             """
-            df_15d = pd.read_sql(query_15d, conn)
+            df_15d = pd.read_sql(query_15d, conn, params=[date_min, date_max])
             df = df.merge(df_15d, on=['code', 'trade_date'], how='left')
             logger.info(f"  label_15d 从缓存加载: {df_15d.shape[0]:,} 条")
         else:
@@ -1221,14 +1256,14 @@ class V43Trainer(V395MultiTargetTrainer):
         if 'label_15d' not in df.columns or df['label_15d'].isna().sum() > len(df) * 0.5:
             logger.info("  从 daily_quotes 计算 label_15d (未来15天收益)...")
             # 获取所有 A 股的 close 价格
-            query_close = f"""
+            query_close = """
             SELECT s.code, q.trade_date, q.close
             FROM daily_quotes q
             JOIN securities s ON q.security_id = s.id
-            WHERE s.type = 'A股' AND q.trade_date >= '{date_min}'
+            WHERE s.type = 'A股' AND q.trade_date >= ?
             ORDER BY s.code, q.trade_date
             """
-            df_close = pd.read_sql(query_close, conn)
+            df_close = pd.read_sql(query_close, conn, params=[date_min])
             df_close = df_close.sort_values(['code', 'trade_date'])
             df_close['future_close_15d'] = df_close.groupby('code')['close'].shift(-15)
             df_close['label_15d_calc'] = (df_close['future_close_15d'] / df_close['close'] - 1)
@@ -1247,13 +1282,10 @@ class V43Trainer(V395MultiTargetTrainer):
             df['label_15d'] = df['label_15d'] - industry_median
             logger.info(f"  label_15d 行业超额: raw={raw_mean:.6f} → excess={df['label_15d'].mean():.6f}")
 
-        # 标签 Winsorization — 对 15d
-        if 'label_15d' in df.columns:
-            lo = df['label_15d'].quantile(0.01)
-            hi = df['label_15d'].quantile(0.99)
-            n_clipped = ((df['label_15d'] < lo) | (df['label_15d'] > hi)).sum()
-            df['label_15d'] = df['label_15d'].clip(lo, hi)
-            logger.info(f"  标签winsorize label_15d: [{lo:.4f}, {hi:.4f}], 裁剪{n_clipped:,}个")
+        # 标签 Winsorization — label_15d 延迟到 split 后执行 (防止数据泄漏)
+        self._pending_label_15d_winsorize = 'label_15d' in df.columns
+        if self._pending_label_15d_winsorize:
+            logger.info("  label_15d Winsorization 将在 split 后执行 (防止数据泄漏)")
 
         # 丢弃 label_15d 为空的行
         before = len(df)
@@ -1262,7 +1294,7 @@ class V43Trainer(V395MultiTargetTrainer):
 
         # ===== 新增: 技术指标特征 =====
         logger.info("加载技术指标特征 (KDJ/MACD/Bollinger/ATR)...")
-        query_tech = f"""
+        query_tech = """
         SELECT s.code, ti.trade_date,
                ti.kdj_k, ti.kdj_j, ti.macd_dif, ti.macd_dea, ti.macd_macd,
                ti.boll_upper, ti.boll_lower, ti.atr_14,
@@ -1270,10 +1302,10 @@ class V43Trainer(V395MultiTargetTrainer):
         FROM technical_indicators ti
         JOIN securities s ON ti.security_id = s.id
         JOIN daily_quotes q ON q.security_id = s.id AND q.trade_date = ti.trade_date
-        WHERE ti.trade_date >= '{date_min}' AND ti.trade_date <= '{date_max}'
+        WHERE ti.trade_date >= ? AND ti.trade_date <= ?
           AND s.type = 'A股'
         """
-        df_tech = pd.read_sql(query_tech, conn)
+        df_tech = pd.read_sql(query_tech, conn, params=[date_min, date_max])
         conn.close()
         logger.info(f"  技术指标记录: {len(df_tech):,}")
 
@@ -1672,11 +1704,22 @@ class V43Trainer(V395MultiTargetTrainer):
             test_mask = (dates >= w['test_start']) & (dates <= w['test_end'])
 
             X_train_w, X_val_w, X_test_w = X[train_mask], X[val_mask], X[test_mask]
-            y_3d_tr, y_3d_va, y_3d_te = y_3d[train_mask], y_3d[val_mask], y_3d[test_mask]
-            y_5d_tr, y_5d_va, y_5d_te = y_5d[train_mask], y_5d[val_mask], y_5d[test_mask]
-            y_10d_tr, y_10d_va, y_10d_te = y_10d[train_mask], y_10d[val_mask], y_10d[test_mask]
-            y_15d_tr, y_15d_va, y_15d_te = y_15d[train_mask], y_15d[val_mask], y_15d[test_mask]
+            y_3d_tr, y_3d_va, y_3d_te = y_3d[train_mask].copy(), y_3d[val_mask].copy(), y_3d[test_mask].copy()
+            y_5d_tr, y_5d_va, y_5d_te = y_5d[train_mask].copy(), y_5d[val_mask].copy(), y_5d[test_mask].copy()
+            y_10d_tr, y_10d_va, y_10d_te = y_10d[train_mask].copy(), y_10d[val_mask].copy(), y_10d[test_mask].copy()
+            y_15d_tr, y_15d_va, y_15d_te = y_15d[train_mask].copy(), y_15d[val_mask].copy(), y_15d[test_mask].copy()
             test_dates_w = dates[test_mask]
+
+            # Walk-Forward: 标签Winsorization (仅用训练集统计量, 防止数据泄漏)
+            for y_tr_w, y_va_w, y_te_w in [(y_3d_tr, y_3d_va, y_3d_te),
+                                             (y_5d_tr, y_5d_va, y_5d_te),
+                                             (y_10d_tr, y_10d_va, y_10d_te),
+                                             (y_15d_tr, y_15d_va, y_15d_te)]:
+                lo = np.percentile(y_tr_w, 1)
+                hi = np.percentile(y_tr_w, 99)
+                y_tr_w[:] = np.clip(y_tr_w, lo, hi)
+                y_va_w[:] = np.clip(y_va_w, lo, hi)
+                y_te_w[:] = np.clip(y_te_w, lo, hi)
 
             logger.info(f"  train={X_train_w.shape[0]:,}, val={X_val_w.shape[0]:,}, test={X_test_w.shape[0]:,}")
 
@@ -1757,11 +1800,18 @@ class V43Trainer(V395MultiTargetTrainer):
         all_results = {}
 
         targets_final = [
-            ('3d', y_3d[train_mask_final], y_3d[val_mask_final]),
-            ('5d', y_5d[train_mask_final], y_5d[val_mask_final]),
-            ('10d', y_10d[train_mask_final], y_10d[val_mask_final]),
-            ('15d', y_15d[train_mask_final], y_15d[val_mask_final]),
+            ('3d', y_3d[train_mask_final].copy(), y_3d[val_mask_final].copy()),
+            ('5d', y_5d[train_mask_final].copy(), y_5d[val_mask_final].copy()),
+            ('10d', y_10d[train_mask_final].copy(), y_10d[val_mask_final].copy()),
+            ('15d', y_15d[train_mask_final].copy(), y_15d[val_mask_final].copy()),
         ]
+
+        # 生产模型: 标签Winsorization (仅用训练集统计量)
+        for target_key, y_tr, y_va in targets_final:
+            lo = np.percentile(y_tr, 1)
+            hi = np.percentile(y_tr, 99)
+            y_tr[:] = np.clip(y_tr, lo, hi)
+            y_va[:] = np.clip(y_va, lo, hi)
 
         for target_key, y_tr, y_va in targets_final:
             sample_w = self.compute_sample_weights(df_train_f, y_tr)
@@ -1847,16 +1897,568 @@ class V43Trainer(V395MultiTargetTrainer):
         return model_data, history
 
 
+class V44Trainer(V43Trainer):
+    """V4.4 训练器 — V4.3信号底座 + 6个增强模块
+
+    目标: 北极星V2 80+/105 (76%+) A+级
+
+    Module A: 单调性校准 (IC Monotonicity 2.9→3.8+)
+      - 保序回归校准: 训练阶段在验证集拟合 score→return 的保序映射
+      - 单调性感知集成权重: 60% IC + 40% quintile单调性
+
+    Module B: 流动性感知 (Liquidity Coverage 80%→95%+)
+      - 低换手率标签折扣: turnover_rate<0.5% 时 label×0.5
+
+    Module C: 市况感知训练 (Worst 60d ICIR -0.001→0.10+)
+      - 熊市样本加权: market_return_20d<-5% 时 weight×2.0
+      - 熊市专家模型: 只用熊市样本训练单独LGB
+
+    Module D: Sharpe标签融合 (来自V3.96)
+      - 继承父类sharpe_label_blend=0.3, 调整目标权重偏向10d
+
+    Module E: 可执行性过滤 (涨停失败率 11.5%→2%) → 在scorer层实现
+
+    Module F: 市况自适应选股 (MaxDD→-10%) → 在scorer层实现
+    """
+
+    def __init__(self, db_path: str = DB_PATH):
+        super().__init__(db_path=db_path)
+        # Module D: Sharpe标签融合 + 调整权重偏向10d (对齐北极星10d评估)
+        self.sharpe_label_blend = 0.3
+        self.target_weights = {
+            'label_3d': 0.20,   # 0.25→0.20
+            'label_5d': 0.25,   # 0.30→0.25
+            'label_10d': 0.35,  # 0.25→0.35 (增加, 对齐北极星10d评估)
+            'label_15d': 0.20,  # 不变
+        }
+
+    def load_data(self, start_date: str = None, end_date: str = None) -> pd.DataFrame:
+        """加载数据 — V4.3基础 + Module B 流动性折扣标签"""
+        df = super().load_data(start_date, end_date)
+
+        # Module B: 低换手率标签折扣 — 教模型"低流动性=低有效收益"
+        if 'turnover_rate' in df.columns:
+            low_liq = df['turnover_rate'] < 0.5  # 换手率<0.5%
+            n_low = low_liq.sum()
+            for col in ['label_3d', 'label_5d', 'label_10d', 'label_15d']:
+                if col in df.columns:
+                    df.loc[low_liq, col] *= 0.5
+            logger.info(f"  Module B 流动性折扣: {n_low:,} 样本标签×0.5 (turnover_rate<0.5%)")
+        else:
+            logger.warning("  turnover_rate 不在数据中, 跳过流动性折扣")
+
+        return df
+
+    def compute_sample_weights(self, df: pd.DataFrame, y: np.ndarray) -> np.ndarray:
+        """Module C: 父类权重 + 熊市样本加权×2.0"""
+        weights = super().compute_sample_weights(df, y)
+
+        # 熊市样本加权 — 迫使模型学习逆境中选股
+        if 'market_return_20d' in df.columns:
+            bear = df['market_return_20d'].values < -0.05
+            n_bear = bear.sum()
+            weights[bear] *= 2.0
+            logger.info(f"    熊市样本加权: {n_bear:,} 样本 × 2.0 (market_return_20d < -5%)")
+        else:
+            # 尝试从市场特征中找
+            logger.info("    market_return_20d 未找到, 跳过熊市加权")
+
+        return weights
+
+    def calculate_ensemble_weights(self, predictions_val: dict, y_val) -> dict:
+        """Module A: 60% IC加权 + 40% 单调性加权 (替代V4.3等权)"""
+        val_dates = getattr(self, 'val_dates', None)
+
+        if val_dates is None:
+            return super().calculate_ensemble_weights(predictions_val, y_val)
+
+        unique_dates = np.unique(val_dates)
+
+        # 计算每个模型的 mean IC 和 quintile 单调性
+        mean_ics = {}
+        monotonicity_scores = {}
+
+        for name, pred in predictions_val.items():
+            # Daily IC
+            daily_ics = []
+            for date in unique_dates:
+                mask = val_dates == date
+                n = mask.sum()
+                if n < 10:
+                    continue
+                ic, _ = spearmanr(pred[mask], y_val[mask])
+                if not np.isnan(ic):
+                    daily_ics.append(ic)
+            mean_ics[name] = float(np.mean(daily_ics)) if daily_ics else 0.0
+
+            # Quintile 单调性: 按预测分5组, 检查实际收益是否单调递增
+            try:
+                q_labels = pd.qcut(pred, q=5, labels=False, duplicates='drop')
+                q_means = pd.Series(y_val).groupby(q_labels).mean()
+                if len(q_means) >= 4:
+                    # 计算相邻组均值差的符号: 理想情况全为正
+                    diffs = np.diff(q_means.values)
+                    monotonicity = np.mean(diffs > 0)  # 0~1, 1=完美单调
+                else:
+                    monotonicity = 0.5
+            except Exception:
+                monotonicity = 0.5
+            monotonicity_scores[name] = monotonicity
+
+        logger.info(f"  模型IC: {', '.join(f'{k}={v:.4f}' for k, v in mean_ics.items())}")
+        logger.info(f"  单调性: {', '.join(f'{k}={v:.3f}' for k, v in monotonicity_scores.items())}")
+
+        # 综合权重: 60% IC + 40% 单调性
+        combined = {}
+        for name in predictions_val:
+            ic_score = max(mean_ics.get(name, 0), 0)
+            mono_score = monotonicity_scores.get(name, 0.5)
+            combined[name] = 0.6 * ic_score + 0.4 * mono_score
+
+        total = sum(combined.values())
+        if total < 1e-8:
+            # 回退到等权
+            n = len(predictions_val)
+            weights = {k: 1.0 / n for k in predictions_val}
+            logger.info(f"  综合权重为0, 回退等权: {n} 模型")
+        else:
+            weights = {k: v / total for k, v in combined.items()}
+            logger.info(f"  IC+单调性权重: {', '.join(f'{k}={v:.3f}' for k, v in weights.items())}")
+
+        return weights, mean_ics
+
+    def _train_bear_specialist(self, X_train, y_train, df_train, target_key='10d'):
+        """Module C: 熊市专家模型 — 只用熊市样本训练单LGB"""
+        if 'market_return_20d' not in df_train.columns:
+            logger.info("  熊市专家: market_return_20d 不可用, 跳过")
+            return None
+
+        bear_mask = df_train['market_return_20d'].values < -0.05
+        n_bear = bear_mask.sum()
+        if n_bear < 1000:
+            logger.info(f"  熊市专家: 熊市样本不足 ({n_bear}), 跳过")
+            return None
+
+        X_bear = X_train[bear_mask]
+        y_bear = y_train[bear_mask]
+
+        logger.info(f"  训练熊市专家 ({target_key}): {n_bear:,} 样本...")
+
+        lgb_params = {
+            'objective': 'regression',
+            'metric': 'rmse',
+            'boosting_type': 'gbdt',
+            'num_leaves': 15,      # 更简单的模型防过拟合
+            'learning_rate': 0.03,
+            'feature_fraction': 0.5,
+            'bagging_fraction': 0.7,
+            'bagging_freq': 5,
+            'reg_alpha': 2.0,
+            'reg_lambda': 10.0,
+            'min_data_in_leaf': 300,
+            'verbose': -1,
+        }
+
+        # 用随机20%做early stopping
+        n = len(X_bear)
+        split = int(n * 0.8)
+        idx = np.random.RandomState(42).permutation(n)
+        train_idx, val_idx = idx[:split], idx[split:]
+
+        lgb_train = lgb.Dataset(X_bear[train_idx], label=y_bear[train_idx], free_raw_data=True)
+        lgb_val = lgb.Dataset(X_bear[val_idx], label=y_bear[val_idx], reference=lgb_train, free_raw_data=True)
+
+        bear_model = lgb.train(
+            lgb_params, lgb_train,
+            num_boost_round=500,
+            valid_sets=[lgb_val],
+            callbacks=[lgb.early_stopping(30), lgb.log_evaluation(0)]
+        )
+
+        # 评估
+        pred_val = bear_model.predict(X_bear[val_idx])
+        ic, _ = spearmanr(pred_val, y_bear[val_idx])
+        logger.info(f"  熊市专家 {target_key}: bear val IC={ic:.4f}, rounds={bear_model.best_iteration}")
+
+        del lgb_train, lgb_val
+        import gc; gc.collect()
+
+        return bear_model
+
+    def _fit_isotonic_calibration(self, X_val, y_val_dict, all_results):
+        """Module A: 在验证集上拟合保序回归校准"""
+        from sklearn.isotonic import IsotonicRegression
+
+        isotonic_models = {}
+
+        for target_key in ['3d', '5d', '10d', '15d']:
+            if target_key not in all_results:
+                continue
+
+            # 获取集成预测
+            pred_val = {}
+            models = all_results[target_key]['models']
+            weights = all_results[target_key]['weights']
+
+            for name, model in models.items():
+                try:
+                    if name == 'xgb':
+                        import xgboost as xgb_lib
+                        pred_val[name] = model.predict(xgb_lib.DMatrix(X_val))
+                    else:
+                        pred_val[name] = model.predict(X_val)
+                except Exception:
+                    continue
+
+            if not pred_val:
+                continue
+
+            # 加权集成
+            ensemble_pred = np.zeros(len(X_val))
+            for name, pred in pred_val.items():
+                w = weights.get(name, 1.0 / len(pred_val))
+                ensemble_pred += w * pred
+            total_w = sum(weights.get(n, 1.0/len(pred_val)) for n in pred_val)
+            if total_w > 0:
+                ensemble_pred /= total_w
+
+            # 拟合保序回归: pred → actual return
+            y_target = y_val_dict.get(target_key)
+            if y_target is None:
+                continue
+
+            valid = ~(np.isnan(ensemble_pred) | np.isnan(y_target))
+            if valid.sum() < 100:
+                continue
+
+            iso = IsotonicRegression(out_of_bounds='clip')
+            iso.fit(ensemble_pred[valid], y_target[valid])
+            isotonic_models[target_key] = iso
+
+            # 评估校准前后IC
+            raw_ic, _ = spearmanr(ensemble_pred[valid], y_target[valid])
+            calibrated_pred = iso.predict(ensemble_pred[valid])
+            cal_ic, _ = spearmanr(calibrated_pred, y_target[valid])
+            logger.info(f"  保序校准 {target_key}: IC {raw_ic:.4f} → {cal_ic:.4f}")
+
+        return isotonic_models
+
+    def walk_forward_train(self, start_date: str = None, end_date: str = None,
+                            purge_days: int = 15, min_train_days: int = 900,
+                            val_days: int = 120, test_days: int = 120,
+                            step_days: int = 90):
+        """V4.4 Walk-Forward 训练 — 增强版
+
+        vs V4.3:
+        - min_train_days: 720→900 (更多熊市样本)
+        - step_days: 120→90 (更多窗口, 更平滑)
+        - 新增: 熊市专家模型
+        - 新增: 保序回归校准
+        """
+        start_time = datetime.now()
+        logger.info("=" * 60)
+        logger.info("V4.4 Walk-Forward 训练 (V4.3信号 + 6增强模块)")
+        logger.info("=" * 60)
+        logger.info(f"  参数: min_train={min_train_days}d, val={val_days}d, test={test_days}d, "
+                     f"step={step_days}d, purge={purge_days}d")
+        logger.info(f"  目标权重: {self.target_weights}")
+        logger.info(f"  Sharpe融合: {self.sharpe_label_blend}")
+
+        # 1. 一次性加载全量数据 (含V4.3扩展+Module B流动性折扣)
+        df = self.load_data(start_date, end_date)
+        X, y_3d, y_5d, y_10d, y_15d, df = self.prepare_features(df)
+
+        dates = df['trade_date'].values
+        unique_dates = np.sort(np.unique(dates))
+        n_dates = len(unique_dates)
+        logger.info(f"  总交易日: {n_dates}, 样本: {len(X):,}")
+
+        # 2. 定义滚动窗口
+        windows = []
+        cursor = min_train_days
+        while cursor + val_days + purge_days + test_days <= n_dates:
+            train_end_idx = cursor - 1
+            val_start_idx = cursor + purge_days
+            val_end_idx = val_start_idx + val_days - 1
+            test_start_idx = val_end_idx + 1 + purge_days
+            test_end_idx = test_start_idx + test_days - 1
+
+            if test_end_idx >= n_dates:
+                break
+
+            windows.append({
+                'train_end': unique_dates[train_end_idx],
+                'val_start': unique_dates[val_start_idx],
+                'val_end': unique_dates[val_end_idx],
+                'test_start': unique_dates[test_start_idx],
+                'test_end': unique_dates[test_end_idx],
+            })
+            cursor += step_days
+
+        logger.info(f"  Walk-Forward 窗口数: {len(windows)}")
+        for i, w in enumerate(windows):
+            logger.info(f"    窗口 {i+1}: train<='{w['train_end']}', val={w['val_start']}~{w['val_end']}, "
+                         f"test={w['test_start']}~{w['test_end']}")
+
+        # 3. 对每个窗口训练+评估
+        wf_metrics = []
+        import gc
+
+        for wi, w in enumerate(windows):
+            logger.info(f"\n{'='*50}")
+            logger.info(f"Walk-Forward 窗口 {wi+1}/{len(windows)}")
+            logger.info(f"{'='*50}")
+
+            train_mask = dates <= w['train_end']
+            val_mask = (dates >= w['val_start']) & (dates <= w['val_end'])
+            test_mask = (dates >= w['test_start']) & (dates <= w['test_end'])
+
+            X_train_w, X_val_w, X_test_w = X[train_mask], X[val_mask], X[test_mask]
+            y_3d_tr, y_3d_va, y_3d_te = y_3d[train_mask].copy(), y_3d[val_mask].copy(), y_3d[test_mask].copy()
+            y_5d_tr, y_5d_va, y_5d_te = y_5d[train_mask].copy(), y_5d[val_mask].copy(), y_5d[test_mask].copy()
+            y_10d_tr, y_10d_va, y_10d_te = y_10d[train_mask].copy(), y_10d[val_mask].copy(), y_10d[test_mask].copy()
+            y_15d_tr, y_15d_va, y_15d_te = y_15d[train_mask].copy(), y_15d[val_mask].copy(), y_15d[test_mask].copy()
+            test_dates_w = dates[test_mask]
+
+            # Walk-Forward: 标签Winsorization (仅用训练集统计量, 防止数据泄漏)
+            for y_tr_w, y_va_w, y_te_w in [(y_3d_tr, y_3d_va, y_3d_te),
+                                             (y_5d_tr, y_5d_va, y_5d_te),
+                                             (y_10d_tr, y_10d_va, y_10d_te),
+                                             (y_15d_tr, y_15d_va, y_15d_te)]:
+                lo = np.percentile(y_tr_w, 1)
+                hi = np.percentile(y_tr_w, 99)
+                y_tr_w[:] = np.clip(y_tr_w, lo, hi)
+                y_va_w[:] = np.clip(y_va_w, lo, hi)
+                y_te_w[:] = np.clip(y_te_w, lo, hi)
+
+            logger.info(f"  train={X_train_w.shape[0]:,}, val={X_val_w.shape[0]:,}, test={X_test_w.shape[0]:,}")
+
+            self.val_dates = dates[val_mask]
+
+            # 训练 4 目标
+            targets_w = [
+                ('3d', y_3d_tr, y_3d_va, y_3d_te),
+                ('5d', y_5d_tr, y_5d_va, y_5d_te),
+                ('10d', y_10d_tr, y_10d_va, y_10d_te),
+                ('15d', y_15d_tr, y_15d_va, y_15d_te),
+            ]
+
+            window_metrics = {}
+            df_train_w = df[train_mask]
+
+            for target_key, y_tr, y_va, y_te in targets_w:
+                sample_w = self.compute_sample_weights(df_train_w, y_tr)
+                models, pred_train, pred_val = self.train_single_target_models(
+                    X_train_w, X_val_w, y_tr, y_va, f"label_{target_key}",
+                    sample_weights_train=sample_w)
+                weights, _ = self.calculate_ensemble_weights(pred_val, y_va)
+
+                # Test set prediction
+                pred_test = {}
+                for name, model in models.items():
+                    if name == 'xgb':
+                        pred_test[name] = model.predict(xgb.DMatrix(X_test_w))
+                    else:
+                        pred_test[name] = model.predict(X_test_w)
+
+                ensemble_pred = self.ensemble_predict(pred_test, weights)
+                ic, icir = self._calculate_daily_ic(ensemble_pred, y_te, test_dates_w)
+                window_metrics[target_key] = {'ic': ic, 'icir': icir}
+                logger.info(f"  {target_key}: IC={ic:.4f}, ICIR={icir:.4f}")
+
+                del models, pred_train, pred_val, pred_test
+                gc.collect()
+
+            wf_metrics.append(window_metrics)
+
+        # 4. Walk-Forward 汇总
+        logger.info("\n" + "=" * 60)
+        logger.info("Walk-Forward 汇总")
+        logger.info("=" * 60)
+
+        wf_summary = {}
+        for target_key in ['3d', '5d', '10d', '15d']:
+            ics = [m[target_key]['ic'] for m in wf_metrics if target_key in m]
+            icirs = [m[target_key]['icir'] for m in wf_metrics if target_key in m]
+            summary = {
+                'mean_ic': float(np.mean(ics)),
+                'std_ic': float(np.std(ics)),
+                'mean_icir': float(np.mean(icirs)),
+                'std_icir': float(np.std(icirs)),
+                'n_windows': len(ics),
+            }
+            wf_summary[target_key] = summary
+            logger.info(f"  {target_key}: IC={summary['mean_ic']:.4f}±{summary['std_ic']:.4f}, "
+                         f"ICIR={summary['mean_icir']:.4f}±{summary['std_icir']:.4f}")
+
+        # 5. 训练最终生产模型 (85% train + 15% val for early stopping)
+        logger.info("\n" + "=" * 60)
+        logger.info("训练最终生产模型 (全量数据)")
+        logger.info("=" * 60)
+
+        split_idx = int(n_dates * 0.85)
+        split_date = unique_dates[split_idx]
+        train_mask_final = dates <= split_date
+        val_mask_final = dates > split_date
+
+        X_train_f, X_val_f = X[train_mask_final], X[val_mask_final]
+        self.val_dates = dates[val_mask_final]
+
+        df_train_f = df[train_mask_final]
+        all_results = {}
+
+        y_val_dict = {}
+        targets_final = [
+            ('3d', y_3d[train_mask_final].copy(), y_3d[val_mask_final].copy()),
+            ('5d', y_5d[train_mask_final].copy(), y_5d[val_mask_final].copy()),
+            ('10d', y_10d[train_mask_final].copy(), y_10d[val_mask_final].copy()),
+            ('15d', y_15d[train_mask_final].copy(), y_15d[val_mask_final].copy()),
+        ]
+
+        # V44生产模型: 标签Winsorization (仅用训练集统计量)
+        for target_key, y_tr, y_va in targets_final:
+            lo = np.percentile(y_tr, 1)
+            hi = np.percentile(y_tr, 99)
+            y_tr[:] = np.clip(y_tr, lo, hi)
+            y_va[:] = np.clip(y_va, lo, hi)
+
+        for target_key, y_tr, y_va in targets_final:
+            sample_w = self.compute_sample_weights(df_train_f, y_tr)
+            models, pred_train, pred_val = self.train_single_target_models(
+                X_train_f, X_val_f, y_tr, y_va, f"label_{target_key}",
+                sample_weights_train=sample_w)
+            weights, rmses = self.calculate_ensemble_weights(pred_val, y_va)
+            all_results[target_key] = {'models': models, 'weights': weights, 'rmses': rmses}
+            y_val_dict[target_key] = y_va
+
+        # 6. Module C: 训练熊市专家模型 (只用10d目标)
+        logger.info("\n" + "=" * 60)
+        logger.info("Module C: 训练熊市专家模型")
+        logger.info("=" * 60)
+        bear_models = {}
+        for target_key in ['10d', '15d']:
+            y_tr_target = y_10d[train_mask_final] if target_key == '10d' else y_15d[train_mask_final]
+            bear_model = self._train_bear_specialist(X_train_f, y_tr_target, df_train_f, target_key)
+            if bear_model is not None:
+                bear_models[target_key] = bear_model
+
+        # 7. Module A: 保序回归校准
+        logger.info("\n" + "=" * 60)
+        logger.info("Module A: 保序回归校准")
+        logger.info("=" * 60)
+        isotonic_models = self._fit_isotonic_calibration(X_val_f, y_val_dict, all_results)
+
+        # 8. 特征重要性分析
+        self._log_feature_importance(all_results)
+
+        # 9. 保存模型
+        end_time = datetime.now()
+        duration = (end_time - start_time).total_seconds()
+
+        output_dir = PROJECT_ROOT / 'ml_models' / 'trained_models' / 'v44'
+        output_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+
+        model_data = {
+            'version': 'v4.4',
+            'models': all_results,
+            'feature_names': self.feature_names,
+            'target_weights': self.target_weights,
+            'market_features': list(self.market_calculator.market_features.columns[1:]),
+            'winsorize_bounds': getattr(self, 'winsorize_bounds', None),
+            # 模型类型标识
+            'cascade': False,
+            'rank_normalized': False,
+            'robust_zscore': True,
+            'industry_excess_labels': True,
+            'dual_stream': False,
+            'cross_sectional_neutralization': False,
+            'macro_feature_cols': self.macro_feature_cols,
+            'stock_feature_cols': self.stock_feature_cols,
+            'extra_features_from_daily_basic': ['pe_ttm', 'pb', 'ps_ttm', 'turnover_rate', 'log_market_cap'],
+            'extra_features_from_tech_indicators': self.extra_tech_feature_names,
+            'targets': ['3d', '5d', '10d', '15d'],
+            'ensemble_type': 'ic_monotonicity_weighted',
+            'sample_weighting': True,
+            'walk_forward_metrics': wf_summary,
+            'walk_forward_windows': len(windows),
+            'regularization': {
+                'num_leaves': 20, 'min_data_in_leaf': 500,
+                'reg_alpha': 1.0, 'reg_lambda': 5.0,
+                'path_smooth': 10.0, 'learning_rate': 0.02,
+            },
+            # V4.4 新增组件
+            'bear_models': bear_models,
+            'isotonic_calibration': isotonic_models,
+            'sharpe_label_blend': self.sharpe_label_blend,
+            'liquidity_discount': True,
+            'bear_sample_weighting': True,
+            'min_train_days': min_train_days,
+            'step_days': step_days,
+        }
+
+        model_path = output_dir / f'v44_multi_target_{timestamp}.pkl'
+        joblib.dump(model_data, model_path)
+        logger.info(f"\n模型已保存: {model_path}")
+        logger.info(f"  大小: {model_path.stat().st_size / 1024 / 1024:.1f} MB")
+
+        # 保存训练历史
+        history = {
+            'version': 'v4.4',
+            'start_time': start_time.isoformat(),
+            'end_time': end_time.isoformat(),
+            'duration_seconds': duration,
+            'status': 'completed',
+            'summary': {
+                'training_samples': int(train_mask_final.sum()),
+                'validation_samples': int(val_mask_final.sum()),
+                'feature_count': len(self.feature_names),
+                'walk_forward_summary': wf_summary,
+                'bear_models': list(bear_models.keys()),
+                'isotonic_targets': list(isotonic_models.keys()) if isotonic_models else [],
+            },
+            'target_weights': self.target_weights,
+            'ensemble_weights': {k: all_results[k]['weights'] for k in all_results},
+            'modules': {
+                'A_monotonicity': True,
+                'B_liquidity_discount': True,
+                'C_bear_specialist': len(bear_models) > 0,
+                'D_sharpe_blend': self.sharpe_label_blend,
+                'E_executability_filter': 'scorer层实现',
+                'F_regime_adaptive': 'scorer层实现',
+            },
+        }
+
+        history_path = output_dir / f'training_history_{timestamp}.json'
+        with open(history_path, 'w', encoding='utf-8') as f:
+            json.dump(history, f, indent=2, ensure_ascii=False)
+
+        latest_path = output_dir / 'training_history_latest.json'
+        with open(latest_path, 'w', encoding='utf-8') as f:
+            json.dump(history, f, indent=2, ensure_ascii=False)
+
+        logger.info(f"训练历史已保存: {history_path}")
+        logger.info(f"\nV4.4 训练完成! 总耗时: {duration:.0f}秒 ({duration/60:.1f}分钟)")
+
+        return model_data, history
+
+
 def main():
-    parser = argparse.ArgumentParser(description='V3.95/V4.3 多目标训练')
+    parser = argparse.ArgumentParser(description='V3.95/V4.3/V4.4 多目标训练')
     parser.add_argument('--start-date', type=str, default='2020-01-01', help='训练开始日期')
     parser.add_argument('--end-date', type=str, default=None, help='训练结束日期')
     parser.add_argument('--purge-days', type=int, default=10, help='Purge gap天数 (应>=最大标签前瞻天数, label_10d需要10天)')
     parser.add_argument('--sharpe-blend', type=float, default=0.3, help='Sharpe标签融合比例 (0=纯收益, 0.3=推荐, 1=纯Sharpe)')
     parser.add_argument('--v43', action='store_true', help='V4.3: 扩展特征+强正则+Walk-Forward')
+    parser.add_argument('--v44', action='store_true', help='V4.4: V4.3信号+6增强模块 (单调性校准/流动性/熊市专家/Sharpe标签)')
     args = parser.parse_args()
 
-    if args.v43:
+    if args.v44:
+        trainer = V44Trainer()
+        trainer.walk_forward_train(
+            start_date=args.start_date, end_date=args.end_date,
+            purge_days=max(args.purge_days, 15))
+    elif args.v43:
         trainer = V43Trainer()
         trainer.walk_forward_train(
             start_date=args.start_date, end_date=args.end_date,

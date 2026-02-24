@@ -69,12 +69,12 @@ def get_missing_samples(start_date, end_date, sample_stocks=None):
     conn = sqlite3.connect(DB_PATH)
 
     # 获取所有交易日
-    trade_dates = pd.read_sql(f"""
+    trade_dates = pd.read_sql("""
         SELECT DISTINCT trade_date
         FROM daily_quotes
-        WHERE trade_date BETWEEN '{start_date}' AND '{end_date}'
+        WHERE trade_date BETWEEN ? AND ?
         ORDER BY trade_date
-    """, conn)['trade_date'].tolist()
+    """, conn, params=[start_date, end_date])['trade_date'].tolist()
 
     # 跳过最后5天（无法计算标签）
     trade_dates = trade_dates[:-5] if len(trade_dates) > 5 else []
@@ -95,11 +95,11 @@ def get_missing_samples(start_date, end_date, sample_stocks=None):
     # 获取已有数据
     existing = set()
     try:
-        existing_df = pd.read_sql(f"""
+        existing_df = pd.read_sql("""
             SELECT code, trade_date
             FROM v39_feature_cache
-            WHERE trade_date BETWEEN '{start_date}' AND '{end_date}'
-        """, conn)
+            WHERE trade_date BETWEEN ? AND ?
+        """, conn, params=[start_date, end_date])
         existing = set(zip(existing_df['code'], existing_df['trade_date']))
     except:
         pass

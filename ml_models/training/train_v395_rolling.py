@@ -100,7 +100,7 @@ class V395RollingTrainer:
         conn = sqlite3.connect(self.db_path)
 
         # 构建查询 - features_json存储为JSON字符串
-        query = f"""
+        query = """
         SELECT code, trade_date, features_json,
                label_3d, label_5d, label_10d,
                market_return_20d, market_return_10d, market_return_5d,
@@ -109,8 +109,8 @@ class V395RollingTrainer:
                market_drawdown_20d, market_volume_ratio,
                market_position_20d, market_momentum_20d, market_momentum_5d
         FROM v39_feature_cache
-        WHERE trade_date >= '{start_date}'
-          AND trade_date <= '{end_date}'
+        WHERE trade_date >= ?
+          AND trade_date <= ?
           AND label_3d IS NOT NULL
           AND label_5d IS NOT NULL
           AND label_10d IS NOT NULL
@@ -118,7 +118,7 @@ class V395RollingTrainer:
         ORDER BY trade_date, code
         """
 
-        df = pd.read_sql_query(query, conn)
+        df = pd.read_sql_query(query, conn, params=[start_date, end_date])
         conn.close()
 
         print(f"原始数据量: {len(df)}")

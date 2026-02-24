@@ -42,6 +42,14 @@ openmp.tar.xz
 # API Keys and Secrets
 config.json
 TA_integration/config/config.json
+.env
+.env.*
+.env.local
+secrets/
+*_key.json
+*_secret.*
+.anthropic_key
+.tushare_token
 
 # Nested git repositories (add as submodules if needed)
 WorldQuantAlpha101/

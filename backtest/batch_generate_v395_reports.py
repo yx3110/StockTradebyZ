@@ -460,7 +460,7 @@ def main():
     parser.add_argument('--output-dir', default=None,
                         help='输出目录 (default: reports/daily_selection_v{version}_fast)')
     parser.add_argument('--version', default='v3.95',
-                        choices=['v3.9', 'v3.95', 'v4.3', 'v5.0'],
+                        choices=['v3.9', 'v3.95', 'v4.3', 'v4.4', 'v5.0'],
                         help='评分版本 (default: v3.95)')
     parser.add_argument('--force', action='store_true',
                         help='强制覆盖已有报告')
@@ -518,6 +518,9 @@ def main():
     if args.version == 'v3.9':
         from ml_models.v39.v390_production_scorer import V390ProductionScorer
         scorer = V390ProductionScorer()
+    elif args.version == 'v4.4':
+        from ml_models.v39.v44_production_scorer import V44ProductionScorer
+        scorer = V44ProductionScorer()
     elif args.version == 'v4.3':
         from ml_models.v39.v43_production_scorer import V43ProductionScorer
         scorer = V43ProductionScorer()

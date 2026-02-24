@@ -38,7 +38,14 @@ from datetime import datetime
 from pathlib import Path
 from scipy.stats import spearmanr
 
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+try:
+    from core.config import PROJECT_ROOT as _PROJECT_ROOT_PATH, get_db_path
+    PROJECT_ROOT = str(_PROJECT_ROOT_PATH)
+    DB_PATH = str(get_db_path())
+except ImportError:
+    PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    DB_PATH = os.path.join(PROJECT_ROOT, 'data_adapter', 'stock_data.db')
+
 sys.path.insert(0, PROJECT_ROOT)
 os.chdir(PROJECT_ROOT)
 
@@ -54,8 +61,6 @@ from backtest.north_star_metrics import (
     batch_load_universe_median_cap, compute_executability_metrics,
     classify_market_regime, compute_regime_conditional_metrics,
 )
-
-DB_PATH = os.path.join(PROJECT_ROOT, 'data_adapter', 'stock_data.db')
 
 HOLDING_DAYS = [1, 3, 5, 7, 10, 15]
 
@@ -134,7 +139,7 @@ def get_future_returns(codes, buy_date, holding_days_list=None):
         conn.close()
         return {}
 
-    codes_str = ','.join([f"'{c}'" for c in codes])
+    placeholders = ','.join(['?' for _ in codes])
 
     # 获取买入日开盘价（次日开盘买入）
     buy_prices = {}
@@ -142,8 +147,8 @@ def get_future_returns(codes, buy_date, holding_days_list=None):
         SELECT s.code, dq.open
         FROM daily_quotes dq
         JOIN securities s ON dq.security_id = s.id
-        WHERE s.code IN ({codes_str}) AND dq.trade_date = ?
-    """, (buy_date,)).fetchall()
+        WHERE s.code IN ({placeholders}) AND dq.trade_date = ?
+    """, list(codes) + [buy_date]).fetchall()
     for code, open_price in rows:
         if open_price and open_price > 0:
             buy_prices[code] = open_price
@@ -160,8 +165,8 @@ def get_future_returns(codes, buy_date, holding_days_list=None):
             SELECT s.code, dq.close
             FROM daily_quotes dq
             JOIN securities s ON dq.security_id = s.id
-            WHERE s.code IN ({codes_str}) AND dq.trade_date = ?
-        """, (sell_date,)).fetchall()
+            WHERE s.code IN ({placeholders}) AND dq.trade_date = ?
+        """, list(codes) + [sell_date]).fetchall()
 
         for code, close in sell_rows:
             if code in buy_prices and buy_prices[code] > 0:

@@ -999,15 +999,15 @@ def batch_load_market_cap_data(buy_dates: List[str], db_path: str = None) -> Dic
         return {}
 
     conn = sqlite3.connect(db_path)
-    dates_str = ','.join([f"'{d}'" for d in buy_dates])
+    placeholders = ','.join(['?' for _ in buy_dates])
     query = f"""
         SELECT db.trade_date, s.code, db.total_mv, db.turnover_rate
         FROM daily_basic db
         JOIN securities s ON db.security_id = s.id
-        WHERE db.trade_date IN ({dates_str})
+        WHERE db.trade_date IN ({placeholders})
           AND db.total_mv IS NOT NULL AND db.total_mv > 0
     """
-    df = pd.read_sql_query(query, conn)
+    df = pd.read_sql_query(query, conn, params=list(buy_dates))
     conn.close()
 
     result = {}
@@ -1036,16 +1036,16 @@ def batch_load_limit_up_data(buy_dates: List[str], db_path: str = None) -> Dict[
         return {}
 
     conn = sqlite3.connect(db_path)
-    dates_str = ','.join([f"'{d}'" for d in buy_dates])
+    placeholders = ','.join(['?' for _ in buy_dates])
     query = f"""
         SELECT dq.trade_date, s.code, dq.price_change_pct
         FROM daily_quotes dq
         JOIN securities s ON dq.security_id = s.id
-        WHERE dq.trade_date IN ({dates_str})
+        WHERE dq.trade_date IN ({placeholders})
           AND dq.price_change_pct IS NOT NULL
           AND s.type = 'A股'
     """
-    df = pd.read_sql_query(query, conn)
+    df = pd.read_sql_query(query, conn, params=list(buy_dates))
     conn.close()
 
     result = {}
@@ -1082,16 +1082,16 @@ def batch_load_universe_median_cap(buy_dates: List[str], db_path: str = None) ->
         return {}
 
     conn = sqlite3.connect(db_path)
-    dates_str = ','.join([f"'{d}'" for d in buy_dates])
+    placeholders = ','.join(['?' for _ in buy_dates])
     query = f"""
         SELECT db.trade_date, db.total_mv
         FROM daily_basic db
         JOIN securities s ON db.security_id = s.id
-        WHERE db.trade_date IN ({dates_str})
+        WHERE db.trade_date IN ({placeholders})
           AND db.total_mv IS NOT NULL AND db.total_mv > 0
           AND s.type = 'A股'
     """
-    df = pd.read_sql_query(query, conn)
+    df = pd.read_sql_query(query, conn, params=list(buy_dates))
     conn.close()
 
     result = {}

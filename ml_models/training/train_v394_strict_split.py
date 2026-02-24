@@ -61,10 +61,13 @@ def load_merged_features(min_date=None, max_date=None):
 
     # 构建日期筛选条件
     date_filter = ""
+    date_params = []
     if min_date:
-        date_filter += f" AND v.trade_date >= '{min_date}'"
+        date_filter += " AND v.trade_date >= ?"
+        date_params.append(min_date)
     if max_date:
-        date_filter += f" AND v.trade_date <= '{max_date}'"
+        date_filter += " AND v.trade_date <= ?"
+        date_params.append(max_date)
 
     # 使用JOIN直接合并两个缓存表
     query = f"""
@@ -88,7 +91,7 @@ def load_merged_features(min_date=None, max_date=None):
     """
 
     logger.info("  执行SQL JOIN查询...")
-    df = pd.read_sql(query, conn)
+    df = pd.read_sql(query, conn, params=date_params if date_params else None)
     logger.info(f"  合并数据: {len(df)} 条")
 
     if df.empty:

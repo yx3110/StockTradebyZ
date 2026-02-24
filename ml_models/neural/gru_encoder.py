@@ -254,10 +254,13 @@ def load_ohlcv_data(db_path: str = DB_PATH,
     conn = sqlite3.connect(db_path)
 
     date_filter = ""
+    params = []
     if start_date:
-        date_filter += f" AND q.trade_date >= '{start_date}'"
+        date_filter += " AND q.trade_date >= ?"
+        params.append(start_date)
     if end_date:
-        date_filter += f" AND q.trade_date <= '{end_date}'"
+        date_filter += " AND q.trade_date <= ?"
+        params.append(end_date)
 
     query = f"""
     SELECT s.code, q.trade_date, q.open, q.high, q.low, q.close, q.volume
@@ -268,7 +271,7 @@ def load_ohlcv_data(db_path: str = DB_PATH,
     ORDER BY s.code, q.trade_date
     """
 
-    df = pd.read_sql(query, conn)
+    df = pd.read_sql(query, conn, params=params if params else None)
     conn.close()
 
     logger.info(f"  加载 {len(df):,} 条 OHLCV 记录")
@@ -289,10 +292,13 @@ def load_training_labels(db_path: str = DB_PATH,
     conn = sqlite3.connect(db_path)
 
     date_filter = ""
+    params = []
     if start_date:
-        date_filter += f" AND trade_date >= '{start_date}'"
+        date_filter += " AND trade_date >= ?"
+        params.append(start_date)
     if end_date:
-        date_filter += f" AND trade_date <= '{end_date}'"
+        date_filter += " AND trade_date <= ?"
+        params.append(end_date)
 
     query = f"""
     SELECT code, trade_date, label_5d
@@ -300,7 +306,7 @@ def load_training_labels(db_path: str = DB_PATH,
     WHERE label_5d IS NOT NULL {date_filter}
     ORDER BY trade_date, code
     """
-    df = pd.read_sql(query, conn)
+    df = pd.read_sql(query, conn, params=params if params else None)
     conn.close()
 
     # Per-date z-score labels

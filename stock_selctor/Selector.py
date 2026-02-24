@@ -183,8 +183,45 @@ def _find_peaks(
     return peaks_df
 
 
+# --------------------------- 基类 --------------------------- #
+from abc import ABC, abstractmethod
+
+
+class BaseSelector(ABC):
+    """所有量化选股策略的基类。
+
+    子类必须实现:
+    - ``_passes_filters(hist)`` : 单支股票过滤逻辑
+    - ``_required_history`` (property) : 所需最小历史长度
+    """
+
+    @property
+    def _required_history(self) -> int:
+        """子类返回所需的最小 K 线数量。默认 max_window + 20。"""
+        return getattr(self, 'max_window', 90) + 20
+
+    @abstractmethod
+    def _passes_filters(self, hist: pd.DataFrame) -> bool:
+        ...
+
+    def select(
+        self, date: pd.Timestamp, data: Dict[str, pd.DataFrame]
+    ) -> List[str]:
+        picks: List[str] = []
+        need = self._required_history
+        for code, df in data.items():
+            if df is None or df.empty:
+                continue
+            hist = df[df["date"] <= date].tail(need)
+            if len(hist) < max(need // 2, 10):
+                continue
+            if self._passes_filters(hist):
+                picks.append(code)
+        return picks
+
+
 # --------------------------- Selector 类 --------------------------- #
-class BBIKDJSelector:
+class BBIKDJSelector(BaseSelector):
     """
     自适应 *BBI(导数)* + *KDJ* 选股器
         • BBI: 允许 bbi_q_threshold 比例的回撤
@@ -255,23 +292,9 @@ class BBIKDJSelector:
 
         return True
 
-    # ---------- 多股票批量 ---------- #
-    def select(
-        self, date: pd.Timestamp, data: Dict[str, pd.DataFrame]
-    ) -> List[str]:
-        picks: List[str] = []
-        for code, df in data.items():
-            hist = df[df["date"] <= date]
-            if hist.empty:
-                continue
-            # 额外预留 20 根 K 线缓冲
-            hist = hist.tail(self.max_window + 20)
-            if self._passes_filters(hist):
-                picks.append(code)
-        return picks
 
 
-class SuperB1Selector:
+class SuperB1Selector(BaseSelector):
     """SuperB1 选股器
 
     过滤逻辑概览
@@ -326,6 +349,10 @@ class SuperB1Selector:
         # 为保证给 BBIKDJSelector 提供足够历史，预留额外缓冲
         self._extra_for_bbi = self.bbi_selector.max_window + 20
 
+    @property
+    def _required_history(self) -> int:
+        return self.lookback_n + self._extra_for_bbi
+
     # 单支股票过滤核心
     def _passes_filters(self, hist: pd.DataFrame) -> bool:
         """*hist* 必须按日期升序，且最后一行为目标 *date*。"""
@@ -372,22 +399,9 @@ class SuperB1Selector:
 
         return True
 
-    # 批量选股接口
-    def select(self, date: pd.Timestamp, data: Dict[str, pd.DataFrame]) -> List[str]:        
-        picks: List[str] = []
-        min_len = self.lookback_n + self._extra_for_bbi
-
-        for code, df in data.items():
-            hist = df[df["date"] <= date].tail(min_len)
-            if len(hist) < min_len:
-                continue
-            if self._passes_filters(hist):
-                picks.append(code)
-
-        return picks
 
 
-class PeakKDJSelector:
+class PeakKDJSelector(BaseSelector):
     """
     Peaks + KDJ 选股器    
     """
@@ -477,30 +491,17 @@ class PeakKDJSelector:
 
         # 3. 当日收盘价波动率
         close_today = hist.iloc[-1]["close"]
+        if target_peak.close <= 0:
+            return False
         fluc_pct = abs(close_today - target_peak.close) / target_peak.close
         if fluc_pct > self.fluc_threshold:
             return False
 
         return True
 
-    # ---------- 多股票批量 ---------- #
-    def select(
-        self,
-        date: pd.Timestamp,
-        data: Dict[str, pd.DataFrame],
-    ) -> List[str]:
-        picks: List[str] = []
-        for code, df in data.items():
-            hist = df[df["date"] <= date]
-            if hist.empty:
-                continue
-            hist = hist.tail(self.max_window + 20)  # 额外缓冲
-            if self._passes_filters(hist):
-                picks.append(code)
-        return picks
-    
 
-class BBIShortLongSelector:
+
+class BBIShortLongSelector(BaseSelector):
     """
     BBI 上升 + 短/长期 RSV 条件 + DIF > 0 选股器
     """
@@ -566,30 +567,13 @@ class BBIShortLongSelector:
 
         return True
 
-    # ---------- 多股票批量 ---------- #
-    def select(
-        self,
-        date: pd.Timestamp,
-        data: Dict[str, pd.DataFrame],
-    ) -> List[str]:
-        picks: List[str] = []
-        for code, df in data.items():
-            hist = df[df["date"] <= date]
-            if hist.empty:
-                continue
-            # 预留足够长度：RSV 计算窗口 + BBI 检测窗口 + m
-            need_len = (
-                max(self.n_short, self.n_long)
-                + self.bbi_min_window
-                + self.m
-            )
-            hist = hist.tail(max(need_len, self.max_window))
-            if self._passes_filters(hist):
-                picks.append(code)
-        return picks
+    @property
+    def _required_history(self) -> int:
+        need_len = max(self.n_short, self.n_long) + self.bbi_min_window + self.m
+        return max(need_len, self.max_window)
 
 
-class BreakoutVolumeKDJSelector:
+class BreakoutVolumeKDJSelector(BaseSelector):
     """
     放量突破 + KDJ + DIF>0 + 收盘价波动幅度 选股器   
     """
@@ -677,21 +661,8 @@ class BreakoutVolumeKDJSelector:
 
         return False
 
-    # ---------- 多股票批量 ---------- #
-    def select(
-        self, date: pd.Timestamp, data: Dict[str, pd.DataFrame]
-    ) -> List[str]:
-        picks: List[str] = []
-        for code, df in data.items():
-            hist = df[df["date"] <= date]
-            if hist.empty:
-                continue
-            if self._passes_filters(hist):
-                picks.append(code)
-        return picks
 
-
-class ZhiXingSelector:
+class ZhiXingSelector(BaseSelector):
     """
     知行选股策略
     基于KDJ指标和知行趋势线的选股器
@@ -792,20 +763,9 @@ class ZhiXingSelector:
         return True
 
     # ---------- 多股票批量 ---------- #
-    def select(
-        self, date: pd.Timestamp, data: Dict[str, pd.DataFrame]
-    ) -> List[str]:
-        picks: List[str] = []
-        for code, df in data.items():
-            hist = df[df["date"] <= date]
-            if hist.empty:
-                continue
-            if self._passes_filters(hist):
-                picks.append(code)
-        return picks
 
 
-class MA60CrossVolumeWaveSelector:
+class MA60CrossVolumeWaveSelector(BaseSelector):
     """
     上穿60放量战法
 
@@ -961,22 +921,12 @@ class MA60CrossVolumeWaveSelector:
         return True
 
     # ---------- 多股票批量 ---------- #
-    def select(
-        self, date: pd.Timestamp, data: Dict[str, pd.DataFrame]
-    ) -> List[str]:
-        picks: List[str] = []
-        for code, df in data.items():
-            hist = df[df["date"] <= date]
-            if hist.empty:
-                continue
-            # 预留足够长度：max_window + 60 (MA60计算) + 20 (额外缓冲)
-            hist = hist.tail(self.max_window + 80)
-            if self._passes_filters(hist):
-                picks.append(code)
-        return picks
+    @property
+    def _required_history(self) -> int:
+        return self.max_window + 80
 
 
-class BigBullishVolumeSelector:
+class BigBullishVolumeSelector(BaseSelector):
     """
     暴力K战法选股器
 
@@ -1113,20 +1063,9 @@ class BigBullishVolumeSelector:
 
         return True
 
-    def select(self, date: pd.Timestamp, data: Dict[str, pd.DataFrame]) -> List[str]:
-        picks: List[str] = []
-        need_len = max(self.min_history, self.vol_lookback_n + 2)
-
-        for code, df in data.items():
-            if df is None or df.empty:
-                continue
-            hist = df[df["date"] <= date].tail(need_len)
-            if len(hist) < need_len:
-                continue
-            if self._passes_filters(hist):
-                picks.append(code)
-
-        return picks
+    @property
+    def _required_history(self) -> int:
+        return max(self.min_history, self.vol_lookback_n + 2)
 
 
 # ─────────── 批量指标预计算 ─────────── #

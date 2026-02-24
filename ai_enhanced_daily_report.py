@@ -24,8 +24,20 @@ sys.path.append(str(current_dir))
 sys.path.append(str(current_dir / "TA_integration"))
 
 # 导入Claude分析器和市场综合分析器
-from claude_driven_analyzer import ClaudeDrivenAnalyzer
-from market_comprehensive_analyzer import MarketComprehensiveAnalyzer
+try:
+    from archive.experimental.claude_driven_analyzer import ClaudeDrivenAnalyzer
+except ImportError:
+    try:
+        from claude_driven_analyzer import ClaudeDrivenAnalyzer
+    except ImportError:
+        print("警告: ClaudeDrivenAnalyzer不可用，AI分析功能将降级")
+        ClaudeDrivenAnalyzer = None
+
+try:
+    from market_comprehensive_analyzer import MarketComprehensiveAnalyzer
+except ImportError:
+    print("警告: MarketComprehensiveAnalyzer不可用，市场分析功能将降级")
+    MarketComprehensiveAnalyzer = None
 
 # 情绪分析组件已禁用
 try:

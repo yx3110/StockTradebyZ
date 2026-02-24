@@ -46,23 +46,23 @@ class CompleteV39FeatureComputer:
         buffer_start = (start_dt - timedelta(days=150)).strftime('%Y-%m-%d')
 
         logger.info(f"📈 Loading daily quotes ({buffer_start} ~ {end_date})...")
-        self.daily_quotes = pd.read_sql(f"""
+        self.daily_quotes = pd.read_sql("""
             SELECT s.code, dq.trade_date, dq.open, dq.high, dq.low, dq.close, dq.volume,
                    dq.price_change_pct, dq.is_limit_up
             FROM daily_quotes dq
             JOIN securities s ON dq.security_id = s.id
-            WHERE s.type = 'A股' AND dq.trade_date BETWEEN '{buffer_start}' AND '{end_date}'
+            WHERE s.type = 'A股' AND dq.trade_date BETWEEN ? AND ?
             ORDER BY s.code, dq.trade_date
-        """, conn)
+        """, conn, params=[buffer_start, end_date])
         logger.info(f"   ✓ Loaded {len(self.daily_quotes):,} quote records")
 
         logger.info(f"💰 Loading daily basic...")
-        self.daily_basic = pd.read_sql(f"""
+        self.daily_basic = pd.read_sql("""
             SELECT s.code, db.trade_date, db.pe_ttm, db.pb, db.ps_ttm, db.turnover_rate, db.circ_mv
             FROM daily_basic db
             JOIN securities s ON db.security_id = s.id
-            WHERE s.type = 'A股' AND db.trade_date BETWEEN '{buffer_start}' AND '{end_date}'
-        """, conn)
+            WHERE s.type = 'A股' AND db.trade_date BETWEEN ? AND ?
+        """, conn, params=[buffer_start, end_date])
         logger.info(f"   ✓ Loaded {len(self.daily_basic):,} basic records")
 
         logger.info("📋 Loading financials...")

@@ -42,7 +42,7 @@ def load_all_data(start_date, end_date):
     conn = sqlite3.connect(DB_PATH)
 
     # 加载所有行情数据
-    quotes = pd.read_sql(f"""
+    quotes = pd.read_sql("""
         SELECT
             s.code,
             q.trade_date,
@@ -50,15 +50,15 @@ def load_all_data(start_date, end_date):
             q.price_change_pct
         FROM daily_quotes q
         JOIN securities s ON q.security_id = s.id
-        WHERE q.trade_date BETWEEN '{start_date}' AND '{end_date}'
+        WHERE q.trade_date BETWEEN ? AND ?
         AND s.type = 'A股'
         ORDER BY s.code, q.trade_date
-    """, conn)
+    """, conn, params=[start_date, end_date])
 
     logger.info(f"  行情数据: {len(quotes):,} 条")
 
     # 加载基本面数据
-    basic = pd.read_sql(f"""
+    basic = pd.read_sql("""
         SELECT
             s.code,
             d.trade_date,
@@ -67,8 +67,8 @@ def load_all_data(start_date, end_date):
             d.turnover_rate
         FROM daily_basic d
         JOIN securities s ON d.security_id = s.id
-        WHERE d.trade_date BETWEEN '{start_date}' AND '{end_date}'
-    """, conn)
+        WHERE d.trade_date BETWEEN ? AND ?
+    """, conn, params=[start_date, end_date])
 
     logger.info(f"  基本面数据: {len(basic):,} 条")
 
@@ -223,11 +223,11 @@ def run_fast_backfill(start_date, end_date, sample_stocks=None, num_workers=None
     # 检查已有数据
     existing = set()
     try:
-        existing_df = pd.read_sql(f"""
+        existing_df = pd.read_sql("""
             SELECT code, trade_date
             FROM v39_feature_cache
-            WHERE trade_date BETWEEN '{start_date}' AND '{end_date}'
-        """, conn)
+            WHERE trade_date BETWEEN ? AND ?
+        """, conn, params=[start_date, end_date])
         existing = set(zip(existing_df['code'], existing_df['trade_date']))
     except:
         pass

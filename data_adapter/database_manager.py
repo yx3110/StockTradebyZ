@@ -183,18 +183,37 @@ class DatabaseManager:
         with self.get_connection() as conn:
             return pd.read_sql_query(query, conn, params=params if params else None)
     
+    # 技术指标表允许的列名白名单
+    ALLOWED_INDICATOR_COLUMNS = frozenset({
+        'kdj_k', 'kdj_d', 'kdj_j',
+        'macd_dif', 'macd_dea', 'macd_macd',
+        'rsi6', 'rsi12', 'rsi24',
+        'boll_upper', 'boll_middle', 'boll_lower',
+        'bbi',
+        'volume_ma5', 'volume_ma10', 'volume_ratio',
+        'kc_upper', 'kc_middle', 'kc_lower', 'kc_width',
+        'squeeze_state', 'squeeze_release', 'squeeze_intensity',
+        'squeeze_days', 'recent_releases',
+        'squeeze_momentum', 'momentum_direction', 'momentum_strength',
+        'momentum_acceleration', 'momentum_consistency',
+    })
+
     def update_technical_indicators(self, security_id: int, date: str, indicators: Dict[str, float]):
         """更新技术指标"""
-        # 构建动态SQL
+        # 列名白名单校验，防止SQL注入
+        invalid_cols = set(indicators.keys()) - self.ALLOWED_INDICATOR_COLUMNS
+        if invalid_cols:
+            raise ValueError(f"非法的技术指标列名: {invalid_cols}")
+
         columns = ['security_id', 'trade_date'] + list(indicators.keys())
         placeholders = ['?'] * len(columns)
         values = [security_id, date] + list(indicators.values())
-        
+
         query = f"""
         INSERT OR REPLACE INTO technical_indicators ({', '.join(columns)})
         VALUES ({', '.join(placeholders)})
         """
-        
+
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(query, values)

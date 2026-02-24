@@ -51,18 +51,21 @@ class TradingAdvisor:
         with open(positions_file, 'r', encoding='utf-8') as f:
             content = f.read()
         
-        # 查找最新日期的持仓表格
+        # 动态查找最新日期的持仓表格
+        import re
         lines = content.split('\n')
         positions = []
-        in_table = False
-        
-        for line in lines:
-            if '## 2025-08-04' in line:  # 查找最新日期
-                in_table = True
-                continue
-            elif line.startswith('## ') and in_table:
+
+        date_headers = [(i, line) for i, line in enumerate(lines) if re.match(r'^## \d{4}-\d{2}-\d{2}', line)]
+        if not date_headers:
+            return pd.DataFrame(positions)
+        # 选择最新日期
+        latest_idx = max(date_headers, key=lambda x: x[1])[0]
+
+        for line in lines[latest_idx + 1:]:
+            if line.startswith('## '):
                 break
-            elif in_table and '|' in line and not line.startswith('|---'):
+            elif '|' in line and not line.startswith('|---'):
                 parts = [p.strip() for p in line.split('|') if p.strip()]
                 if len(parts) >= 3 and parts[0] != '股票代码':
                     try:
@@ -73,7 +76,7 @@ class TradingAdvisor:
                         })
                     except (ValueError, IndexError):
                         continue
-        
+
         return pd.DataFrame(positions)
     
     def load_latest_report(self) -> Optional[pd.DataFrame]:

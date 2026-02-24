@@ -153,13 +153,13 @@ class V500ProductionScorer(V395ProductionScorer):
         """从 v40_feature_cache 加载精选特征"""
         conn = sqlite3.connect(self.db_path)
         try:
-            codes_str = ','.join([f"'{c}'" for c in codes])
+            placeholders = ','.join(['?' for _ in codes])
             query = f"""
             SELECT code, features_json
             FROM v40_feature_cache
-            WHERE code IN ({codes_str}) AND trade_date = '{date}'
+            WHERE code IN ({placeholders}) AND trade_date = ?
             """
-            df_raw = pd.read_sql_query(query, conn)
+            df_raw = pd.read_sql_query(query, conn, params=list(codes) + [date])
         finally:
             conn.close()
 

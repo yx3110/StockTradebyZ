@@ -28,7 +28,12 @@ import time
 import signal
 
 # 添加项目路径
-PROJECT_ROOT = Path(__file__).parent.parent
+try:
+    from core.config import PROJECT_ROOT, get_db_path
+    _DB_PATH = str(get_db_path())
+except ImportError:
+    PROJECT_ROOT = Path(__file__).parent.parent
+    _DB_PATH = str(PROJECT_ROOT / 'data_adapter' / 'stock_data.db')
 sys.path.insert(0, str(PROJECT_ROOT))
 
 logging.basicConfig(
@@ -44,7 +49,7 @@ class V39FeatureCacheUpdaterOptimized:
     def __init__(self, db_path: str = None):
         """初始化更新器"""
         if db_path is None:
-            db_path = str(PROJECT_ROOT / 'data_adapter' / 'stock_data.db')
+            db_path = _DB_PATH
         self.db_path = db_path
 
         # 市场指数代码 (用于计算市场状态特征)

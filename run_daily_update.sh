@@ -1,8 +1,9 @@
 #!/bin/bash
 # 每日股票数据更新和选股分析启动脚本
 
-# 配置变量（请根据实际情况修改）
-TUSHARE_TOKEN="YOUR_TUSHARE_TOKEN_HERE"  # 替换为你的Tushare Token
+# 配置变量
+# API Token 从环境变量读取，不在脚本中硬编码
+# 设置方法: export TUSHARE_TOKEN="your_token" 或写入 ~/.bashrc / ~/.zshrc
 WORKERS=5
 MODE="both"  # 可选: update, report, both, check, ai-enhance
 USE_DATABASE=true  # 使用数据库模式
@@ -44,15 +45,22 @@ check_environment() {
         exit 1
     fi
     
-    # 检查Token配置
-    if [ "$TUSHARE_TOKEN" = "YOUR_TUSHARE_TOKEN_HERE" ]; then
-        print_warning "请在脚本中配置你的Tushare Token"
-        read -p "请输入你的Tushare Token: " TUSHARE_TOKEN
+    # 检查Token配置 (从环境变量或config.json读取)
+    if [ -z "$TUSHARE_TOKEN" ]; then
+        # 尝试从config.json读取
+        TUSHARE_TOKEN=$($PYTHON_CMD -c "
+import json, pathlib
+p = pathlib.Path('$SCRIPT_DIR/config.json')
+if p.exists():
+    cfg = json.loads(p.read_text())
+    print(cfg.get('tushare', {}).get('token', ''))
+" 2>/dev/null)
         if [ -z "$TUSHARE_TOKEN" ]; then
-            print_error "Token不能为空"
+            print_error "未找到 Tushare Token。请设置环境变量: export TUSHARE_TOKEN='your_token'"
             exit 1
         fi
     fi
+    export TUSHARE_TOKEN  # 确保子进程可用
     
     print_info "环境检查通过"
 }
@@ -155,10 +163,10 @@ run_main_program() {
             return 0
         fi
     else
-        # 传统CSV模式
+        # 传统CSV模式 (deprecated)
         print_info "使用传统CSV模式..."
         CMD="$PYTHON_CMD $SCRIPT_DIR/daily_update_system.py"
-        CMD="$CMD --token $TUSHARE_TOKEN"
+        # Token通过环境变量TUSHARE_TOKEN传递，不再通过命令行参数
         CMD="$CMD --data-dir $DATA_DIR"
         CMD="$CMD --workers $WORKERS"
         CMD="$CMD --mode $MODE"
@@ -215,7 +223,7 @@ show_help() {
     echo "选项:"
     echo "  -m, --mode MODE     运行模式 (update|report|both|check|ai-enhance) [默认: both]"
     echo "  -w, --workers NUM   并发线程数 [默认: 5]"
-    echo "  -t, --token TOKEN   Tushare API Token"
+    echo "  -t, --token TOKEN   Tushare API Token (推荐使用环境变量 TUSHARE_TOKEN)"
     echo "  --database          启用数据库模式 (默认)"
     echo "  --enable-ai         启用AI增强报告 [默认启用]"
     echo "  --disable-ai        禁用AI增强报告"
@@ -243,7 +251,7 @@ show_help() {
     echo "  $0 --disable-ai             # 禁用AI增强功能"
     echo "  $0 --ai-top-n 5             # AI分析前5只股票"
     echo "  $0 --csv -m both            # 使用CSV模式运行"
-    echo "  $0 -t your_token --database # 指定token使用数据库模式"
+    echo "  TUSHARE_TOKEN=xxx $0        # 通过环境变量指定token"
 }
 
 # 解析命令行参数

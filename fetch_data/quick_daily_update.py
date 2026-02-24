@@ -13,8 +13,27 @@ import json
 import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+try:
+    from core.config import PROJECT_ROOT, get_tushare_token, get_db_path, MARKET_INDICES, load_config
+    _config_path = str(PROJECT_ROOT / 'config.json')
+    _ts_token = get_tushare_token()
+    _db_path = str(get_db_path())
+except ImportError:
+    PROJECT_ROOT = Path(__file__).parent.parent
+    _config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config.json')
+    with open(_config_path, 'r') as _f:
+        _cfg = json.load(_f)
+        _ts_token = _cfg['tushare']['token']
+    _db_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'data_adapter', 'stock_data.db')
+    MARKET_INDICES = {
+        '000001.SH': '上证指数', '399001.SZ': '深证成指', '399006.SZ': '创业板指',
+        '000688.SH': '科创50', '000016.SH': '上证50', '000300.SH': '沪深300',
+        '000905.SH': '中证500', '000852.SH': '中证1000', '932000.CSI': '中证2000',
+        '000985.SH': '中证全指',
+    }
+
 from data_adapter.database_manager import DatabaseManager
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from pure_tushare_news_fetcher import PureTushareNewsFetcher
 
 # 配置日志
@@ -24,13 +43,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# 读取配置
-config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config.json')
-with open(config_path, 'r') as f:
-    config = json.load(f)
-    ts_token = config['tushare']['token']
-
-ts.set_token(ts_token)
+ts.set_token(_ts_token)
 pro = ts.pro_api()
 
 # 初始化数据库管理器
@@ -74,6 +87,7 @@ def batch_update_stocks(date_str: str, batch_size: int = 500):
                     # 准备日线数据
                     trade_date = pd.to_datetime(row['trade_date'], format='%Y%m%d').strftime('%Y-%m-%d')
 
+                    pct_val = row.get('pct_chg')
                     data_to_insert.append({
                         'security_id': security_id,
                         'trade_date': trade_date,
@@ -82,22 +96,22 @@ def batch_update_stocks(date_str: str, batch_size: int = 500):
                         'high': row['high'],
                         'low': row['low'],
                         'volume': row['vol'],
-                        'price_change_pct': row.get('pct_chg', 0) / 100 if row.get('pct_chg') else 0,
+                        'price_change_pct': pct_val / 100 if pd.notna(pct_val) else 0,
                         'is_limit_up': row.get('limit') == 'U' if row.get('limit') else False,
                         'is_limit_down': row.get('limit') == 'D' if row.get('limit') else False
                     })
 
                     success_count += 1
-                    
+
             except Exception as e:
                 logger.error(f"处理 {row['ts_code']} 失败: {e}")
                 continue
-        
+
         # 批量插入数据库
         if data_to_insert:
             db_rows = db_manager.insert_daily_quotes(data_to_insert)
             logger.info(f"数据库插入 {db_rows} 条记录")
-        
+
         logger.info(f"A股更新完成: {success_count} 只")
         return success_count
         
@@ -143,6 +157,7 @@ def batch_update_funds(date_str: str):
                     # 准备日线数据
                     trade_date = pd.to_datetime(row['trade_date'], format='%Y%m%d').strftime('%Y-%m-%d')
 
+                    pct_val = row.get('pct_chg')
                     data_to_insert.append({
                         'security_id': security_id,
                         'trade_date': trade_date,
@@ -151,22 +166,22 @@ def batch_update_funds(date_str: str):
                         'high': row['high'],
                         'low': row['low'],
                         'volume': row['vol'],
-                        'price_change_pct': row.get('pct_chg', 0) / 100 if row.get('pct_chg') else 0,
+                        'price_change_pct': pct_val / 100 if pd.notna(pct_val) else 0,
                         'is_limit_up': False,
                         'is_limit_down': False
                     })
 
                     success_count += 1
-                    
+
             except Exception as e:
                 logger.error(f"处理 {row['ts_code']} 失败: {e}")
                 continue
-        
+
         # 批量插入数据库
         if data_to_insert:
             db_rows = db_manager.insert_daily_quotes(data_to_insert)
             logger.info(f"数据库插入 {db_rows} 条记录")
-        
+
         logger.info(f"基金更新完成: {success_count} 只")
         return success_count
         
@@ -180,25 +195,11 @@ def update_market_indices(date_str: str):
     
     try:
         # 初始化数据获取器
-        fetcher = PureTushareNewsFetcher(config_path)
-        
-        # 重要A股指数（包含中证2000和中证全指）
-        important_indices = {
-            '000001.SH': '上证指数',
-            '399001.SZ': '深证成指', 
-            '399006.SZ': '创业板指',
-            '000688.SH': '科创50',
-            '000016.SH': '上证50',
-            '000300.SH': '沪深300',
-            '000905.SH': '中证500',
-            '000852.SH': '中证1000',
-            '932000.CSI': '中证2000',
-            '000985.SH': '中证全指'
-        }
-        
+        fetcher = PureTushareNewsFetcher(_config_path)
+
         success_count = 0
-        
-        for ts_code, name in important_indices.items():
+
+        for ts_code, name in MARKET_INDICES.items():
             try:
                 time.sleep(0.3)  # API调用间隔
                 
@@ -224,6 +225,7 @@ def update_market_indices(date_str: str):
                         # 准备指数数据
                         trade_date = pd.to_datetime(row['trade_date'], format='%Y%m%d').strftime('%Y-%m-%d')
 
+                        pct_val = row.get('pct_chg')
                         data_to_insert = {
                             'security_id': security_id,
                             'trade_date': trade_date,
@@ -232,7 +234,7 @@ def update_market_indices(date_str: str):
                             'high': row['high'],
                             'low': row['low'],
                             'volume': row.get('vol', 0),
-                            'price_change_pct': row.get('pct_chg', 0) / 100 if row.get('pct_chg') else 0,
+                            'price_change_pct': pct_val / 100 if pd.notna(pct_val) else 0,
                             'is_limit_up': False,
                             'is_limit_down': False
                         }
@@ -268,44 +270,43 @@ def update_daily_basic(date_str: str):
         
         logger.info(f"获取到 {len(df)} 条基本面指标")
         
-        # 连接数据库
+        # 连接数据库 (使用绝对路径)
         import sqlite3
-        conn = sqlite3.connect('data_adapter/stock_data.db')
-        cursor = conn.cursor()
-        
-        # 获取证券ID映射
-        cursor.execute('SELECT code, id FROM securities')
-        security_map = {row[0]: row[1] for row in cursor.fetchall()}
-        
-        count = 0
-        for _, row in df.iterrows():
-            code = row['ts_code'][:6]
-            if code in security_map:
-                try:
-                    # 统一日期格式为 YYYY-MM-DD
-                    formatted_date = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
-                    
-                    cursor.execute('''
-                        INSERT OR REPLACE INTO daily_basic 
-                        (security_id, trade_date, close, turnover_rate, turnover_rate_f,
-                         volume_ratio, pe, pe_ttm, pb, ps, ps_ttm, dv_ratio, dv_ttm,
-                         total_share, float_share, free_share, total_mv, circ_mv)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ''', (
-                        security_map[code], formatted_date, row.get('close'),
-                        row.get('turnover_rate'), row.get('turnover_rate_f'),
-                        row.get('volume_ratio'), row.get('pe'), row.get('pe_ttm'),
-                        row.get('pb'), row.get('ps'), row.get('ps_ttm'),
-                        row.get('dv_ratio'), row.get('dv_ttm'),
-                        row.get('total_share'), row.get('float_share'), row.get('free_share'),
-                        row.get('total_mv'), row.get('circ_mv')
-                    ))
-                    count += 1
-                except Exception as e:
-                    logger.debug(f"插入基本面数据失败 {code}: {e}")
-        
-        conn.commit()
-        conn.close()
+        db_path = _db_path
+
+        with sqlite3.connect(db_path) as conn:
+            cursor = conn.cursor()
+
+            # 获取证券ID映射
+            cursor.execute('SELECT code, id FROM securities')
+            security_map = {row[0]: row[1] for row in cursor.fetchall()}
+
+            count = 0
+            formatted_date = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
+            for _, row in df.iterrows():
+                code = row['ts_code'][:6]
+                if code in security_map:
+                    try:
+                        cursor.execute('''
+                            INSERT OR REPLACE INTO daily_basic
+                            (security_id, trade_date, close, turnover_rate, turnover_rate_f,
+                             volume_ratio, pe, pe_ttm, pb, ps, ps_ttm, dv_ratio, dv_ttm,
+                             total_share, float_share, free_share, total_mv, circ_mv)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ''', (
+                            security_map[code], formatted_date, row.get('close'),
+                            row.get('turnover_rate'), row.get('turnover_rate_f'),
+                            row.get('volume_ratio'), row.get('pe'), row.get('pe_ttm'),
+                            row.get('pb'), row.get('ps'), row.get('ps_ttm'),
+                            row.get('dv_ratio'), row.get('dv_ttm'),
+                            row.get('total_share'), row.get('float_share'), row.get('free_share'),
+                            row.get('total_mv'), row.get('circ_mv')
+                        ))
+                        count += 1
+                    except Exception as e:
+                        logger.debug(f"插入基本面数据失败 {code}: {e}")
+
+            conn.commit()
         
         logger.info(f"✅ 基本面指标更新完成: {count} 条")
         return count
@@ -319,27 +320,27 @@ def update_financial_indicators(date_str: str):
     logger.info(f"检查 {date_str} 及前一天发布财务数据的公司...")
     
     try:
-        # 获取今天和前一天的日期
-        today = int(date_str)
-        yesterday = today - 1
-        target_dates = [str(today), str(yesterday)]
+        # 获取今天和前一天的日期 (用datetime避免月初/年初溢出)
+        from datetime import datetime, timedelta
+        today_dt = datetime.strptime(date_str, '%Y%m%d')
+        yesterday_dt = today_dt - timedelta(days=1)
+        target_dates = [date_str, yesterday_dt.strftime('%Y%m%d')]
         
         # 从数据库获取活跃股票列表（限制数量避免API超限）
         import sqlite3
-        conn = sqlite3.connect('data_adapter/stock_data.db')
-        cursor = conn.cursor()
-        
-        cursor.execute("""
-            SELECT DISTINCT s.code || '.' || 
-                   CASE WHEN s.exchange = 'SH' THEN 'SH' 
-                        WHEN s.exchange = 'SZ' THEN 'SZ'
-                        ELSE s.exchange END as ts_code
-            FROM securities s 
-            WHERE s.type = 'A股'
-            ORDER BY s.id
-        """)
-        stock_codes = [row[0] for row in cursor.fetchall()]
-        conn.close()
+        db_path = _db_path
+        with sqlite3.connect(db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT DISTINCT s.code || '.' ||
+                       CASE WHEN s.exchange = 'SH' THEN 'SH'
+                            WHEN s.exchange = 'SZ' THEN 'SZ'
+                            ELSE s.exchange END as ts_code
+                FROM securities s
+                WHERE s.type = 'A股'
+                ORDER BY s.id
+            """)
+            stock_codes = [row[0] for row in cursor.fetchall()]
         
         if not stock_codes:
             logger.info("未找到活跃股票，跳过财务指标更新")
@@ -439,58 +440,58 @@ def save_financial_data_to_db(df):
     """保存财务数据到数据库"""
     try:
         import sqlite3
-        conn = sqlite3.connect('data_adapter/stock_data.db')
-        cursor = conn.cursor()
-        
-        # 获取证券ID映射
-        cursor.execute('SELECT code, id FROM securities')
-        security_map = {row[0]: row[1] for row in cursor.fetchall()}
-        
-        count = 0
-        for _, row in df.iterrows():
-            code = row['ts_code'][:6]  # 获取6位代码
-            if code in security_map:
-                try:
-                    # 插入或更新财务数据 (v3.9扩展：包含更多字段)
-                    cursor.execute('''
-                        INSERT OR REPLACE INTO financial_indicator
-                        (security_id, ann_date, end_date, eps, dt_eps, roe, roe_waa, roe_dt, roa,
-                         grossprofit_margin, netprofit_margin, profit_to_gr, ocf_to_profit,
-                         debt_to_assets, current_ratio, quick_ratio, ar_turn, ca_turn, fa_turn, assets_turn,
-                         netprofit_yoy, or_yoy)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ''', (
-                        security_map[code],
-                        row.get('ann_date'),
-                        row.get('end_date'),
-                        row.get('eps'),
-                        row.get('dt_eps'),
-                        row.get('roe'),
-                        row.get('roe_waa'),
-                        row.get('roe_dt'),
-                        row.get('roa'),
-                        row.get('grossprofit_margin'),
-                        row.get('netprofit_margin'),
-                        row.get('profit_to_gr'),
-                        row.get('ocf_to_profit'),
-                        row.get('debt_to_assets'),
-                        row.get('current_ratio'),
-                        row.get('quick_ratio'),
-                        row.get('ar_turn'),
-                        row.get('ca_turn'),
-                        row.get('fa_turn'),
-                        row.get('assets_turn'),
-                        row.get('netprofit_yoy'),
-                        row.get('or_yoy')
-                    ))
-                    count += 1
-                except Exception as e:
-                    logger.debug(f"插入财务数据失败 {code}: {e}")
-        
-        conn.commit()
-        conn.close()
+        db_path = _db_path
+
+        with sqlite3.connect(db_path) as conn:
+            cursor = conn.cursor()
+
+            # 获取证券ID映射
+            cursor.execute('SELECT code, id FROM securities')
+            security_map = {row[0]: row[1] for row in cursor.fetchall()}
+
+            count = 0
+            for _, row in df.iterrows():
+                code = row['ts_code'][:6]  # 获取6位代码
+                if code in security_map:
+                    try:
+                        cursor.execute('''
+                            INSERT OR REPLACE INTO financial_indicator
+                            (security_id, ann_date, end_date, eps, dt_eps, roe, roe_waa, roe_dt, roa,
+                             grossprofit_margin, netprofit_margin, profit_to_gr, ocf_to_profit,
+                             debt_to_assets, current_ratio, quick_ratio, ar_turn, ca_turn, fa_turn, assets_turn,
+                             netprofit_yoy, or_yoy)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ''', (
+                            security_map[code],
+                            row.get('ann_date'),
+                            row.get('end_date'),
+                            row.get('eps'),
+                            row.get('dt_eps'),
+                            row.get('roe'),
+                            row.get('roe_waa'),
+                            row.get('roe_dt'),
+                            row.get('roa'),
+                            row.get('grossprofit_margin'),
+                            row.get('netprofit_margin'),
+                            row.get('profit_to_gr'),
+                            row.get('ocf_to_profit'),
+                            row.get('debt_to_assets'),
+                            row.get('current_ratio'),
+                            row.get('quick_ratio'),
+                            row.get('ar_turn'),
+                            row.get('ca_turn'),
+                            row.get('fa_turn'),
+                            row.get('assets_turn'),
+                            row.get('netprofit_yoy'),
+                            row.get('or_yoy')
+                        ))
+                        count += 1
+                    except Exception as e:
+                        logger.debug(f"插入财务数据失败 {code}: {e}")
+
+            conn.commit()
         return count
-        
+
     except Exception as e:
         logger.error(f"保存财务数据失败: {e}")
         return 0
@@ -597,10 +598,8 @@ def update_v40_feature_cache(date_str: str):
     try:
         from fetch_data.v40_feature_cache_updater import update_v40_feature_cache as _update_v40
 
-        # 转换日期格式
-        date_dash = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
-
-        count = _update_v40(date_dash)
+        # _update_v40 内部会自己做 YYYYMMDD→dash 转换，直接传原始格式
+        count = _update_v40(date_str)
 
         if count and count > 0:
             logger.info(f"✅ V4.0特征缓存更新成功: {count} 条")
@@ -727,7 +726,7 @@ def update_neural_embeddings(date_str: str):
         # 转换日期格式
         date_dash = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
 
-        count = daily_update_embeddings(date_dash)
+        count = daily_update_embeddings(date_dash) or 0
 
         if count > 0:
             logger.info(f"✅ GRU嵌入缓存更新成功: {count} 条")
@@ -769,6 +768,7 @@ def quick_daily_update(date: str = None, skip_financial: bool = True):
         'squeeze_momentum': 0,
         'active_mv': 0,  # V3.9.4 活跃市值特征
         'v39_cache': 0,  # V3.9/V3.95 特征缓存
+        'v40_cache': 0,  # V4.0 Cross-Sectional 特征缓存
         'neural_embed': 0  # GRU神经网络嵌入 (V5.0)
     }
 
@@ -871,6 +871,7 @@ def quick_daily_update(date: str = None, skip_financial: bool = True):
     logger.info(f"挤压动量指标: {stats['squeeze_momentum']:,} 只股票")
     logger.info(f"V3.9.4活跃市值特征: {stats['active_mv']:,} 条")
     logger.info(f"V3.9/V3.95特征缓存: {stats['v39_cache']:,} 条")
+    logger.info(f"V4.0特征缓存: {stats['v40_cache']:,} 条")
     logger.info(f"GRU神经网络嵌入: {stats['neural_embed']:,} 条")
     logger.info(f"总耗时: {duration:.1f} 秒")
     if stats['quotes'] > 0:

@@ -20,7 +20,11 @@ sys.path.append(project_root)
 sys.path.append(os.path.join(project_root, 'scoring_improvements'))
 
 from database_manager import DatabaseManager
-from squeeze_momentum_calculator import SqueezeMomentumCalculator
+
+try:
+    from squeeze_momentum_calculator import SqueezeMomentumCalculator
+except ImportError:
+    SqueezeMomentumCalculator = None
 
 # 设置日志
 logging.basicConfig(level=logging.INFO)
@@ -30,6 +34,8 @@ class SqueezeMomentumUpdater:
     """挤压动量指标数据库更新器"""
     
     def __init__(self):
+        if SqueezeMomentumCalculator is None:
+            raise ImportError("squeeze_momentum_calculator 模块未找到 (scoring_improvements/ 目录已移除)")
         self.db_manager = DatabaseManager()
         self.squeeze_calculator = SqueezeMomentumCalculator()
         self.batch_size = 100  # 批处理大小

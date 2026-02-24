@@ -149,6 +149,7 @@ def run_comparison(top_n=20, benchmark='000905.SH', focus_days=10):
         'v3.95-Phase2': 'daily_selection_v3.95_phase2',
         'v3.96-merged': 'daily_selection_v3.95_merged',
         'v4.3': 'daily_selection_v4.3',
+        'v4.4': 'daily_selection_v4.4',
         'v5.0': 'daily_selection_v5.0',
     }
     for label, dirname in extra_dirs.items():
@@ -347,17 +348,18 @@ def generate_extended_reports(scoring_version='v3.95',
         print(f"  命令: {' '.join(cmd)}")
         subprocess.run(cmd, cwd=str(PROJECT_ROOT))
 
-    elif scoring_version == 'v4.3':
-        # 使用batch_generate_v40_reports.py
+    elif scoring_version in ('v4.3', 'v4.4'):
+        # 使用batch_generate_v395_reports.py (支持v4.3/v4.4)
         import subprocess
         cmd = [
             sys.executable,
-            str(PROJECT_ROOT / 'batch_generate_v40_reports.py'),
-            '--version', 'v4.3',
+            str(PROJECT_ROOT / 'backtest' / 'batch_generate_v395_reports.py'),
+            '--version', scoring_version,
             '--start-date', start_date,
             '--end-date', end_date,
+            '--output-dir', str(PROJECT_ROOT / 'reports' / f'daily_selection_{scoring_version}_extended'),
         ]
-        print(f"  生成 v4.3 扩展报告: {start_date} → {end_date}")
+        print(f"  生成 {scoring_version} 扩展报告: {start_date} → {end_date}")
         print(f"  命令: {' '.join(cmd)}")
         subprocess.run(cmd, cwd=str(PROJECT_ROOT))
 

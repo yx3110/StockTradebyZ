@@ -114,17 +114,17 @@ class ImprovedV391Trainer:
 
         conn = sqlite3.connect(self.db_path)
 
-        query = f"""
+        query = """
             SELECT code, trade_date, features_json, label_5d, label_10d, label_15d
             FROM v39_feature_cache
             WHERE label_5d IS NOT NULL
             AND label_10d IS NOT NULL
             AND label_15d IS NOT NULL
-            AND trade_date >= '{self.start_date}'
+            AND trade_date >= ?
             ORDER BY trade_date, code
         """
 
-        df = pd.read_sql_query(query, conn)
+        df = pd.read_sql_query(query, conn, params=[self.start_date])
         conn.close()
 
         logger.info(f"✅ 加载 {len(df):,} 个样本 (从 {self.start_date} 开始)")

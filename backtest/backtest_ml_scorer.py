@@ -70,14 +70,14 @@ def get_future_returns(codes, trade_date, holding_days_list=[1, 3, 5, 10]):
         return {}
 
     # 获取当日收盘价
-    codes_str = ','.join([f"'{c}'" for c in codes])
+    placeholders = ','.join(['?' for _ in codes])
     today_prices = {}
     rows = conn.execute(f"""
         SELECT s.code, dq.close
         FROM daily_quotes dq
         JOIN securities s ON dq.security_id = s.id
-        WHERE s.code IN ({codes_str}) AND dq.trade_date = ?
-    """, (trade_date,)).fetchall()
+        WHERE s.code IN ({placeholders}) AND dq.trade_date = ?
+    """, list(codes) + [trade_date]).fetchall()
     for code, close in rows:
         today_prices[code] = close
 
@@ -92,8 +92,8 @@ def get_future_returns(codes, trade_date, holding_days_list=[1, 3, 5, 10]):
             SELECT s.code, dq.close
             FROM daily_quotes dq
             JOIN securities s ON dq.security_id = s.id
-            WHERE s.code IN ({codes_str}) AND dq.trade_date = ?
-        """, (future_date,)).fetchall()
+            WHERE s.code IN ({placeholders}) AND dq.trade_date = ?
+        """, list(codes) + [future_date]).fetchall()
 
         for code, future_close in future_rows:
             if code in today_prices and today_prices[code] > 0:

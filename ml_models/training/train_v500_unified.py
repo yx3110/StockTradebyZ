@@ -137,10 +137,13 @@ class V500UnifiedTrainer:
 
         # --- Step 1: 加载 v39 基础特征 ---
         date_filter = ""
+        date_params = []
         if start_date:
-            date_filter += f" AND v.trade_date >= '{start_date}'"
+            date_filter += " AND v.trade_date >= ?"
+            date_params.append(start_date)
         if end_date:
-            date_filter += f" AND v.trade_date <= '{end_date}'"
+            date_filter += " AND v.trade_date <= ?"
+            date_params.append(end_date)
 
         query_v39 = f"""
         SELECT
@@ -169,7 +172,7 @@ class V500UnifiedTrainer:
         ORDER BY v.trade_date, v.code
         """
 
-        df_v39 = pd.read_sql(query_v39, conn)
+        df_v39 = pd.read_sql(query_v39, conn, params=date_params if date_params else None)
         logger.info(f"  v39 记录: {len(df_v39):,}")
 
         # 解析 v39 features_json
@@ -198,17 +201,20 @@ class V500UnifiedTrainer:
 
         # v40 的日期范围 (可能比 v39 短)
         v40_date_filter = ""
+        v40_params = []
         if start_date:
-            v40_date_filter += f" AND trade_date >= '{start_date}'"
+            v40_date_filter += " AND trade_date >= ?"
+            v40_params.append(start_date)
         if end_date:
-            v40_date_filter += f" AND trade_date <= '{end_date}'"
+            v40_date_filter += " AND trade_date <= ?"
+            v40_params.append(end_date)
 
         query_v40 = f"""
         SELECT code, trade_date, features_json
         FROM v40_feature_cache
         WHERE 1=1 {v40_date_filter}
         """
-        df_v40_raw = pd.read_sql(query_v40, conn)
+        df_v40_raw = pd.read_sql(query_v40, conn, params=v40_params if v40_params else None)
         logger.info(f"  v40 记录: {len(df_v40_raw):,}")
 
         # 解析 v40 并提取精选特征
@@ -235,14 +241,14 @@ class V500UnifiedTrainer:
         logger.info("  加载 daily_basic 额外特征...")
         date_min = df['trade_date'].min()
         date_max = df['trade_date'].max()
-        query_basic = f"""
+        query_basic = """
         SELECT s.code, db.trade_date,
                db.pe_ttm, db.pb, db.ps_ttm, db.turnover_rate, db.circ_mv
         FROM daily_basic db
         JOIN securities s ON db.security_id = s.id
-        WHERE db.trade_date >= '{date_min}' AND db.trade_date <= '{date_max}'
+        WHERE db.trade_date >= ? AND db.trade_date <= ?
         """
-        df_basic = pd.read_sql(query_basic, conn)
+        df_basic = pd.read_sql(query_basic, conn, params=[date_min, date_max])
         conn.close()
         logger.info(f"  daily_basic 记录: {len(df_basic):,}")
 

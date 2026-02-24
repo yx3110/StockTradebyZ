@@ -53,6 +53,16 @@ class TechnicalIndicatorCalculator:
         if self.conn:
             self.conn.close()
     
+    def __enter__(self):
+        """Context manager 支持"""
+        self.connect_db()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager 退出时清理所有连接"""
+        self.close_all_connections()
+        return False
+
     def get_thread_connection(self):
         """获取线程本地数据库连接"""
         if not hasattr(self.thread_local, 'conn'):
@@ -63,6 +73,20 @@ class TechnicalIndicatorCalculator:
             self.thread_local.conn.execute("PRAGMA temp_store = memory")
             self.thread_local.conn.execute("PRAGMA mmap_size = 268435456")  # 256MB
         return self.thread_local.conn
+
+    def close_thread_connection(self):
+        """关闭当前线程的数据库连接"""
+        if hasattr(self.thread_local, 'conn'):
+            try:
+                self.thread_local.conn.close()
+            except Exception:
+                pass
+            delattr(self.thread_local, 'conn')
+
+    def close_all_connections(self):
+        """关闭主连接和所有已知的线程连接"""
+        self.close_db()
+        self.close_thread_connection()
     
     def get_stock_list(self, limit: Optional[int] = None) -> List[Tuple]:
         """获取股票列表"""
@@ -72,11 +96,13 @@ class TechnicalIndicatorCalculator:
         WHERE is_active = 1 AND type IN ('A股', '科创板', '创业板')
         ORDER BY code
         """
+        params = []
         if limit:
-            query += f" LIMIT {limit}"
-        
+            query += " LIMIT ?"
+            params.append(int(limit))
+
         cursor = self.conn.cursor()
-        cursor.execute(query)
+        cursor.execute(query, params)
         return cursor.fetchall()
     
     def get_stock_price_data(self, security_id: int, days: int = 250, conn=None) -> Optional[pd.DataFrame]:
@@ -152,9 +178,10 @@ class TechnicalIndicatorCalculator:
             df['j'] = 3 * df['k'] - 2 * df['d']
             
             return df['k'].values, df['d'].values, df['j'].values
-        except:
+        except (ValueError, ZeroDivisionError, IndexError, TypeError) as e:
+            logger.debug(f"计算异常: {e}")
             return np.full(len(high), np.nan), np.full(len(high), np.nan), np.full(len(high), np.nan)
-    
+
     def calculate_macd(self, close: np.array, fast: int = 12, slow: int = 26, signal: int = 9) -> tuple:
         """计算MACD指标"""
         try:
@@ -172,9 +199,10 @@ class TechnicalIndicatorCalculator:
             macd = (dif - dea) * 2
             
             return dif, dea, macd
-        except:
+        except (ValueError, ZeroDivisionError, IndexError, TypeError) as e:
+            logger.debug(f"计算异常: {e}")
             return np.full(len(close), np.nan), np.full(len(close), np.nan), np.full(len(close), np.nan)
-    
+
     def calculate_rsi(self, close: np.array, period: int = 14) -> np.array:
         """计算RSI指标"""
         try:
@@ -192,9 +220,10 @@ class TechnicalIndicatorCalculator:
             df['rsi'] = 100 - (100 / (1 + df['rs']))
             
             return df['rsi'].values
-        except:
+        except (ValueError, ZeroDivisionError, IndexError, TypeError) as e:
+            logger.debug(f"计算异常: {e}")
             return np.full(len(close), np.nan)
-    
+
     def calculate_bollinger_bands(self, close: np.array, period: int = 20, std_dev: float = 2) -> tuple:
         """计算布林带"""
         try:
@@ -205,7 +234,8 @@ class TechnicalIndicatorCalculator:
             df['lower'] = df['middle'] - (df['std'] * std_dev)
             
             return df['upper'].values, df['middle'].values, df['lower'].values
-        except:
+        except (ValueError, ZeroDivisionError, IndexError, TypeError) as e:
+            logger.debug(f"计算异常: {e}")
             return np.full(len(close), np.nan), np.full(len(close), np.nan), np.full(len(close), np.nan)
 
     def calculate_technical_indicators(self, df: pd.DataFrame) -> Dict:
@@ -229,7 +259,8 @@ class TechnicalIndicatorCalculator:
                 indicators['kdj_k'] = k[-1] if not np.isnan(k[-1]) else None
                 indicators['kdj_d'] = d[-1] if not np.isnan(d[-1]) else None  
                 indicators['kdj_j'] = j[-1] if not np.isnan(j[-1]) else None
-            except:
+            except (ValueError, ZeroDivisionError, IndexError, TypeError) as e:
+                logger.debug(f"计算异常: {e}")
                 indicators['kdj_k'] = indicators['kdj_d'] = indicators['kdj_j'] = None
             
             # 2. 计算MACD指标
@@ -239,7 +270,8 @@ class TechnicalIndicatorCalculator:
                 indicators['macd_dif'] = macd_dif[-1] if not np.isnan(macd_dif[-1]) else None
                 indicators['macd_dea'] = macd_dea[-1] if not np.isnan(macd_dea[-1]) else None
                 indicators['macd_macd'] = macd_hist[-1] if not np.isnan(macd_hist[-1]) else None
-            except:
+            except (ValueError, ZeroDivisionError, IndexError, TypeError) as e:
+                logger.debug(f"计算异常: {e}")
                 indicators['macd_dif'] = indicators['macd_dea'] = indicators['macd_macd'] = None
             
             # 3. 计算RSI指标
@@ -251,7 +283,8 @@ class TechnicalIndicatorCalculator:
                 indicators['rsi6'] = rsi6[-1] if not np.isnan(rsi6[-1]) else None
                 indicators['rsi12'] = rsi12[-1] if not np.isnan(rsi12[-1]) else None
                 indicators['rsi24'] = rsi24[-1] if not np.isnan(rsi24[-1]) else None
-            except:
+            except (ValueError, ZeroDivisionError, IndexError, TypeError) as e:
+                logger.debug(f"计算异常: {e}")
                 indicators['rsi6'] = indicators['rsi12'] = indicators['rsi24'] = None
             
             # 4. 计算布林带
@@ -261,7 +294,8 @@ class TechnicalIndicatorCalculator:
                 indicators['boll_upper'] = upper[-1] if not np.isnan(upper[-1]) else None
                 indicators['boll_middle'] = middle[-1] if not np.isnan(middle[-1]) else None
                 indicators['boll_lower'] = lower[-1] if not np.isnan(lower[-1]) else None
-            except:
+            except (ValueError, ZeroDivisionError, IndexError, TypeError) as e:
+                logger.debug(f"计算异常: {e}")
                 indicators['boll_upper'] = indicators['boll_middle'] = indicators['boll_lower'] = None
             
             # 5. 计算BBI指标 (Bull and Bear Index)
@@ -273,7 +307,8 @@ class TechnicalIndicatorCalculator:
                 
                 bbi = (ma3 + ma6 + ma12 + ma24) / 4
                 indicators['bbi'] = bbi[-1] if not np.isnan(bbi[-1]) else None
-            except:
+            except (ValueError, ZeroDivisionError, IndexError, TypeError) as e:
+                logger.debug(f"计算异常: {e}")
                 indicators['bbi'] = None
             
             # 6. 计算成交量指标
@@ -289,7 +324,8 @@ class TechnicalIndicatorCalculator:
                     indicators['volume_ratio'] = round(volume[-1] / indicators['volume_ma5'], 3)
                 else:
                     indicators['volume_ratio'] = None
-            except:
+            except (ValueError, ZeroDivisionError, IndexError, TypeError) as e:
+                logger.debug(f"计算异常: {e}")
                 indicators['volume_ma5'] = indicators['volume_ma10'] = indicators['volume_ratio'] = None
             
             # 7. 计算CCI指标 (Commodity Channel Index, 14日)
@@ -307,7 +343,8 @@ class TechnicalIndicatorCalculator:
                         indicators['cci_14'] = 0.0
                 else:
                     indicators['cci_14'] = None
-            except:
+            except (ValueError, ZeroDivisionError, IndexError, TypeError) as e:
+                logger.debug(f"计算异常: {e}")
                 indicators['cci_14'] = None
 
             # 8. 计算ATR指标 (Average True Range, 14日)
@@ -327,7 +364,8 @@ class TechnicalIndicatorCalculator:
                     indicators['atr_14'] = float(atr_series[-1])
                 else:
                     indicators['atr_14'] = None
-            except:
+            except (ValueError, ZeroDivisionError, IndexError, TypeError) as e:
+                logger.debug(f"计算异常: {e}")
                 indicators['atr_14'] = None
 
             # 9. 计算知行策略所需指标
@@ -658,7 +696,7 @@ class TechnicalIndicatorCalculator:
         except Exception as e:
             logger.error(f"计算技术指标过程失败: {e}")
         finally:
-            self.close_db()
+            self.close_all_connections()
     
     def _print_statistics(self):
         """打印统计信息"""

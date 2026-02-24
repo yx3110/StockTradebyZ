@@ -113,14 +113,14 @@ class CachedScorer:
         """V3.9/V3.94评分（从缓存读取特征）"""
         conn = sqlite3.connect(self.db_path)
 
-        query = f"""
+        query = """
         SELECT code, features_json, label_5d
         FROM v39_feature_cache
-        WHERE trade_date = '{date}'
+        WHERE trade_date = ?
           AND features_json IS NOT NULL
         """
 
-        df = pd.read_sql_query(query, conn)
+        df = pd.read_sql_query(query, conn, params=[date])
         conn.close()
 
         if len(df) == 0:
@@ -182,7 +182,7 @@ class CachedScorer:
         """V3.95评分"""
         conn = sqlite3.connect(self.db_path)
 
-        query = f"""
+        query = """
         SELECT code, features_json,
                market_return_20d, market_return_10d, market_return_5d,
                market_volatility_20d, market_volatility_10d,
@@ -190,12 +190,12 @@ class CachedScorer:
                market_drawdown_20d, market_volume_ratio,
                market_position_20d, market_momentum_20d, market_momentum_5d
         FROM v39_feature_cache
-        WHERE trade_date = '{date}'
+        WHERE trade_date = ?
           AND features_json IS NOT NULL
           AND market_return_20d IS NOT NULL
         """
 
-        df = pd.read_sql_query(query, conn)
+        df = pd.read_sql_query(query, conn, params=[date])
         conn.close()
 
         if len(df) == 0:
@@ -291,14 +291,14 @@ class FastBacktester:
     def get_trading_dates(self, start_date: str, end_date: str) -> List[str]:
         """获取交易日列表"""
         conn = sqlite3.connect(self.db_path)
-        query = f"""
+        query = """
         SELECT DISTINCT trade_date
         FROM v39_feature_cache
-        WHERE trade_date >= '{start_date}'
-          AND trade_date <= '{end_date}'
+        WHERE trade_date >= ?
+          AND trade_date <= ?
         ORDER BY trade_date
         """
-        df = pd.read_sql_query(query, conn)
+        df = pd.read_sql_query(query, conn, params=[start_date, end_date])
         conn.close()
         return df['trade_date'].tolist()
 
@@ -318,11 +318,11 @@ class FastBacktester:
         query = f"""
         SELECT code, {label_col} as future_return
         FROM v39_feature_cache
-        WHERE trade_date = '{date}'
+        WHERE trade_date = ?
           AND {label_col} IS NOT NULL
         """
 
-        df = pd.read_sql_query(query, conn)
+        df = pd.read_sql_query(query, conn, params=[date])
         conn.close()
 
         return dict(zip(df['code'], df['future_return']))

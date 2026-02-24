@@ -237,10 +237,13 @@ class V394EnsembleTrainer:
 
         # 构建日期筛选条件
         date_filter = ""
+        date_params = []
         if min_date:
-            date_filter += f" AND v.trade_date >= '{min_date}'"
+            date_filter += " AND v.trade_date >= ?"
+            date_params.append(min_date)
         if max_date:
-            date_filter += f" AND v.trade_date <= '{max_date}'"
+            date_filter += " AND v.trade_date <= ?"
+            date_params.append(max_date)
 
         # JOIN合并两个缓存表
         query = f"""
@@ -263,7 +266,7 @@ class V394EnsembleTrainer:
         ORDER BY v.trade_date, v.code
         """
 
-        df = pd.read_sql(query, conn)
+        df = pd.read_sql(query, conn, params=date_params if date_params else None)
         logger.info(f"  合并数据: {len(df):,} 条")
         conn.close()
 

@@ -66,14 +66,14 @@ def backfill_embeddings(start_date: str, end_date: str,
 
     # 3. Get all (code, date) pairs to process
     conn = sqlite3.connect(db_path)
-    query = f"""
+    query = """
     SELECT DISTINCT v.code, v.trade_date
     FROM v39_feature_cache v
-    WHERE v.trade_date >= '{start_date}'
-      AND v.trade_date <= '{end_date}'
+    WHERE v.trade_date >= ?
+      AND v.trade_date <= ?
     ORDER BY v.trade_date, v.code
     """
-    codes_dates = pd.read_sql(query, conn)
+    codes_dates = pd.read_sql(query, conn, params=[start_date, end_date])
     conn.close()
 
     logger.info(f"待处理: {len(codes_dates):,} 个 (code, date) 组合")
@@ -158,11 +158,11 @@ def daily_update_embeddings(date: str, model_path: str = None,
 
     # Get codes for this date
     conn = sqlite3.connect(db_path)
-    query = f"""
+    query = """
     SELECT DISTINCT code FROM v39_feature_cache
-    WHERE trade_date = '{date}'
+    WHERE trade_date = ?
     """
-    codes = pd.read_sql(query, conn)['code'].tolist()
+    codes = pd.read_sql(query, conn, params=[date])['code'].tolist()
     conn.close()
 
     if not codes:

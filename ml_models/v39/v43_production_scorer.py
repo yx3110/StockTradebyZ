@@ -103,7 +103,7 @@ class V43ProductionScorer(V395ProductionScorer):
             conn = sqlite3.connect(self.db_path)
             try:
                 codes = features_df['code'].tolist()
-                codes_str = ','.join([f"'{c}'" for c in codes])
+                placeholders = ','.join(['?' for _ in codes])
                 query = f"""
                 SELECT s.code,
                        ti.kdj_k, ti.kdj_j, ti.macd_dif, ti.macd_dea, ti.macd_macd,
@@ -112,9 +112,9 @@ class V43ProductionScorer(V395ProductionScorer):
                 FROM technical_indicators ti
                 JOIN securities s ON ti.security_id = s.id
                 JOIN daily_quotes q ON q.security_id = s.id AND q.trade_date = ti.trade_date
-                WHERE s.code IN ({codes_str}) AND ti.trade_date = '{date}'
+                WHERE s.code IN ({placeholders}) AND ti.trade_date = ?
                 """
-                df_tech = pd.read_sql_query(query, conn)
+                df_tech = pd.read_sql_query(query, conn, params=codes + [date])
             finally:
                 conn.close()
             self._tech_feature_cache[date] = df_tech
@@ -194,8 +194,11 @@ class V43ProductionScorer(V395ProductionScorer):
         # 准备特征矩阵
         exclude_cols = {'code', 'trade_date'}
         if self.feature_cols:
-            for col in self.feature_cols:
-                if col not in features_df.columns:
+            missing = [c for c in self.feature_cols if c not in features_df.columns]
+            if missing:
+                if len(missing) > len(self.feature_cols) * 0.3:
+                    logger.warning(f"⚠️ V4.3: {len(missing)}/{len(self.feature_cols)} 特征缺失: {missing[:5]}...")
+                for col in missing:
                     features_df[col] = 0
             available_cols = self.feature_cols
         else:

@@ -79,13 +79,13 @@ def calculate_market_features_for_date(conn, trade_date, lookback_days=60):
     WHERE s.type = 'A股'
         AND db.circ_mv IS NOT NULL
         AND db.turnover_rate IS NOT NULL
-        AND (trade_date <= '{trade_date}' OR trade_date <= '{date_variants[1]}')
+        AND (trade_date <= ? OR trade_date <= ?)
     GROUP BY trade_date
     ORDER BY trade_date DESC
     LIMIT {lookback_days}
     """
 
-    df = pd.read_sql(query, conn)
+    df = pd.read_sql(query, conn, params=[trade_date, date_variants[1]])
 
     if df.empty:
         return None
@@ -150,7 +150,7 @@ def calculate_stock_features_for_date(conn, trade_date, market_features):
     # 尝试两种日期格式
     date_variants = [trade_date, trade_date.replace('-', '')]
 
-    query = f"""
+    query = """
     SELECT
         s.code,
         db.circ_mv / 10000 as circ_mv_yi,
@@ -161,10 +161,10 @@ def calculate_stock_features_for_date(conn, trade_date, market_features):
     WHERE s.type = 'A股'
         AND db.circ_mv IS NOT NULL
         AND db.turnover_rate IS NOT NULL
-        AND (db.trade_date = '{trade_date}' OR db.trade_date = '{date_variants[1]}')
+        AND (db.trade_date = ? OR db.trade_date = ?)
     """
 
-    df = pd.read_sql(query, conn)
+    df = pd.read_sql(query, conn, params=[trade_date, date_variants[1]])
 
     if df.empty:
         return None

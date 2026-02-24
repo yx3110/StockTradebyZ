@@ -20,6 +20,12 @@ import logging
 import sqlite3
 from typing import Dict, List, Optional
 
+try:
+    from core.config import get_db_path as _get_db_path
+    _DEFAULT_DB_PATH = str(_get_db_path())
+except ImportError:
+    _DEFAULT_DB_PATH = str(Path(__file__).parent.parent.parent / 'data_adapter' / 'stock_data.db')
+
 logger = logging.getLogger(__name__)
 
 
@@ -51,7 +57,7 @@ class V390ProductionScorer:
 
         # 数据库路径 - 使用绝对路径
         if db_path is None:
-            db_path = str(self.project_root / 'data_adapter' / 'stock_data.db')
+            db_path = _DEFAULT_DB_PATH
         self.db_path = db_path
 
         # 加载申万行业映射 (用于行业分位数计算)
@@ -914,22 +920,15 @@ class V390ProductionScorer:
 
             # 按日期分组，批量解析 JSON
             for date, date_df in df.groupby('trade_date'):
-                features_list = []
-                valid_codes = []
-
-                for _, row in date_df.iterrows():
-                    try:
-                        features = json.loads(row['features_json'])
-                        features_list.append(features)
-                        valid_codes.append(row['code'])
-                    except (json.JSONDecodeError, TypeError):
-                        continue
-
-                if not features_list:
+                parsed = date_df['features_json'].apply(
+                    lambda s: json.loads(s) if isinstance(s, str) else None
+                )
+                valid_mask = parsed.notna()
+                if not valid_mask.any():
                     continue
 
-                features_df = pd.DataFrame(features_list)
-                features_df['code'] = valid_codes
+                features_df = pd.DataFrame(parsed[valid_mask].tolist())
+                features_df['code'] = date_df.loc[valid_mask, 'code'].values
 
                 # 对齐特征列
                 if self.feature_names:

@@ -175,8 +175,8 @@ class V394ProductionScorer:
         if row:
             try:
                 return json.loads(row[0])
-            except:
-                pass
+            except (json.JSONDecodeError, TypeError) as e:
+                logger.debug(f"v39_feature_cache JSON解析失败 {code}/{trade_date}: {e}")
 
         # 如果缓存没有,尝试找最近的日期
         cursor = conn.execute("""
@@ -190,8 +190,8 @@ class V394ProductionScorer:
         if row:
             try:
                 return json.loads(row[0])
-            except:
-                pass
+            except (json.JSONDecodeError, TypeError) as e:
+                logger.debug(f"v39_feature_cache JSON解析失败(近期) {code}/{trade_date}: {e}")
 
         return None
 
