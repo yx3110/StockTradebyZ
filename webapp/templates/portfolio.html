@@ -579,23 +579,50 @@
     <div class="modal-dialog modal-lg">
         <div class="modal-content">
             <div class="modal-header bg-info text-white">
-                <h5 class="modal-title"><i class="bi bi-upload"></i> 导入持仓 (CSV)</h5>
+                <h5 class="modal-title"><i class="bi bi-upload"></i> 导入持仓</h5>
                 <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
             </div>
             <div class="modal-body">
-                <!-- 步骤1: 上传文件 -->
+                <!-- 步骤1: 选择导入方式 -->
                 <div id="import-step1">
-                    <div class="alert alert-info">
-                        <i class="bi bi-info-circle"></i>
-                        支持东方财富、同花顺等券商导出的CSV文件。自动识别编码(GBK/UTF-8)和列名。
+                    <ul class="nav nav-tabs mb-3" id="import-tabs">
+                        <li class="nav-item">
+                            <a class="nav-link active" data-bs-toggle="tab" href="#import-paste-tab">
+                                <i class="bi bi-clipboard"></i> 粘贴导入
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link" data-bs-toggle="tab" href="#import-file-tab">
+                                <i class="bi bi-file-earmark-arrow-up"></i> 文件导入
+                            </a>
+                        </li>
+                    </ul>
+                    <div class="tab-content">
+                        <div class="tab-pane fade show active" id="import-paste-tab">
+                            <div class="alert alert-info py-2">
+                                <i class="bi bi-info-circle"></i>
+                                从东方财富网页版持仓页面全选复制,直接粘贴到下方。支持自动识别粘连行和错误数据。
+                            </div>
+                            <textarea class="form-control" id="import-paste-text" rows="8"
+                                      placeholder="在此粘贴从券商网页复制的持仓数据..."></textarea>
+                            <button class="btn btn-primary mt-2" id="btn-parse-paste">
+                                <i class="bi bi-search"></i> 解析预览
+                            </button>
+                        </div>
+                        <div class="tab-pane fade" id="import-file-tab">
+                            <div class="alert alert-info py-2">
+                                <i class="bi bi-info-circle"></i>
+                                支持东方财富、同花顺等券商导出的CSV文件。自动识别编码(GBK/UTF-8)和列名。
+                            </div>
+                            <div class="mb-3">
+                                <label class="form-label">选择CSV文件</label>
+                                <input type="file" class="form-control" id="import-file" accept=".csv,.txt,.xls">
+                            </div>
+                            <button class="btn btn-primary" id="btn-parse-csv">
+                                <i class="bi bi-search"></i> 解析预览
+                            </button>
+                        </div>
                     </div>
-                    <div class="mb-3">
-                        <label class="form-label">选择CSV文件</label>
-                        <input type="file" class="form-control" id="import-file" accept=".csv,.txt,.xls">
-                    </div>
-                    <button class="btn btn-primary" id="btn-parse-csv">
-                        <i class="bi bi-search"></i> 解析预览
-                    </button>
                 </div>
 
                 <!-- 步骤2: 预览确认 -->
@@ -673,8 +700,9 @@ $(document).ready(function() {
     $('#btn-save-trade').click(saveTrade);
     $('#btn-add-group').click(addGroup);
 
-    // CSV导入事件
+    // 导入事件
     $('#btn-parse-csv').click(parseImportCSV);
+    $('#btn-parse-paste').click(parseImportPaste);
     $('#btn-confirm-import').click(confirmImport);
     $('#btn-import-back').click(function() {
         $('#import-step2').hide();
@@ -685,10 +713,10 @@ $(document).ready(function() {
         $('.import-row-check').prop('checked', $(this).is(':checked'));
     });
     $('#importModal').on('hidden.bs.modal', function() {
-        // 重置到步骤1
         $('#import-step1').show();
         $('#import-step2, #import-step3, #btn-confirm-import').hide();
         $('#import-file').val('');
+        $('#import-paste-text').val('');
     });
 
     // 股票代码搜索
@@ -1482,6 +1510,36 @@ function parseImportCSV() {
     });
 }
 
+function parseImportPaste() {
+    const text = $('#import-paste-text').val().trim();
+    if (!text) {
+        showToast('请先粘贴持仓数据', 'warning');
+        return;
+    }
+
+    $('#btn-parse-paste').prop('disabled', true).html('<i class="bi bi-hourglass-split"></i> 解析中...');
+
+    $.ajax({
+        url: '/api/portfolio/import/paste',
+        method: 'POST',
+        contentType: 'application/json',
+        data: JSON.stringify({ text: text }),
+        success: function(response) {
+            $('#btn-parse-paste').prop('disabled', false).html('<i class="bi bi-search"></i> 解析预览');
+            if (response.success) {
+                importParsedData = response.positions;
+                renderImportPreview(response.positions, response.warnings);
+            } else {
+                showToast(response.error, 'error');
+            }
+        },
+        error: function(xhr) {
+            $('#btn-parse-paste').prop('disabled', false).html('<i class="bi bi-search"></i> 解析预览');
+            showToast(xhr.responseJSON?.error || '解析失败', 'error');
+        }
+    });
+}
+
 function renderImportPreview(positions, warnings) {
     // 显示警告
     const warningsHtml = warnings.map(w =>
@@ -1494,14 +1552,15 @@ function renderImportPreview(positions, warnings) {
     const tbody = $('#import-preview-tbody');
     tbody.empty();
     positions.forEach(function(p, idx) {
+        const needsData = !p.current_price;
         tbody.append(`
-            <tr>
+            <tr class="${needsData ? 'table-warning' : ''}">
                 <td><input type="checkbox" class="import-row-check" data-idx="${idx}" checked></td>
                 <td><code>${p.code}</code></td>
                 <td>${p.name || '-'}</td>
                 <td>${p.quantity}</td>
-                <td>${p.avg_cost?.toFixed(3) || '-'}</td>
-                <td>${p.current_price?.toFixed(3) || '-'}</td>
+                <td>${p.avg_cost?.toFixed(3) || '<span class="text-danger">缺失</span>'}</td>
+                <td>${p.current_price?.toFixed(3) || '<span class="text-danger">需补录</span>'}</td>
             </tr>
         `);
     });

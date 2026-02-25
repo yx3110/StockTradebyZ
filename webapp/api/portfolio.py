@@ -10,7 +10,7 @@ from pathlib import Path
 
 from core.database import DatabaseManager
 from core.position_analyzer import PositionAnalyzer
-from core.portfolio_importer import parse_csv, merge_positions
+from core.portfolio_importer import parse_csv, parse_web_paste, merge_positions
 
 logger = logging.getLogger(__name__)
 
@@ -998,6 +998,37 @@ def parse_import_csv():
 
     except Exception as e:
         logger.error(f'解析CSV失败: {e}', exc_info=True)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@portfolio_bp.route('/import/paste', methods=['POST'])
+def parse_import_paste():
+    """
+    解析粘贴的持仓文本 (从券商网页直接复制)
+
+    Request Body: {text: "粘贴的文本内容"}
+    Returns: {success, positions: [...], warnings: [...]}
+    """
+    try:
+        data = request.get_json()
+        if not data or not data.get('text'):
+            return jsonify({'success': False, 'error': '请粘贴持仓文本'}), 400
+
+        text = data['text']
+        if len(text) > 100000:
+            return jsonify({'success': False, 'error': '文本过长(最大100KB)'}), 400
+
+        positions, warnings = parse_web_paste(text)
+
+        return jsonify({
+            'success': True,
+            'positions': positions,
+            'warnings': warnings,
+            'count': len(positions)
+        })
+
+    except Exception as e:
+        logger.error(f'解析粘贴文本失败: {e}', exc_info=True)
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
