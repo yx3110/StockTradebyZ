@@ -560,8 +560,10 @@ def generate_recommendations():
         analyzer = get_position_analyzer()
         today = datetime.now().strftime('%Y-%m-%d')
 
-        # 批量分析所有持仓
-        analysis_results = analyzer.analyze_portfolio(positions)
+        # 批量分析所有持仓 (含组合风控)
+        portfolio_analysis = analyzer.analyze_portfolio(positions)
+        analysis_results = portfolio_analysis['positions']
+        portfolio_risk = portfolio_analysis['portfolio_risk']
 
         recommendations = []
         for result in analysis_results:
@@ -578,22 +580,35 @@ def generate_recommendations():
                 'date': today,
                 'code': result['code'],
                 'name': result.get('name', ''),
-                'action': result['action'],
-                'urgency': result['urgency'],
-                'reason': result['reason'],
-                'confidence': result['confidence'],
+                'action': result.get('action', 'hold'),
+                'action_cn': result.get('action_cn', '持有'),
+                'action_reason': result.get('action_reason', ''),
+                'action_color': result.get('action_color', 'secondary'),
+                'reduce_pct': result.get('reduce_pct'),
+                'add_pct': result.get('add_pct'),
+                'urgency': result.get('urgency', 'normal'),
+                'reason': result.get('reason', ''),
+                'confidence': result.get('confidence', 0.5),
                 'stop_loss_price': result.get('stop_loss_price'),
                 'take_profit_price': result.get('take_profit_price'),
-                # ML相关
+                # 绝对ML评分
                 'ml_score': result.get('ml_score'),
+                'score_source': result.get('score_source', 'ml'),
                 'ml_recommendation': result.get('ml_recommendation'),
                 'predicted_return_5d': result.get('predicted_return_5d'),
                 # V4.4.1 多目标预测
                 'pred_3d': result.get('pred_3d'),
+                'pred_5d': result.get('pred_5d'),
                 'pred_10d': result.get('pred_10d'),
                 'pred_15d': result.get('pred_15d'),
+                'pred_targets': result.get('pred_targets', {}),
                 'exec_filter': result.get('exec_filter'),
                 'regime_info': result.get('regime_info'),
+                # 风险评分 (新)
+                'risk_score': result.get('risk_score'),
+                'risk_level': result.get('risk_level'),
+                'risk_level_text': result.get('risk_level_text'),
+                'risk_breakdown': result.get('risk_breakdown', {}),
                 # 技术面
                 'trend': result.get('trend'),
                 'trend_strength': result.get('trend_strength'),
@@ -615,7 +630,10 @@ def generate_recommendations():
                 'resistance': result.get('resistance'),
                 # 盈亏
                 'profit_loss_pct': result.get('profit_loss_pct'),
-                'market_value': result.get('market_value')
+                'market_value': result.get('market_value'),
+                'quantity': result.get('quantity'),
+                'avg_cost': result.get('avg_cost'),
+                'current_price': result.get('current_price'),
             }
 
             # 保存到数据库 (包含关键字段)
@@ -623,23 +641,22 @@ def generate_recommendations():
                 'date': today,
                 'code': result['code'],
                 'name': result.get('name', ''),
-                'action': result['action'],
-                'urgency': result['urgency'],
-                'reason': result['reason'],
+                'action': result.get('action', 'hold'),
+                'urgency': result.get('urgency', 'normal'),
+                'reason': result.get('action_reason', ''),
                 'ml_score': result.get('ml_score'),
                 'stop_loss_price': result.get('stop_loss_price'),
                 'take_profit_price': result.get('take_profit_price'),
-                'confidence': result['confidence'],
-                'kelly_position': result.get('kelly_position'),  # 添加Kelly仓位
-                'predicted_return_5d': result.get('predicted_return_5d')  # 添加5日预测
+                'confidence': result.get('confidence', 0.5),
+                'kelly_position': result.get('kelly_position'),
+                'predicted_return_5d': result.get('predicted_return_5d')
             }
             db.add_recommendation(db_rec)
 
             recommendations.append(rec_data)
 
-        # 按紧急程度排序
-        urgency_order = {'critical': 0, 'high': 1, 'normal': 2, 'low': 3}
-        recommendations.sort(key=lambda x: urgency_order.get(x['urgency'], 4))
+        # 按风险评分排序 (高风险优先)
+        recommendations.sort(key=lambda x: -(x.get('risk_score') or 0))
 
         # 获取ML版本信息
         ml_version = analyzer.ml_version or 'N/A'
@@ -652,15 +669,17 @@ def generate_recommendations():
         return jsonify({
             'success': True,
             'recommendations': recommendations,
+            'portfolio_risk': portfolio_risk,
             'date': today,
             'message': f'已使用{ml_version.upper()} ML系统为{len(recommendations)}只持仓生成专业建议',
             'ml_version': ml_version,
             'ml_info': ml_info,
             'analysis_summary': {
                 'total_positions': len(recommendations),
-                'critical_actions': sum(1 for r in recommendations if r['urgency'] == 'critical'),
-                'high_actions': sum(1 for r in recommendations if r['urgency'] == 'high'),
-                'ml_scored': sum(1 for r in recommendations if r.get('ml_score') is not None)
+                'critical_actions': sum(1 for r in recommendations if r.get('action') in ('sell', 'stop_loss')),
+                'high_actions': sum(1 for r in recommendations if r.get('action') == 'reduce'),
+                'ml_scored': sum(1 for r in recommendations if r.get('ml_score') is not None),
+                'high_risk_count': portfolio_risk.get('high_risk_count', 0)
             }
         })
 

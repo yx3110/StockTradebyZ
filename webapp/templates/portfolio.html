@@ -89,13 +89,13 @@
 <!-- 标签页导航 -->
 <ul class="nav nav-tabs mb-4" id="portfolioTabs" role="tablist">
     <li class="nav-item">
-        <button class="nav-link active" id="positions-tab" data-bs-toggle="tab" data-bs-target="#positions" type="button">
-            <i class="bi bi-list-ul"></i> 当前持仓
+        <button class="nav-link active" id="recommendations-tab" data-bs-toggle="tab" data-bs-target="#recommendations" type="button">
+            <i class="bi bi-lightbulb"></i> 操作建议
         </button>
     </li>
     <li class="nav-item">
-        <button class="nav-link" id="recommendations-tab" data-bs-toggle="tab" data-bs-target="#recommendations" type="button">
-            <i class="bi bi-lightbulb"></i> 操作建议
+        <button class="nav-link" id="positions-tab" data-bs-toggle="tab" data-bs-target="#positions" type="button">
+            <i class="bi bi-list-ul"></i> 当前持仓
         </button>
     </li>
     <li class="nav-item">
@@ -114,7 +114,7 @@
 <div class="tab-content" id="portfolioTabContent">
 
     <!-- 当前持仓 -->
-    <div class="tab-pane fade show active" id="positions" role="tabpanel">
+    <div class="tab-pane fade" id="positions" role="tabpanel">
         <div class="card">
             <div class="card-header bg-primary text-white">
                 <div class="d-flex justify-content-between align-items-center">
@@ -175,7 +175,7 @@
     </div>
 
     <!-- 操作建议 -->
-    <div class="tab-pane fade" id="recommendations" role="tabpanel">
+    <div class="tab-pane fade show active" id="recommendations" role="tabpanel">
         <div class="card">
             <div class="card-header bg-warning">
                 <div class="d-flex justify-content-between align-items-center">
@@ -186,6 +186,35 @@
                 </div>
             </div>
             <div class="card-body">
+                <!-- 组合健康卡片 -->
+                <div id="portfolio-health-card" class="mb-3" style="display: none;">
+                    <div class="card">
+                        <div class="card-body py-2">
+                            <div class="row align-items-center">
+                                <div class="col-md-2 text-center">
+                                    <div class="fs-4 fw-bold" id="health-score-display">-</div>
+                                    <small class="text-muted">健康度</small>
+                                </div>
+                                <div class="col-md-2 text-center">
+                                    <div id="health-hhi">-</div>
+                                    <small class="text-muted">集中度HHI</small>
+                                </div>
+                                <div class="col-md-2 text-center">
+                                    <div id="health-risk-avg">-</div>
+                                    <small class="text-muted">平均风险</small>
+                                </div>
+                                <div class="col-md-2 text-center">
+                                    <div id="health-high-risk">-</div>
+                                    <small class="text-muted">高风险数</small>
+                                </div>
+                                <div class="col-md-4">
+                                    <div id="health-warnings"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- 分析汇总 -->
                 <div class="row g-2 mb-3" id="rec-summary" style="display: none;">
                     <div class="col-md-3">
@@ -195,14 +224,14 @@
                         </div>
                     </div>
                     <div class="col-md-3">
-                        <div class="alert alert-danger mb-0 py-2">
-                            <small><i class="bi bi-exclamation-triangle"></i> 危急:</small>
+                        <div class="alert alert-danger mb-0 py-2" role="button" id="filter-critical" style="cursor:pointer" title="点击筛选">
+                            <small><i class="bi bi-exclamation-triangle"></i> 需操作:</small>
                             <strong id="rec-critical">0</strong>
                         </div>
                     </div>
                     <div class="col-md-3">
-                        <div class="alert alert-warning mb-0 py-2">
-                            <small><i class="bi bi-exclamation-circle"></i> 高优先:</small>
+                        <div class="alert alert-warning mb-0 py-2" role="button" id="filter-reduce" style="cursor:pointer" title="点击筛选">
+                            <small><i class="bi bi-exclamation-circle"></i> 需减仓:</small>
                             <strong id="rec-high">0</strong>
                         </div>
                     </div>
@@ -213,30 +242,32 @@
                         </div>
                     </div>
                 </div>
+                <!-- 筛选状态条 -->
+                <div class="alert alert-info py-2 mb-3 d-none" id="rec-filter-bar">
+                    <i class="bi bi-funnel"></i> <span id="rec-filter-label"></span>
+                    <button class="btn btn-sm btn-outline-info ms-2" id="btn-clear-filter">显示全部</button>
+                </div>
 
                 <div class="table-responsive">
                     <table class="table table-hover table-sm" id="recommendations-table">
                         <thead class="table-dark">
                             <tr>
-                                <th data-sort="urgency" class="sortable">紧急 <i class="bi bi-arrow-down-up sort-icon"></i></th>
                                 <th data-sort="code" class="sortable">代码 <i class="bi bi-arrow-down-up sort-icon"></i></th>
                                 <th data-sort="name" class="sortable">名称 <i class="bi bi-arrow-down-up sort-icon"></i></th>
                                 <th data-sort="ml_score" data-sort-type="number" class="sortable">ML评分 <i class="bi bi-arrow-down-up sort-icon"></i></th>
-                                <th data-sort="predicted_return_5d" data-sort-type="number" class="sortable">预测收益 <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th data-sort="risk_score" data-sort-type="number" class="sortable">风险 <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th data-sort="action" class="sortable">建议 <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th data-sort="profit_loss_pct" data-sort-type="number" class="sortable">盈亏% <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                                <th data-sort="predicted_return_5d" data-sort-type="number" class="sortable" title="未来N日行业超额收益预测(非总收益)">超额预测 <i class="bi bi-arrow-down-up sort-icon"></i></th>
                                 <th data-sort="exec_filter" class="sortable">可执行 <i class="bi bi-arrow-down-up sort-icon"></i></th>
                                 <th data-sort="trend" class="sortable">趋势 <i class="bi bi-arrow-down-up sort-icon"></i></th>
-                                <th data-sort="action" class="sortable">建议 <i class="bi bi-arrow-down-up sort-icon"></i></th>
-                                <th>原因</th>
                                 <th data-sort="stop_loss_price" data-sort-type="number" class="sortable">止损 <i class="bi bi-arrow-down-up sort-icon"></i></th>
-                                <th data-sort="take_profit_price" data-sort-type="number" class="sortable">止盈 <i class="bi bi-arrow-down-up sort-icon"></i></th>
                                 <th data-sort="kelly_position" data-sort-type="number" class="sortable">Kelly% <i class="bi bi-arrow-down-up sort-icon"></i></th>
-                                <th data-sort="confidence" data-sort-type="number" class="sortable">置信度 <i class="bi bi-arrow-down-up sort-icon"></i></th>
-                                <th>状态</th>
                             </tr>
                         </thead>
                         <tbody id="recommendations-tbody">
                             <tr>
-                                <td colspan="14" class="text-center text-muted py-4">
+                                <td colspan="11" class="text-center text-muted py-4">
                                     <i class="bi bi-lightbulb fs-1"></i>
                                     <p>点击"生成建议"使用ML系统分析持仓</p>
                                 </td>
@@ -681,12 +712,11 @@ let searchTimeout = null;
 let sortState = {}; // 记录每个表格的排序状态
 
 $(document).ready(function() {
-    // 初始化
+    // 初始化 - 操作建议优先加载
+    generateRecommendations();
     loadGroups().then(() => {
         loadPositions();
     });
-    loadTrades();
-    loadEvaluations();
 
     // 设置默认日期
     $('#trade-date').val(new Date().toISOString().split('T')[0]);
@@ -727,12 +757,11 @@ $(document).ready(function() {
         }
     });
 
-    // 标签页切换时刷新数据
+    // 标签页切换时懒加载数据
     $('button[data-bs-toggle="tab"]').on('shown.bs.tab', function(e) {
         const target = $(e.target).attr('data-bs-target');
         if (target === '#trades') loadTrades();
         else if (target === '#evaluations') loadEvaluations();
-        else if (target === '#recommendations') loadRecommendations();
     });
 
     // 分组筛选按钮点击
@@ -1277,7 +1306,7 @@ function generateRecommendations() {
             if (response.success) {
                 showToast(response.message, 'success');
                 recommendationsData = response.recommendations;
-                renderRecommendations(response.recommendations, response.analysis_summary, response.ml_version, response.ml_info);
+                renderRecommendations(response.recommendations, response.analysis_summary, response.ml_version, response.ml_info, response.portfolio_risk);
             } else {
                 showToast(response.error, 'error');
             }
@@ -1289,16 +1318,51 @@ function generateRecommendations() {
     });
 }
 
-function renderRecommendations(recommendations, summary, mlVersion, mlInfo) {
+function renderPortfolioHealth(portfolioRisk) {
+    if (!portfolioRisk) {
+        $('#portfolio-health-card').hide();
+        return;
+    }
+    $('#portfolio-health-card').show();
+
+    const hs = portfolioRisk.health_score || 0;
+    const hsColor = hs >= 70 ? 'text-success' : (hs >= 50 ? 'text-warning' : 'text-danger');
+    $('#health-score-display').attr('class', 'fs-4 fw-bold ' + hsColor).text(hs.toFixed(0));
+
+    const hhi = portfolioRisk.hhi || 0;
+    const hhiColor = hhi > 0.25 ? 'text-danger' : (hhi > 0.15 ? 'text-warning' : 'text-success');
+    $('#health-hhi').attr('class', hhiColor).text((hhi * 100).toFixed(0) + '%');
+
+    const riskAvg = portfolioRisk.total_risk_exposure || 0;
+    const riskColor = riskAvg > 60 ? 'text-danger' : (riskAvg > 40 ? 'text-warning' : 'text-success');
+    $('#health-risk-avg').attr('class', riskColor).text(riskAvg.toFixed(0));
+
+    const hrc = portfolioRisk.high_risk_count || 0;
+    $('#health-high-risk').attr('class', hrc >= 3 ? 'text-danger fw-bold' : '').text(hrc);
+
+    const warnings = portfolioRisk.warnings || [];
+    if (warnings.length > 0) {
+        $('#health-warnings').html(warnings.map(w =>
+            `<div class="alert alert-warning py-1 px-2 mb-1 small"><i class="bi bi-exclamation-triangle"></i> ${w}</div>`
+        ).join(''));
+    } else {
+        $('#health-warnings').html('<div class="text-success small"><i class="bi bi-check-circle"></i> 组合状况良好</div>');
+    }
+}
+
+function renderRecommendations(recommendations, summary, mlVersion, mlInfo, portfolioRisk) {
     const tbody = $('#recommendations-tbody');
     tbody.empty();
-    $('#regime-info-bar').remove();  // 清除旧的市况信息条
+    $('#regime-info-bar').remove();
+
+    // 组合健康卡片
+    renderPortfolioHealth(portfolioRisk);
 
     if (!recommendations || recommendations.length === 0) {
         $('#rec-summary').hide();
         tbody.html(`
             <tr>
-                <td colspan="14" class="text-center text-muted py-4">
+                <td colspan="11" class="text-center text-muted py-4">
                     <i class="bi bi-check-circle fs-1 text-success"></i>
                     <p>当前无操作建议，持仓状况良好</p>
                 </td>
@@ -1313,7 +1377,6 @@ function renderRecommendations(recommendations, summary, mlVersion, mlInfo) {
         $('#rec-total').text(summary.total_positions || 0);
         $('#rec-critical').text(summary.critical_actions || 0);
         $('#rec-high').text(summary.high_actions || 0);
-        // 显示ML版本信息
         let mlLabel = `${summary.ml_scored || 0}`;
         if (mlVersion) {
             mlLabel += ` (${mlVersion.toUpperCase()})`;
@@ -1321,9 +1384,30 @@ function renderRecommendations(recommendations, summary, mlVersion, mlInfo) {
         $('#rec-ml-scored').text(mlLabel);
     }
 
+    // 存储全量数据供筛选用
+    window._allRecommendations = recommendations;
+    window._recRenderArgs = {summary, mlVersion, mlInfo, portfolioRisk};
+
+    // 绑定筛选按钮
+    $('#filter-critical').off('click').on('click', function() {
+        const critical = recommendations.filter(r => ['stop_loss', 'sell'].includes(r.action));
+        if (!critical.length) { showToast('无需紧急操作的持仓', 'info'); return; }
+        applyRecFilter(critical, `止损/清仓 ${critical.length} 只`, 'critical');
+    });
+    $('#filter-reduce').off('click').on('click', function() {
+        const reduce = recommendations.filter(r => r.action === 'reduce');
+        if (!reduce.length) { showToast('无需减仓的持仓', 'info'); return; }
+        applyRecFilter(reduce, `需减仓 ${reduce.length} 只`, 'reduce');
+    });
+    $('#btn-clear-filter').off('click').on('click', function() {
+        $('#rec-filter-bar').addClass('d-none');
+        $('#filter-critical, #filter-reduce').removeClass('border border-2');
+        renderRecTable(recommendations);
+    });
+
     // 市况信息展示 (V4.4.1)
     const firstRec = recommendations[0];
-    if (firstRec && firstRec.regime_info && firstRec.regime_info.regime !== 'unknown') {
+    if (firstRec && firstRec.regime_info && firstRec.regime_info.regime && firstRec.regime_info.regime !== 'unknown') {
         const ri = firstRec.regime_info;
         const regimeLabels = {'bull': '牛市', 'bear': '熊市', 'neutral': '震荡'};
         const regimeColors = {'bull': 'success', 'bear': 'danger', 'neutral': 'warning'};
@@ -1336,127 +1420,23 @@ function renderRecommendations(recommendations, summary, mlVersion, mlInfo) {
         `);
     }
 
-    const urgencyLabels = {
-        'critical': '危急',
-        'high': '高',
-        'normal': '中',
-        'low': '低'
-    };
-    const urgencyColors = {
-        'critical': 'danger',
-        'high': 'warning',
-        'normal': 'info',
-        'low': 'secondary'
-    };
-    const actionLabels = {
-        'hold': '持有',
-        'sell': '卖出',
-        'reduce': '减仓',
-        'add': '加仓'
-    };
-    const actionColors = {
-        'hold': 'secondary',
-        'sell': 'danger',
-        'reduce': 'warning',
-        'add': 'success'
-    };
-    const trendLabels = {
-        'up': '↑ 上涨',
-        'down': '↓ 下跌',
-        'sideways': '→ 横盘',
-        'unknown': '-'
-    };
-    const trendColors = {
-        'up': 'text-danger',
-        'down': 'text-success',
-        'sideways': 'text-muted',
-        'unknown': 'text-muted'
-    };
-    const execLabels = {
-        'pass': '通过',
-        'limit_up': '涨停',
-        'limit_up_t1': 'T+1涨停',
-        'near_limit_up': '近涨停',
-        'near_limit_up_t1': 'T+1近停',
-        'momentum_risk': '追涨风险',
-        'low_liquidity': '低流动性',
-        'no_data': '无数据',
-        'unknown': '-'
-    };
-    const execColors = {
-        'pass': 'text-success',
-        'limit_up': 'text-danger',
-        'limit_up_t1': 'text-danger',
-        'near_limit_up': 'text-warning',
-        'near_limit_up_t1': 'text-warning',
-        'momentum_risk': 'text-warning',
-        'low_liquidity': 'text-muted',
-        'no_data': 'text-muted',
-        'unknown': 'text-muted'
-    };
+    // 评分说明
+    $('#score-legend').remove();
+    $('<div class="alert alert-light border py-2 mb-3 small" id="score-legend">' +
+        '<i class="bi bi-info-circle"></i> ' +
+        '<strong>ML评分</strong>(0-100): 基于V4.4.1模型对<u>未来3-15天行业超额收益</u>的预测，>65看好 / 45-65中性 / <45看空。ETF用近期动量替代。' +
+        ' | <strong>风险</strong>(0-100): 综合盈亏状态、止损距离、波动率、技术面、市况、集中度6个维度。' +
+        ' | <strong>操作建议</strong>: ML评分×风险的二维矩阵决定。' +
+        ' | <strong>超额预测</strong>: 模型预测的<u>未来</u>行业超额收益(±1%级别)，不是从成本算起的总收益。' +
+    '</div>').insertAfter('#regime-info-bar').length || $('<div class="alert alert-light border py-2 mb-3 small" id="score-legend">' +
+        '<i class="bi bi-info-circle"></i> ' +
+        '<strong>ML评分</strong>(0-100): 基于V4.4.1模型对<u>未来3-15天行业超额收益</u>的预测，>65看好 / 45-65中性 / <45看空。ETF用近期动量替代。' +
+        ' | <strong>风险</strong>(0-100): 综合盈亏状态、止损距离、波动率、技术面、市况、集中度6个维度。' +
+        ' | <strong>操作建议</strong>: ML评分×风险的二维矩阵决定。' +
+        ' | <strong>超额预测</strong>: 模型预测的<u>未来</u>行业超额收益(±1%级别)，不是从成本算起的总收益。' +
+    '</div>').insertAfter('#rec-summary');
 
-    recommendations.forEach(function(rec) {
-        const urgencyBadge = `<span class="badge bg-${urgencyColors[rec.urgency] || 'secondary'}">${urgencyLabels[rec.urgency] || rec.urgency}</span>`;
-        const actionBadge = `<span class="badge bg-${actionColors[rec.action]}">${actionLabels[rec.action] || rec.action}</span>`;
-        const confidencePct = (rec.confidence * 100).toFixed(0);
-        const confidenceClass = confidencePct >= 70 ? 'text-success' : (confidencePct >= 50 ? 'text-warning' : 'text-danger');
-
-        // ML评分显示
-        let mlScoreHtml = '-';
-        if (rec.ml_score != null) {
-            const mlClass = rec.ml_score >= 65 ? 'text-danger' : (rec.ml_score >= 54 ? 'text-warning' : 'text-success');
-            mlScoreHtml = `<strong class="${mlClass}">${rec.ml_score?.toFixed(1)}</strong>`;
-        }
-
-        // 多目标预测收益 (V4.4.1: 3d/5d/10d/15d)
-        let predictHtml = '-';
-        if (rec.pred_3d != null || rec.predicted_return_5d != null) {
-            const preds = [];
-            if (rec.pred_3d != null) preds.push(`3d:${(rec.pred_3d*100).toFixed(1)}%`);
-            if (rec.predicted_return_5d != null) preds.push(`5d:${(rec.predicted_return_5d*100).toFixed(1)}%`);
-            if (rec.pred_10d != null) preds.push(`10d:${(rec.pred_10d*100).toFixed(1)}%`);
-            if (rec.pred_15d != null) preds.push(`15d:${(rec.pred_15d*100).toFixed(1)}%`);
-            const mainPred = rec.predicted_return_5d || rec.pred_3d || 0;
-            const predictClass = mainPred >= 0 ? 'text-danger' : 'text-success';
-            predictHtml = `<span class="${predictClass}" title="${preds.join(' | ')}">${(mainPred*100).toFixed(1)}%</span>`;
-        }
-
-        // 可执行性 (V4.4.1)
-        const ef = rec.exec_filter || 'unknown';
-        const execHtml = `<span class="${execColors[ef] || 'text-muted'}" title="${ef}">${execLabels[ef] || ef}</span>`;
-
-        // 趋势
-        const trendHtml = `<span class="${trendColors[rec.trend] || 'text-muted'}">${trendLabels[rec.trend] || '-'}</span>`;
-
-        // Kelly仓位
-        const kellyHtml = rec.kelly_position != null ? `${rec.kelly_position?.toFixed(1)}%` : '-';
-
-        tbody.append(`
-            <tr>
-                <td>${urgencyBadge}</td>
-                <td><code>${rec.code}</code></td>
-                <td>${rec.name || '-'}</td>
-                <td>${mlScoreHtml}</td>
-                <td>${predictHtml}</td>
-                <td>${execHtml}</td>
-                <td>${trendHtml}</td>
-                <td>${actionBadge}</td>
-                <td><small title="${rec.reason || ''}">${(rec.reason || '-').substring(0, 30)}${(rec.reason?.length > 30) ? '...' : ''}</small></td>
-                <td class="text-danger">${rec.stop_loss_price?.toFixed(2) || '-'}</td>
-                <td class="text-success">${rec.take_profit_price?.toFixed(2) || '-'}</td>
-                <td>${kellyHtml}</td>
-                <td class="${confidenceClass}"><strong>${confidencePct}%</strong></td>
-                <td>
-                    ${rec.is_executed ?
-                        '<span class="badge bg-success"><i class="bi bi-check"></i> 已执行</span>' :
-                        `<button class="btn btn-sm btn-outline-primary" onclick="markExecuted(${rec.id})">
-                            <i class="bi bi-check2"></i>
-                        </button>`
-                    }
-                </td>
-            </tr>
-        `);
-    });
+    renderRecTable(recommendations);
 }
 
 function markExecuted(recId) {
@@ -1469,6 +1449,164 @@ function markExecuted(recId) {
                 loadRecommendations();
             }
         }
+    });
+}
+
+// ==================== 建议表格渲染 + 筛选 ====================
+
+const _trendLabels = {'up': '↑ 上涨', 'down': '↓ 下跌', 'sideways': '→ 横盘', 'unknown': '-'};
+const _trendColors = {'up': 'text-danger', 'down': 'text-success', 'sideways': 'text-muted', 'unknown': 'text-muted'};
+const _execLabels = {
+    'pass': '通过', 'limit_up': '涨停', 'limit_up_t1': 'T+1涨停',
+    'near_limit_up': '近涨停', 'near_limit_up_t1': 'T+1近停',
+    'momentum_risk': '追涨风险', 'low_liquidity': '低流动性',
+    'no_data': '无数据', 'unknown': '-'
+};
+const _execColors = {
+    'pass': 'text-success', 'limit_up': 'text-danger', 'limit_up_t1': 'text-danger',
+    'near_limit_up': 'text-warning', 'near_limit_up_t1': 'text-warning',
+    'momentum_risk': 'text-warning', 'low_liquidity': 'text-muted',
+    'no_data': 'text-muted', 'unknown': 'text-muted'
+};
+const _riskLevelColors = {'low': 'success', 'medium': 'info', 'high': 'warning', 'critical': 'danger'};
+
+function applyRecFilter(filteredRecs, label, filterType) {
+    $('#rec-filter-bar').removeClass('d-none');
+    $('#rec-filter-label').text(label);
+    // 高亮当前选中的筛选卡片
+    $('#filter-critical, #filter-reduce').removeClass('border border-2 border-dark');
+    if (filterType === 'critical') $('#filter-critical').addClass('border border-2 border-dark');
+    else if (filterType === 'reduce') $('#filter-reduce').addClass('border border-2 border-dark');
+    renderRecTable(filteredRecs);
+}
+
+function renderRecTable(recommendations) {
+    const tbody = $('#recommendations-tbody');
+    tbody.empty();
+
+    if (!recommendations || !recommendations.length) {
+        tbody.append(`<tr><td colspan="11" class="text-center text-muted py-4">无匹配记录</td></tr>`);
+        return;
+    }
+
+    recommendations.forEach(function(rec) {
+        // ML评分
+        let mlScoreHtml = '<span class="text-muted">N/A</span>';
+        if (rec.ml_score != null) {
+            const mlClass = rec.ml_score >= 65 ? 'text-danger' : (rec.ml_score >= 45 ? 'text-warning' : 'text-success');
+            const srcTag = rec.score_source === 'momentum' ? '<sup class="text-muted" title="动量评分(非ML)">M</sup>' : '';
+            mlScoreHtml = `<strong class="${mlClass}">${rec.ml_score.toFixed(1)}</strong>${srcTag}`;
+        }
+
+        // 风险评分 + 五维小条
+        let riskHtml = '-';
+        if (rec.risk_score != null) {
+            const rl = rec.risk_level || 'medium';
+            const riskBadgeColor = _riskLevelColors[rl] || 'secondary';
+            riskHtml = `<span class="badge bg-${riskBadgeColor}">${rec.risk_level_text||''} ${rec.risk_score.toFixed(0)}</span>`;
+            if (rec.risk_breakdown) {
+                const rb = rec.risk_breakdown;
+                const dims = [
+                    {label:'止损', v:rb.stop_loss||0}, {label:'波动', v:rb.volatility||0},
+                    {label:'技术', v:rb.technical||0}, {label:'市况', v:rb.regime||0},
+                    {label:'集中', v:rb.concentration||0}
+                ];
+                riskHtml += '<div class="mt-1" style="min-width:120px">';
+                dims.forEach(d => {
+                    const c = d.v <= 30 ? '#198754' : (d.v <= 50 ? '#0dcaf0' : (d.v <= 70 ? '#ffc107' : '#dc3545'));
+                    riskHtml += `<div class="d-flex align-items-center mb-0" style="font-size:10px;line-height:14px">` +
+                        `<span style="width:24px" class="text-muted">${d.label}</span>` +
+                        `<div style="flex:1;height:6px;background:#e9ecef;border-radius:3px;margin:0 3px">` +
+                        `<div style="width:${Math.min(d.v,100)}%;height:100%;background:${c};border-radius:3px"></div></div>` +
+                        `<span style="width:18px;text-align:right">${d.v.toFixed(0)}</span></div>`;
+                });
+                riskHtml += '</div>';
+            }
+        }
+
+        // 操作建议: 含具体操作量
+        const actionColor = rec.action_color || 'secondary';
+        const actionCn = rec.action_cn || rec.action || '持有';
+        let actionHtml = `<span class="badge bg-${actionColor}">${actionCn}</span>`;
+
+        // 可操作项: 显示具体减仓数量
+        if (rec.reduce_pct && rec.quantity) {
+            // 减仓/止损/清仓: 显示卖出量
+            let reduceQty = Math.floor(rec.quantity * rec.reduce_pct / 100 / 100) * 100;
+            if (reduceQty === 0 && rec.reduce_pct > 0) reduceQty = Math.min(100, rec.quantity);
+            const reduceVal = rec.current_price ? (reduceQty * rec.current_price / 10000).toFixed(1) : null;
+            if (reduceQty > 0) {
+                let detail = '';
+                if (rec.reduce_pct >= 100) {
+                    detail = `卖出全部 ${rec.quantity}股`;
+                } else {
+                    detail = `卖${rec.reduce_pct}% ≈ ${reduceQty}股`;
+                }
+                if (reduceVal && reduceVal !== '0.0') detail += ` (${reduceVal}万)`;
+                actionHtml += `<div class="mt-1" style="font-size:11px;color:#6c757d">${detail}</div>`;
+            }
+        } else if (rec.add_pct && rec.quantity) {
+            // 加仓: 显示买入量
+            let addQty = Math.floor(rec.quantity * rec.add_pct / 100 / 100) * 100;
+            if (addQty === 0 && rec.add_pct > 0) addQty = 100;
+            const addVal = rec.current_price ? (addQty * rec.current_price / 10000).toFixed(1) : null;
+            let detail = `买${rec.add_pct}% ≈ ${addQty}股`;
+            if (addVal && addVal !== '0.0') detail += ` (${addVal}万)`;
+            actionHtml += `<div class="mt-1" style="font-size:11px;color:#28a745">${detail}</div>`;
+        }
+
+        // 原因
+        const reason = rec.action_reason || rec.reason || '-';
+        actionHtml += `<div style="font-size:10px;color:#999;margin-top:2px">${reason}</div>`;
+
+        // 盈亏%
+        let plHtml = '-';
+        if (rec.profit_loss_pct != null) {
+            const plClass = rec.profit_loss_pct >= 0 ? 'text-danger' : 'text-success';
+            const plIcon = rec.profit_loss_pct >= 0 ? '▲' : '▼';
+            plHtml = `<span class="${plClass}">${plIcon}${rec.profit_loss_pct.toFixed(1)}%</span>`;
+        }
+
+        // 超额预测
+        let predictHtml = '-';
+        if (rec.score_source !== 'momentum' && (rec.pred_3d || rec.pred_5d || rec.predicted_return_5d)) {
+            const preds = [];
+            if (rec.pred_3d) preds.push(`3d:${(rec.pred_3d*100).toFixed(2)}%`);
+            const p5d = rec.pred_5d || rec.predicted_return_5d;
+            if (p5d) preds.push(`5d:${(p5d*100).toFixed(2)}%`);
+            if (rec.pred_10d) preds.push(`10d:${(rec.pred_10d*100).toFixed(2)}%`);
+            if (rec.pred_15d) preds.push(`15d:${(rec.pred_15d*100).toFixed(2)}%`);
+            const mainPred = p5d || rec.pred_3d || 0;
+            const predictClass = mainPred >= 0 ? 'text-danger' : 'text-success';
+            predictHtml = `<span class="${predictClass}" title="未来行业超额: ${preds.join(' | ')}">${(mainPred*100).toFixed(2)}%</span>`;
+        }
+
+        // 其他列
+        const ef = rec.exec_filter || 'unknown';
+        const execHtml = `<span class="${_execColors[ef] || 'text-muted'}" title="${ef}">${_execLabels[ef] || ef}</span>`;
+        const trendHtml = `<span class="${_trendColors[rec.trend] || 'text-muted'}">${_trendLabels[rec.trend] || '-'}</span>`;
+        const kellyHtml = rec.kelly_position != null ? `${rec.kelly_position.toFixed(1)}%` : '-';
+
+        // 行高亮: 需操作的行加背景色
+        const isActionable = ['stop_loss', 'sell', 'reduce'].includes(rec.action);
+        const rowClass = rec.action === 'stop_loss' || rec.action === 'sell'
+            ? 'table-danger' : (rec.action === 'reduce' ? 'table-warning' : '');
+
+        tbody.append(`
+            <tr class="${rowClass}">
+                <td><code>${rec.code}</code></td>
+                <td>${rec.name || '-'}</td>
+                <td>${mlScoreHtml}</td>
+                <td>${riskHtml}</td>
+                <td style="min-width:130px">${actionHtml}</td>
+                <td>${plHtml}</td>
+                <td>${predictHtml}</td>
+                <td>${execHtml}</td>
+                <td>${trendHtml}</td>
+                <td class="text-danger">${rec.stop_loss_price?.toFixed(2) || '-'}</td>
+                <td>${kellyHtml}</td>
+            </tr>
+        `);
     });
 }
 

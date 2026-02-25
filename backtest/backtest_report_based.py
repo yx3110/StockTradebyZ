@@ -349,20 +349,231 @@ def _aggregate_benchmark_to_periods(benchmark_daily: pd.Series,
     return s
 
 
+def _load_market_return_20d_bulk(dates):
+    """批量加载20日市场收益 (用于组合风控)"""
+    if not dates:
+        return {}
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        # 获取上证指数收盘价
+        min_date = min(dates)
+        query = """
+        SELECT q.trade_date, q.close
+        FROM daily_quotes q
+        JOIN securities s ON q.security_id = s.id
+        WHERE s.code = '000001.SH' AND q.trade_date <= ?
+        ORDER BY q.trade_date
+        """
+        df = pd.read_sql_query(query, conn, params=[max(dates)])
+    finally:
+        conn.close()
+
+    if df.empty:
+        return {}
+
+    df['trade_date'] = df['trade_date'].astype(str)
+    df = df.set_index('trade_date')
+    df['ret_20d'] = df['close'].pct_change(20)
+
+    result = {}
+    for d in dates:
+        if d in df.index:
+            val = df.loc[d, 'ret_20d']
+            result[d] = float(val) if pd.notna(val) else None
+    return result
+
+
+def _load_industry_map_bulk():
+    """批量加载行业映射"""
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        rows = conn.execute(
+            "SELECT code, industry FROM securities WHERE type = 'A股'"
+        ).fetchall()
+    finally:
+        conn.close()
+    return {code: (ind or '未知') for code, ind in rows}
+
+
+# ═══════════════════════════════════════════════════
+# V4.5 Portfolio Risk Overlays
+# ═══════════════════════════════════════════════════
+
+def _load_market_daily_returns_bulk(dates, index_code='000001.SH'):
+    """加载市场指数每日收益率 (用于EWMA波动率计算)
+
+    Args:
+        dates: 交易日列表 (YYYY-MM-DD format)
+        index_code: 指数代码 (默认上证指数)
+
+    Returns:
+        pd.Series(index=trade_date_str, values=daily_return)
+    """
+    if not dates:
+        return pd.Series(dtype=float)
+
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        # 向前多取60天用于EWMA预热
+        min_date = min(dates)
+        query = """
+            SELECT dq.trade_date, dq.close
+            FROM daily_quotes dq
+            JOIN securities s ON dq.security_id = s.id
+            WHERE s.code = ?
+              AND dq.trade_date >= date(?, '-90 days')
+              AND dq.trade_date <= ?
+            ORDER BY dq.trade_date
+        """
+        df = pd.read_sql_query(query, conn, params=(index_code, min_date, max(dates)))
+    finally:
+        conn.close()
+
+    if df.empty or len(df) < 2:
+        return pd.Series(dtype=float)
+
+    df['trade_date'] = df['trade_date'].astype(str)
+    df = df.set_index('trade_date').sort_index()
+    daily_ret = df['close'].pct_change().dropna()
+    return daily_ret
+
+
+def _compute_ewma_vol(daily_returns, halflife=20):
+    """计算EWMA年化波动率
+
+    Args:
+        daily_returns: 日收益率序列
+        halflife: EWMA半衰期 (默认20天)
+
+    Returns:
+        pd.Series(index=trade_date_str, values=annualized_vol)
+    """
+    if daily_returns.empty:
+        return pd.Series(dtype=float)
+
+    ewma_var = daily_returns.pow(2).ewm(halflife=halflife, min_periods=10).mean()
+    annualized_vol = np.sqrt(ewma_var * 252)
+    return annualized_vol
+
+
+def _compute_overlay_exposure(date, market_ewma_vol, nav, peak_nav,
+                               vol_target, cppi_floor, cppi_multiplier):
+    """计算组合exposure (0.05~1.0), 两个overlay取min
+
+    Args:
+        date: 当前日期 (str)
+        market_ewma_vol: EWMA年化波动率序列
+        nav: 当前净值
+        peak_nav: 历史峰值净值
+        vol_target: 年化波动率目标 (0=关闭)
+        cppi_floor: CPPI最大回撤容忍度 (0=关闭)
+        cppi_multiplier: CPPI乘数
+
+    Returns:
+        float: exposure in [0.05, 1.0]
+    """
+    exposure = 1.0
+
+    # Overlay A: Vol Targeting (Moreira & Muir 2017)
+    # 高波时降低仓位: exposure = vol_target / realized_vol
+    if vol_target > 0 and not market_ewma_vol.empty:
+        # 找到date当天或之前最近的波动率
+        vol_val = None
+        if date in market_ewma_vol.index:
+            vol_val = market_ewma_vol[date]
+        else:
+            prior = market_ewma_vol[market_ewma_vol.index <= date]
+            if not prior.empty:
+                vol_val = prior.iloc[-1]
+
+        if vol_val is not None and vol_val > 0:
+            vol_exposure = vol_target / vol_val
+            exposure = min(exposure, vol_exposure)
+
+    # Overlay B: CPPI Trailing Floor (Grossman-Zhou)
+    # 接近回撤极限时自动减仓: exposure = m * cushion / nav
+    if cppi_floor > 0 and nav > 0 and peak_nav > 0:
+        floor = peak_nav * (1 - cppi_floor)
+        cushion = nav - floor
+        if cushion <= 0:
+            # 已触及floor, 最低仓位
+            exposure = min(exposure, 0.05)
+        else:
+            cppi_exposure = cppi_multiplier * cushion / nav
+            exposure = min(exposure, cppi_exposure)
+
+    return max(0.05, min(1.0, exposure))
+
+
 def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
-                        focus_days=10, retention_bonus=0.0):
+                        focus_days=10, retention_bonus=0.0, score_floor=0.0,
+                        min_holdings=3, risk_control=False,
+                        vol_target=0.0, cppi_floor=0.0, cppi_multiplier=3.0):
     """运行单个报告目录的回测（含北极星指标）
 
     Args:
         retention_bonus: 0.0-1.0, 持仓保留加分比例。>0时已持有股票得到分数加成,
                         减少换手率。0.0=无加成(默认), 0.3=30%加成
+        score_floor: 最低评分门槛。低于此分的股票不入选，空位算现金(0收益)。
+                    0.0=不过滤(默认)。推荐35.0用于V4.4.2风控模式。
+        min_holdings: 最少持仓股票数 (默认3)。即使过滤后不足min_holdings只，
+                     也至少保留min_holdings只(取最高分)。
+        risk_control: 启用组合层面风控 (V4.4.2三层防御)。
+                     不修改scores (保护IC), 仅在选股时:
+                     1) 熊市减仓 (top_n动态缩减, 空位算现金)
+                     2) 行业集中度限制 (单行业最多N只)
+        vol_target: V4.5 年化波动率目标 (0=关闭, 推荐0.12)。
+                   Overlay A: 高波时降低仓位 (Moreira & Muir 2017)
+        cppi_floor: V4.5 CPPI最大回撤容忍度 (0=关闭, 推荐0.10)。
+                   Overlay B: 接近回撤极限时自动减仓 (Grossman-Zhou)
+        cppi_multiplier: V4.5 CPPI乘数 (默认3.0)
     """
     print(f"\n{'='*80}")
     print(f"  报告回测: {label}")
     print(f"  报告天数: {len(reports)}, Top N: {top_n}")
     if retention_bonus > 0:
         print(f"  持仓保留加分: {retention_bonus:.0%}")
+    if score_floor > 0:
+        print(f"  评分门槛: {score_floor:.0f} (低于此分不入选，空位算现金)")
+        print(f"  最少持仓: {min_holdings}只")
+    if risk_control:
+        print(f"  组合风控: 启用 (熊市减仓+行业集中度)")
+
+    # V4.5 Risk Overlays
+    overlay_active = vol_target > 0 or cppi_floor > 0
+    if overlay_active:
+        overlay_parts = []
+        if vol_target > 0:
+            overlay_parts.append(f"VolTarget={vol_target:.0%}")
+        if cppi_floor > 0:
+            overlay_parts.append(f"CPPI(floor={cppi_floor:.0%}, m={cppi_multiplier:.1f})")
+        print(f"  V4.5 Risk Overlays: {' + '.join(overlay_parts)}")
+
     print(f"{'='*80}\n")
+
+    # V4.5: 预加载overlay数据
+    market_ewma_vol = pd.Series(dtype=float)
+    nav = 1.0
+    peak_nav = 1.0
+    exposure_history = []
+    if overlay_active:
+        dates_all_overlay = sorted(reports.keys())
+        mkt_ret = _load_market_daily_returns_bulk(dates_all_overlay)
+        if not mkt_ret.empty:
+            market_ewma_vol = _compute_ewma_vol(mkt_ret, halflife=20)
+            print(f"  V4.5: 加载市场波动率 {len(market_ewma_vol)}天, "
+                  f"均值={market_ewma_vol.mean():.1%}, 当前={market_ewma_vol.iloc[-1]:.1%}")
+        else:
+            print(f"  ⚠️ V4.5: 无法加载市场波动率数据, overlay将不生效")
+
+    # 预加载风控数据
+    market_ret_20d = {}
+    industry_map = {}
+    if risk_control:
+        dates_all = sorted(reports.keys())
+        market_ret_20d = _load_market_return_20d_bulk(dates_all)
+        industry_map = _load_industry_map_bulk()
+        print(f"  风控数据预加载: {len(market_ret_20d)}天市场收益, {len(industry_map)}只行业映射")
 
     daily_results = []
     all_picks = []
@@ -387,6 +598,36 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
         else:
             top_stocks = stocks[:top_n]
 
+        # Module J: 评分门槛过滤 + 现金仓位
+        actual_top_n = top_n
+        if score_floor > 0 and top_stocks:
+            eligible = [s for s in top_stocks if s.get('score', 0) >= score_floor]
+            if len(eligible) < min_holdings:
+                eligible = top_stocks[:min_holdings]
+            top_stocks = eligible
+
+        # V4.4.2 组合风控: 不修改scores, 仅调整持仓
+        if risk_control:
+            mret = market_ret_20d.get(date)
+            if mret is not None and mret < -0.02:
+                # 1) 熊市减仓: -2%→保留8只, -5%→保留5只, -10%→保留3只
+                severity = min(1.0, (abs(mret) - 0.02) / 0.08)
+                effective_n = max(min_holdings, int(top_n * (1 - 0.7 * severity)))
+                top_stocks = top_stocks[:effective_n]
+
+            # 2) 行业集中度限制
+            max_per_ind = 2 if (mret is not None and mret < -0.03) else 4
+            if industry_map:
+                ind_count = {}
+                filtered = []
+                for s in top_stocks:
+                    ind = industry_map.get(s['code'], '未知')
+                    if ind_count.get(ind, 0) < max_per_ind:
+                        filtered.append(s)
+                        ind_count[ind] = ind_count.get(ind, 0) + 1
+                if len(filtered) >= min_holdings:
+                    top_stocks = filtered
+
         bottom_stocks = stocks[-top_n:] if len(stocks) >= top_n * 2 else stocks[-(len(stocks)//2):]
 
         # 买入日 = 报告日的下一个交易日
@@ -410,6 +651,14 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
             skipped += 1
             continue
 
+        # V4.5: 计算当日exposure
+        if overlay_active:
+            exposure = _compute_overlay_exposure(
+                date, market_ewma_vol, nav, peak_nav,
+                vol_target, cppi_floor, cppi_multiplier)
+        else:
+            exposure = 1.0
+
         for days in HOLDING_DAYS:
             key = f'return_{days}d'
             top_returns = [future_returns.get(c, {}).get(key, 0) for c in top_codes
@@ -418,7 +667,16 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
                              if key in future_returns.get(c, {})]
 
             if top_returns:
-                avg_top = np.mean(top_returns)
+                # 原始平均收益 (不受exposure影响, 用于IC)
+                if score_floor > 0 and len(top_returns) < actual_top_n:
+                    cash_slots = actual_top_n - len(top_returns)
+                    raw_avg_top = sum(top_returns) / actual_top_n  # 含现金的平均收益
+                else:
+                    raw_avg_top = np.mean(top_returns)
+
+                # V4.5: exposure缩放 (exposure×stock + (1-exposure)×cash)
+                avg_top = raw_avg_top * exposure
+
                 avg_bottom = np.mean(bottom_returns) if bottom_returns else 0
 
                 daily_results.append({
@@ -426,12 +684,15 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
                     'buy_date': buy_date,
                     'days': days,
                     'avg_top_return': avg_top,
+                    'avg_top_return_raw': raw_avg_top,
                     'avg_bottom_return': avg_bottom,
-                    'spread': avg_top - avg_bottom,
+                    'spread': raw_avg_top - avg_bottom,  # spread用raw (IC不变)
                     'top_positive_pct': np.mean([r > 0 for r in top_returns]),
                     'n_top': len(top_returns),
                     'n_bottom': len(bottom_returns),
                     'n_total_stocks': len(stocks),
+                    'n_cash_slots': actual_top_n - len(top_returns) if score_floor > 0 else 0,
+                    'exposure': exposure,
                 })
 
         # 记录所有候选股票明细（用于逐日IC计算）
@@ -451,12 +712,41 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
                 pick[key] = future_returns.get(s['code'], {}).get(key, None)
             all_picks.append(pick)
 
+        # V4.5: 用1d风控后收益更新NAV (用于CPPI floor追踪)
+        if overlay_active:
+            # 找当天1d收益更新NAV
+            day1_results = [r for r in daily_results
+                           if r['date'] == date and r['days'] == 1]
+            if day1_results:
+                nav *= (1 + day1_results[-1]['avg_top_return'])
+            # Decaying peak: prevents CPPI trap after prolonged drawdowns
+            # Half-life ~139 days (0.995^139 ≈ 0.5)
+            peak_nav = max(nav, peak_nav * 0.995)
+            exposure_history.append({
+                'date': date, 'exposure': exposure,
+                'nav': nav, 'peak_nav': peak_nav
+            })
+
         if (i + 1) % 20 == 0 or i == 0:
+            exp_str = f", exp={exposure:.0%}" if overlay_active else ""
             print(f"  [{i+1}/{len(dates)}] {date} → 买入{buy_date}: "
-                  f"{len(stocks)}只候选, top{min(top_n, len(stocks))}只")
+                  f"{len(stocks)}只候选, top{min(top_n, len(stocks))}只{exp_str}")
 
     if skipped:
         print(f"  跳过 {skipped} 天（无交易数据）")
+
+    # V4.5: Overlay诊断
+    if overlay_active and exposure_history:
+        exp_vals = [e['exposure'] for e in exposure_history]
+        avg_exp = np.mean(exp_vals)
+        min_exp = min(exp_vals)
+        low_exp_days = sum(1 for e in exp_vals if e < 0.5)
+        final_nav = exposure_history[-1]['nav']
+        print(f"\n  V4.5 Overlay诊断:")
+        print(f"    平均exposure: {avg_exp:.1%}")
+        print(f"    最小exposure: {min_exp:.1%}")
+        print(f"    exposure<50%天数: {low_exp_days}/{len(exp_vals)}")
+        print(f"    最终NAV: {final_nav:.4f} ({(final_nav-1)*100:+.1f}%)")
 
     if not daily_results:
         print("  无回测结果!")
@@ -464,6 +754,30 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
 
     df = pd.DataFrame(daily_results)
     picks_df = pd.DataFrame(all_picks)
+
+    # V4.5: For multi-day holdings, replace day-0 exposure with average exposure
+    # over the holding period. This better models daily rebalancing of cash/stock ratio.
+    if overlay_active and exposure_history and 'avg_top_return_raw' in df.columns:
+        exp_by_date = {e['date']: e['exposure'] for e in exposure_history}
+        dates_sorted = sorted(exp_by_date.keys())
+        date_to_idx = {d: i for i, d in enumerate(dates_sorted)}
+
+        for days in HOLDING_DAYS:
+            if days <= 1:
+                continue
+            mask = df['days'] == days
+            for idx in df[mask].index:
+                date = df.loc[idx, 'date']
+                if date not in date_to_idx:
+                    continue
+                pos = date_to_idx[date]
+                # Average exposure over next N trading days
+                end = min(pos + days, len(dates_sorted))
+                exps = [exp_by_date[dates_sorted[k]] for k in range(pos, end)]
+                avg_exp = np.mean(exps) if exps else 1.0
+                raw = df.loc[idx, 'avg_top_return_raw']
+                df.loc[idx, 'avg_top_return'] = raw * avg_exp
+                df.loc[idx, 'exposure'] = avg_exp
 
     # ═══════════════════════════════════════════════════
     # 基础IC/收益统计（保留原有逻辑）
@@ -1280,6 +1594,12 @@ def main():
     parser.add_argument('--focus-days', type=int, default=10,
                         help='重点评估的持仓天数 (default: 10)')
     parser.add_argument('--all', action='store_true', help='四模型全面对比')
+    parser.add_argument('--score-floor', type=float, default=0.0,
+                        help='评分门槛 (Module J): 低于此分不入选，空位算现金 (default: 0)')
+    parser.add_argument('--min-holdings', type=int, default=3,
+                        help='最少持仓数 (default: 3)')
+    parser.add_argument('--risk-control', action='store_true',
+                        help='启用V4.4.2组合风控 (熊市减仓+行业集中度)')
     args = parser.parse_args()
 
     if args.all:
@@ -1298,7 +1618,10 @@ def main():
             reports = load_reports(dir_path)
             print(f"加载 {label}: {len(reports)} 天报告")
             result = run_single_backtest(reports, label, args.top_n,
-                                        args.benchmark, args.focus_days)
+                                        args.benchmark, args.focus_days,
+                                        score_floor=args.score_floor,
+                                        min_holdings=args.min_holdings,
+                                        risk_control=args.risk_control)
             if result:
                 results.append(result)
 
@@ -1315,7 +1638,9 @@ def main():
         print(f"加载 {args.label}: {len(reports_a)} 天报告")
 
         result_a = run_single_backtest(reports_a, args.label, args.top_n,
-                                       args.benchmark, args.focus_days)
+                                       args.benchmark, args.focus_days,
+                                       score_floor=args.score_floor,
+                                       min_holdings=args.min_holdings)
 
         results = [result_a] if result_a else []
 
@@ -1323,7 +1648,9 @@ def main():
             reports_b = load_reports(args.compare_dir)
             print(f"加载 {args.compare_label}: {len(reports_b)} 天报告")
             result_b = run_single_backtest(reports_b, args.compare_label, args.top_n,
-                                           args.benchmark, args.focus_days)
+                                           args.benchmark, args.focus_days,
+                                           score_floor=args.score_floor,
+                                           min_holdings=args.min_holdings)
 
             if result_a and result_b:
                 results.append(result_b)

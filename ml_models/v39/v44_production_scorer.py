@@ -684,3 +684,439 @@ class V44ProductionScorer(V43ProductionScorer):
             self._exec_cache[date] = result
 
         print(f"V4.4可执行性数据预加载完成: {len(valid_dates)}天(含T+1), {len(df)}条记录")
+
+
+class V442ProductionScorer(V44ProductionScorer):
+    """V4.4.2 生产评分器 — V4.4.1基础 + 三层组合风控
+
+    新增模块 (纯推理层，不重训模型):
+      Module G: 市况评分压缩 — 熊市时压缩分数区间，降低信号强度
+      Module H: 置信度门槛 — 动态评分下限，低置信度归零
+      Module I: 行业集中度限制 — 单行业最多N只，防相关性回撤
+    """
+
+    def __init__(self, model_type: str = 'small_data'):
+        self._industry_cache = {}  # code -> industry
+        super().__init__(model_type=model_type)
+
+    def _load_industry_map(self, codes: List[str]) -> Dict[str, str]:
+        """加载股票行业映射 (带缓存)"""
+        missing = [c for c in codes if c not in self._industry_cache]
+        if missing:
+            conn = sqlite3.connect(self.db_path)
+            try:
+                placeholders = ','.join(['?' for _ in missing])
+                rows = conn.execute(f"""
+                    SELECT code, industry FROM securities
+                    WHERE code IN ({placeholders}) AND type = 'A股'
+                """, missing).fetchall()
+            finally:
+                conn.close()
+            for code, industry in rows:
+                self._industry_cache[code] = industry or '未知'
+
+        return {c: self._industry_cache.get(c, '未知') for c in codes}
+
+    def _apply_regime_score_compression(self, results: Dict[str, Dict],
+                                         date: str) -> Dict[str, Dict]:
+        """Module G: 市况评分压缩 — 熊市时压缩分数区间，降低信号强度
+
+        触发: 20d市场收益 < -2%
+        压缩公式: new_score = 50 + (score - 50) * compress_factor
+        压缩因子: -2%→0.9, -5%→0.7, -10%→0.5
+        效果: 熊市时所有分数向50靠拢，顶分从90→70
+        """
+        market_ret = self._get_market_return_20d(date)
+        if market_ret is None or market_ret > -0.02:
+            return results  # 非熊市不压缩
+
+        # 压缩因子: 线性插值 -2%→0.9, -10%→0.5
+        severity = min(1.0, (abs(market_ret) - 0.02) / 0.08)  # 0→1 over -2%→-10%
+        compress_factor = 0.9 - 0.4 * severity  # 0.9→0.5
+
+        for code in results:
+            old_score = results[code].get('score', 50.0)
+            if old_score > 0:  # 不压缩已归零的
+                results[code]['score'] = 50.0 + (old_score - 50.0) * compress_factor
+                results[code]['regime_compression'] = compress_factor
+
+        return results
+
+    def _apply_confidence_floor(self, results: Dict[str, Dict],
+                                 date: str) -> Dict[str, Dict]:
+        """Module H: 置信度门槛 — 动态评分下限，低置信度归零
+
+        动态下限:
+          牛市/中性: floor=35 (几乎不过滤)
+          弱市(-2%~-5%): floor=50
+          熊市(-5%~-8%): floor=58
+          重熊(<-8%): floor=65
+        加上: 熊市中pred_10d < -0.5%的股票→归零
+        """
+        market_ret = self._get_market_return_20d(date)
+        if market_ret is None:
+            return results
+
+        # 确定动态下限
+        if market_ret > -0.02:
+            floor = 35.0
+        elif market_ret > -0.05:
+            # -2%→50, -5%→50 (线性过渡区间)
+            floor = 50.0
+        elif market_ret > -0.08:
+            # -5%→58, -8%→58 (线性过渡区间)
+            floor = 58.0
+        else:
+            floor = 65.0
+
+        is_bear = market_ret < -0.05
+
+        for code in list(results.keys()):
+            score = results[code].get('score', 0)
+            if score <= 0:
+                continue  # 已归零的跳过
+
+            # 低于门槛→归零
+            if score < floor:
+                results[code]['score'] = 0.0
+                results[code]['confidence_filter'] = f'below_floor_{floor:.0f}'
+                continue
+
+            # 熊市中预测10d收益为负→归零
+            if is_bear:
+                pred_10d = results[code].get('pred_10d', 0)
+                if pred_10d < -0.005:
+                    results[code]['score'] = 0.0
+                    results[code]['confidence_filter'] = 'bear_negative_10d'
+                    continue
+
+            results[code]['confidence_filter'] = 'pass'
+
+        return results
+
+    def _apply_industry_concentration_cap(self, results: Dict[str, Dict],
+                                            date: str) -> Dict[str, Dict]:
+        """Module I: 行业集中度限制 — 单行业最多N只，超额降权
+
+        牛市: 单行业最多4只
+        熊市: 单行业最多2只
+        超额股票: score × 0.3 (降权非归零，保留备选)
+        """
+        market_ret = self._get_market_return_20d(date)
+        max_per_industry = 2 if (market_ret is not None and market_ret < -0.03) else 4
+
+        # 获取有效stock (score > 0)
+        active_codes = [c for c in results if results[c].get('score', 0) > 0]
+        if not active_codes:
+            return results
+
+        industry_map = self._load_industry_map(active_codes)
+
+        # 按score排序
+        sorted_codes = sorted(active_codes, key=lambda c: results[c].get('score', 0), reverse=True)
+
+        # 统计每个行业已选中数量
+        industry_count = {}
+        for code in sorted_codes:
+            ind = industry_map.get(code, '未知')
+            count = industry_count.get(ind, 0)
+            if count >= max_per_industry:
+                # 超额→降权
+                results[code]['score'] *= 0.3
+                results[code]['industry_cap'] = f'capped_{ind}'
+            else:
+                industry_count[ind] = count + 1
+
+        return results
+
+    def predict_scores(self, stock_codes: List[str], date: str) -> Dict[str, Dict]:
+        """V4.4.2 评分管线: V4.4.1完整管线 + 三层组合风控"""
+        # Step 1-4: V4.4.1 完整管线 (基础预测 → 熊市混合 → 保序校准 → 可执行性过滤)
+        # 但我们需要在可执行性过滤之前插入G/H/I
+        results = {}
+
+        # Step 1: V4.3 基础评分
+        features_df = self._get_features(stock_codes, date, load_full_cross_section=True)
+        if features_df is not None and len(features_df) > 0:
+            features_df = self._robust_zscore_normalize_features(features_df)
+            features_df = self._load_daily_basic_features(features_df, date)
+            features_df = self._load_technical_features(features_df, date)
+            features_df = features_df[features_df['code'].isin(stock_codes)].copy()
+
+        if features_df is None or len(features_df) == 0:
+            for code in stock_codes:
+                results[code] = {'score': 50.0, 'pred_3d': 0, 'pred_5d': 0, 'pred_10d': 0, 'pred_15d': 0,
+                                 'exec_filter': 'no_data'}
+            return results
+
+        # 准备特征矩阵
+        exclude_cols = {'code', 'trade_date'}
+        if self.feature_cols:
+            missing = [c for c in self.feature_cols if c not in features_df.columns]
+            if missing:
+                for col in missing:
+                    features_df[col] = 0
+            available_cols = self.feature_cols
+        else:
+            available_cols = [c for c in features_df.columns if c not in exclude_cols]
+
+        X = features_df[available_cols].fillna(0).values
+        X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
+        codes = features_df['code'].tolist()
+
+        # 独立预测 4 目标
+        model_predictions_success = False
+        predictions = {
+            '3d': np.zeros(len(X)), '5d': np.zeros(len(X)),
+            '10d': np.zeros(len(X)), '15d': np.zeros(len(X))
+        }
+
+        for target in ['3d', '5d', '10d', '15d']:
+            if target not in self.models or not self.models[target]:
+                continue
+            target_pred = np.zeros(len(X))
+            total_weight = 0
+            success_count = 0
+            for name, model in self.models[target].items():
+                try:
+                    pred = model.predict(X)
+                    weight = self.weights.get(f'label_{target}', {}).get(name, 0.2)
+                    target_pred += weight * pred
+                    total_weight += weight
+                    success_count += 1
+                except Exception:
+                    continue
+            if total_weight > 0:
+                target_pred /= total_weight
+                predictions[target] = target_pred
+                if success_count > 0:
+                    model_predictions_success = True
+
+        # 构建初始结果 (市况自适应目标权重)
+        regime_weights = self._get_regime_target_weights(date)
+        if model_predictions_success:
+            combined_pred = (
+                regime_weights.get('label_3d', 0.20) * predictions['3d'] +
+                regime_weights.get('label_5d', 0.25) * predictions['5d'] +
+                regime_weights.get('label_10d', 0.35) * predictions['10d'] +
+                regime_weights.get('label_15d', 0.20) * predictions['15d']
+            )
+        else:
+            combined_pred = self._calculate_fallback_scores(features_df, available_cols)
+            predictions = self._estimate_predictions_from_features(features_df, available_cols)
+
+        # 映射到 30-90 分制
+        if len(combined_pred) > 1:
+            from scipy import stats
+            ranks = stats.rankdata(combined_pred)
+            percentiles = (ranks - 1) / (len(ranks) - 1) * 100
+            scores = 30 + percentiles * 0.6
+        else:
+            scores = np.array([60.0])
+
+        for i, code in enumerate(codes):
+            results[code] = {
+                'score': float(scores[i]),
+                'pred_3d': float(predictions['3d'][i]) if i < len(predictions['3d']) else 0,
+                'pred_5d': float(predictions['5d'][i]) if i < len(predictions['5d']) else 0,
+                'pred_10d': float(predictions['10d'][i]) if i < len(predictions['10d']) else 0,
+                'pred_15d': float(predictions.get('15d', np.zeros(1))[min(i, len(predictions.get('15d', [0]))-1)]) if '15d' in predictions else 0,
+            }
+
+        # Step 2: Module C — 熊市专家混合
+        results = self._blend_bear_specialist(results, date, X, codes)
+
+        # Step 3: Module A — 保序回归校准
+        results = self._apply_isotonic_calibration(results, codes)
+
+        # Step 3b: 校准后重新计算综合分数和排名
+        if model_predictions_success and self.isotonic_calibration:
+            new_combined = np.zeros(len(codes))
+            for i, code in enumerate(codes):
+                if code in results:
+                    r = results[code]
+                    new_combined[i] = (
+                        regime_weights.get('label_3d', 0.20) * r.get('pred_3d', 0) +
+                        regime_weights.get('label_5d', 0.25) * r.get('pred_5d', 0) +
+                        regime_weights.get('label_10d', 0.35) * r.get('pred_10d', 0) +
+                        regime_weights.get('label_15d', 0.20) * r.get('pred_15d', 0)
+                    )
+
+            if len(new_combined) > 1:
+                from scipy import stats
+                ranks = stats.rankdata(new_combined)
+                percentiles = (ranks - 1) / (len(ranks) - 1) * 100
+                new_scores = 30 + percentiles * 0.6
+                for i, code in enumerate(codes):
+                    if code in results:
+                        results[code]['score'] = float(new_scores[i])
+
+        # === V4.4.2 新增: 三层组合风控 ===
+        # Step 4: Module G — 市况评分压缩
+        results = self._apply_regime_score_compression(results, date)
+
+        # Step 5: Module H — 置信度门槛
+        results = self._apply_confidence_floor(results, date)
+
+        # Step 6: Module I — 行业集中度限制
+        results = self._apply_industry_concentration_cap(results, date)
+
+        # Step 7: Module E — 可执行性过滤 (V4.4.1, 位置后移)
+        results = self._apply_executability_filters(results, date)
+
+        # 补全缺失code
+        for code in stock_codes:
+            if code not in results:
+                results[code] = {'score': 50.0, 'pred_3d': 0, 'pred_5d': 0, 'pred_10d': 0, 'pred_15d': 0,
+                                 'exec_filter': 'no_data'}
+
+        # Module F: 附加市况信息 (不影响评分)
+        regime_info = self._get_regime_info(date)
+        for code in results:
+            results[code]['regime_info'] = regime_info
+
+        return results
+
+    def predict_scores_from_preloaded(self, stock_codes: List[str], date: str,
+                                       features_df: Optional[pd.DataFrame]) -> Dict[str, Dict]:
+        """V4.4.2 使用预加载特征评分 — 批量评分用"""
+        results = {}
+
+        if features_df is None or len(features_df) == 0:
+            for code in stock_codes:
+                results[code] = {'score': 50.0, 'pred_3d': 0, 'pred_5d': 0, 'pred_10d': 0, 'pred_15d': 0,
+                                 'exec_filter': 'no_data'}
+            return results
+
+        # robust z-score + daily_basic + tech features
+        features_df = self._robust_zscore_normalize_features(features_df.copy())
+        features_df = self._load_daily_basic_features(features_df, date)
+        features_df = self._load_technical_features(features_df, date)
+
+        mask = features_df['code'].isin(stock_codes)
+        filtered_df = features_df[mask].copy()
+
+        if len(filtered_df) == 0:
+            for code in stock_codes:
+                results[code] = {'score': 50.0, 'pred_3d': 0, 'pred_5d': 0, 'pred_10d': 0, 'pred_15d': 0,
+                                 'exec_filter': 'no_data'}
+            return results
+
+        # 准备特征矩阵
+        exclude_cols = {'code', 'trade_date'}
+        if self.feature_cols:
+            for col in self.feature_cols:
+                if col not in filtered_df.columns:
+                    filtered_df[col] = 0
+            available_cols = self.feature_cols
+        else:
+            available_cols = [c for c in filtered_df.columns if c not in exclude_cols]
+
+        X = filtered_df[available_cols].fillna(0).values
+        X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
+        codes = filtered_df['code'].tolist()
+
+        model_predictions_success = False
+        predictions = {
+            '3d': np.zeros(len(X)), '5d': np.zeros(len(X)),
+            '10d': np.zeros(len(X)), '15d': np.zeros(len(X))
+        }
+
+        for target in ['3d', '5d', '10d', '15d']:
+            if target not in self.models or not self.models[target]:
+                continue
+            target_pred = np.zeros(len(X))
+            total_weight = 0
+            success_count = 0
+            for name, model in self.models[target].items():
+                try:
+                    pred = model.predict(X)
+                    weight = self.weights.get(f'label_{target}', {}).get(name, 0.2)
+                    target_pred += weight * pred
+                    total_weight += weight
+                    success_count += 1
+                except Exception:
+                    continue
+            if total_weight > 0:
+                target_pred /= total_weight
+                predictions[target] = target_pred
+                if success_count > 0:
+                    model_predictions_success = True
+
+        # 市况自适应目标权重
+        regime_weights = self._get_regime_target_weights(date)
+        if model_predictions_success:
+            combined_pred = (
+                regime_weights.get('label_3d', 0.20) * predictions['3d'] +
+                regime_weights.get('label_5d', 0.25) * predictions['5d'] +
+                regime_weights.get('label_10d', 0.35) * predictions['10d'] +
+                regime_weights.get('label_15d', 0.20) * predictions['15d']
+            )
+        else:
+            combined_pred = self._calculate_fallback_scores(filtered_df, available_cols)
+            predictions = self._estimate_predictions_from_features(filtered_df, available_cols)
+
+        if len(combined_pred) > 1:
+            from scipy import stats
+            ranks = stats.rankdata(combined_pred)
+            percentiles = (ranks - 1) / (len(ranks) - 1) * 100
+            scores = 30 + percentiles * 0.6
+        else:
+            scores = np.array([60.0])
+
+        for i, code in enumerate(codes):
+            results[code] = {
+                'score': float(scores[i]),
+                'pred_3d': float(predictions['3d'][i]) if i < len(predictions['3d']) else 0,
+                'pred_5d': float(predictions['5d'][i]) if i < len(predictions['5d']) else 0,
+                'pred_10d': float(predictions['10d'][i]) if i < len(predictions['10d']) else 0,
+                'pred_15d': float(predictions.get('15d', np.zeros(1))[min(i, len(predictions.get('15d', [0]))-1)]) if '15d' in predictions else 0,
+            }
+
+        # Step 2: Module C — 熊市专家混合
+        results = self._blend_bear_specialist(results, date, X, codes)
+
+        # Step 3: Module A — 保序回归校准
+        results = self._apply_isotonic_calibration(results, codes)
+
+        # Step 3b: 校准后重新排名
+        if model_predictions_success and self.isotonic_calibration:
+            new_combined = np.zeros(len(codes))
+            for i, code in enumerate(codes):
+                if code in results:
+                    r = results[code]
+                    new_combined[i] = (
+                        regime_weights.get('label_3d', 0.20) * r.get('pred_3d', 0) +
+                        regime_weights.get('label_5d', 0.25) * r.get('pred_5d', 0) +
+                        regime_weights.get('label_10d', 0.35) * r.get('pred_10d', 0) +
+                        regime_weights.get('label_15d', 0.20) * r.get('pred_15d', 0)
+                    )
+
+            if len(new_combined) > 1:
+                from scipy import stats
+                ranks = stats.rankdata(new_combined)
+                percentiles = (ranks - 1) / (len(ranks) - 1) * 100
+                new_scores = 30 + percentiles * 0.6
+                for i, code in enumerate(codes):
+                    if code in results:
+                        results[code]['score'] = float(new_scores[i])
+
+        # === V4.4.2 新增: 三层组合风控 ===
+        # Step 4: Module G — 市况评分压缩
+        results = self._apply_regime_score_compression(results, date)
+
+        # Step 5: Module H — 置信度门槛
+        results = self._apply_confidence_floor(results, date)
+
+        # Step 6: Module I — 行业集中度限制
+        results = self._apply_industry_concentration_cap(results, date)
+
+        # Step 7: Module E — 可执行性过滤
+        results = self._apply_executability_filters(results, date)
+
+        for code in stock_codes:
+            if code not in results:
+                results[code] = {'score': 50.0, 'pred_3d': 0, 'pred_5d': 0, 'pred_10d': 0, 'pred_15d': 0,
+                                 'exec_filter': 'no_data'}
+
+        return results

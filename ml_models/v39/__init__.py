@@ -28,7 +28,7 @@ from .v390_enhanced_feature_ml_system import V390EnhancedFeatureMLSystem
 from .v390_production_scorer import V390ProductionScorer
 from .v394_production_scorer import V394ProductionScorer
 from .v500_production_scorer import V500ProductionScorer
-from .v44_production_scorer import V44ProductionScorer
+from .v44_production_scorer import V44ProductionScorer, V442ProductionScorer
 from .alpha158_production_scorer import Alpha158ProductionScorer
 
 # 导出
@@ -38,5 +38,6 @@ __all__ = [
     'V394ProductionScorer',
     'V500ProductionScorer',
     'V44ProductionScorer',
+    'V442ProductionScorer',
     'Alpha158ProductionScorer',
 ]
