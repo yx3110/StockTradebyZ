@@ -275,6 +275,36 @@
                         </tbody>
                     </table>
                 </div>
+
+                <!-- 开仓建议 (来自选股报告) -->
+                <div class="mt-4" id="new-positions-section" style="display:none">
+                    <h6 class="text-success mb-2">
+                        <i class="bi bi-plus-circle"></i> 开仓建议
+                        <small class="text-muted ms-2" id="selection-report-date"></small>
+                    </h6>
+                    <div class="table-responsive">
+                        <table class="table table-hover table-sm" id="selections-table">
+                            <thead class="table-success">
+                                <tr>
+                                    <th>代码</th>
+                                    <th>名称</th>
+                                    <th>行业</th>
+                                    <th>评分</th>
+                                    <th>建议</th>
+                                    <th>策略</th>
+                                    <th>预测5d</th>
+                                    <th>信心</th>
+                                    <th>风险</th>
+                                    <th>买入价</th>
+                                    <th>止损</th>
+                                    <th>止盈</th>
+                                </tr>
+                            </thead>
+                            <tbody id="selections-tbody">
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
@@ -1307,6 +1337,8 @@ function generateRecommendations() {
                 showToast(response.message, 'success');
                 recommendationsData = response.recommendations;
                 renderRecommendations(response.recommendations, response.analysis_summary, response.ml_version, response.ml_info, response.portfolio_risk);
+                // 同时加载开仓建议
+                loadSelections();
             } else {
                 showToast(response.error, 'error');
             }
@@ -1605,6 +1637,75 @@ function renderRecTable(recommendations) {
                 <td>${trendHtml}</td>
                 <td class="text-danger">${rec.stop_loss_price?.toFixed(2) || '-'}</td>
                 <td>${kellyHtml}</td>
+            </tr>
+        `);
+    });
+}
+
+// ==================== 开仓建议 (选股报告) ====================
+
+function loadSelections() {
+    $.ajax({
+        url: '/api/portfolio/selections/today',
+        data: {top_n: 15, min_score: 60},
+        success: function(response) {
+            if (response.success) {
+                renderSelections(response.selections, response.report_date);
+            }
+        }
+    });
+}
+
+function renderSelections(selections, reportDate) {
+    const section = $('#new-positions-section');
+    const tbody = $('#selections-tbody');
+    tbody.empty();
+
+    if (!selections || !selections.length) {
+        section.hide();
+        return;
+    }
+    section.show();
+
+    // 报告日期
+    if (reportDate) {
+        const d = reportDate.replace(/(\d{4})(\d{2})(\d{2})/, '$1-$2-$3');
+        $('#selection-report-date').text(`(报告: ${d})`);
+    }
+
+    const riskColors = {'very_low': 'success', 'low': 'info', 'medium': 'warning', 'high': 'danger'};
+    const riskLabels = {'very_low': '极低', 'low': '低', 'medium': '中', 'high': '高'};
+
+    selections.forEach(function(s) {
+        const scoreClass = s.score >= 70 ? 'text-danger fw-bold' : (s.score >= 60 ? 'text-warning' : 'text-muted');
+        const predRet = s.predicted_return_5d != null ? `<span class="${s.predicted_return_5d >= 0 ? 'text-danger' : 'text-success'}">${(s.predicted_return_5d * 100).toFixed(1)}%</span>` : '-';
+        const conf = s.confidence != null ? `${(s.confidence * 100).toFixed(0)}%` : '-';
+        const rl = s.risk_level || 'medium';
+        const riskBadge = `<span class="badge bg-${riskColors[rl] || 'secondary'}">${riskLabels[rl] || rl}</span>`;
+        const strategies = (s.strategies || []).join(', ');
+        const recColor = s.recommendation.includes('强烈') ? 'danger' : (s.recommendation.includes('买入') ? 'success' : 'secondary');
+
+        // 买入建议: 根据score和confidence计算建议仓位
+        let buyDetail = '';
+        const suggestPct = s.score >= 70 ? '3-5%' : '1-3%';
+        if (s.buy_price) {
+            buyDetail = `<div style="font-size:10px;color:#28a745">建议${suggestPct}仓位</div>`;
+        }
+
+        tbody.append(`
+            <tr>
+                <td><code>${s.code}</code></td>
+                <td>${s.name}</td>
+                <td><small class="text-muted">${s.industry || '-'}</small></td>
+                <td><span class="${scoreClass}">${s.score.toFixed(1)}</span></td>
+                <td><span class="badge bg-${recColor}">${s.recommendation}</span>${buyDetail}</td>
+                <td><small>${strategies}</small></td>
+                <td>${predRet}</td>
+                <td>${conf}</td>
+                <td>${riskBadge}</td>
+                <td class="text-primary">${s.buy_price?.toFixed(2) || '-'}</td>
+                <td class="text-danger">${s.stop_loss?.toFixed(2) || '-'}</td>
+                <td class="text-success">${s.take_profit?.toFixed(2) || '-'}</td>
             </tr>
         `);
     });

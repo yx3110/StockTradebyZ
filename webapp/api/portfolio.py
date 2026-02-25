@@ -1185,3 +1185,99 @@ def set_position_group(position_id: int):
     except Exception as e:
         logger.error(f'设置分组失败: {e}', exc_info=True)
         return jsonify({'success': False, 'error': str(e)}), 500
+
+
+# ==================== 开仓建议 API (选股报告) ====================
+
+@portfolio_bp.route('/selections/today', methods=['GET'])
+def get_today_selections():
+    """
+    获取最新选股报告的开仓建议
+
+    Query Parameters:
+        top_n: 返回前N只 (默认15)
+        min_score: 最低评分 (默认60)
+
+    Returns:
+        {success, selections: [...], report_date, held_codes: [...]}
+    """
+    try:
+        import glob as glob_mod
+        top_n = int(request.args.get('top_n', 15))
+        min_score = float(request.args.get('min_score', 60))
+
+        # 找到最新的analysis_data JSON
+        reports_dir = current_app.config.get('REPORTS_DIR',
+                        Path(current_app.config['STOCK_DB_PATH']).parent.parent / 'reports')
+        report_dirs = [
+            reports_dir / 'daily_selection_v3.9',
+        ]
+
+        latest_file = None
+        latest_date = ''
+        for rd in report_dirs:
+            for f in sorted(rd.glob('analysis_data_*.json'), reverse=True):
+                date_str = f.stem.replace('analysis_data_', '')
+                if date_str > latest_date:
+                    latest_date = date_str
+                    latest_file = f
+
+        if not latest_file:
+            return jsonify({'success': True, 'selections': [],
+                           'message': '未找到选股报告'})
+
+        with open(latest_file) as f:
+            report_data = json.load(f)
+
+        all_stocks = report_data.get('all_stocks_with_scores', [])
+
+        # 获取当前持仓代码，排除已持有
+        db = get_db_manager()
+        positions = db.get_all_positions()
+        held_codes = set(p['code'] for p in positions)
+
+        # 过滤: 排除已持仓 + 最低评分 + 推荐为买入
+        selections = []
+        for s in all_stocks:
+            code = s.get('stock_code', '')
+            if code in held_codes:
+                continue
+            score = s.get('score', 0) or 0
+            if score < min_score:
+                continue
+            rec = s.get('recommendation', '')
+            if '卖出' in rec or '观望' in rec:
+                continue
+
+            selections.append({
+                'code': code,
+                'name': s.get('stock_name', ''),
+                'score': round(score, 1),
+                'strategies': s.get('strategies', []),
+                'strategy_count': s.get('selected_by_strategies', 1),
+                'recommendation': rec,
+                'predicted_return_5d': s.get('predicted_return_5d'),
+                'confidence': s.get('confidence_score'),
+                'risk_level': s.get('risk_level', 'medium'),
+                'close_price': s.get('close_price'),
+                'buy_price': s.get('suggested_buy_price'),
+                'stop_loss': s.get('stop_loss_price'),
+                'take_profit': s.get('take_profit_price'),
+                'industry': s.get('industry', ''),
+            })
+
+        # 按评分排序，取top_n
+        selections.sort(key=lambda x: -x['score'])
+        selections = selections[:top_n]
+
+        return jsonify({
+            'success': True,
+            'selections': selections,
+            'report_date': latest_date,
+            'total_in_report': len(all_stocks),
+            'held_codes': list(held_codes),
+        })
+
+    except Exception as e:
+        logger.error(f'获取选股建议失败: {e}', exc_info=True)
+        return jsonify({'success': False, 'error': str(e)}), 500
