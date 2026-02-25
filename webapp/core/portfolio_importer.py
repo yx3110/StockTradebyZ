@@ -1,15 +1,18 @@
 """
-CSV/网页粘贴 持仓导入器
+CSV/网页粘贴/HTML 持仓导入器
 
-支持两种输入格式:
+支持三种输入格式:
 1. CSV文件 (东方财富/同花顺导出): 标准CSV, 自动检测GBK/UTF-8编码
 2. 网页粘贴文本 (从券商网页直接复制): 处理多行表头、粘连行、缺失数据
+3. HTML表格 (东方财富模拟交易等网页源码): 结构化解析<table>标签
 
 核心能力:
 - 自动检测GBK/UTF-8编码
+- 自动检测HTML格式并路由到HTML解析器
 - 模糊匹配列名
 - 用正则从每行提取6位股票代码+中文名+数字字段
 - 检测粘连行 (两只股票挤在一行) 并拆分
+- HTML截断修复: 成本价缺失时从盈亏推算
 - 智能合并已有持仓
 """
 import csv
@@ -27,6 +30,7 @@ QUANTITY_COLUMNS = ['持仓数量', '股份余额', '数量', '持仓', '库存�
 COST_COLUMNS = ['成本价', '参考成本价', '购入价', '买入均价', '成本', '摊薄成本价']
 PRICE_COLUMNS = ['当前价', '市价', '现价', '最新价', '市场价']
 MARKET_VALUE_COLUMNS = ['市值', '参考市值', '最新市值', '证券市值']
+PNL_COLUMNS = ['持仓盈亏', '盈亏', '浮动盈亏']
 
 # A股/ETF有效代码前2位
 # 00:深主板 30:创业板 60:沪主板 68:科创板 8x:北交所
@@ -101,6 +105,228 @@ def _is_chinese_name(s: str) -> bool:
     return bool(re.search(r'[\u4e00-\u9fff]', s))
 
 
+def _detect_html(text: str) -> bool:
+    """检测输入是否为HTML表格格式"""
+    return bool(re.search(r'<t(?:able|body|head|r)\b', text, re.IGNORECASE))
+
+
+def _extract_html_cells(row_html: str) -> List[str]:
+    """
+    从HTML <tr> 内容中提取单元格文本列表
+
+    处理: </td>, </th>, 截断的 </t>, 损坏的 </ts="..."> 等各种标签
+    策略: 用标签边界做分隔符, 提取所有非空文本段
+    """
+    text = row_html
+    # 关闭标签作为分隔符: </td>, </th>, 截断的</t>, 损坏的</ts="green">
+    text = re.sub(r'</t[^>]*>', '\x00', text, flags=re.IGNORECASE)
+    # 开启标签作为分隔符: <td>, <td class="...">, <th>
+    text = re.sub(r'<t[dh][^>]*>', '\x00', text, flags=re.IGNORECASE)
+    # 清除剩余HTML标签 (如<a>, <button>, <br>等)
+    text = re.sub(r'<[^>]+>', '', text)
+    # HTML实体
+    text = text.replace('&amp;', '&').replace('&nbsp;', ' ')
+    # 按分隔符切分, 取非空段
+    cells = [c.strip() for c in text.split('\x00') if c.strip()]
+    return cells
+
+
+# ==================== 格式3: HTML表格解析 ====================
+
+def parse_html_table(html_text: str) -> Tuple[List[Dict], List[str]]:
+    """
+    解析HTML表格格式的持仓数据 (东方财富模拟交易等)
+
+    处理:
+    1. <thead>/<tbody> 结构化表格
+    2. HTML标签截断/损坏 (如 </t> 代替 </td>)
+    3. 单元格缺失时自动检测列偏移
+    4. 成本价缺失时从市值和盈亏推算
+    """
+    warnings = []
+
+    # ---- 1. 提取表头 ----
+    headers = []
+    thead = re.search(r'<thead[^>]*>(.*?)</thead>', html_text, re.DOTALL | re.IGNORECASE)
+    if thead:
+        ths = re.findall(r'<th[^>]*>(.*?)</th>', thead.group(1), re.DOTALL | re.IGNORECASE)
+        headers = [re.sub(r'<[^>]+>', '', h).strip() for h in ths]
+
+    if not headers:
+        # 回退: 从第一个<tr>提取
+        first_tr = re.search(r'<tr[^>]*>(.*?)</tr>', html_text, re.DOTALL | re.IGNORECASE)
+        if first_tr:
+            cells = re.findall(r'<t[dh][^>]*>(.*?)</t[dh]>', first_tr.group(1),
+                               re.DOTALL | re.IGNORECASE)
+            headers = [re.sub(r'<[^>]+>', '', c).strip() for c in cells]
+
+    n_cols = len(headers)
+
+    # ---- 2. 列映射 ----
+    code_idx = _match_column(headers, CODE_COLUMNS) if headers else None
+    name_idx = _match_column(headers, NAME_COLUMNS) if headers else None
+    qty_idx = _match_column(headers, QUANTITY_COLUMNS) if headers else None
+    cost_idx = _match_column(headers, COST_COLUMNS) if headers else None
+    price_idx = _match_column(headers, PRICE_COLUMNS) if headers else None
+    mv_idx = _match_column(headers, MARKET_VALUE_COLUMNS) if headers else None
+    pnl_idx = _match_column(headers, PNL_COLUMNS) if headers else None
+
+    mapped = []
+    for label, idx in [('代码', code_idx), ('名称', name_idx), ('数量', qty_idx),
+                        ('成本', cost_idx), ('现价', price_idx), ('市值', mv_idx),
+                        ('盈亏', pnl_idx)]:
+        if idx is not None:
+            mapped.append(f'{label}=#{idx}')
+    if mapped:
+        warnings.append(f'列映射: {", ".join(mapped)} (共{n_cols}列)')
+
+    # ---- 3. 提取数据行 ----
+    tbody = re.search(r'<tbody[^>]*>(.*?)</tbody>', html_text, re.DOTALL | re.IGNORECASE)
+    body = tbody.group(1) if tbody else html_text
+    # 排除thead中已处理的行
+    if not tbody and thead:
+        body = html_text[thead.end():]
+    row_htmls = re.findall(r'<tr[^>]*>(.*?)</tr>', body, re.DOTALL | re.IGNORECASE)
+
+    positions = []
+    for row_num, row_html in enumerate(row_htmls, 1):
+        cells = _extract_html_cells(row_html)
+
+        # ---- 提取股票代码 ----
+        code = ''
+        if code_idx is not None and code_idx < len(cells):
+            code = _clean_code(cells[code_idx])
+        if not _is_stock_code(code):
+            # 回退: 在行文本中搜索6位代码
+            row_text = re.sub(r'<[^>]+>', ' ', row_html)
+            m = re.search(r'(\d{6})', row_text)
+            if m and _is_stock_code(m.group(1)):
+                code = m.group(1)
+        if not _is_stock_code(code):
+            continue
+
+        # ---- 提取名称 ----
+        name = ''
+        if name_idx is not None and name_idx < len(cells):
+            name = cells[name_idx]
+        if not name or not _is_chinese_name(name):
+            for c in cells[1:5]:
+                if _is_chinese_name(c) and '买' not in c and '卖' not in c:
+                    name = c
+                    break
+
+        # ---- 提取数值 ----
+        quantity = avg_cost = current_price = market_value = pnl_value = None
+
+        def _safe_get(idx):
+            if idx is not None and idx < len(cells):
+                return _parse_number(cells[idx])
+            return None
+
+        if len(cells) >= n_cols:
+            # 单元格数量匹配 → 直接列映射
+            quantity = _safe_get(qty_idx)
+            avg_cost = _safe_get(cost_idx)
+            current_price = _safe_get(price_idx)
+            market_value = _safe_get(mv_idx)
+            pnl_value = _safe_get(pnl_idx)
+
+        elif len(cells) == n_cols - 1 and cost_idx is not None:
+            # 少1个单元格 → 先尝试直接映射(末尾列缺失), 再尝试成本价列缺失
+            quantity = _safe_get(qty_idx)
+
+            # 尝试1: 直接映射 (缺失列在末尾, 不影响核心数据)
+            avg_cost = _safe_get(cost_idx)
+            current_price = _safe_get(price_idx)
+            market_value = _safe_get(mv_idx)
+            pnl_value = _safe_get(pnl_idx)
+
+            # 验证: price * qty ≈ market_value
+            direct_ok = False
+            if current_price and market_value and quantity and quantity > 0 and market_value > 0:
+                if abs(current_price * quantity - market_value) / market_value < 0.02:
+                    direct_ok = True
+
+            if not direct_ok:
+                # 尝试2: 成本价列缺失, 后续列左移1位
+                test_price = _safe_get(cost_idx)
+                test_mv = _parse_number(cells[mv_idx - 1]) if mv_idx and mv_idx - 1 < len(cells) else None
+
+                if test_price and test_mv and quantity and quantity > 0 and test_mv > 0:
+                    if abs(test_price * quantity - test_mv) / test_mv < 0.02:
+                        current_price = test_price
+                        market_value = test_mv
+                        pnl_value = _parse_number(cells[pnl_idx - 1]) if pnl_idx and pnl_idx - 1 < len(cells) else None
+                        avg_cost = None  # 后续从盈亏推算
+                        warnings.append(f'{code} {name}: HTML截断，成本价列缺失')
+
+        else:
+            # 严重损坏 → 正则回退: 从行纯文本提取所有数字
+            row_text = re.sub(r'<[^>]+>', ' ', row_html)
+            nums = []
+            for n in re.findall(r'-?\d+\.?\d*', row_text):
+                if n == code:
+                    continue
+                try:
+                    nums.append(float(n))
+                except ValueError:
+                    pass
+            if len(nums) >= 4:
+                quantity = int(nums[0])
+                avg_cost = nums[2]
+                current_price = nums[3]
+                if len(nums) >= 5:
+                    market_value = nums[4]
+                if len(nums) >= 6:
+                    pnl_value = nums[5]
+            elif len(nums) >= 1:
+                quantity = int(nums[0])
+            warnings.append(f'{code} {name}: HTML严重损坏({len(cells)}列vs期望{n_cols}列)')
+
+        # ---- 验证和修复 ----
+        if quantity is not None:
+            quantity = int(quantity)
+        if quantity is None or quantity <= 0:
+            if quantity == 0:
+                warnings.append(f'{code} {name}: 持仓为0，跳过')
+            continue
+
+        # 成本价修复: 从市值和盈亏推算
+        if (avg_cost is None or avg_cost <= 0) and market_value and pnl_value is not None and quantity > 0:
+            total_cost = market_value - pnl_value
+            if total_cost > 0:
+                avg_cost = total_cost / quantity
+                warnings.append(f'{code} {name}: 从盈亏推算成本={avg_cost:.3f}')
+
+        # 负成本(分红摊薄) → 用现价替代
+        if avg_cost is not None and avg_cost <= 0:
+            avg_cost = current_price
+
+        if not avg_cost and not current_price:
+            warnings.append(f'{code} {name}: 无有效价格，跳过')
+            continue
+
+        # 市值交叉验证
+        if current_price and market_value and quantity and market_value > 0:
+            expected = quantity * current_price
+            if abs(expected - market_value) / market_value > 0.02:
+                inferred = market_value / quantity
+                if avg_cost and 0.05 < inferred / avg_cost < 20:
+                    warnings.append(f'{code} {name}: 价格校验{current_price:.3f}→{inferred:.3f}')
+                    current_price = inferred
+
+        positions.append({
+            'code': code,
+            'name': name,
+            'quantity': quantity,
+            'avg_cost': round(avg_cost, 3) if avg_cost else None,
+            'current_price': round(current_price, 3) if current_price else None,
+        })
+
+    warnings.insert(0, f'HTML表格: {len(row_htmls)}行数据，解析出{len(positions)}只有效持仓')
+    return positions, warnings
+
+
 # ==================== 格式1: 标准CSV解析 ====================
 
 def parse_csv(content: bytes) -> Tuple[List[Dict], List[str]]:
@@ -124,6 +350,10 @@ def parse_csv(content: bytes) -> Tuple[List[Dict], List[str]]:
 
     if text.startswith('\ufeff'):
         text = text[1:]
+
+    # HTML表格格式 (包含<table>/<tr>/<td>标签)
+    if _detect_html(text):
+        return parse_html_table(text)
 
     # 先尝试网页粘贴格式（检测特征：多行表头、没有逗号分隔、包含"买  卖"）
     if ('买' in text and '卖' in text) or ('持仓盈亏' in text and ',' not in text.split('\n')[0]):
@@ -223,6 +453,10 @@ def parse_web_paste(text: str) -> Tuple[List[Dict], List[str]]:
 
     解析策略: 用正则逐行提取所有6位股票代码，以每个代码为锚点切分数据段
     """
+    # HTML表格格式: 自动路由
+    if _detect_html(text):
+        return parse_html_table(text)
+
     warnings = []
 
     # 清理文本：合并连续空白为单个分隔符，去掉"买  卖"

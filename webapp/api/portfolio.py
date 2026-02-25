@@ -10,7 +10,7 @@ from pathlib import Path
 
 from core.database import DatabaseManager
 from core.position_analyzer import PositionAnalyzer
-from core.portfolio_importer import parse_csv, parse_web_paste, merge_positions
+from core.portfolio_importer import parse_csv, parse_web_paste, parse_html_table, merge_positions
 
 logger = logging.getLogger(__name__)
 
