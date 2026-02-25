@@ -1053,12 +1053,12 @@ def batch_load_limit_up_data(buy_dates: List[str], db_path: str = None) -> Dict[
         limit_up_codes = set()
         for _, row in group.iterrows():
             code = row['code']
-            pct = row['price_change_pct']  # 小数形式, 0.095 = 9.5%
+            pct = row['price_change_pct']  # 百分比形式: 9.5 = 9.5%
             # 创业板(30x) 或 科创板(688x): 20%涨停
             if code.startswith('30') or code.startswith('688'):
-                threshold = 0.195
+                threshold = 19.5
             else:
-                threshold = 0.095
+                threshold = 9.5
             if pct >= threshold:
                 limit_up_codes.add(code)
         result[date] = limit_up_codes

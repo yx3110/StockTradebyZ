@@ -256,42 +256,47 @@ class V44ProductionScorer(V43ProductionScorer):
             d_t = exec_data_t.get(code, {})
             d_t1 = exec_data_t1.get(code, {})
 
-            # T+1已知涨停 → 评分清零 (不可买入, 直接匹配北极星判定)
-            if d_t1.get('is_limit_up', 0) == 1:
+            # 判定涨停阈值 (百分比形式: 9.5 = 9.5%)
+            is_cyb_kc = code.startswith('30') or code.startswith('688')
+            limit_threshold = 19.5 if is_cyb_kc else 9.5
+
+            # T+1实际涨停 → 评分清零 (买入日不可买入, 直接匹配北极星判定)
+            pct_t1 = d_t1.get('pct_change', 0)
+            if pct_t1 >= limit_threshold:
                 results[code]['score'] = 0.0
                 results[code]['exec_filter'] = 'limit_up_t1'
                 continue
 
             # T日涨停 → 评分清零 (T+1大概率高开或继续涨停)
-            if d_t.get('is_limit_up', 0) == 1:
+            pct_t = d_t.get('pct_change', 0)
+            if pct_t >= limit_threshold:
                 results[code]['score'] = 0.0
                 results[code]['exec_filter'] = 'limit_up'
                 continue
 
             # T+1近涨停 (涨幅>5%) → 大幅降权
-            pct_t1 = d_t1.get('pct_change', 0)
-            if pct_t1 > 0.05:
+            if pct_t1 > 5.0:
                 results[code]['score'] *= 0.2
                 results[code]['exec_filter'] = 'near_limit_up_t1'
                 continue
 
-            # T日近涨停 (涨幅>5%) → 降权 (T+1追高风险, 阈值从8%降至5%)
-            pct_t = d_t.get('pct_change', 0)
-            if pct_t > 0.05:
+            # T日近涨停 (涨幅>5%) → 降权 (T+1追高风险)
+            if pct_t > 5.0:
                 results[code]['score'] *= 0.3
                 results[code]['exec_filter'] = 'near_limit_up'
                 continue
 
             # T日涨幅>3% → 轻度降权 (追涨风险)
-            if pct_t > 0.03:
+            if pct_t > 3.0:
                 results[code]['score'] *= 0.7
                 results[code]['exec_filter'] = 'momentum_risk'
                 continue
 
-            # 低换手率 (<0.5%) → 降权 (难以执行)
+            # 低换手率 (<1.0%) → 降权 (难以执行, 改善流动性覆盖)
             turnover = d_t.get('turnover_rate', 999)
-            if turnover < 0.5:
-                results[code]['score'] *= 0.5
+            if turnover < 1.0:
+                discount = 0.3 if turnover < 0.3 else 0.5 if turnover < 0.5 else 0.7
+                results[code]['score'] *= discount
                 results[code]['exec_filter'] = 'low_liquidity'
                 continue
 
