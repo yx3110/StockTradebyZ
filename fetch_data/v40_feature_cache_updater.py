@@ -732,8 +732,13 @@ class V40FeatureCacheUpdater:
     # 单日更新
     # ================================================================
 
-    def update_single_date(self, date: str) -> int:
-        """更新单日的V4.0特征缓存"""
+    def update_single_date(self, date: str, stock_data_cache: dict = None) -> int:
+        """更新单日的V4.0特征缓存
+
+        Args:
+            date: 交易日期 YYYY-MM-DD
+            stock_data_cache: 可选的预加载股票数据 {code: DataFrame}，避免重复查询
+        """
         start_time = time.time()
         logger.info(f"开始更新 {date} 的V4.0特征缓存...")
 
@@ -744,8 +749,12 @@ class V40FeatureCacheUpdater:
         # 1. 加载行业映射
         self._load_sw_industry_mapping()
 
-        # 2. 批量预加载数据
-        stock_data_map = self._batch_load_stock_data(date, lookback=60)
+        # 2. 批量预加载数据 (如果有缓存则复用)
+        if stock_data_cache is not None:
+            stock_data_map = stock_data_cache
+            logger.info(f"复用股票数据缓存: {len(stock_data_map)} 只股票")
+        else:
+            stock_data_map = self._batch_load_stock_data(date, lookback=60)
         tech_indicators = self._batch_load_technical_indicators(date)
         daily_basic = self._batch_load_daily_basic(date)
 
@@ -1244,17 +1253,18 @@ def _safe_float(val, default: float = 0.0) -> float:
         return default
 
 
-def update_v40_feature_cache(date_str: str) -> int:
+def update_v40_feature_cache(date_str: str, stock_data_cache: dict = None) -> int:
     """
     每日更新入口函数 (供quick_daily_update.py调用)
 
     Args:
         date_str: 日期字符串，格式 YYYYMMDD
+        stock_data_cache: 可选的预加载股票数据 {code: DataFrame}
     """
     date_dash = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
     try:
         updater = V40FeatureCacheUpdater()
-        count = updater.update_single_date(date_dash)
+        count = updater.update_single_date(date_dash, stock_data_cache=stock_data_cache)
         return count
     except Exception as e:
         logger.error(f"更新V4.0特征缓存失败: {e}")

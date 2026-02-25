@@ -88,7 +88,29 @@ class DatabaseManager:
             conn.commit()
             return cursor.rowcount
     
-    def insert_security(self, code: str, name: str, security_type: str, 
+    def get_security_map(self) -> Dict[str, int]:
+        """一次查询获取所有证券的 {code: id} 映射"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT code, id FROM securities")
+            return {row[0]: row[1] for row in cursor.fetchall()}
+
+    def batch_insert_securities(self, securities: List[Dict[str, str]]) -> int:
+        """批量插入新证券
+
+        Args:
+            securities: [{'code': '000001', 'name': '平安银行', 'type': 'A股', 'exchange': 'SZ'}, ...]
+        Returns:
+            插入的记录数
+        """
+        query = """
+        INSERT OR IGNORE INTO securities (code, name, type, exchange)
+        VALUES (?, ?, ?, ?)
+        """
+        rows = [(s['code'], s['name'], s['type'], s.get('exchange')) for s in securities]
+        return self.execute_many(query, rows)
+
+    def insert_security(self, code: str, name: str, security_type: str,
                        exchange: Optional[str] = None) -> int:
         """插入证券基本信息"""
         query = """
@@ -99,7 +121,7 @@ class DatabaseManager:
             cursor = conn.cursor()
             cursor.execute(query, (code, name, security_type, exchange))
             conn.commit()
-            
+
             # 获取security_id
             cursor.execute("SELECT id FROM securities WHERE code = ?", (code,))
             result = cursor.fetchone()

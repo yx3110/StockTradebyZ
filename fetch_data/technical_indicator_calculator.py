@@ -502,25 +502,9 @@ class TechnicalIndicatorCalculator:
         except Exception as e:
             logger.error(f"更新MA指标失败 (security_id: {security_id}, date: {target_date}): {e}")
     
-    def insert_technical_indicators(self, security_id: int, trade_date: str, indicators: Dict, conn=None):
-        """插入技术指标到数据库"""
-        if conn is None:
-            conn = self.get_thread_connection()
-            
-        insert_query = """
-        INSERT OR REPLACE INTO technical_indicators (
-            security_id, trade_date, kdj_k, kdj_d, kdj_j,
-            macd_dif, macd_dea, macd_macd,
-            rsi6, rsi12, rsi24,
-            boll_upper, boll_middle, boll_lower,
-            bbi, volume_ma5, volume_ma10, volume_ratio,
-            zhixing_short_trend, zhixing_multi_kong, ma14, ma28, ma57, ma114,
-            cci_14, atr_14,
-            created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """
-
-        values = [
+    def _make_ti_values(self, security_id: int, trade_date: str, indicators: Dict) -> tuple:
+        """构造技术指标插入值元组"""
+        return (
             security_id, trade_date,
             indicators.get('kdj_k'), indicators.get('kdj_d'), indicators.get('kdj_j'),
             indicators.get('macd_dif'), indicators.get('macd_dea'), indicators.get('macd_macd'),
@@ -531,14 +515,60 @@ class TechnicalIndicatorCalculator:
             indicators.get('ma14'), indicators.get('ma28'), indicators.get('ma57'), indicators.get('ma114'),
             indicators.get('cci_14'), indicators.get('atr_14'),
             datetime.now()
-        ]
-        
+        )
+
+    _TI_INSERT_QUERY = """
+        INSERT OR REPLACE INTO technical_indicators (
+            security_id, trade_date, kdj_k, kdj_d, kdj_j,
+            macd_dif, macd_dea, macd_macd,
+            rsi6, rsi12, rsi24,
+            boll_upper, boll_middle, boll_lower,
+            bbi, volume_ma5, volume_ma10, volume_ratio,
+            zhixing_short_trend, zhixing_multi_kong, ma14, ma28, ma57, ma114,
+            cci_14, atr_14,
+            created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """
+
+    _MA_UPDATE_QUERY = """
+        UPDATE daily_quotes
+        SET ma5 = ?, ma10 = ?, ma20 = ?, ma60 = ?
+        WHERE security_id = ? AND trade_date = ?
+    """
+
+    def batch_commit(self, ti_batch: List[tuple], ma_batch: List[tuple]):
+        """批量写入技术指标和MA数据 (单次commit)"""
+        conn = sqlite3.connect(str(self.db_path), timeout=30.0)
+        try:
+            conn.execute("PRAGMA journal_mode = WAL")
+            conn.execute("PRAGMA synchronous = NORMAL")
+            cursor = conn.cursor()
+            if ti_batch:
+                cursor.executemany(self._TI_INSERT_QUERY, ti_batch)
+            if ma_batch:
+                cursor.executemany(self._MA_UPDATE_QUERY, ma_batch)
+            conn.commit()
+            logger.info(f"批量写入完成: {len(ti_batch)} 条技术指标, {len(ma_batch)} 条MA更新")
+        except Exception as e:
+            logger.error(f"批量写入失败: {e}")
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def insert_technical_indicators(self, security_id: int, trade_date: str, indicators: Dict, conn=None):
+        """插入技术指标到数据库"""
+        if conn is None:
+            conn = self.get_thread_connection()
+
+        values = list(self._make_ti_values(security_id, trade_date, indicators))
+
         max_retries = 3
         for attempt in range(max_retries):
             try:
                 with self.db_lock:  # 使用全局锁
                     cursor = conn.cursor()
-                    cursor.execute(insert_query, values)
+                    cursor.execute(self._TI_INSERT_QUERY, values)
                     conn.commit()
                 break
             except sqlite3.OperationalError as e:
@@ -698,6 +728,79 @@ class TechnicalIndicatorCalculator:
         finally:
             self.close_all_connections()
     
+    def calculate_all_indicators_batch(self, limit: Optional[int] = None) -> int:
+        """单线程计算所有股票的技术指标，最后批量写入 (适合单日更新)
+
+        Returns:
+            成功计算的股票数
+        """
+        self.stats['start_time'] = datetime.now()
+        logger.info("开始计算技术指标 (批量模式)...")
+
+        try:
+            self.connect_db()
+
+            stock_list = self.get_stock_list(limit)
+            total_stocks = len(stock_list)
+            logger.info(f"总计需要处理 {total_stocks} 只股票")
+
+            ti_batch = []
+            ma_batch = []
+            success_count = 0
+
+            for security_id, code, name in stock_list:
+                try:
+                    df = self.get_stock_price_data(security_id, days=250, conn=self.conn)
+                    if df is None or len(df) < 26:
+                        continue
+
+                    indicators = self.calculate_technical_indicators(df)
+                    if indicators is None:
+                        continue
+
+                    latest_date = df['trade_date'].iloc[-1].strftime('%Y-%m-%d')
+
+                    # 收集技术指标
+                    ti_batch.append(self._make_ti_values(security_id, latest_date, indicators))
+
+                    # 收集MA数据
+                    close = df['close'].values
+                    ma5 = self.sma(close, 5)
+                    ma10 = self.sma(close, 10)
+                    ma20 = self.sma(close, 20)
+                    ma60 = self.sma(close, 60)
+                    ma_batch.append((
+                        ma5[-1] if not np.isnan(ma5[-1]) else None,
+                        ma10[-1] if not np.isnan(ma10[-1]) else None,
+                        ma20[-1] if not np.isnan(ma20[-1]) else None,
+                        ma60[-1] if not np.isnan(ma60[-1]) else None,
+                        security_id, latest_date
+                    ))
+
+                    success_count += 1
+                    if success_count % 500 == 0:
+                        logger.info(f"进度: 已计算 {success_count}/{total_stocks} 只股票")
+
+                except Exception as e:
+                    logger.debug(f"处理 {code} 失败: {e}")
+                    continue
+
+            # 批量写入
+            self.batch_commit(ti_batch, ma_batch)
+
+            self.stats['successful_calculations'] = success_count
+            self.stats['processed_stocks'] = total_stocks
+            self.stats['end_time'] = datetime.now()
+            self._print_statistics()
+
+            return success_count
+
+        except Exception as e:
+            logger.error(f"批量计算技术指标失败: {e}")
+            return 0
+        finally:
+            self.close_db()
+
     def _print_statistics(self):
         """打印统计信息"""
         processing_time = (self.stats['end_time'] - self.stats['start_time']).total_seconds()

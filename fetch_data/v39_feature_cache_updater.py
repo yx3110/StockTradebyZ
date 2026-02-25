@@ -855,6 +855,7 @@ class V39FeatureCacheUpdaterOptimized:
 
         # 3. 批量预加载所有股票数据
         stock_data_map = self._batch_load_stock_data(date, lookback=60)
+        self._batch_stock_data = stock_data_map  # 保存供外部共享 (v40复用)
 
         # 3.5. 批量预加载行业数据 (申万2021)
         self._load_sw_industry_mapping()
