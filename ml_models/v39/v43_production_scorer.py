@@ -82,6 +82,21 @@ class V43ProductionScorer(V395ProductionScorer):
         self.extra_tech_features = model_data.get('extra_features_from_tech_indicators', None)
         self.stock_rank_cols = model_data.get('stock_feature_cols', None)
 
+        # Winsorization bounds
+        raw_bounds = model_data.get('winsorize_bounds')
+        if raw_bounds and self.feature_cols:
+            if isinstance(raw_bounds, dict):
+                self.winsorize_bounds = raw_bounds
+            elif isinstance(raw_bounds, list) and len(raw_bounds) == len(self.feature_cols):
+                self.winsorize_bounds = {
+                    col: bounds for col, bounds in zip(self.feature_cols, raw_bounds)
+                    if bounds[0] != bounds[1]
+                }
+            else:
+                self.winsorize_bounds = None
+        else:
+            self.winsorize_bounds = None
+
         # Walk-forward 结果
         wf = model_data.get('walk_forward_metrics', {})
 
@@ -207,6 +222,9 @@ class V43ProductionScorer(V395ProductionScorer):
         X = features_df[available_cols].fillna(0).values
         X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
 
+        # 应用训练时保存的Winsorization bounds
+        X = self._apply_winsorization(X, available_cols)
+
         # 独立预测 4 目标
         model_predictions_success = False
         predictions = {
@@ -310,6 +328,9 @@ class V43ProductionScorer(V395ProductionScorer):
 
         X = filtered_df[available_cols].fillna(0).values
         X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
+
+        # 应用训练时保存的Winsorization bounds
+        X = self._apply_winsorization(X, available_cols)
 
         model_predictions_success = False
         predictions = {

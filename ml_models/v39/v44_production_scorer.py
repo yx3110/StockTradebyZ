@@ -32,6 +32,7 @@ class V44ProductionScorer(V43ProductionScorer):
         self.isotonic_calibration = {}
         self._exec_cache = {}  # date -> DataFrame (可执行性数据缓存)
         self._market_return_cache = {}  # date -> float
+        self._next_trade_date_cache = {}  # date -> next_trading_date
         super().__init__(model_type=model_type)
 
     def _load_models(self):
@@ -163,18 +164,36 @@ class V44ProductionScorer(V43ProductionScorer):
         self._market_return_cache[date] = float(ret)
         return float(ret)
 
+    def _get_next_trading_date(self, date: str) -> Optional[str]:
+        """获取date的下一个交易日 (买入日T+1)"""
+        if date in self._next_trade_date_cache:
+            return self._next_trade_date_cache[date]
+
+        conn = sqlite3.connect(self.db_path)
+        try:
+            row = conn.execute("""
+                SELECT DISTINCT trade_date FROM daily_quotes
+                WHERE trade_date > ? ORDER BY trade_date LIMIT 1
+            """, (date,)).fetchone()
+        finally:
+            conn.close()
+
+        result = row[0] if row else None
+        self._next_trade_date_cache[date] = result
+        return result
+
     def _blend_bear_specialist(self, results: Dict[str, Dict], date: str,
                                 X: np.ndarray, codes: List[str]) -> Dict[str, Dict]:
-        """Module C: 熊市时混入bear_specialist预测"""
+        """Module C: 熊市时混入bear_specialist预测 (V4.4.1: 更早激活, 更大权重)"""
         if not self.bear_models:
             return results
 
         market_ret = self._get_market_return_20d(date)
-        if market_ret is None or market_ret > -0.05:
-            return results  # 非熊市不混合
+        if market_ret is None or market_ret > -0.03:
+            return results  # 非熊市不混合 (阈值从-5%降至-3%)
 
-        # 熊市权重: -5%→0.2, -10%→0.4, 最大0.4
-        bear_weight = min(0.4, abs(market_ret) * 4)
+        # 熊市权重: -3%→0.15, -5%→0.30, -10%→0.60, 最大0.60
+        bear_weight = min(0.60, max(0.15, (abs(market_ret) - 0.03) * 6.4 + 0.15))
 
         for target_key, bear_model in self.bear_models.items():
             try:
@@ -222,27 +241,55 @@ class V44ProductionScorer(V43ProductionScorer):
         return results
 
     def _apply_executability_filters(self, results: Dict[str, Dict], date: str) -> Dict[str, Dict]:
-        """Module E: 可执行性过滤 — 涨停/近涨停/低流动性降权"""
-        exec_data = self._load_executability_data(date, list(results.keys()))
+        """Module E: 可执行性过滤 (V4.4.1: T+1涨停检测 + 更严门槛)
+
+        关键修复: 北极星评估在买入日T+1检测涨停, 我们也必须检查T+1数据。
+        报告生成于T日, 股票在T+1买入。T日涨5%的股票, T+1很可能涨停。
+        """
+        exec_data_t = self._load_executability_data(date, list(results.keys()))
+
+        # 加载T+1数据 (买入日)
+        next_date = self._get_next_trading_date(date)
+        exec_data_t1 = self._load_executability_data(next_date, list(results.keys())) if next_date else {}
 
         for code in list(results.keys()):
-            d = exec_data.get(code, {})
+            d_t = exec_data_t.get(code, {})
+            d_t1 = exec_data_t1.get(code, {})
 
-            # 涨停→评分清零 (不可买入)
-            if d.get('is_limit_up', 0) == 1:
+            # T+1已知涨停 → 评分清零 (不可买入, 直接匹配北极星判定)
+            if d_t1.get('is_limit_up', 0) == 1:
+                results[code]['score'] = 0.0
+                results[code]['exec_filter'] = 'limit_up_t1'
+                continue
+
+            # T日涨停 → 评分清零 (T+1大概率高开或继续涨停)
+            if d_t.get('is_limit_up', 0) == 1:
                 results[code]['score'] = 0.0
                 results[code]['exec_filter'] = 'limit_up'
                 continue
 
-            # 近涨停 (涨幅>8%) → 大幅降权 (追高风险)
-            pct = d.get('pct_change', 0)
-            if pct > 0.08:
+            # T+1近涨停 (涨幅>5%) → 大幅降权
+            pct_t1 = d_t1.get('pct_change', 0)
+            if pct_t1 > 0.05:
+                results[code]['score'] *= 0.2
+                results[code]['exec_filter'] = 'near_limit_up_t1'
+                continue
+
+            # T日近涨停 (涨幅>5%) → 降权 (T+1追高风险, 阈值从8%降至5%)
+            pct_t = d_t.get('pct_change', 0)
+            if pct_t > 0.05:
                 results[code]['score'] *= 0.3
                 results[code]['exec_filter'] = 'near_limit_up'
                 continue
 
+            # T日涨幅>3% → 轻度降权 (追涨风险)
+            if pct_t > 0.03:
+                results[code]['score'] *= 0.7
+                results[code]['exec_filter'] = 'momentum_risk'
+                continue
+
             # 低换手率 (<0.5%) → 降权 (难以执行)
-            turnover = d.get('turnover_rate', 999)
+            turnover = d_t.get('turnover_rate', 999)
             if turnover < 0.5:
                 results[code]['score'] *= 0.5
                 results[code]['exec_filter'] = 'low_liquidity'
@@ -251,6 +298,21 @@ class V44ProductionScorer(V43ProductionScorer):
             results[code]['exec_filter'] = 'pass'
 
         return results
+
+    def _get_regime_target_weights(self, date: str) -> dict:
+        """根据市况动态调整目标权重 — 熊市偏向10d/15d (更防御), 牛市偏向3d/5d (更进攻)"""
+        market_ret = self._get_market_return_20d(date)
+        base = dict(self.target_weights)  # copy
+
+        if market_ret is not None and market_ret < -0.03:
+            # 熊市: 减少短期动量权重, 增加长期质量权重
+            severity = min(1.0, (abs(market_ret) - 0.03) / 0.07)  # 0→1 over -3%→-10%
+            base['label_3d'] = 0.20 - 0.10 * severity   # 0.20→0.10
+            base['label_5d'] = 0.25 - 0.10 * severity   # 0.25→0.15
+            base['label_10d'] = 0.35 + 0.05 * severity  # 0.35→0.40
+            base['label_15d'] = 0.20 + 0.15 * severity  # 0.20→0.35
+
+        return base
 
     def _get_regime_info(self, date: str) -> dict:
         """Module F: 市况自适应信息"""
@@ -341,13 +403,14 @@ class V44ProductionScorer(V43ProductionScorer):
                 if success_count > 0:
                     model_predictions_success = True
 
-        # 构建初始结果 (带原始预测)
+        # 构建初始结果 (V4.4.1: 市况自适应目标权重)
+        regime_weights = self._get_regime_target_weights(date)
         if model_predictions_success:
             combined_pred = (
-                self.target_weights.get('label_3d', 0.20) * predictions['3d'] +
-                self.target_weights.get('label_5d', 0.25) * predictions['5d'] +
-                self.target_weights.get('label_10d', 0.35) * predictions['10d'] +
-                self.target_weights.get('label_15d', 0.20) * predictions['15d']
+                regime_weights.get('label_3d', 0.20) * predictions['3d'] +
+                regime_weights.get('label_5d', 0.25) * predictions['5d'] +
+                regime_weights.get('label_10d', 0.35) * predictions['10d'] +
+                regime_weights.get('label_15d', 0.20) * predictions['15d']
             )
         else:
             combined_pred = self._calculate_fallback_scores(features_df, available_cols)
@@ -377,17 +440,17 @@ class V44ProductionScorer(V43ProductionScorer):
         # Step 3: Module A — 保序回归校准
         results = self._apply_isotonic_calibration(results, codes)
 
-        # 校准后重新计算综合分数和排名
+        # 校准后重新计算综合分数和排名 (V4.4.1: 市况自适应权重)
         if model_predictions_success and self.isotonic_calibration:
             new_combined = np.zeros(len(codes))
             for i, code in enumerate(codes):
                 if code in results:
                     r = results[code]
                     new_combined[i] = (
-                        self.target_weights.get('label_3d', 0.20) * r.get('pred_3d', 0) +
-                        self.target_weights.get('label_5d', 0.25) * r.get('pred_5d', 0) +
-                        self.target_weights.get('label_10d', 0.35) * r.get('pred_10d', 0) +
-                        self.target_weights.get('label_15d', 0.20) * r.get('pred_15d', 0)
+                        regime_weights.get('label_3d', 0.20) * r.get('pred_3d', 0) +
+                        regime_weights.get('label_5d', 0.25) * r.get('pred_5d', 0) +
+                        regime_weights.get('label_10d', 0.35) * r.get('pred_10d', 0) +
+                        regime_weights.get('label_15d', 0.20) * r.get('pred_15d', 0)
                     )
 
             if len(new_combined) > 1:
@@ -399,7 +462,7 @@ class V44ProductionScorer(V43ProductionScorer):
                     if code in results:
                         results[code]['score'] = float(new_scores[i])
 
-        # Step 4: Module E — 可执行性过滤
+        # Step 4: Module E — 可执行性过滤 (V4.4.1: T+1涨停检测)
         results = self._apply_executability_filters(results, date)
 
         # 补全缺失code
@@ -483,12 +546,14 @@ class V44ProductionScorer(V43ProductionScorer):
                 if success_count > 0:
                     model_predictions_success = True
 
+        # V4.4.1: 市况自适应目标权重
+        regime_weights = self._get_regime_target_weights(date)
         if model_predictions_success:
             combined_pred = (
-                self.target_weights.get('label_3d', 0.20) * predictions['3d'] +
-                self.target_weights.get('label_5d', 0.25) * predictions['5d'] +
-                self.target_weights.get('label_10d', 0.35) * predictions['10d'] +
-                self.target_weights.get('label_15d', 0.20) * predictions['15d']
+                regime_weights.get('label_3d', 0.20) * predictions['3d'] +
+                regime_weights.get('label_5d', 0.25) * predictions['5d'] +
+                regime_weights.get('label_10d', 0.35) * predictions['10d'] +
+                regime_weights.get('label_15d', 0.20) * predictions['15d']
             )
         else:
             combined_pred = self._calculate_fallback_scores(filtered_df, available_cols)
@@ -511,23 +576,23 @@ class V44ProductionScorer(V43ProductionScorer):
                 'pred_15d': float(predictions.get('15d', np.zeros(1))[min(i, len(predictions.get('15d', [0]))-1)]) if '15d' in predictions else 0,
             }
 
-        # Step 2: Module C — 熊市专家混合
+        # Step 2: Module C — 熊市专家混合 (V4.4.1: 更早激活, 更大权重)
         results = self._blend_bear_specialist(results, date, X, codes)
 
         # Step 3: Module A — 保序回归校准
         results = self._apply_isotonic_calibration(results, codes)
 
-        # 校准后重新排名
+        # 校准后重新排名 (V4.4.1: 市况自适应权重)
         if model_predictions_success and self.isotonic_calibration:
             new_combined = np.zeros(len(codes))
             for i, code in enumerate(codes):
                 if code in results:
                     r = results[code]
                     new_combined[i] = (
-                        self.target_weights.get('label_3d', 0.20) * r.get('pred_3d', 0) +
-                        self.target_weights.get('label_5d', 0.25) * r.get('pred_5d', 0) +
-                        self.target_weights.get('label_10d', 0.35) * r.get('pred_10d', 0) +
-                        self.target_weights.get('label_15d', 0.20) * r.get('pred_15d', 0)
+                        regime_weights.get('label_3d', 0.20) * r.get('pred_3d', 0) +
+                        regime_weights.get('label_5d', 0.25) * r.get('pred_5d', 0) +
+                        regime_weights.get('label_10d', 0.35) * r.get('pred_10d', 0) +
+                        regime_weights.get('label_15d', 0.20) * r.get('pred_15d', 0)
                     )
 
             if len(new_combined) > 1:
@@ -539,7 +604,7 @@ class V44ProductionScorer(V43ProductionScorer):
                     if code in results:
                         results[code]['score'] = float(new_scores[i])
 
-        # Step 4: Module E — 可执行性过滤
+        # Step 4: Module E — 可执行性过滤 (V4.4.1: T+1涨停检测)
         results = self._apply_executability_filters(results, date)
 
         for code in stock_codes:
@@ -559,8 +624,28 @@ class V44ProductionScorer(V43ProductionScorer):
         return result
 
     def preload_executability_bulk(self, dates: List[str]):
-        """批量预加载涨停/换手数据, 避免逐日SQL"""
-        valid_dates = [d for d in dates if d not in self._exec_cache]
+        """批量预加载涨停/换手数据 (V4.4.1: 同时预加载T+1数据), 避免逐日SQL"""
+        # 收集T+1日期 (买入日)
+        all_dates_needed = set(dates)
+        conn = sqlite3.connect(self.db_path)
+        try:
+            # 批量查找所有dates的下一个交易日
+            all_trade_dates = [r[0] for r in conn.execute(
+                "SELECT DISTINCT trade_date FROM daily_quotes ORDER BY trade_date"
+            ).fetchall()]
+        finally:
+            conn.close()
+
+        trade_date_set = set(all_trade_dates)
+        for d in dates:
+            if d in trade_date_set:
+                idx = all_trade_dates.index(d)
+                if idx + 1 < len(all_trade_dates):
+                    next_d = all_trade_dates[idx + 1]
+                    all_dates_needed.add(next_d)
+                    self._next_trade_date_cache[d] = next_d
+
+        valid_dates = [d for d in all_dates_needed if d not in self._exec_cache]
         if not valid_dates:
             return
 
@@ -593,4 +678,4 @@ class V44ProductionScorer(V43ProductionScorer):
                 }
             self._exec_cache[date] = result
 
-        print(f"V4.4可执行性数据预加载完成: {len(valid_dates)}天, {len(df)}条记录")
+        print(f"V4.4可执行性数据预加载完成: {len(valid_dates)}天(含T+1), {len(df)}条记录")

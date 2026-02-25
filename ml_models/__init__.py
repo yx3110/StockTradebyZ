@@ -20,6 +20,7 @@ from .v39.v394_production_scorer import V394ProductionScorer
 from .v39.v395_production_scorer import V395ProductionScorer
 from .v39.v396_production_scorer import V396ProductionScorer
 from .v39.v500_production_scorer import V500ProductionScorer
+from .v39.alpha158_production_scorer import Alpha158ProductionScorer
 
 # Deprecated versions (kept for backward compatibility)
 try:
@@ -34,6 +35,7 @@ __all__ = [
     'V395ProductionScorer',
     'V396ProductionScorer',
     'V500ProductionScorer',
+    'Alpha158ProductionScorer',
     # Deprecated
     'V380AdvancedIncrementalMLSystem',
 ]

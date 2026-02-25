@@ -52,11 +52,12 @@ os.chdir(PROJECT_ROOT)
 DB_PATH = os.path.join(PROJECT_ROOT, 'data_adapter', 'stock_data.db')
 
 
-def get_trading_dates(start_date: str, end_date: str) -> List[str]:
-    """从 v39_feature_cache 获取交易日列表"""
+def get_trading_dates(start_date: str, end_date: str, version: str = 'v3.95') -> List[str]:
+    """从特征缓存获取交易日列表"""
+    table = 'alpha158_feature_cache' if version == 'alpha158' else 'v39_feature_cache'
     conn = sqlite3.connect(DB_PATH)
-    dates = [r[0] for r in conn.execute("""
-        SELECT DISTINCT trade_date FROM v39_feature_cache
+    dates = [r[0] for r in conn.execute(f"""
+        SELECT DISTINCT trade_date FROM {table}
         WHERE trade_date >= ? AND trade_date <= ?
         ORDER BY trade_date
     """, (start_date, end_date)).fetchall()]
@@ -120,6 +121,43 @@ def fast_preload_feature_cache(dates: List[str]) -> Dict[str, pd.DataFrame]:
             features_all[col] = df[col].values
 
         # 按日期分组
+        for date, group in features_all.groupby('trade_date'):
+            result[date] = group.drop(columns=['trade_date']).reset_index(drop=True)
+            total_records += len(group)
+
+    conn.close()
+    return result
+
+
+def fast_preload_alpha158_cache(dates: List[str]) -> Dict[str, pd.DataFrame]:
+    """高速批量预加载 Alpha158 特征缓存"""
+    result = {d: None for d in dates}
+    if not dates:
+        return result
+
+    conn = sqlite3.connect(DB_PATH)
+    CHUNK_SIZE = 50
+    total_records = 0
+
+    for chunk_start in range(0, len(dates), CHUNK_SIZE):
+        chunk_dates = dates[chunk_start:chunk_start + CHUNK_SIZE]
+        placeholders = ','.join(['?' for _ in chunk_dates])
+
+        query = f"""
+        SELECT code, trade_date, features_json
+        FROM alpha158_feature_cache
+        WHERE trade_date IN ({placeholders})
+        """
+        df = pd.read_sql_query(query, conn, params=chunk_dates)
+
+        if df.empty:
+            continue
+
+        parsed = df['features_json'].apply(json.loads)
+        features_all = pd.DataFrame(parsed.tolist())
+        features_all['code'] = df['code'].values
+        features_all['trade_date'] = df['trade_date'].values
+
         for date, group in features_all.groupby('trade_date'):
             result[date] = group.drop(columns=['trade_date']).reset_index(drop=True)
             total_records += len(group)
@@ -209,6 +247,11 @@ def score_all_stocks_from_preloaded(
     """
     if features_df is None or len(features_df) == 0:
         return {}
+
+    # Alpha158: 使用 scorer 自带的 predict_scores_from_preloaded 方法
+    if version == 'alpha158':
+        all_codes = features_df['code'].tolist()
+        return scorer.predict_scores_from_preloaded(all_codes, date, features_df)
 
     # V3.9: 使用 scorer 自带的 predict_scores_from_preloaded 方法
     # (V390 内部结构不同: base_models + meta_model, 非 models[target])
@@ -460,7 +503,7 @@ def main():
     parser.add_argument('--output-dir', default=None,
                         help='输出目录 (default: reports/daily_selection_v{version}_fast)')
     parser.add_argument('--version', default='v3.95',
-                        choices=['v3.9', 'v3.95', 'v4.3', 'v4.4', 'v5.0'],
+                        choices=['v3.9', 'v3.95', 'v4.3', 'v4.4', 'v5.0', 'alpha158'],
                         help='评分版本 (default: v3.95)')
     parser.add_argument('--force', action='store_true',
                         help='强制覆盖已有报告')
@@ -488,7 +531,7 @@ def main():
 
     # ========== 1. 获取交易日列表 ==========
     t0 = time.time()
-    dates = get_trading_dates(args.start_date, args.end_date)
+    dates = get_trading_dates(args.start_date, args.end_date, version=args.version)
     if not dates:
         print(f"未找到 {args.start_date} ~ {args.end_date} 范围内的交易日数据")
         return
@@ -515,7 +558,10 @@ def main():
 
     # ========== 2. 加载模型 ==========
     t_model = time.time()
-    if args.version == 'v3.9':
+    if args.version == 'alpha158':
+        from ml_models.v39.alpha158_production_scorer import Alpha158ProductionScorer
+        scorer = Alpha158ProductionScorer()
+    elif args.version == 'v3.9':
         from ml_models.v39.v390_production_scorer import V390ProductionScorer
         scorer = V390ProductionScorer()
     elif args.version == 'v4.4':
@@ -534,7 +580,10 @@ def main():
 
     # ========== 3. 预加载特征缓存 (高速模式) ==========
     t_cache = time.time()
-    preloaded_cache = fast_preload_feature_cache(dates_to_generate)
+    if args.version == 'alpha158':
+        preloaded_cache = fast_preload_alpha158_cache(dates_to_generate)
+    else:
+        preloaded_cache = fast_preload_feature_cache(dates_to_generate)
     n_records = sum(len(v) for v in preloaded_cache.values() if v is not None)
     print(f"[3/5] 特征缓存预加载完成: {n_records} 条记录 ({time.time()-t_cache:.1f}秒)")
 

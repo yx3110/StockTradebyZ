@@ -649,13 +649,11 @@ class V390ProductionScorer:
         # 优先从缓存读取特征（与训练数据一致）
         features = self._get_features_from_cache(code, trade_date)
 
-        # 缓存无数据时 fallback 到原始特征计算
+        # 缓存未命中时直接使用备用评分，不走 extract_features() 的42-feature路径
+        # 原因: extract_features() 计算的42个特征(ADX, Aroon, Ichimoku等)与模型训练用的
+        # 32个v39_feature_cache特征完全不同，positional mapping会产生语义错位的垃圾预测
         if features is None:
-            features = self.extract_features(code, trade_date)
-
-        if features is None:
-            logger.warning(f"无法提取特征: {code}，尝试使用备用评分")
-            # 使用备用评分方法
+            logger.debug(f"缓存未命中 {code}@{trade_date}, 使用备用评分")
             return self._fallback_score(code, trade_date)
 
         # 处理缺失值
@@ -703,16 +701,11 @@ class V390ProductionScorer:
         # 优先从缓存批量读取特征（与训练一致）
         batch_features = self._get_features_from_cache_batch(codes, trade_date)
 
-        # 找出缓存中没有的股票，用原始方法补充
+        # 缓存未命中的股票直接用fallback评分，不走垃圾特征路径
         missing_codes = [c for c in codes if batch_features.get(c) is None]
         if missing_codes:
             logger.info(f"缓存命中 {len(codes)-len(missing_codes)}/{len(codes)}, "
-                        f"回退提取 {len(missing_codes)} 只")
-            try:
-                fallback_features = self._extract_features_batch(missing_codes, trade_date)
-                batch_features.update(fallback_features)
-            except Exception as e:
-                logger.warning(f"批量特征提取失败，回退到逐只提取: {e}")
+                        f"{len(missing_codes)} 只使用备用评分")
 
         results = {}
 

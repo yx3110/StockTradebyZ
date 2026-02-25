@@ -66,8 +66,12 @@ class MarketStateCalculator:
         self.market_features = None
 
     def calculate_market_features(self) -> pd.DataFrame:
-        """计算所有日期的市场状态特征"""
-        logger.info("计算市场状态特征...")
+        """计算所有日期的市场状态特征
+
+        公式与 v39_feature_cache_updater._precompute_all_market_features() 对齐，
+        确保训练和推理使用完全相同的特征定义。
+        """
+        logger.info("计算市场状态特征 (对齐DB缓存公式)...")
 
         conn = sqlite3.connect(self.db_path)
 
@@ -80,39 +84,66 @@ class MarketStateCalculator:
         ORDER BY q.trade_date
         """
         df = pd.read_sql(query, conn)
+
+        # 查询全市场每日上涨/总股票数 (用于 market_up_ratio)
+        breadth_query = """
+        SELECT q.trade_date,
+               SUM(CASE WHEN q.price_change_pct > 0 THEN 1 ELSE 0 END) as up_count,
+               COUNT(*) as total_count
+        FROM daily_quotes q
+        JOIN securities s ON q.security_id = s.id
+        WHERE s.type = 'A股'
+        GROUP BY q.trade_date
+        ORDER BY q.trade_date
+        """
+        breadth_df = pd.read_sql(breadth_query, conn)
         conn.close()
 
         # 计算市场状态特征
         lookback = self.lookback
 
-        # 1. 市场收益率
+        # 1. 市场收益率 (与DB一致: pct_change)
         df['market_return_20d'] = df['close'].pct_change(lookback)
         df['market_return_10d'] = df['close'].pct_change(10)
         df['market_return_5d'] = df['close'].pct_change(5)
 
-        # 2. 市场波动率
-        df['market_volatility_20d'] = df['price_change_pct'].rolling(lookback).std()
-        df['market_volatility_10d'] = df['price_change_pct'].rolling(10).std()
+        # 2. 市场波动率 — 对齐DB: log-returns + 年化 sqrt(252)
+        log_returns = np.log(df['close'] / df['close'].shift(1))
+        df['market_volatility_20d'] = log_returns.rolling(lookback).std() * np.sqrt(252)
+        df['market_volatility_10d'] = log_returns.rolling(10).std() * np.sqrt(252)
 
-        # 3. 上涨天数比例
-        df['market_up_ratio_20d'] = (df['price_change_pct'] > 0).rolling(lookback).mean()
-        df['market_up_ratio_10d'] = (df['price_change_pct'] > 0).rolling(10).mean()
+        # 3. 上涨比例 — 对齐DB: 全市场上涨股票比率 (非指数涨跌天数)
+        breadth_df['up_ratio'] = breadth_df['up_count'] / breadth_df['total_count'].clip(lower=1)
+        df = df.merge(breadth_df[['trade_date', 'up_ratio']], on='trade_date', how='left')
+        df['up_ratio'] = df['up_ratio'].ffill()
+        df['market_up_ratio_20d'] = df['up_ratio'].rolling(lookback).mean()
+        df['market_up_ratio_10d'] = df['up_ratio'].rolling(10).mean()
+        df.drop(columns=['up_ratio'], inplace=True)
 
-        # 4. 最大回撤
-        df['market_max_20d'] = df['close'].rolling(lookback).max()
-        df['market_drawdown_20d'] = (df['close'] / df['market_max_20d'] - 1)
+        # 4. 最大回撤 — 对齐DB: 窗口内最大回撤 min((price - cummax) / cummax)
+        def rolling_max_drawdown(closes, window):
+            result = pd.Series(index=closes.index, dtype=float)
+            for i in range(window - 1, len(closes)):
+                window_closes = closes.iloc[i - window + 1:i + 1].values
+                running_max = np.maximum.accumulate(window_closes)
+                drawdowns = (window_closes - running_max) / running_max
+                result.iloc[i] = np.min(drawdowns)
+            return result
 
-        # 5. 成交量变化
+        df['market_drawdown_20d'] = rolling_max_drawdown(df['close'], lookback)
+
+        # 5. 成交量变化 (与DB一致)
         df['market_volume_ratio'] = df['volume'] / df['volume'].rolling(lookback).mean()
 
-        # 6. 趋势强度 (简化版：使用价格相对位置)
+        # 6. 趋势强度 (价格相对位置, 与DB一致)
+        df['market_max_20d'] = df['close'].rolling(lookback).max()
         df['market_min_20d'] = df['close'].rolling(lookback).min()
         df['market_position_20d'] = (df['close'] - df['market_min_20d']) / \
                                      (df['market_max_20d'] - df['market_min_20d'] + 1e-8)
 
-        # 7. 市场动量
-        df['market_momentum_20d'] = df['close'] / df['close'].shift(lookback) - 1
-        df['market_momentum_5d'] = df['close'] / df['close'].shift(5) - 1
+        # 7. 市场动量 — 对齐DB: 相对均线偏离 (非shift)
+        df['market_momentum_20d'] = df['close'] / df['close'].rolling(lookback).mean() - 1
+        df['market_momentum_5d'] = df['close'] / df['close'].rolling(5).mean() - 1
 
         # 选择最终特征
         market_features = df[['trade_date',

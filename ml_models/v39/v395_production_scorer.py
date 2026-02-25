@@ -69,6 +69,9 @@ class V395ProductionScorer:
         self.robust_zscore = False
         self.extra_features_from_daily_basic = None
 
+        # Winsorization bounds (训练时clip到[1st,99th]分位数)
+        self.winsorize_bounds = None
+
         self._load_models()
 
     def _load_models(self):
@@ -155,6 +158,21 @@ class V395ProductionScorer:
             self.robust_zscore = model_data.get('robust_zscore', False)
             self.extra_features_from_daily_basic = model_data.get('extra_features_from_daily_basic', None)
 
+            # Winsorization bounds (训练时保存的 [1st, 99th] 分位数边界)
+            raw_bounds = model_data.get('winsorize_bounds')
+            if raw_bounds and self.feature_cols:
+                if isinstance(raw_bounds, dict):
+                    self.winsorize_bounds = raw_bounds
+                elif isinstance(raw_bounds, list) and len(raw_bounds) == len(self.feature_cols):
+                    self.winsorize_bounds = {
+                        col: bounds for col, bounds in zip(self.feature_cols, raw_bounds)
+                        if bounds[0] != bounds[1]  # 跳过常量列
+                    }
+                else:
+                    self.winsorize_bounds = None
+            else:
+                self.winsorize_bounds = None
+
         if self.robust_zscore:
             suffix = " [robust_zscore+industry_excess]"
         elif self.cascade:
@@ -205,6 +223,16 @@ class V395ProductionScorer:
         features_df[zscore_cols] = data
         features_df[zscore_cols] = features_df[zscore_cols].fillna(0.0)
         return features_df
+
+    def _apply_winsorization(self, X: np.ndarray, available_cols: list) -> np.ndarray:
+        """推理时应用训练时保存的Winsorization bounds"""
+        if not self.winsorize_bounds:
+            return X
+        for col_idx, col in enumerate(available_cols):
+            if col in self.winsorize_bounds:
+                lo, hi = self.winsorize_bounds[col]
+                X[:, col_idx] = np.clip(X[:, col_idx], lo, hi)
+        return X
 
     def _load_daily_basic_features(self, features_df: pd.DataFrame, date: str) -> pd.DataFrame:
         """从daily_basic加载额外特征 (pe_ttm, pb, ps_ttm, turnover_rate, log_market_cap)"""
@@ -546,6 +574,9 @@ class V395ProductionScorer:
         X = features_df[available_cols].fillna(0).values
         X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
 
+        # 应用训练时保存的Winsorization bounds
+        X = self._apply_winsorization(X, available_cols)
+
         # 尝试使用训练好的模型预测
         model_predictions_success = False
         predictions = {'3d': np.zeros(len(X)), '5d': np.zeros(len(X)), '10d': np.zeros(len(X))}
@@ -757,6 +788,9 @@ class V395ProductionScorer:
 
         X = filtered_df[available_cols].fillna(0).values
         X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
+
+        # 应用训练时保存的Winsorization bounds
+        X = self._apply_winsorization(X, available_cols)
 
         model_predictions_success = False
         predictions = {'3d': np.zeros(len(X)), '5d': np.zeros(len(X)), '10d': np.zeros(len(X))}
