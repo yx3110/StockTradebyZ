@@ -10,6 +10,7 @@ from pathlib import Path
 
 from core.database import DatabaseManager
 from core.position_analyzer import PositionAnalyzer
+from core.portfolio_importer import parse_csv, merge_positions
 
 logger = logging.getLogger(__name__)
 
@@ -587,6 +588,12 @@ def generate_recommendations():
                 'ml_score': result.get('ml_score'),
                 'ml_recommendation': result.get('ml_recommendation'),
                 'predicted_return_5d': result.get('predicted_return_5d'),
+                # V4.4.1 多目标预测
+                'pred_3d': result.get('pred_3d'),
+                'pred_10d': result.get('pred_10d'),
+                'pred_15d': result.get('pred_15d'),
+                'exec_filter': result.get('exec_filter'),
+                'regime_info': result.get('regime_info'),
                 # 技术面
                 'trend': result.get('trend'),
                 'trend_strength': result.get('trend_strength'),
@@ -637,6 +644,7 @@ def generate_recommendations():
         # 获取ML版本信息
         ml_version = analyzer.ml_version or 'N/A'
         ml_info = {
+            'v4.4.1': 'S级, 59特征, 6增强模块',
             'v3.9.4': 'IC=0.1363, 48特征',
             'v3.9.0': 'IC=0.0489, 42特征'
         }.get(ml_version, '')
@@ -951,6 +959,74 @@ def get_stock_price(code: str):
 
     except Exception as e:
         logger.error(f'获取价格失败: {e}', exc_info=True)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+# ==================== CSV导入 API ====================
+
+@portfolio_bp.route('/import/parse', methods=['POST'])
+def parse_import_csv():
+    """
+    解析上传的CSV文件,返回预览数据
+
+    Request: multipart/form-data with 'file' field
+    Returns: {success, positions: [...], warnings: [...]}
+    """
+    try:
+        if 'file' not in request.files:
+            return jsonify({'success': False, 'error': '请选择CSV文件'}), 400
+
+        file = request.files['file']
+        if not file.filename:
+            return jsonify({'success': False, 'error': '请选择CSV文件'}), 400
+
+        if not file.filename.lower().endswith(('.csv', '.txt', '.xls')):
+            return jsonify({'success': False, 'error': '仅支持CSV/TXT格式文件'}), 400
+
+        content = file.read()
+        if len(content) > 5 * 1024 * 1024:  # 5MB limit
+            return jsonify({'success': False, 'error': '文件过大(最大5MB)'}), 400
+
+        positions, warnings = parse_csv(content)
+
+        return jsonify({
+            'success': True,
+            'positions': positions,
+            'warnings': warnings,
+            'count': len(positions)
+        })
+
+    except Exception as e:
+        logger.error(f'解析CSV失败: {e}', exc_info=True)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@portfolio_bp.route('/import/confirm', methods=['POST'])
+def confirm_import():
+    """
+    确认导入解析好的持仓
+
+    Request Body: {positions: [{code, name, quantity, avg_cost, current_price}, ...]}
+    Returns: {success, added, updated, skipped, details: [...]}
+    """
+    try:
+        data = request.get_json()
+        if not data or not data.get('positions'):
+            return jsonify({'success': False, 'error': '无导入数据'}), 400
+
+        db = get_db_manager()
+        existing = db.get_all_positions()
+
+        result = merge_positions(data['positions'], existing, db)
+
+        return jsonify({
+            'success': True,
+            **result,
+            'message': f'导入完成: 新增{result["added"]}只, 更新{result["updated"]}只, 跳过{result["skipped"]}只'
+        })
+
+    except Exception as e:
+        logger.error(f'导入持仓失败: {e}', exc_info=True)
         return jsonify({'success': False, 'error': str(e)}), 500
 
 

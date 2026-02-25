@@ -126,6 +126,9 @@
                         <button class="btn btn-warning btn-sm me-2" data-bs-toggle="modal" data-bs-target="#groupModal">
                             <i class="bi bi-folder-plus"></i> 管理分组
                         </button>
+                        <button class="btn btn-info btn-sm me-2" data-bs-toggle="modal" data-bs-target="#importModal">
+                            <i class="bi bi-upload"></i> 导入持仓
+                        </button>
                         <button class="btn btn-success btn-sm" data-bs-toggle="modal" data-bs-target="#addPositionModal">
                             <i class="bi bi-plus-lg"></i> 添加持仓
                         </button>
@@ -219,9 +222,9 @@
                                 <th data-sort="code" class="sortable">代码 <i class="bi bi-arrow-down-up sort-icon"></i></th>
                                 <th data-sort="name" class="sortable">名称 <i class="bi bi-arrow-down-up sort-icon"></i></th>
                                 <th data-sort="ml_score" data-sort-type="number" class="sortable">ML评分 <i class="bi bi-arrow-down-up sort-icon"></i></th>
-                                <th data-sort="predicted_return_5d" data-sort-type="number" class="sortable">5日预测 <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th data-sort="predicted_return_5d" data-sort-type="number" class="sortable">预测收益 <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th data-sort="exec_filter" class="sortable">可执行 <i class="bi bi-arrow-down-up sort-icon"></i></th>
                                 <th data-sort="trend" class="sortable">趋势 <i class="bi bi-arrow-down-up sort-icon"></i></th>
-                                <th data-sort="rsi" data-sort-type="number" class="sortable">RSI <i class="bi bi-arrow-down-up sort-icon"></i></th>
                                 <th data-sort="action" class="sortable">建议 <i class="bi bi-arrow-down-up sort-icon"></i></th>
                                 <th>原因</th>
                                 <th data-sort="stop_loss_price" data-sort-type="number" class="sortable">止损 <i class="bi bi-arrow-down-up sort-icon"></i></th>
@@ -235,7 +238,7 @@
                             <tr>
                                 <td colspan="14" class="text-center text-muted py-4">
                                     <i class="bi bi-lightbulb fs-1"></i>
-                                    <p>点击"生成建议"使用V3.9.0 ML系统分析持仓</p>
+                                    <p>点击"生成建议"使用ML系统分析持仓</p>
                                 </td>
                             </tr>
                         </tbody>
@@ -571,6 +574,72 @@
     </div>
 </div>
 
+<!-- CSV导入模态框 -->
+<div class="modal fade" id="importModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header bg-info text-white">
+                <h5 class="modal-title"><i class="bi bi-upload"></i> 导入持仓 (CSV)</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <!-- 步骤1: 上传文件 -->
+                <div id="import-step1">
+                    <div class="alert alert-info">
+                        <i class="bi bi-info-circle"></i>
+                        支持东方财富、同花顺等券商导出的CSV文件。自动识别编码(GBK/UTF-8)和列名。
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">选择CSV文件</label>
+                        <input type="file" class="form-control" id="import-file" accept=".csv,.txt,.xls">
+                    </div>
+                    <button class="btn btn-primary" id="btn-parse-csv">
+                        <i class="bi bi-search"></i> 解析预览
+                    </button>
+                </div>
+
+                <!-- 步骤2: 预览确认 -->
+                <div id="import-step2" style="display:none;">
+                    <div id="import-warnings" class="mb-3"></div>
+                    <div class="d-flex justify-content-between align-items-center mb-2">
+                        <h6 class="mb-0">解析结果: <span id="import-count" class="badge bg-primary">0</span> 只股票</h6>
+                        <button class="btn btn-sm btn-outline-secondary" id="btn-import-back">
+                            <i class="bi bi-arrow-left"></i> 重新选择
+                        </button>
+                    </div>
+                    <div class="table-responsive" style="max-height: 400px; overflow-y: auto;">
+                        <table class="table table-sm table-hover">
+                            <thead class="table-light sticky-top">
+                                <tr>
+                                    <th><input type="checkbox" id="import-select-all" checked></th>
+                                    <th>代码</th>
+                                    <th>名称</th>
+                                    <th>数量</th>
+                                    <th>成本价</th>
+                                    <th>现价</th>
+                                </tr>
+                            </thead>
+                            <tbody id="import-preview-tbody"></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- 步骤3: 导入结果 -->
+                <div id="import-step3" style="display:none;">
+                    <div class="alert alert-success" id="import-result-msg"></div>
+                    <ul id="import-result-details" class="list-group list-group-flush" style="max-height: 300px; overflow-y: auto;"></ul>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
+                <button type="button" class="btn btn-success" id="btn-confirm-import" style="display:none;">
+                    <i class="bi bi-check-lg"></i> 确认导入
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
 {% endblock %}
 
 {% block extra_js %}
@@ -603,6 +672,24 @@ $(document).ready(function() {
     $('#btn-confirm-adjust').click(confirmAdjust);
     $('#btn-save-trade').click(saveTrade);
     $('#btn-add-group').click(addGroup);
+
+    // CSV导入事件
+    $('#btn-parse-csv').click(parseImportCSV);
+    $('#btn-confirm-import').click(confirmImport);
+    $('#btn-import-back').click(function() {
+        $('#import-step2').hide();
+        $('#btn-confirm-import').hide();
+        $('#import-step1').show();
+    });
+    $('#import-select-all').change(function() {
+        $('.import-row-check').prop('checked', $(this).is(':checked'));
+    });
+    $('#importModal').on('hidden.bs.modal', function() {
+        // 重置到步骤1
+        $('#import-step1').show();
+        $('#import-step2, #import-step3, #btn-confirm-import').hide();
+        $('#import-file').val('');
+    });
 
     // 股票代码搜索
     $('#pos-code').on('input', debounce(searchStocks, 300));
@@ -1152,7 +1239,7 @@ function loadRecommendations() {
 }
 
 function generateRecommendations() {
-    showLoading('正在使用V3.9.0 ML系统分析持仓...');
+    showLoading('正在使用ML系统分析持仓...');
 
     $.ajax({
         url: '/api/portfolio/recommendations/generate',
@@ -1162,7 +1249,7 @@ function generateRecommendations() {
             if (response.success) {
                 showToast(response.message, 'success');
                 recommendationsData = response.recommendations;
-                renderRecommendations(response.recommendations, response.analysis_summary);
+                renderRecommendations(response.recommendations, response.analysis_summary, response.ml_version, response.ml_info);
             } else {
                 showToast(response.error, 'error');
             }
@@ -1174,9 +1261,10 @@ function generateRecommendations() {
     });
 }
 
-function renderRecommendations(recommendations, summary) {
+function renderRecommendations(recommendations, summary, mlVersion, mlInfo) {
     const tbody = $('#recommendations-tbody');
     tbody.empty();
+    $('#regime-info-bar').remove();  // 清除旧的市况信息条
 
     if (!recommendations || recommendations.length === 0) {
         $('#rec-summary').hide();
@@ -1197,7 +1285,27 @@ function renderRecommendations(recommendations, summary) {
         $('#rec-total').text(summary.total_positions || 0);
         $('#rec-critical').text(summary.critical_actions || 0);
         $('#rec-high').text(summary.high_actions || 0);
-        $('#rec-ml-scored').text(summary.ml_scored || 0);
+        // 显示ML版本信息
+        let mlLabel = `${summary.ml_scored || 0}`;
+        if (mlVersion) {
+            mlLabel += ` (${mlVersion.toUpperCase()})`;
+        }
+        $('#rec-ml-scored').text(mlLabel);
+    }
+
+    // 市况信息展示 (V4.4.1)
+    const firstRec = recommendations[0];
+    if (firstRec && firstRec.regime_info && firstRec.regime_info.regime !== 'unknown') {
+        const ri = firstRec.regime_info;
+        const regimeLabels = {'bull': '牛市', 'bear': '熊市', 'neutral': '震荡'};
+        const regimeColors = {'bull': 'success', 'bear': 'danger', 'neutral': 'warning'};
+        const regimeBadge = `<span class="badge bg-${regimeColors[ri.regime] || 'secondary'}">${regimeLabels[ri.regime] || ri.regime}</span>`;
+        const mktRet = ri.market_return_20d != null ? (ri.market_return_20d * 100).toFixed(1) + '%' : '-';
+        $('#rec-summary').after(`
+            <div class="alert alert-${regimeColors[ri.regime] || 'secondary'} py-2 mb-3" id="regime-info-bar">
+                <small><i class="bi bi-activity"></i> 当前市况: ${regimeBadge} | 20日市场回报: ${mktRet}</small>
+            </div>
+        `);
     }
 
     const urgencyLabels = {
@@ -1236,6 +1344,28 @@ function renderRecommendations(recommendations, summary) {
         'sideways': 'text-muted',
         'unknown': 'text-muted'
     };
+    const execLabels = {
+        'pass': '通过',
+        'limit_up': '涨停',
+        'limit_up_t1': 'T+1涨停',
+        'near_limit_up': '近涨停',
+        'near_limit_up_t1': 'T+1近停',
+        'momentum_risk': '追涨风险',
+        'low_liquidity': '低流动性',
+        'no_data': '无数据',
+        'unknown': '-'
+    };
+    const execColors = {
+        'pass': 'text-success',
+        'limit_up': 'text-danger',
+        'limit_up_t1': 'text-danger',
+        'near_limit_up': 'text-warning',
+        'near_limit_up_t1': 'text-warning',
+        'momentum_risk': 'text-warning',
+        'low_liquidity': 'text-muted',
+        'no_data': 'text-muted',
+        'unknown': 'text-muted'
+    };
 
     recommendations.forEach(function(rec) {
         const urgencyBadge = `<span class="badge bg-${urgencyColors[rec.urgency] || 'secondary'}">${urgencyLabels[rec.urgency] || rec.urgency}</span>`;
@@ -1250,23 +1380,25 @@ function renderRecommendations(recommendations, summary) {
             mlScoreHtml = `<strong class="${mlClass}">${rec.ml_score?.toFixed(1)}</strong>`;
         }
 
-        // 5日预测收益
+        // 多目标预测收益 (V4.4.1: 3d/5d/10d/15d)
         let predictHtml = '-';
-        if (rec.predicted_return_5d != null) {
-            const pct = (rec.predicted_return_5d * 100).toFixed(2);
-            const predictClass = rec.predicted_return_5d >= 0 ? 'text-danger' : 'text-success';
-            predictHtml = `<span class="${predictClass}">${pct}%</span>`;
+        if (rec.pred_3d != null || rec.predicted_return_5d != null) {
+            const preds = [];
+            if (rec.pred_3d != null) preds.push(`3d:${(rec.pred_3d*100).toFixed(1)}%`);
+            if (rec.predicted_return_5d != null) preds.push(`5d:${(rec.predicted_return_5d*100).toFixed(1)}%`);
+            if (rec.pred_10d != null) preds.push(`10d:${(rec.pred_10d*100).toFixed(1)}%`);
+            if (rec.pred_15d != null) preds.push(`15d:${(rec.pred_15d*100).toFixed(1)}%`);
+            const mainPred = rec.predicted_return_5d || rec.pred_3d || 0;
+            const predictClass = mainPred >= 0 ? 'text-danger' : 'text-success';
+            predictHtml = `<span class="${predictClass}" title="${preds.join(' | ')}">${(mainPred*100).toFixed(1)}%</span>`;
         }
+
+        // 可执行性 (V4.4.1)
+        const ef = rec.exec_filter || 'unknown';
+        const execHtml = `<span class="${execColors[ef] || 'text-muted'}" title="${ef}">${execLabels[ef] || ef}</span>`;
 
         // 趋势
         const trendHtml = `<span class="${trendColors[rec.trend] || 'text-muted'}">${trendLabels[rec.trend] || '-'}</span>`;
-
-        // RSI
-        let rsiHtml = '-';
-        if (rec.rsi != null) {
-            const rsiClass = rec.rsi > 70 ? 'text-danger' : (rec.rsi < 30 ? 'text-success' : 'text-muted');
-            rsiHtml = `<span class="${rsiClass}">${rec.rsi?.toFixed(0)}</span>`;
-        }
 
         // Kelly仓位
         const kellyHtml = rec.kelly_position != null ? `${rec.kelly_position?.toFixed(1)}%` : '-';
@@ -1278,8 +1410,8 @@ function renderRecommendations(recommendations, summary) {
                 <td>${rec.name || '-'}</td>
                 <td>${mlScoreHtml}</td>
                 <td>${predictHtml}</td>
+                <td>${execHtml}</td>
                 <td>${trendHtml}</td>
-                <td>${rsiHtml}</td>
                 <td>${actionBadge}</td>
                 <td><small title="${rec.reason || ''}">${(rec.reason || '-').substring(0, 30)}${(rec.reason?.length > 30) ? '...' : ''}</small></td>
                 <td class="text-danger">${rec.stop_loss_price?.toFixed(2) || '-'}</td>
@@ -1308,6 +1440,121 @@ function markExecuted(recId) {
                 showToast('已标记为已执行', 'success');
                 loadRecommendations();
             }
+        }
+    });
+}
+
+// ==================== CSV导入 ====================
+
+let importParsedData = [];
+
+function parseImportCSV() {
+    const fileInput = document.getElementById('import-file');
+    if (!fileInput.files.length) {
+        showToast('请先选择CSV文件', 'warning');
+        return;
+    }
+
+    const formData = new FormData();
+    formData.append('file', fileInput.files[0]);
+
+    $('#btn-parse-csv').prop('disabled', true).html('<i class="bi bi-hourglass-split"></i> 解析中...');
+
+    $.ajax({
+        url: '/api/portfolio/import/parse',
+        method: 'POST',
+        data: formData,
+        processData: false,
+        contentType: false,
+        success: function(response) {
+            $('#btn-parse-csv').prop('disabled', false).html('<i class="bi bi-search"></i> 解析预览');
+            if (response.success) {
+                importParsedData = response.positions;
+                renderImportPreview(response.positions, response.warnings);
+            } else {
+                showToast(response.error, 'error');
+            }
+        },
+        error: function(xhr) {
+            $('#btn-parse-csv').prop('disabled', false).html('<i class="bi bi-search"></i> 解析预览');
+            showToast(xhr.responseJSON?.error || '解析失败', 'error');
+        }
+    });
+}
+
+function renderImportPreview(positions, warnings) {
+    // 显示警告
+    const warningsHtml = warnings.map(w =>
+        `<div class="alert alert-${w.includes('未找到') || w.includes('失败') ? 'warning' : 'secondary'} py-1 mb-1"><small>${w}</small></div>`
+    ).join('');
+    $('#import-warnings').html(warningsHtml);
+    $('#import-count').text(positions.length);
+
+    // 渲染预览表格
+    const tbody = $('#import-preview-tbody');
+    tbody.empty();
+    positions.forEach(function(p, idx) {
+        tbody.append(`
+            <tr>
+                <td><input type="checkbox" class="import-row-check" data-idx="${idx}" checked></td>
+                <td><code>${p.code}</code></td>
+                <td>${p.name || '-'}</td>
+                <td>${p.quantity}</td>
+                <td>${p.avg_cost?.toFixed(3) || '-'}</td>
+                <td>${p.current_price?.toFixed(3) || '-'}</td>
+            </tr>
+        `);
+    });
+
+    // 切换到步骤2
+    $('#import-step1').hide();
+    $('#import-step2').show();
+    $('#btn-confirm-import').show();
+}
+
+function confirmImport() {
+    // 收集勾选的行
+    const selectedPositions = [];
+    $('.import-row-check:checked').each(function() {
+        const idx = $(this).data('idx');
+        selectedPositions.push(importParsedData[idx]);
+    });
+
+    if (!selectedPositions.length) {
+        showToast('请至少选择一只股票', 'warning');
+        return;
+    }
+
+    $('#btn-confirm-import').prop('disabled', true).html('<i class="bi bi-hourglass-split"></i> 导入中...');
+
+    $.ajax({
+        url: '/api/portfolio/import/confirm',
+        method: 'POST',
+        contentType: 'application/json',
+        data: JSON.stringify({ positions: selectedPositions }),
+        success: function(response) {
+            $('#btn-confirm-import').prop('disabled', false).hide();
+            if (response.success) {
+                // 显示结果
+                $('#import-step2').hide();
+                $('#import-step3').show();
+                $('#import-result-msg').html(
+                    `<i class="bi bi-check-circle"></i> ${response.message}`
+                );
+                const detailsHtml = (response.details || []).map(d =>
+                    `<li class="list-group-item py-1"><small>${d}</small></li>`
+                ).join('');
+                $('#import-result-details').html(detailsHtml);
+
+                // 刷新持仓列表
+                loadPositions();
+            } else {
+                showToast(response.error, 'error');
+            }
+        },
+        error: function(xhr) {
+            $('#btn-confirm-import').prop('disabled', false).html('<i class="bi bi-check-lg"></i> 确认导入');
+            showToast(xhr.responseJSON?.error || '导入失败', 'error');
         }
     });
 }

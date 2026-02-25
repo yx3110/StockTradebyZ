@@ -182,6 +182,13 @@ class DatabaseManager:
                 )
             ''')
 
+            # 为已有的recommendations表添加新列（如果不存在）
+            for col, coltype in [('kelly_position', 'REAL'), ('predicted_return_5d', 'REAL')]:
+                try:
+                    cursor.execute(f'ALTER TABLE recommendations ADD COLUMN {col} {coltype}')
+                except:
+                    pass  # 列已存在
+
             # 交易评估表
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS trade_evaluations (

@@ -42,10 +42,24 @@ class PositionAnalyzer:
         self._init_ml_scorer()
 
     def _init_ml_scorer(self):
-        """初始化ML评分系统 - 优先V3.9.4，回退V3.9.0"""
+        """初始化ML评分系统 - 优先V4.4.1，回退V3.9.4，最后V3.9.0"""
         self.ml_version = None
 
-        # 优先尝试V3.9.4 (IC=0.1363, 比V3.9.0提升166%)
+        # 优先尝试V4.4.1 (S级, 59特征, 6增强模块)
+        try:
+            from ml_models.v39.v44_production_scorer import V44ProductionScorer
+            self.ml_scorer = V44ProductionScorer()
+            if self.ml_scorer.models:
+                self.ml_version = 'v4.4.1'
+                logger.info("✅ V4.4.1 ML评分系统初始化成功 (59特征, S级, 6增强模块)")
+                return
+            else:
+                logger.warning("V4.4.1模型文件缺失，尝试V3.9.4")
+                self.ml_scorer = None
+        except Exception as e:
+            logger.warning(f"V4.4.1初始化失败，尝试V3.9.4: {e}")
+
+        # 回退到V3.9.4 (IC=0.1363, 48特征)
         try:
             from ml_models.v39.v394_production_scorer import V394ProductionScorer
             self.ml_scorer = V394ProductionScorer()
@@ -55,7 +69,7 @@ class PositionAnalyzer:
         except Exception as e:
             logger.warning(f"V3.9.4初始化失败，尝试V3.9.0: {e}")
 
-        # 回退到V3.9.0
+        # 最终回退到V3.9.0
         try:
             from ml_models.v39.v390_production_scorer import V390ProductionScorer
             self.ml_scorer = V390ProductionScorer()
@@ -151,6 +165,12 @@ class PositionAnalyzer:
             'ml_recommendation': ml_result.get('recommendation'),
             'predicted_return_5d': ml_result.get('predicted_return_5d'),
             'ml_confidence': ml_result.get('confidence'),
+            # V4.4.1 多目标预测
+            'pred_3d': ml_result.get('pred_3d'),
+            'pred_10d': ml_result.get('pred_10d'),
+            'pred_15d': ml_result.get('pred_15d'),
+            'exec_filter': ml_result.get('exec_filter'),
+            'regime_info': ml_result.get('regime_info'),
             # 技术分析
             'trend': tech_analysis.get('trend'),
             'trend_strength': tech_analysis.get('trend_strength'),
@@ -190,7 +210,7 @@ class PositionAnalyzer:
             return datetime.now().strftime('%Y-%m-%d')
 
     def _get_ml_score(self, code: str, trade_date: str) -> Dict:
-        """获取ML评分"""
+        """获取ML评分 - 适配V4.4.1批量API和V3.9.x单股API"""
         if self.ml_scorer is None:
             return {
                 'score': None,
@@ -200,9 +220,45 @@ class PositionAnalyzer:
             }
 
         try:
-            result = self.ml_scorer.predict_score(code, trade_date)
-            if result:
-                return result
+            if self.ml_version == 'v4.4.1':
+                # V4.4.1: 批量API predict_scores([code], date)
+                results = self.ml_scorer.predict_scores([code], trade_date)
+                if results and code in results:
+                    r = results[code]
+                    score = r.get('score')
+                    pred_5d = r.get('pred_5d', 0)
+                    # 生成recommendation文本
+                    if score is not None:
+                        if score >= 65:
+                            rec = '强烈买入'
+                        elif score >= 60:
+                            rec = '买入'
+                        elif score >= 54:
+                            rec = '中性'
+                        elif score >= 50:
+                            rec = '偏空'
+                        else:
+                            rec = '卖出'
+                    else:
+                        rec = '评分失败'
+
+                    return {
+                        'score': score,
+                        'recommendation': rec,
+                        'predicted_return_5d': pred_5d,
+                        'confidence': min(0.95, 0.5 + abs(score - 60) / 60) if score else None,
+                        # V4.4.1 额外字段
+                        'pred_3d': r.get('pred_3d', 0),
+                        'pred_10d': r.get('pred_10d', 0),
+                        'pred_15d': r.get('pred_15d', 0),
+                        'exec_filter': r.get('exec_filter', 'unknown'),
+                        'regime_info': r.get('regime_info', {}),
+                    }
+            else:
+                # V3.9.x: 单股API predict_score(code, date)
+                result = self.ml_scorer.predict_score(code, trade_date)
+                if result:
+                    return result
         except Exception as e:
             logger.warning(f"ML评分获取失败 {code}: {e}")
 
@@ -545,7 +601,16 @@ class PositionAnalyzer:
 
         # 1. ML评分分析 (权重40%)
         ml_score = ml_result.get('score')
-        if ml_score is not None:
+        exec_filter = ml_result.get('exec_filter')
+
+        # V4.4.1可执行性过滤: 涨停/近涨停直接标记
+        if exec_filter and exec_filter in ('limit_up', 'limit_up_t1'):
+            scores['ml'] = -2
+            reasons.append(f"涨停不可买入({exec_filter})")
+        elif exec_filter == 'near_limit_up_t1':
+            scores['ml'] = -1
+            reasons.append("T+1近涨停,追高风险")
+        elif ml_score is not None:
             if ml_score >= 65:
                 scores['ml'] = 2
                 reasons.append(f"ML强烈买入信号({ml_score:.1f}分)")
@@ -561,6 +626,12 @@ class PositionAnalyzer:
             else:
                 scores['ml'] = -2
                 reasons.append(f"ML卖出信号({ml_score:.1f}分)")
+
+        # V4.4.1市况信息: 熊市额外扣分
+        regime_info = ml_result.get('regime_info', {})
+        if regime_info.get('regime') == 'bear':
+            scores['risk'] -= 0.5
+            reasons.append(f"熊市环境(20d回报{regime_info.get('market_return_20d', 0)*100:.1f}%)")
 
         # 2. 技术面分析 (权重30%)
         trend = tech_analysis.get('trend', 'unknown')
