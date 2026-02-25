@@ -185,9 +185,9 @@
                                         <th>版本</th>
                                         <th>特征数</th>
                                         <th>训练样本</th>
-                                        <th>验证RMSE</th>
-                                        <th>最佳迭代</th>
-                                        <th>训练时间</th>
+                                        <th>IC (融合)</th>
+                                        <th>ICIR (融合)</th>
+                                        <th>训练时长</th>
                                     </tr>
                                 </thead>
                                 <tbody></tbody>
@@ -400,13 +400,27 @@ function loadModels() {
 
 function displayModels(models) {
     const colors = {
-        'v3.9': 'primary',
+        'v5.0': 'dark',
+        'v4.4': 'danger',
+        'v4.3': 'warning',
+        'v4.0': 'info',
+        'v3.96': 'primary',
+        'v3.95': 'primary',
+        'v3.94': 'secondary',
+        'v3.9': 'success',
         'v3.81': 'success',
         'v3.8': 'info',
-        'v3.7': 'warning'
+        'v3.7': 'secondary'
     };
 
     const icons = {
+        'v5.0': 'bi-rocket-takeoff',
+        'v4.4': 'bi-trophy-fill',
+        'v4.3': 'bi-shield-check',
+        'v4.0': 'bi-bullseye',
+        'v3.96': 'bi-arrow-repeat',
+        'v3.95': 'bi-bullseye',
+        'v3.94': 'bi-gear-wide-connected',
         'v3.9': 'bi-star-fill',
         'v3.81': 'bi-award',
         'v3.8': 'bi-arrow-repeat',
@@ -455,10 +469,17 @@ function displayModels(models) {
 
 function _get_model_description(version) {
     const descriptions = {
-        'v3.9': '42个增强特征，17个财务指标',
-        'v3.81': '质量元学习器，解决评分聚集',
+        'v5.0': '下一代预测系统',
+        'v4.4': '六增强模块，59特征，ICIR>1.0',
+        'v4.3': 'Walk-Forward验证，Sharpe融合',
+        'v4.0': '多目标预测基础版',
+        'v3.96': '特征对齐，Robust Z-Score',
+        'v3.95': '多目标(3d/5d/10d)，滚动训练',
+        'v3.94': '优化Ensemble，71特征',
+        'v3.9': '42增强特征，17财务指标',
+        'v3.81': '质量元学习器',
         'v3.8': '增量学习，自适应评分',
-        'v3.7': '三层Ensemble，49个特征'
+        'v3.7': '三层Ensemble，49特征'
     };
     return descriptions[version] || '';
 }
@@ -582,9 +603,145 @@ function loadTrainingReport(version) {
     });
 }
 
+function formatDuration(seconds) {
+    if (!seconds) return '-';
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const s = Math.floor(seconds % 60);
+    if (h > 0) return `${h}h${m}m${s}s`;
+    return `${m}m${s}s`;
+}
+
 function displayTrainingReport(report) {
     let html = '';
 
+    // JSON-based report (v3.95+)
+    if (report.source === 'training_history_json') {
+        // Basic info
+        html += '<h6>基本信息</h6><ul class="list-group list-group-flush mb-3">';
+        html += `<li class="list-group-item d-flex justify-content-between py-1"><span>版本</span><strong>${report.version || '-'}</strong></li>`;
+        if (report.status) {
+            const badge = report.status === 'completed' ? 'bg-success' : 'bg-warning';
+            html += `<li class="list-group-item d-flex justify-content-between py-1"><span>状态</span><span class="badge ${badge}">${report.status}</span></li>`;
+        }
+        if (report.duration_seconds) {
+            html += `<li class="list-group-item d-flex justify-content-between py-1"><span>训练时长</span><strong>${formatDuration(report.duration_seconds)}</strong></li>`;
+        }
+        if (report.training_samples) {
+            html += `<li class="list-group-item d-flex justify-content-between py-1"><span>训练样本</span><strong>${report.training_samples.toLocaleString()}</strong></li>`;
+        }
+        if (report.validation_samples) {
+            html += `<li class="list-group-item d-flex justify-content-between py-1"><span>验证样本</span><strong>${report.validation_samples.toLocaleString()}</strong></li>`;
+        }
+        if (report.feature_count) {
+            let fcText = `${report.feature_count}`;
+            if (report.market_feature_count) fcText += ` (+${report.market_feature_count} 市场)`;
+            html += `<li class="list-group-item d-flex justify-content-between py-1"><span>特征数量</span><strong>${fcText}</strong></li>`;
+        }
+        if (report.sharpe_label_blend !== undefined) {
+            html += `<li class="list-group-item d-flex justify-content-between py-1"><span>Sharpe融合</span><strong>${report.sharpe_label_blend}</strong></li>`;
+        }
+        html += '</ul>';
+
+        // Walk-Forward IC/ICIR table (v4.3/v4.4)
+        if (report.walk_forward_summary) {
+            html += '<h6>Walk-Forward IC/ICIR</h6>';
+            html += '<table class="table table-sm table-bordered mb-3"><thead class="table-light"><tr><th>目标</th><th>Mean IC</th><th>Mean ICIR</th><th>Windows</th></tr></thead><tbody>';
+            for (const [target, data] of Object.entries(report.walk_forward_summary)) {
+                const icClass = data.mean_ic > 0.05 ? 'text-success fw-bold' : (data.mean_ic > 0 ? 'text-success' : 'text-danger');
+                const icirClass = data.mean_icir > 1.0 ? 'text-success fw-bold' : (data.mean_icir > 0.5 ? 'text-success' : 'text-muted');
+                html += `<tr>
+                    <td><strong>${target}</strong></td>
+                    <td class="${icClass}">${data.mean_ic?.toFixed(4) || '-'}</td>
+                    <td class="${icirClass}">${data.mean_icir?.toFixed(3) || '-'}</td>
+                    <td>${data.n_windows || '-'}</td>
+                </tr>`;
+            }
+            html += '</tbody></table>';
+        }
+
+        // Final Metrics (v3.95/v3.96)
+        if (report.final_metrics) {
+            html += '<h6>Final Metrics (IC/ICIR)</h6>';
+            html += '<table class="table table-sm table-bordered mb-3"><thead class="table-light"><tr><th>目标</th><th>IC</th><th>ICIR</th><th>IC>0%</th></tr></thead><tbody>';
+            for (const [target, data] of Object.entries(report.final_metrics)) {
+                if (typeof data !== 'object') continue;
+                const ic = data.daily_ic_mean ?? data.ic ?? null;
+                const icir = data.daily_icir ?? null;
+                const icPos = data.daily_ic_positive_pct ?? null;
+                const icClass = ic > 0.05 ? 'text-success fw-bold' : (ic > 0 ? 'text-success' : 'text-danger');
+                html += `<tr>
+                    <td><strong>${target}</strong></td>
+                    <td class="${icClass}">${ic !== null ? ic.toFixed(4) : '-'}</td>
+                    <td>${icir !== null ? icir.toFixed(3) : '-'}</td>
+                    <td>${icPos !== null ? icPos.toFixed(1) + '%' : '-'}</td>
+                </tr>`;
+            }
+            html += '</tbody></table>';
+        }
+
+        // Target Weights
+        if (report.target_weights) {
+            html += '<h6>目标权重</h6><div class="mb-3">';
+            for (const [label, weight] of Object.entries(report.target_weights)) {
+                const pct = (weight * 100).toFixed(0);
+                const shortLabel = label.replace('label_', '');
+                html += `<div class="d-flex align-items-center mb-1">
+                    <span class="me-2" style="width:40px"><strong>${shortLabel}</strong></span>
+                    <div class="progress flex-grow-1" style="height:18px">
+                        <div class="progress-bar bg-primary" style="width:${pct}%">${pct}%</div>
+                    </div>
+                </div>`;
+            }
+            html += '</div>';
+        }
+
+        // Ensemble Weights (show first target as representative)
+        if (report.ensemble_weights) {
+            const firstTarget = Object.keys(report.ensemble_weights)[0];
+            if (firstTarget) {
+                const weights = report.ensemble_weights[firstTarget];
+                html += `<h6>Ensemble权重 (${firstTarget})</h6><div class="mb-3">`;
+                for (const [model, weight] of Object.entries(weights)) {
+                    const pct = (weight * 100).toFixed(1);
+                    html += `<div class="d-flex align-items-center mb-1">
+                        <span class="me-2" style="width:35px"><strong>${model}</strong></span>
+                        <div class="progress flex-grow-1" style="height:16px">
+                            <div class="progress-bar bg-info" style="width:${pct}%">${pct}%</div>
+                        </div>
+                    </div>`;
+                }
+                html += '</div>';
+            }
+        }
+
+        // Modules (v4.4)
+        if (report.modules) {
+            html += '<h6>增强模块</h6><ul class="list-group list-group-flush mb-3">';
+            for (const [name, value] of Object.entries(report.modules)) {
+                const displayName = name.replace(/^[A-F]_/, '');
+                let badge;
+                if (value === true) badge = '<span class="badge bg-success">ON</span>';
+                else if (value === false) badge = '<span class="badge bg-secondary">OFF</span>';
+                else badge = `<span class="badge bg-info">${value}</span>`;
+                html += `<li class="list-group-item d-flex justify-content-between py-1"><span>${displayName}</span>${badge}</li>`;
+            }
+            html += '</ul>';
+        }
+
+        // Bear models / Isotonic targets
+        if (report.bear_models) {
+            html += `<p class="small mb-1"><strong>Bear专用:</strong> ${report.bear_models.join(', ')}</p>`;
+        }
+        if (report.isotonic_targets) {
+            html += `<p class="small mb-1"><strong>Isotonic校准:</strong> ${report.isotonic_targets.join(', ')}</p>`;
+        }
+
+        $('#training-report').html(html);
+        return;
+    }
+
+    // Legacy MD-based report (v3.9)
     if (report.training_time) {
         html += `<p><strong>训练时间:</strong> ${report.training_time}</p>`;
     }
@@ -655,19 +812,23 @@ function updateMetricsTable(versions) {
     tbody.empty();
 
     versions.forEach(v => {
-        // 加载每个版本的指标
         $.ajax({
             url: `/api/models/${v.version}/metrics`,
             success: function(response) {
                 if (response.success) {
                     const m = response.metrics;
+                    const icVal = m.fused_ic !== undefined && m.fused_ic !== null ? m.fused_ic.toFixed(4) : '-';
+                    const icirVal = m.fused_icir !== undefined && m.fused_icir !== null ? m.fused_icir.toFixed(3) : '-';
+                    const icClass = m.fused_ic > 0.05 ? 'text-success fw-bold' : (m.fused_ic > 0 ? 'text-success' : '');
+                    const icirClass = m.fused_icir > 1.0 ? 'text-success fw-bold' : (m.fused_icir > 0.5 ? 'text-success' : '');
+                    const samples = m.training_samples ? Number(m.training_samples).toLocaleString() : '-';
                     tbody.append(`
                         <tr>
                             <td><span class="badge bg-primary">${v.version}</span></td>
                             <td>${m.feature_count || m.n_features || '-'}</td>
-                            <td>${m.training_samples || '-'}</td>
-                            <td>${m.val_score ? m.val_score.toFixed(4) : '-'}</td>
-                            <td>${m.best_iteration || '-'}</td>
+                            <td>${samples}</td>
+                            <td class="${icClass}">${icVal}</td>
+                            <td class="${icirClass}">${icirVal}</td>
                             <td>${m.training_time || v.latest_modified || '-'}</td>
                         </tr>
                     `);
@@ -983,12 +1144,10 @@ function displayTrainingSummary(curves) {
 
     // 训练时间
     if (curves.start_time) {
-        html += `<p><strong>开始时间:</strong><br><small>${new Date(curves.start_time).toLocaleString('zh-CN')}</small></p>`;
+        html += `<p><strong>开始:</strong><br><small>${new Date(curves.start_time).toLocaleString('zh-CN')}</small></p>`;
     }
     if (duration) {
-        const minutes = Math.floor(duration / 60);
-        const seconds = Math.floor(duration % 60);
-        html += `<p><strong>训练时长:</strong> ${minutes}分${seconds}秒</p>`;
+        html += `<p><strong>时长:</strong> ${formatDuration(duration)}</p>`;
     }
 
     // 数据统计
@@ -999,24 +1158,32 @@ function displayTrainingSummary(curves) {
         html += `<p><strong>验证样本:</strong> ${summary.validation_samples.toLocaleString()}</p>`;
     }
     if (summary.feature_count) {
-        html += `<p><strong>特征数量:</strong> ${summary.feature_count}</p>`;
+        html += `<p><strong>特征数:</strong> ${summary.feature_count}</p>`;
     }
 
-    // 最终指标
-    if (summary.final_metrics) {
-        html += '<hr><h6>最终指标</h6>';
-        for (const [key, value] of Object.entries(summary.final_metrics)) {
-            if (value !== null && value !== undefined) {
-                const displayKey = key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
-                html += `<p class="small mb-1"><strong>${displayKey}:</strong> ${typeof value === 'number' ? value.toFixed(4) : value}</p>`;
-            }
+    // Walk-Forward Summary (compact)
+    const wf = summary.walk_forward_summary;
+    if (wf) {
+        html += '<hr><h6 class="mb-1">WF ICIR</h6>';
+        for (const [target, data] of Object.entries(wf)) {
+            const icir = data.mean_icir;
+            const cls = icir > 1.0 ? 'text-success fw-bold' : (icir > 0.5 ? 'text-success' : 'text-muted');
+            html += `<p class="small mb-0"><strong>${target}:</strong> <span class="${cls}">${icir?.toFixed(3)}</span></p>`;
         }
+    }
+
+    // Final Metrics (compact, show fused)
+    const fm = summary.final_metrics;
+    if (fm && fm.fused) {
+        html += '<hr><h6 class="mb-1">融合IC</h6>';
+        html += `<p class="small mb-0"><strong>IC:</strong> ${fm.fused.daily_ic_mean?.toFixed(4) || '-'}</p>`;
+        html += `<p class="small mb-0"><strong>ICIR:</strong> ${fm.fused.daily_icir?.toFixed(3) || '-'}</p>`;
     }
 
     // 模型数量
     const modelsCount = Object.keys(curves.models || {}).length;
     if (modelsCount > 0) {
-        html += `<hr><p><strong>训练模型数:</strong> ${modelsCount}</p>`;
+        html += `<hr><p><strong>模型数:</strong> ${modelsCount}</p>`;
     }
 
     if (!html) {

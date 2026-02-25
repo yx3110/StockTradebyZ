@@ -54,29 +54,31 @@ def scan_model_directories(models_dir: Path) -> dict:
         if item.is_dir() and item.name.startswith('v'):
             dir_name = item.name
 
-            # 解析目录名称
-            # v360 -> 3.6.0 -> v3.6
-            # v370 -> 3.7.0 -> v3.7
-            # v39 -> 3.9 -> v3.9
-            # v391 -> 3.9.1 -> v3.91
-
             # 移除v前缀
             version_str = dir_name[1:]
 
-            # 尝试解析版本号
+            # 跳过非数字目录（如 alpha158, neural 等）
+            if not version_str.isdigit():
+                continue
+
+            # 解析版本号
             if len(version_str) == 2:
-                # v39 -> 3.9
+                # v39 -> v3.9, v44 -> v4.4
                 major = version_str[0]
                 minor = version_str[1]
                 version = f"v{major}.{minor}"
             elif len(version_str) == 3:
-                if version_str.endswith('0'):
-                    # v360, v370, v380 -> 3.6, 3.7, 3.8
+                if version_str.endswith('00'):
+                    # v300, v400, v500 -> v3.0, v4.0, v5.0
+                    major = version_str[0]
+                    version = f"v{major}.0"
+                elif version_str.endswith('0'):
+                    # v360, v370, v380 -> v3.6, v3.7, v3.8
                     major = version_str[0]
                     minor = version_str[1]
                     version = f"v{major}.{minor}"
                 else:
-                    # v391, v392 -> 3.91, 3.92
+                    # v391, v392, v395, v396 -> v3.91, v3.92, v3.95, v3.96
                     major = version_str[0]
                     minor = version_str[1:]
                     version = f"v{major}.{minor}"

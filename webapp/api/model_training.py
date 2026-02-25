@@ -487,7 +487,6 @@ def get_models_summary():
 
 def _get_model_name(version: str) -> str:
     """获取模型名称"""
-    # 已知版本的特定名称
     names = {
         'v3.6': 'V3.6 基础评分系统',
         'v3.7': 'V3.7 三层Ensemble系统',
@@ -499,11 +498,14 @@ def _get_model_name(version: str) -> str:
         'v3.93': 'V3.93 实验特征系统',
         'v3.94': 'V3.94 优化Ensemble系统',
         'v3.95': 'V3.95 多目标滚动预测',
+        'v3.96': 'V3.96 特征对齐版',
+        'v4.0': 'V4.0 基础多目标系统',
+        'v4.3': 'V4.3 Walk-Forward验证',
+        'v4.4': 'V4.4 六模块增强系统',
+        'v5.0': 'V5.0 下一代系统',
     }
-    # 对于未知版本，生成默认名称
     if version in names:
         return names[version]
-    # 生成动态名称：v3.91 -> V3.91 模型
     return f'{version.upper()} 模型'
 
 
@@ -514,12 +516,17 @@ def _get_model_description(version: str) -> str:
         'v3.7': '三层Ensemble架构，49个特征，5个基础模型（LightGBM, XGBoost, CatBoost, RandomForest, MLP）',
         'v3.8': '增量学习引擎，实时特征计算，自适应评分标准化，模型漂移检测',
         'v3.81': 'V3.8基础 + Level 4质量元学习器，解决质量评分聚集问题',
-        'v3.9': '42个增强特征，包含17个扩展财务指标',
+        'v3.9': '42个增强特征，包含17个扩展财务指标，LightGBM+XGB+CB+RF Ensemble',
         'v3.91': '基于V3.9优化的特征组合',
         'v3.92': '高级特征工程与模型优化',
         'v3.93': '实验性特征与算法测试',
-        'v3.94': '优化Ensemble架构：移除MLP，加权Ensemble替代Ridge回归，71个特征，5个基础模型',
-        'v3.95': '多目标预测(3d/5d/10d)，滚动训练，77个特征(65基础+12市场状态)，5个基础模型，IC=+0.16',
+        'v3.94': '优化Ensemble架构：移除MLP，加权Ensemble替代Ridge回归，71个特征',
+        'v3.95': '多目标预测(3d/5d/10d)，滚动训练，77个特征(65基础+12市场状态)',
+        'v3.96': '特征对齐版：Robust Z-Score + Industry-Excess Labels，49特征',
+        'v4.0': '多目标预测基础版，Walk-Forward验证框架',
+        'v4.3': 'Walk-Forward交叉验证，59特征，Sharpe融合标签',
+        'v4.4': '六增强模块(单调性/熊市/流动性/Sharpe/可执行性/市况自适应)，59特征',
+        'v5.0': '下一代预测系统',
     }
     return descriptions.get(version, f'{version} 机器学习评分模型')
 
@@ -528,11 +535,10 @@ def _load_feature_importance(version: str) -> List[Dict[str, Any]]:
     """加载特征重要性数据"""
     features = []
     models_dir = current_app.config['MODELS_DIR']
+    version_dir = _get_version_dir(version)
 
     # 尝试从CSV文件加载 (v3.6格式)
-    version_dir = _get_version_dir(version)
     csv_file = version_dir / 'feature_importance_target_1d.csv' if version_dir else None
-
     if csv_file and csv_file.exists():
         with open(csv_file, 'r') as f:
             reader = csv.DictReader(f)
@@ -543,7 +549,6 @@ def _load_feature_importance(version: str) -> List[Dict[str, Any]]:
                     'xgb_importance': float(row.get('xgb_importance', 0)),
                     'avg_importance': float(row.get('avg_importance', 0))
                 })
-        # 按平均重要性排序
         features.sort(key=lambda x: x['avg_importance'], reverse=True)
         return features
 
@@ -555,40 +560,99 @@ def _load_feature_importance(version: str) -> List[Dict[str, Any]]:
                 metadata = json.load(f)
             importance = metadata.get('feature_importance', {})
             for name, value in importance.items():
-                features.append({
-                    'name': name,
-                    'importance': value
-                })
+                features.append({'name': name, 'importance': value})
             features.sort(key=lambda x: x['importance'], reverse=True)
             return features
 
-    # 尝试从训练报告获取特征列表 (v3.9格式)
-    if version in ['v3.9']:
-        version_dir = models_dir / 'v39'
-        if version_dir.exists():
-            report_files = list(version_dir.glob('training_report_*.md'))
-            if report_files:
-                report = _parse_training_report_md(max(report_files, key=lambda f: f.stat().st_mtime))
-                feature_list = report.get('features', [])
-                for i, name in enumerate(feature_list):
-                    features.append({
-                        'name': name,
-                        'importance': len(feature_list) - i  # 假设按重要性排序
-                    })
-                return features
+    # 从 feature_importance JSON 文件加载 (v3.9/v3.95/v4.x)
+    if version_dir and version_dir.exists():
+        # v3.9: v390_feature_importance_*.json (has "average" key)
+        # v3.95+: v395/v400/v43/v44_feature_importance_*.json (has "global_average" key)
+        fi_files = sorted(version_dir.glob('*_feature_importance_*.json'), reverse=True)
+        if fi_files:
+            try:
+                with open(fi_files[0], 'r', encoding='utf-8') as f:
+                    fi_data = json.load(f)
+                # 优先用 "average"(v3.9) 或 "global_average"(v3.95+)
+                avg_data = fi_data.get('average') or fi_data.get('global_average')
+                if avg_data:
+                    for name, value in avg_data.items():
+                        features.append({'name': name, 'importance': value})
+                    features.sort(key=lambda x: x['importance'], reverse=True)
+                    return features
+            except Exception as e:
+                logger.error(f'加载特征重要性JSON失败: {e}')
 
     return features
 
 
 def _load_training_report(version: str) -> Dict[str, Any]:
-    """加载训练报告"""
+    """加载训练报告 — 通用JSON训练历史 + 旧格式兼容"""
     models_dir = current_app.config['MODELS_DIR']
+    version_dir = _get_version_dir(version)
 
-    # v3.9训练报告
+    # 优先从 training_history_latest.json 加载（v3.95/v3.96/v4.x/v5.0）
+    if version_dir and version_dir.exists():
+        history_file = version_dir / 'training_history_latest.json'
+        if history_file.exists():
+            try:
+                with open(history_file, 'r', encoding='utf-8') as f:
+                    history = json.load(f)
+                summary = history.get('summary', {})
+                report = {
+                    'source': 'training_history_json',
+                    'version': history.get('version', version),
+                    'status': history.get('status'),
+                    'start_time': history.get('start_time'),
+                    'end_time': history.get('end_time'),
+                    'duration_seconds': history.get('duration_seconds'),
+                    'training_samples': summary.get('training_samples'),
+                    'validation_samples': summary.get('validation_samples'),
+                    'feature_count': summary.get('feature_count'),
+                    'market_feature_count': summary.get('market_feature_count'),
+                }
+                # Walk-forward summary (v4.3/v4.4)
+                wf = summary.get('walk_forward_summary')
+                if wf:
+                    report['walk_forward_summary'] = wf
+                # Final metrics (v3.95/v3.96)
+                fm = summary.get('final_metrics')
+                if fm:
+                    report['final_metrics'] = fm
+                # Target weights
+                tw = history.get('target_weights')
+                if tw:
+                    report['target_weights'] = tw
+                # Dynamic weights (v3.95)
+                dw = history.get('dynamic_weights')
+                if dw:
+                    report['dynamic_weights'] = dw
+                # Ensemble weights
+                ew = history.get('ensemble_weights')
+                if ew:
+                    report['ensemble_weights'] = ew
+                # Modules (v4.4)
+                modules = history.get('modules')
+                if modules:
+                    report['modules'] = modules
+                # Bear models / isotonic targets
+                if summary.get('bear_models'):
+                    report['bear_models'] = summary['bear_models']
+                if summary.get('isotonic_targets'):
+                    report['isotonic_targets'] = summary['isotonic_targets']
+                # Sharpe blend
+                sb = history.get('sharpe_label_blend')
+                if sb is not None:
+                    report['sharpe_label_blend'] = sb
+                return report
+            except Exception as e:
+                logger.error(f'加载训练历史JSON失败: {e}')
+
+    # v3.9 Markdown训练报告
     if version == 'v3.9':
-        version_dir = models_dir / 'v39'
-        if version_dir.exists():
-            report_files = list(version_dir.glob('training_report_*.md'))
+        v39_dir = models_dir / 'v39'
+        if v39_dir.exists():
+            report_files = list(v39_dir.glob('training_report_*.md'))
             if report_files:
                 return _parse_training_report_md(max(report_files, key=lambda f: f.stat().st_mtime))
 
@@ -605,7 +669,6 @@ def _load_training_report(version: str) -> Dict[str, Any]:
             }
 
     # 通用模型文件信息
-    version_dir = _get_version_dir(version)
     if version_dir and version_dir.exists():
         pkl_files = list(version_dir.glob('*.pkl'))
         if pkl_files:
@@ -670,17 +733,63 @@ def _parse_training_report_md(filepath: Path) -> Dict[str, Any]:
 
 
 def _load_model_metrics(version: str) -> Dict[str, Any]:
-    """加载模型性能指标"""
-    metrics = {
-        'rmse': None,
-        'mae': None,
-        'r2': None,
-        'best_iteration': None,
-        'train_score': None,
-        'val_score': None
-    }
-
+    """加载模型性能指标 — 优先从training_history_latest.json读取IC/ICIR"""
+    metrics = {}
     models_dir = current_app.config['MODELS_DIR']
+    version_dir = _get_version_dir(version)
+
+    # 优先从training_history_latest.json加载
+    if version_dir and version_dir.exists():
+        history_file = version_dir / 'training_history_latest.json'
+        if history_file.exists():
+            try:
+                with open(history_file, 'r', encoding='utf-8') as f:
+                    history = json.load(f)
+                summary = history.get('summary', {})
+                metrics['feature_count'] = summary.get('feature_count')
+                metrics['training_samples'] = summary.get('training_samples')
+                duration = history.get('duration_seconds')
+                if duration:
+                    hours = int(duration // 3600)
+                    mins = int((duration % 3600) // 60)
+                    secs = int(duration % 60)
+                    if hours > 0:
+                        metrics['training_time'] = f'{hours}h{mins}m{secs}s'
+                    else:
+                        metrics['training_time'] = f'{mins}m{secs}s'
+
+                # Walk-forward IC/ICIR (v4.3/v4.4)
+                wf = summary.get('walk_forward_summary', {})
+                if wf:
+                    # 计算融合 IC/ICIR (加权平均)
+                    tw = history.get('target_weights', {})
+                    fused_ic, fused_icir, total_w = 0, 0, 0
+                    for target, data in wf.items():
+                        w = tw.get(f'label_{target}', 1.0 / len(wf))
+                        fused_ic += data.get('mean_ic', 0) * w
+                        fused_icir += data.get('mean_icir', 0) * w
+                        total_w += w
+                    if total_w > 0:
+                        metrics['fused_ic'] = round(fused_ic / total_w, 4)
+                        metrics['fused_icir'] = round(fused_icir / total_w, 4)
+
+                # Final metrics (v3.95/v3.96) — use fused IC/ICIR
+                fm = summary.get('final_metrics', {})
+                if fm and 'fused' in fm:
+                    fused = fm['fused']
+                    metrics['fused_ic'] = round(fused.get('daily_ic_mean', 0), 4)
+                    metrics['fused_icir'] = round(fused.get('daily_icir', 0), 4)
+                elif fm and not wf:
+                    # 没有walk_forward也没有fused，取3d作为代表
+                    for target in ['3d', '5d', '10d']:
+                        if target in fm:
+                            metrics['fused_ic'] = round(fm[target].get('daily_ic_mean', fm[target].get('ic', 0)), 4)
+                            metrics['fused_icir'] = round(fm[target].get('daily_icir', 0), 4)
+                            break
+
+                return metrics
+            except Exception as e:
+                logger.error(f'加载模型指标失败: {e}')
 
     # Level4元数据 (v3.81)
     if version == 'v3.81':
@@ -690,20 +799,15 @@ def _load_model_metrics(version: str) -> Dict[str, Any]:
                 metadata = json.load(f)
             history = metadata.get('training_history', {})
             best_score = history.get('best_score', {})
-
             metrics['best_iteration'] = history.get('best_iteration')
             metrics['n_features'] = history.get('n_features')
-            metrics['train_score'] = best_score.get('train', {}).get('rmse')
             metrics['val_score'] = best_score.get('val', {}).get('rmse')
-
-            if metrics['train_score']:
-                metrics['rmse'] = metrics['val_score']
 
     # v3.9从训练报告获取
     elif version == 'v3.9':
-        version_dir = models_dir / 'v39'
-        if version_dir.exists():
-            report_files = list(version_dir.glob('training_report_*.md'))
+        v39_dir = models_dir / 'v39'
+        if v39_dir.exists():
+            report_files = list(v39_dir.glob('training_report_*.md'))
             if report_files:
                 report = _parse_training_report_md(max(report_files, key=lambda f: f.stat().st_mtime))
                 params = report.get('params', {})
