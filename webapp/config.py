@@ -29,6 +29,10 @@ def scan_report_directories(reports_dir: Path) -> dict:
     return report_dirs
 
 
+# 页面上隐藏的已废弃版本（模型文件保留，仅从webapp界面隐藏）
+HIDDEN_MODEL_VERSIONS = {'v3.6', 'v3.7', 'v3.8', 'v3.81', 'v3.9', 'v3.91', 'v3.92', 'v3.93', 'v3.94'}
+
+
 def scan_model_directories(models_dir: Path) -> dict:
     """
     自动扫描模型目录，发现所有可用的模型版本
@@ -86,14 +90,11 @@ def scan_model_directories(models_dir: Path) -> dict:
                 # 跳过无法识别的目录
                 continue
 
-            model_dirs[version] = item
+            # 跳过已废弃版本
+            if version in HIDDEN_MODEL_VERSIONS:
+                continue
 
-    # v3.81 使用 v380 目录，需要特殊处理
-    if 'v3.8' in model_dirs:
-        # 检查是否存在 level4 模型文件
-        level4_file = models_dir / 'level4_quality_meta_learner.pkl'
-        if level4_file.exists():
-            model_dirs['v3.81'] = model_dirs['v3.8']
+            model_dirs[version] = item
 
     return model_dirs
 
