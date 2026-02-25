@@ -7,6 +7,8 @@ import json
 import csv
 import re
 import pickle
+import sys
+import os
 from pathlib import Path
 from flask import Blueprint, jsonify, request, Response, current_app
 from datetime import datetime
@@ -307,6 +309,37 @@ def get_training_report(version: str):
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+@model_training_bp.route('/<version>/north_star', methods=['GET'])
+def get_north_star(version: str):
+    """
+    获取模型版本的北极星V2评分卡
+
+    Returns:
+        {
+            "success": True,
+            "version": "v4.4",
+            "north_star": {
+                "total_score": 88,
+                "max_score": 105,
+                "pct": 83.8,
+                "grade": "S",
+                "layers": { ... },
+                "metrics": { ... }
+            }
+        }
+    """
+    try:
+        result = _compute_north_star_v2(version)
+        return jsonify({
+            'success': True,
+            'version': version,
+            'north_star': result
+        })
+    except Exception as e:
+        logger.error(f'获取北极星评分失败: {e}', exc_info=True)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
 @model_training_bp.route('/<version>/metrics', methods=['GET'])
 def get_model_metrics(version: str):
     """
@@ -598,55 +631,45 @@ def _load_training_report(version: str) -> Dict[str, Any]:
             try:
                 with open(history_file, 'r', encoding='utf-8') as f:
                     history = json.load(f)
-                summary = history.get('summary', {})
-                report = {
-                    'source': 'training_history_json',
-                    'version': history.get('version', version),
-                    'status': history.get('status'),
-                    'start_time': history.get('start_time'),
-                    'end_time': history.get('end_time'),
-                    'duration_seconds': history.get('duration_seconds'),
-                    'training_samples': summary.get('training_samples'),
-                    'validation_samples': summary.get('validation_samples'),
-                    'feature_count': summary.get('feature_count'),
-                    'market_feature_count': summary.get('market_feature_count'),
-                }
-                # Walk-forward summary (v4.3/v4.4)
-                wf = summary.get('walk_forward_summary')
-                if wf:
-                    report['walk_forward_summary'] = wf
-                # Final metrics (v3.95/v3.96)
-                fm = summary.get('final_metrics')
-                if fm:
-                    report['final_metrics'] = fm
-                # Target weights
-                tw = history.get('target_weights')
-                if tw:
-                    report['target_weights'] = tw
-                # Dynamic weights (v3.95)
-                dw = history.get('dynamic_weights')
-                if dw:
-                    report['dynamic_weights'] = dw
-                # Ensemble weights
-                ew = history.get('ensemble_weights')
-                if ew:
-                    report['ensemble_weights'] = ew
-                # Modules (v4.4)
-                modules = history.get('modules')
-                if modules:
-                    report['modules'] = modules
-                # Bear models / isotonic targets
-                if summary.get('bear_models'):
-                    report['bear_models'] = summary['bear_models']
-                if summary.get('isotonic_targets'):
-                    report['isotonic_targets'] = summary['isotonic_targets']
-                # Sharpe blend
-                sb = history.get('sharpe_label_blend')
-                if sb is not None:
-                    report['sharpe_label_blend'] = sb
-                return report
+                return _build_report_from_history(history, version)
             except Exception as e:
                 logger.error(f'加载训练历史JSON失败: {e}')
+
+        # 回退: 扫描 training_history_*.json (非latest)，取最新时间戳 (v5.0)
+        history_files = sorted(
+            [f for f in version_dir.glob('training_history_*.json') if 'latest' not in f.name],
+            key=lambda f: f.stat().st_mtime, reverse=True
+        )
+        if history_files:
+            try:
+                with open(history_files[0], 'r', encoding='utf-8') as f:
+                    history = json.load(f)
+                report = _build_report_from_history(history, version)
+                report['source_file'] = history_files[0].name
+                return report
+            except Exception as e:
+                logger.error(f'加载训练历史JSON回退失败: {e}')
+
+        # 回退: v4.0 evaluation_results.json
+        eval_files = sorted(version_dir.glob('*_evaluation_*.json'), reverse=True)
+        if eval_files:
+            try:
+                with open(eval_files[0], 'r', encoding='utf-8') as f:
+                    eval_data = json.load(f)
+                return {
+                    'source': 'evaluation_json',
+                    'version': version,
+                    'source_file': eval_files[0].name,
+                    'daily_ic_mean': eval_data.get('daily_ic_mean'),
+                    'ic_ir': eval_data.get('ic_ir'),
+                    'ic_positive_pct': eval_data.get('ic_positive_pct'),
+                    'top10_excess_return': eval_data.get('top10_excess_return_mean'),
+                    'top20_excess_return': eval_data.get('top20_excess_return_mean'),
+                    'top10_precision': eval_data.get('top10_precision_mean'),
+                    'top20_precision': eval_data.get('top20_precision_mean'),
+                }
+            except Exception as e:
+                logger.error(f'加载evaluation JSON失败: {e}')
 
     # v3.9 Markdown训练报告
     if version == 'v3.9':
@@ -668,18 +691,74 @@ def _load_training_report(version: str) -> Dict[str, Any]:
                 'random_state': metadata.get('random_state')
             }
 
-    # 通用模型文件信息
+    # 通用pkl文件信息回退 (v3.8/v3.94/v3.96等无详细训练记录的版本)
     if version_dir and version_dir.exists():
         pkl_files = list(version_dir.glob('*.pkl'))
         if pkl_files:
             newest = max(pkl_files, key=lambda f: f.stat().st_mtime)
+            stat = newest.stat()
             return {
+                'source': 'pkl_fallback',
+                'version': version,
                 'latest_model': newest.name,
-                'modified_time': datetime.fromtimestamp(newest.stat().st_mtime).isoformat(),
-                'model_count': len(pkl_files)
+                'modified_time': datetime.fromtimestamp(stat.st_mtime).isoformat(),
+                'model_count': len(pkl_files),
+                'size_mb': round(stat.st_size / (1024 * 1024), 2),
+                'message': '此版本无详细训练记录，仅显示模型文件信息',
             }
 
     return {}
+
+
+def _build_report_from_history(history: Dict, version: str) -> Dict[str, Any]:
+    """从training_history JSON构建标准化报告"""
+    summary = history.get('summary', {})
+    report = {
+        'source': 'training_history_json',
+        'version': history.get('version', version),
+        'status': history.get('status'),
+        'start_time': history.get('start_time'),
+        'end_time': history.get('end_time'),
+        'duration_seconds': history.get('duration_seconds'),
+        'training_samples': summary.get('training_samples'),
+        'validation_samples': summary.get('validation_samples'),
+        'feature_count': summary.get('feature_count') or history.get('feature_count'),
+        'market_feature_count': summary.get('market_feature_count'),
+    }
+    # Walk-forward summary (v4.3/v4.4)
+    wf = summary.get('walk_forward_summary')
+    if wf:
+        report['walk_forward_summary'] = wf
+    # Final metrics (v3.95/v3.96)
+    fm = summary.get('final_metrics')
+    if fm:
+        report['final_metrics'] = fm
+    # Target weights
+    tw = history.get('target_weights')
+    if tw:
+        report['target_weights'] = tw
+    # Dynamic weights (v3.95)
+    dw = history.get('dynamic_weights')
+    if dw:
+        report['dynamic_weights'] = dw
+    # Ensemble weights
+    ew = history.get('ensemble_weights')
+    if ew:
+        report['ensemble_weights'] = ew
+    # Modules (v4.4)
+    modules = history.get('modules')
+    if modules:
+        report['modules'] = modules
+    # Bear models / isotonic targets
+    if summary.get('bear_models'):
+        report['bear_models'] = summary['bear_models']
+    if summary.get('isotonic_targets'):
+        report['isotonic_targets'] = summary['isotonic_targets']
+    # Sharpe blend
+    sb = history.get('sharpe_label_blend')
+    if sb is not None:
+        report['sharpe_label_blend'] = sb
+    return report
 
 
 def _parse_training_report_md(filepath: Path) -> Dict[str, Any]:
@@ -977,3 +1056,201 @@ def _run_model_training(progress_callback, **params):
     except Exception as e:
         logger.error(f'模型训练任务失败: {e}')
         raise
+
+
+# ==================== North Star V2 评分卡 ====================
+
+# 版本 → 报告目录映射
+VERSION_REPORT_DIRS = {
+    'v3.9': 'reports/daily_selection_v3.9',
+    'v3.95': 'reports/daily_selection_v3.95_robust_zscore',
+    'v3.96': 'reports/daily_selection_v3.96_aligned',
+    'v4.3': 'reports/daily_selection_v4.3',
+    'v4.4': 'reports/daily_selection_v4.4_v2',
+    'v5.0': 'reports/daily_selection_v5.0',
+}
+
+
+def _compute_north_star_v2(version: str) -> Dict[str, Any]:
+    """计算North Star V2评分卡，带文件缓存"""
+    base_dir = current_app.config['BASE_DIR']
+
+    # 检查此版本是否有选股报告
+    report_rel = VERSION_REPORT_DIRS.get(version)
+    if not report_rel:
+        return {'error': '此版本无选股报告，无法评估', 'has_data': False}
+
+    report_dir = base_dir / report_rel
+    if not report_dir.exists():
+        return {'error': f'报告目录不存在: {report_rel}', 'has_data': False}
+
+    # 检查缓存
+    cache_dir = current_app.config['WEBAPP_DIR'] / 'data'
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cache_file = cache_dir / f'north_star_cache_{version.replace(".", "")}.json'
+
+    # 获取报告目录最新文件时间
+    json_files = list(report_dir.glob('analysis_data_*.json'))
+    if not json_files:
+        return {'error': '报告目录中无分析数据文件', 'has_data': False}
+
+    latest_report_time = max(f.stat().st_mtime for f in json_files)
+
+    # 检查缓存有效性
+    if cache_file.exists():
+        try:
+            cache_stat = cache_file.stat()
+            if cache_stat.st_mtime > latest_report_time:
+                with open(cache_file, 'r', encoding='utf-8') as f:
+                    cached = json.load(f)
+                if cached.get('has_data'):
+                    return cached
+        except Exception:
+            pass  # 缓存损坏，重新计算
+
+    # 计算评分
+    result = _run_north_star_evaluation(str(report_dir), version)
+
+    # 写入缓存
+    try:
+        with open(cache_file, 'w', encoding='utf-8') as f:
+            json.dump(result, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.error(f'写入北极星缓存失败: {e}')
+
+    return result
+
+
+def _run_north_star_evaluation(report_dir: str, version: str,
+                                top_n: int = 10, focus_days: int = 10) -> Dict[str, Any]:
+    """运行北极星V2评估"""
+    base_dir = str(current_app.config['BASE_DIR'])
+
+    # 确保 backtest 模块可导入
+    if base_dir not in sys.path:
+        sys.path.insert(0, base_dir)
+
+    try:
+        from backtest.backtest_report_based import load_reports, run_single_backtest
+        from backtest.north_star_metrics import (
+            NORTH_STAR_TARGETS_V2, V2_LAYER_NAMES, score_metric_v2, compute_v2_grade
+        )
+    except ImportError as e:
+        return {'error': f'导入回测模块失败: {e}', 'has_data': False}
+
+    # 加载报告
+    reports = load_reports(report_dir)
+    if not reports:
+        return {'error': '无有效报告数据', 'has_data': False}
+
+    # 运行回测
+    try:
+        result = run_single_backtest(reports, version, top_n=top_n, focus_days=focus_days)
+    except Exception as e:
+        return {'error': f'回测失败: {e}', 'has_data': False}
+
+    s = result.get('summary', {}).get(focus_days)
+    if not s:
+        return {'error': f'无{focus_days}天持仓回测结果', 'has_data': False}
+
+    # 构建 metric_value_map (从 _print_scorecard_v2 逻辑)
+    metric_value_map = {
+        'daily_ic':              s.get('ic_mean', 0),
+        'icir':                  s.get('icir', 0),
+        'ic_positive_pct':       s.get('ic_positive_pct', 0),
+        'ic_monotonicity':       s.get('ic_monotonicity', 0),
+        'ic_time_stability':     s.get('ic_time_stability', 999),
+        'signal_half_life':      s.get('signal_half_life', 0),
+        'annual_turnover':       s.get('annual_turnover', 0),
+        'annual_cost_drag':      s.get('annual_cost_drag', 0),
+        'net_gross_ratio':       s.get('net_gross_ratio', 0),
+        'limit_up_fail_rate':    s.get('limit_up_fail_rate', 0),
+        'liquidity_coverage':    s.get('liquidity_coverage', 0),
+        'max_drawdown':          s.get('max_drawdown', 0),
+        'sharpe_ratio':          s.get('sharpe_ratio', 0),
+        'sortino_ratio':         s.get('sortino_ratio', 0),
+        'calmar_ratio':          s.get('calmar_ratio', 0),
+        'worst_rolling_60d_icir': s.get('worst_rolling_60d_icir', -999),
+        'annual_return':         s.get('annual_return', 0),
+        'monthly_win_rate':      s.get('monthly_win_rate', 0),
+        'half_period_consistency': s.get('half_period_consistency', 0),
+        'small_cap_bias_ratio':  s.get('small_cap_bias_ratio', 0),
+        'median_market_cap_bn':  s.get('median_market_cap_bn', 0),
+    }
+
+    # 百分比格式化的指标
+    pct_fmt_keys = {'max_drawdown', 'annual_return', 'annual_cost_drag',
+                    'net_gross_ratio', 'limit_up_fail_rate', 'liquidity_coverage',
+                    'half_period_consistency', 'small_cap_bias_ratio'}
+    plain_fmt_keys = {'ic_positive_pct', 'monthly_win_rate', 'annual_turnover',
+                      'signal_half_life', 'median_market_cap_bn'}
+
+    # 逐项评分
+    total_score = 0
+    max_score = 0
+    layers = {}
+    metrics_detail = {}
+
+    for layer_id in sorted(V2_LAYER_NAMES.keys()):
+        layer_name = V2_LAYER_NAMES[layer_id]
+        layer_metrics = [(k, v) for k, v in NORTH_STAR_TARGETS_V2.items() if v['layer'] == layer_id]
+        layer_score = 0
+        layer_max = 0
+        layer_items = []
+
+        for metric_key, target_info in layer_metrics:
+            current = metric_value_map.get(metric_key)
+            if current is None:
+                continue
+
+            score, grade_str = score_metric_v2(current, target_info)
+            total_score += score
+            max_score += 5
+            layer_score += score
+            layer_max += 5
+
+            # 格式化当前值
+            if metric_key in pct_fmt_keys:
+                formatted = f"{current:.1%}" if abs(current) < 10 else f"{current:.0%}"
+            elif metric_key in plain_fmt_keys:
+                formatted = f"{current:.1f}"
+            else:
+                formatted = f"{current:.3f}"
+
+            item = {
+                'key': metric_key,
+                'display': target_info['display'],
+                'current': current,
+                'formatted': formatted,
+                'score': score,
+                'max_score': 5,
+                'grade': grade_str,
+                'pass_val': target_info['pass'],
+                'target_val': target_info['target'],
+            }
+            layer_items.append(item)
+            metrics_detail[metric_key] = item
+
+        layers[str(layer_id)] = {
+            'name': layer_name,
+            'score': layer_score,
+            'max_score': layer_max,
+            'pct': round(layer_score / layer_max * 100, 1) if layer_max > 0 else 0,
+            'items': layer_items,
+        }
+
+    grade = compute_v2_grade(total_score, max_score) if max_score > 0 else 'D'
+    pct = round(total_score / max_score * 100, 1) if max_score > 0 else 0
+
+    return {
+        'has_data': True,
+        'total_score': total_score,
+        'max_score': max_score,
+        'pct': pct,
+        'grade': grade,
+        'report_days': len(reports),
+        'focus_days': focus_days,
+        'top_n': top_n,
+        'layers': layers,
+        'metrics': metrics_detail,
+    }

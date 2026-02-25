@@ -110,6 +110,53 @@
     </div>
 </div>
 
+<!-- 北极星V2评分卡 -->
+<div class="row mb-4" id="north-star-section" style="display:none;">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header bg-dark text-white">
+                <div class="d-flex justify-content-between align-items-center">
+                    <h5 class="mb-0"><i class="bi bi-star-fill"></i> 北极星 V2 评分卡</h5>
+                    <div id="north-star-badge"></div>
+                </div>
+            </div>
+            <div class="card-body">
+                <div id="north-star-loading" class="text-center py-4">
+                    <div class="spinner-border spinner-border-sm"></div>
+                    <span class="ms-2">计算北极星评分中（首次可能需要30-60秒）...</span>
+                </div>
+                <div id="north-star-error" class="text-center text-muted py-4" style="display:none;">
+                    <i class="bi bi-inbox fs-1"></i>
+                    <p id="north-star-error-msg">暂无评分数据</p>
+                </div>
+                <div id="north-star-content" style="display:none;">
+                    <!-- 顶部汇总 -->
+                    <div class="row mb-3">
+                        <div class="col-md-4 text-center">
+                            <h1 id="ns-total-score" class="display-4 fw-bold mb-0">-</h1>
+                            <p class="text-muted mb-0">总分 / <span id="ns-max-score">105</span></p>
+                        </div>
+                        <div class="col-md-4 text-center">
+                            <div id="ns-grade-display" class="display-4 fw-bold mb-0">-</div>
+                            <p class="text-muted mb-0">综合等级</p>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="progress mt-3" style="height:30px;">
+                                <div id="ns-progress-bar" class="progress-bar" style="width:0%">0%</div>
+                            </div>
+                            <small class="text-muted" id="ns-meta-info"></small>
+                        </div>
+                    </div>
+                    <!-- 分层分数概览 -->
+                    <div class="row g-2 mb-3" id="ns-layer-summary"></div>
+                    <!-- 详细指标表格 -->
+                    <div id="ns-detail-tables"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
 <!-- 训练配置和进度 -->
 <div class="row mb-4">
     <div class="col-12">
@@ -800,6 +847,48 @@ function displayTrainingReport(report) {
         html += `<p class="mt-3 small text-muted"><i class="bi bi-folder"></i> ${report.model_path}</p>`;
     }
 
+    // Evaluation JSON report (v4.0)
+    if (report.source === 'evaluation_json') {
+        html += '<h6>评估指标</h6><ul class="list-group list-group-flush mb-3">';
+        if (report.source_file) {
+            html += `<li class="list-group-item d-flex justify-content-between py-1"><span>数据来源</span><code>${report.source_file}</code></li>`;
+        }
+        if (report.daily_ic_mean !== undefined) {
+            const icClass = report.daily_ic_mean > 0.05 ? 'text-success fw-bold' : (report.daily_ic_mean > 0 ? 'text-success' : 'text-danger');
+            html += `<li class="list-group-item d-flex justify-content-between py-1"><span>Daily IC</span><strong class="${icClass}">${report.daily_ic_mean.toFixed(4)}</strong></li>`;
+        }
+        if (report.ic_ir !== undefined) {
+            html += `<li class="list-group-item d-flex justify-content-between py-1"><span>ICIR</span><strong>${report.ic_ir.toFixed(3)}</strong></li>`;
+        }
+        if (report.ic_positive_pct !== undefined) {
+            html += `<li class="list-group-item d-flex justify-content-between py-1"><span>IC>0%</span><strong>${(report.ic_positive_pct * 100).toFixed(1)}%</strong></li>`;
+        }
+        if (report.top10_excess_return !== undefined) {
+            html += `<li class="list-group-item d-flex justify-content-between py-1"><span>Top10超额</span><strong>${(report.top10_excess_return * 100).toFixed(2)}%</strong></li>`;
+        }
+        if (report.top20_excess_return !== undefined) {
+            html += `<li class="list-group-item d-flex justify-content-between py-1"><span>Top20超额</span><strong>${(report.top20_excess_return * 100).toFixed(2)}%</strong></li>`;
+        }
+        html += '</ul>';
+        $('#training-report').html(html);
+        return;
+    }
+
+    // PKL fallback (v3.8/v3.94/v3.96)
+    if (report.source === 'pkl_fallback') {
+        html += `<div class="alert alert-info mb-3"><i class="bi bi-info-circle"></i> ${report.message}</div>`;
+        html += '<ul class="list-group list-group-flush mb-3">';
+        html += `<li class="list-group-item d-flex justify-content-between py-1"><span>版本</span><strong>${report.version}</strong></li>`;
+        html += `<li class="list-group-item d-flex justify-content-between py-1"><span>最新模型</span><code>${report.latest_model}</code></li>`;
+        html += `<li class="list-group-item d-flex justify-content-between py-1"><span>模型大小</span><strong>${report.size_mb} MB</strong></li>`;
+        html += `<li class="list-group-item d-flex justify-content-between py-1"><span>文件数量</span><strong>${report.model_count}</strong></li>`;
+        const modTime = new Date(report.modified_time).toLocaleString('zh-CN');
+        html += `<li class="list-group-item d-flex justify-content-between py-1"><span>修改时间</span><strong>${modTime}</strong></li>`;
+        html += '</ul>';
+        $('#training-report').html(html);
+        return;
+    }
+
     if (!html) {
         html = '<div class="text-center text-muted py-4"><i class="bi bi-inbox fs-1"></i><p>暂无训练报告</p></div>';
     }
@@ -886,6 +975,7 @@ function displayMetricsChart(versions) {
 
 function showModelDetail(version) {
     $('#feature-version-select').val(version).trigger('change');
+    loadNorthStar(version);
     $('html, body').animate({
         scrollTop: $('#feature-version-select').offset().top - 100
     }, 500);
@@ -1308,6 +1398,152 @@ function monitorTrainingProgress(taskId) {
         $('#progress-status').removeClass('alert-info').addClass('alert-danger')
             .text('连接中断，请检查训练状态');
     };
+}
+
+// ==================== 北极星V2评分卡 ====================
+
+const GRADE_COLORS = {
+    'S': {bg: '#b8860b', text: '#fff', bar: 'bg-warning'},
+    'A+': {bg: '#dc3545', text: '#fff', bar: 'bg-danger'},
+    'A': {bg: '#198754', text: '#fff', bar: 'bg-success'},
+    'B': {bg: '#0d6efd', text: '#fff', bar: 'bg-primary'},
+    'C': {bg: '#fd7e14', text: '#fff', bar: 'bg-warning'},
+    'D': {bg: '#6c757d', text: '#fff', bar: 'bg-secondary'},
+};
+
+function loadNorthStar(version) {
+    $('#north-star-section').show();
+    $('#north-star-loading').show();
+    $('#north-star-error').hide();
+    $('#north-star-content').hide();
+    $('#north-star-badge').html('');
+
+    $.ajax({
+        url: `/api/models/${version}/north_star`,
+        timeout: 120000,  // 2min timeout for first-time computation
+        success: function(response) {
+            $('#north-star-loading').hide();
+            if (response.success && response.north_star) {
+                const ns = response.north_star;
+                if (ns.has_data) {
+                    displayNorthStar(ns, version);
+                } else {
+                    $('#north-star-error').show();
+                    $('#north-star-error-msg').text(ns.error || '暂无评分数据');
+                }
+            } else {
+                $('#north-star-error').show();
+                $('#north-star-error-msg').text(response.error || '获取评分失败');
+            }
+        },
+        error: function(xhr) {
+            $('#north-star-loading').hide();
+            $('#north-star-error').show();
+            $('#north-star-error-msg').text('请求超时或服务器错误');
+        }
+    });
+}
+
+function displayNorthStar(ns, version) {
+    $('#north-star-content').show();
+
+    const gc = GRADE_COLORS[ns.grade] || GRADE_COLORS['D'];
+
+    // Badge in header
+    $('#north-star-badge').html(
+        `<span class="badge fs-6" style="background:${gc.bg};color:${gc.text}">
+            ${ns.grade} ${ns.total_score}/${ns.max_score} (${ns.pct}%)
+        </span>`
+    );
+
+    // Total score
+    $('#ns-total-score').text(ns.total_score).css('color', gc.bg);
+    $('#ns-max-score').text(ns.max_score);
+
+    // Grade display
+    $('#ns-grade-display').html(
+        `<span style="color:${gc.bg};font-size:3rem">${ns.grade}</span>`
+    );
+
+    // Progress bar
+    $('#ns-progress-bar')
+        .css('width', ns.pct + '%')
+        .text(ns.pct + '%')
+        .removeClass('bg-success bg-warning bg-danger bg-primary bg-secondary bg-info')
+        .addClass(gc.bar);
+
+    // Meta info
+    $('#ns-meta-info').text(
+        `${version} | ${ns.report_days}天报告 | Top${ns.top_n} | ${ns.focus_days}天持仓`
+    );
+
+    // Layer summary cards
+    let layerHtml = '';
+    const layerColors = {'1': 'primary', '2': 'info', '3': 'warning', '4': 'success'};
+    for (const [layerId, layer] of Object.entries(ns.layers)) {
+        const lc = layerColors[layerId] || 'secondary';
+        layerHtml += `
+            <div class="col-md-3">
+                <div class="card border-${lc}">
+                    <div class="card-body py-2 text-center">
+                        <small class="text-muted">L${layerId} ${layer.name}</small>
+                        <h5 class="mb-0">${layer.score}/${layer.max_score}
+                            <small class="text-muted">(${layer.pct}%)</small>
+                        </h5>
+                    </div>
+                </div>
+            </div>
+        `;
+    }
+    $('#ns-layer-summary').html(layerHtml);
+
+    // Detail tables per layer
+    let detailHtml = '';
+    for (const [layerId, layer] of Object.entries(ns.layers)) {
+        const lc = layerColors[layerId] || 'secondary';
+        detailHtml += `
+            <h6 class="mt-3 mb-2">
+                <span class="badge bg-${lc}">L${layerId}</span> ${layer.name}
+                <small class="text-muted ms-2">${layer.score}/${layer.max_score}</small>
+            </h6>
+            <table class="table table-sm table-bordered mb-2">
+                <thead class="table-light">
+                    <tr>
+                        <th style="width:20%">指标</th>
+                        <th style="width:15%">当前值</th>
+                        <th style="width:10%">得分</th>
+                        <th style="width:40%">进度</th>
+                        <th style="width:15%">评级</th>
+                    </tr>
+                </thead>
+                <tbody>
+        `;
+
+        for (const item of layer.items) {
+            const scorePct = (item.score / item.max_score * 100).toFixed(0);
+            const barColor = item.score >= 4 ? 'bg-success' :
+                             item.score >= 3 ? 'bg-primary' :
+                             item.score >= 2 ? 'bg-info' :
+                             item.score >= 1 ? 'bg-warning' : 'bg-danger';
+
+            detailHtml += `
+                <tr>
+                    <td>${item.display}</td>
+                    <td class="text-end"><strong>${item.formatted}</strong></td>
+                    <td class="text-center">${item.score}/${item.max_score}</td>
+                    <td>
+                        <div class="progress" style="height:18px">
+                            <div class="progress-bar ${barColor}" style="width:${scorePct}%">${item.score}</div>
+                        </div>
+                    </td>
+                    <td class="text-center"><small>${item.grade}</small></td>
+                </tr>
+            `;
+        }
+
+        detailHtml += '</tbody></table>';
+    }
+    $('#ns-detail-tables').html(detailHtml);
 }
 </script>
 {% endblock %}
