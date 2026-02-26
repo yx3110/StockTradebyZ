@@ -146,9 +146,14 @@
             <div class="card-body py-2">
                 <div class="d-flex justify-content-between align-items-center mb-1">
                     <h6 class="card-title mb-0"><i class="bi bi-graph-down"></i> 回撤</h6>
-                    <button class="btn btn-outline-primary btn-sm" id="btn-risk-update" title="更新风控">
-                        <i class="bi bi-arrow-repeat"></i> 更新风控
-                    </button>
+                    <div class="btn-group btn-group-sm">
+                        <button class="btn btn-outline-primary" id="btn-risk-update" title="更新风控">
+                            <i class="bi bi-arrow-repeat"></i> 风控
+                        </button>
+                        <button class="btn btn-primary" id="btn-daily-risk" title="一键日常: 建议+风控+评分">
+                            <i class="bi bi-lightning"></i> 日常
+                        </button>
+                    </div>
                 </div>
                 <span class="fs-5 fw-bold" id="risk-drawdown">-</span>
             </div>
@@ -401,9 +406,14 @@
             <div class="card-header bg-success text-white">
                 <div class="d-flex justify-content-between align-items-center">
                     <h5 class="mb-0"><i class="bi bi-journal-text"></i> 交易记录</h5>
-                    <button class="btn btn-light btn-sm" data-bs-toggle="modal" data-bs-target="#addTradeModal">
-                        <i class="bi bi-plus-lg"></i> 添加记录
-                    </button>
+                    <div>
+                        <button class="btn btn-info btn-sm me-2" data-bs-toggle="modal" data-bs-target="#tradeImportModal">
+                            <i class="bi bi-upload"></i> 导入成交
+                        </button>
+                        <button class="btn btn-light btn-sm" data-bs-toggle="modal" data-bs-target="#addTradeModal">
+                            <i class="bi bi-plus-lg"></i> 添加记录
+                        </button>
+                    </div>
                 </div>
             </div>
             <div class="card-body">
@@ -937,6 +947,7 @@ $(document).ready(function() {
 
     // 风控事件
     $('#btn-risk-update').click(runRiskUpdate);
+    $('#btn-daily-risk').click(runDailyRisk);
     $('#btn-prevalidate').click(prevalidatePosition);
 
     // 导入事件
@@ -1130,6 +1141,22 @@ function renderPositions(positions) {
         const plClass = (pos.profit_loss_pct || 0) >= 0 ? 'text-danger' : 'text-success';
         const plIcon = (pos.profit_loss_pct || 0) >= 0 ? '▲' : '▼';
 
+        // Position health indicator
+        let healthBadge = '';
+        if (pos.stop_loss_price && pos.current_price) {
+            const slDist = (pos.current_price - pos.stop_loss_price) / pos.current_price;
+            const tpDist = pos.take_profit_price ? (pos.take_profit_price - pos.current_price) / pos.current_price : 1;
+            if (pos.current_price <= pos.stop_loss_price) {
+                healthBadge = '<span class="badge bg-danger" title="已触发止损">SL!</span>';
+            } else if (slDist < 0.03) {
+                healthBadge = '<span class="badge bg-warning text-dark" title="接近止损">SL</span>';
+            } else if (tpDist < 0.02) {
+                healthBadge = '<span class="badge bg-info" title="接近止盈">TP</span>';
+            } else if (pos.target_weight_pct && pos.target_weight_pct > 0) {
+                healthBadge = '<span class="badge bg-success" title="正常" style="opacity:0.6">OK</span>';
+            }
+        }
+
         // 生成分组下拉菜单选项
         let groupOptions = '<option value="">未分组</option>';
         groupsData.forEach(g => {
@@ -1164,7 +1191,7 @@ function renderPositions(positions) {
                         </ul>
                     </div>
                 </td>
-                <td><code>${pos.code}</code></td>
+                <td><code>${pos.code}</code> ${healthBadge}</td>
                 <td>${pos.name || '-'}</td>
                 <td>${pos.quantity?.toLocaleString() || 0}</td>
                 <td>${pos.avg_cost?.toFixed(2) || '-'}</td>
@@ -2712,6 +2739,81 @@ function runRiskUpdate() {
         error: function(xhr) {
             hideLoading();
             showToast(xhr.responseJSON?.error || '风控更新失败', 'error');
+        }
+    });
+}
+
+function runDailyRisk() {
+    // 一键日常风控: 生成建议 → 风控更新 → PPS评分
+    showLoading('一键日常风控进行中...');
+    let step = 1;
+
+    function updateProgress(msg) {
+        showLoading(`[${step}/3] ${msg}`);
+        step++;
+    }
+
+    // Step 1: 生成操作建议
+    updateProgress('生成操作建议...');
+    $.ajax({
+        url: '/api/portfolio/recommendations/generate',
+        method: 'POST',
+        timeout: 120000,
+        success: function(res1) {
+            if (res1.success) {
+                showToast(`建议已生成: ${res1.recommendations?.length || 0}条`, 'success');
+                loadRecommendations();
+            }
+            // Step 2: 风控更新
+            updateProgress('更新风控引擎...');
+            $.ajax({
+                url: '/api/portfolio/risk/update',
+                method: 'POST',
+                timeout: 60000,
+                success: function(res2) {
+                    if (res2.success) {
+                        loadRiskState();
+                        loadRebalanceSuggestions();
+                        loadPositions();
+                        const triggered = res2.result?.triggered_stops || [];
+                        if (triggered.length > 0) {
+                            showToast(`止损触发: ${triggered.map(t=>t.code).join(', ')}`, 'warning');
+                        }
+                    }
+                    // Step 3: PPS评分
+                    updateProgress('计算PPS评分...');
+                    $.ajax({
+                        url: '/api/portfolio/score',
+                        method: 'POST',
+                        contentType: 'application/json',
+                        data: JSON.stringify({}),
+                        timeout: 120000,
+                        success: function(res3) {
+                            hideLoading();
+                            if (res3.success && res3.score) {
+                                ppsData = res3.score;
+                                renderPPS(ppsData);
+                                updatePPSQuickCard(ppsData);
+                                showToast(`日常风控完成! PPS: ${res3.score.total_score}/100 ${res3.score.grade}`, 'success');
+                            } else {
+                                showToast('日常风控完成 (PPS计算跳过)', 'info');
+                            }
+                        },
+                        error: function() {
+                            hideLoading();
+                            showToast('日常风控完成 (PPS计算失败)', 'warning');
+                        }
+                    });
+                },
+                error: function() {
+                    hideLoading();
+                    showToast('风控更新失败', 'error');
+                }
+            });
+        },
+        error: function() {
+            hideLoading();
+            showToast('建议生成失败', 'error');
         }
     });
 }
