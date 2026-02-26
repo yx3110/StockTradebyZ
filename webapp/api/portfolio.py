@@ -12,11 +12,13 @@ from core.database import DatabaseManager
 from core.position_analyzer import PositionAnalyzer
 from core.portfolio_importer import parse_csv, parse_web_paste, parse_html_table, merge_positions
 from core.portfolio_scorer import PortfolioScorer
+from core.portfolio_manager import PortfolioManager
 
 logger = logging.getLogger(__name__)
 
 # 全局PositionAnalyzer实例
 _position_analyzer = None
+_portfolio_manager = None
 
 def get_position_analyzer():
     """获取PositionAnalyzer单例"""
@@ -26,6 +28,17 @@ def get_position_analyzer():
         stock_db_path = current_app.config['STOCK_DB_PATH']
         _position_analyzer = PositionAnalyzer(stock_db_path)
     return _position_analyzer
+
+def get_portfolio_manager():
+    """获取PortfolioManager单例"""
+    global _portfolio_manager
+    if _portfolio_manager is None:
+        from flask import current_app
+        _portfolio_manager = PortfolioManager(
+            current_app.config['STOCK_DB_PATH'],
+            current_app.config['WEBAPP_DB_PATH']
+        )
+    return _portfolio_manager
 
 portfolio_bp = Blueprint('portfolio', __name__)
 
@@ -143,7 +156,46 @@ def add_position():
         data['current_price'] = current_price or data['avg_cost']
         data['first_buy_date'] = data.get('first_buy_date', datetime.now().strftime('%Y-%m-%d'))
 
+        # 质量门控检查 (非force模式)
+        if not data.get('force'):
+            try:
+                manager = get_portfolio_manager()
+                positions = db.get_all_positions()
+                total_capital = float(db.get_portfolio_setting('total_capital') or 0)
+                validation = manager.validate_new_position(
+                    data['code'], data['quantity'], data['avg_cost'],
+                    total_capital, positions)
+
+                if validation.get('blocks'):
+                    return jsonify({
+                        'success': False,
+                        'error': '质量门控未通过',
+                        'validation': validation,
+                    }), 400
+            except Exception as e:
+                logger.warning(f'质量门控检查异常(不阻止建仓): {e}')
+                validation = {}
+        else:
+            validation = {}
+
         position_id = db.add_position(data)
+
+        # 自动计算并设置SL/TP
+        try:
+            manager = get_portfolio_manager()
+            risk = manager.compute_initial_risk_levels(
+                data['code'], data['avg_cost'], data['current_price'])
+            ml_score = validation.get('ml_score')
+            db.update_position_risk(
+                position_id,
+                stop_loss_price=risk['stop_loss'],
+                take_profit_price=risk['take_profit'],
+                trailing_stop_price=risk['trailing_stop'],
+                ml_score_at_entry=ml_score,
+                last_risk_update=datetime.now().isoformat(),
+            )
+        except Exception as e:
+            logger.warning(f'自动SL/TP设置异常: {e}')
 
         # 记录交易
         trade_data = {
@@ -158,10 +210,16 @@ def add_position():
         }
         db.add_trade(trade_data)
 
+        msg = f'成功添加持仓: {data["code"]} {name}'
+        warnings = validation.get('warnings', [])
+        if warnings:
+            msg += f' (警告: {"; ".join(warnings)})'
+
         return jsonify({
             'success': True,
             'position_id': position_id,
-            'message': f'成功添加持仓: {data["code"]} {name}'
+            'message': msg,
+            'validation': validation,
         })
 
     except Exception as e:
@@ -252,11 +310,43 @@ def add_to_position(position_id: int):
         new_quantity = old_quantity + add_quantity
         new_avg_cost = (old_quantity * old_cost + add_quantity * add_price) / new_quantity
 
+        # 仓位比例检查 (加仓)
+        warnings = []
+        total_capital = float(db.get_portfolio_setting('total_capital') or 0)
+        if total_capital > 0:
+            new_value = new_quantity * add_price
+            weight = new_value / total_capital
+            if weight > 0.10 and not data.get('force'):
+                return jsonify({
+                    'success': False,
+                    'error': f'加仓后仓位占比 {weight:.1%} 超过10%上限'
+                }), 400
+            elif weight > 0.08:
+                warnings.append(f'加仓后仓位占比 {weight:.1%} 接近10%上限')
+
         # 更新持仓
         db.update_position(position_id, {
             'quantity': new_quantity,
             'avg_cost': new_avg_cost
         })
+
+        # 重新计算SL/TP
+        try:
+            manager = get_portfolio_manager()
+            current_price = db.get_stock_latest_price(
+                position['code'].split('.')[0] if '.' in position['code'] else position['code']
+            ) or add_price
+            risk = manager.compute_initial_risk_levels(
+                position['code'], new_avg_cost, current_price)
+            db.update_position_risk(
+                position_id,
+                stop_loss_price=risk['stop_loss'],
+                take_profit_price=risk['take_profit'],
+                trailing_stop_price=risk['trailing_stop'],
+                last_risk_update=datetime.now().isoformat(),
+            )
+        except Exception as e:
+            logger.warning(f'加仓后SL/TP更新异常: {e}')
 
         # 记录交易
         trade_data = {
@@ -271,9 +361,14 @@ def add_to_position(position_id: int):
         }
         db.add_trade(trade_data)
 
+        msg = f'成功加仓 {add_quantity} 股，新均价 {new_avg_cost:.2f}'
+        if warnings:
+            msg += f' (警告: {"; ".join(warnings)})'
+
         return jsonify({
             'success': True,
-            'message': f'成功加仓 {add_quantity} 股，新均价 {new_avg_cost:.2f}'
+            'message': msg,
+            'warnings': warnings,
         })
 
     except Exception as e:
@@ -1490,4 +1585,113 @@ def set_capital_settings():
         return jsonify({'success': True, 'message': '资金设置已保存'})
     except Exception as e:
         logger.error(f'设置资金失败: {e}', exc_info=True)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+# ==================== 风控管理 API ====================
+
+@portfolio_bp.route('/risk/update', methods=['POST'])
+def risk_update():
+    """一键运行风控更新 (trailing stops + risk parity + regime + rebalance)"""
+    try:
+        db = get_db_manager()
+        manager = get_portfolio_manager()
+        positions = db.get_all_positions()
+
+        if not positions:
+            return jsonify({'success': True, 'message': '当前无持仓', 'result': {}})
+
+        total_capital = float(db.get_portfolio_setting('total_capital') or 0)
+        cash_amount = float(db.get_portfolio_setting('cash_amount') or 0)
+        trades = db.get_all_trades(limit=200)
+        snapshots = db.get_position_snapshots(days=60)
+
+        result = manager.run_daily_risk_update(
+            db, positions, total_capital, cash_amount, trades, snapshots)
+
+        return jsonify({
+            'success': True,
+            'message': f'风控更新完成: {result["regime"]["regime"]}市况, '
+                       f'{len(result["triggered_stops"])}只触发止损, '
+                       f'{len(result["suggestions"])}条再平衡建议',
+            'result': {
+                'regime': result['regime'],
+                'triggered_stops': result['triggered_stops'],
+                'suggestions_count': len(result['suggestions']),
+                'timestamp': result['timestamp'],
+            }
+        })
+    except Exception as e:
+        logger.error(f'风控更新失败: {e}', exc_info=True)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@portfolio_bp.route('/risk/state', methods=['GET'])
+def risk_state():
+    """获取当前风控状态"""
+    try:
+        db = get_db_manager()
+        state = db.get_portfolio_risk_state()
+        return jsonify({'success': True, 'state': state})
+    except Exception as e:
+        logger.error(f'获取风控状态失败: {e}', exc_info=True)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@portfolio_bp.route('/risk/validate', methods=['POST'])
+def risk_validate():
+    """建仓前预校验"""
+    try:
+        data = request.get_json() or {}
+        code = data.get('code', '')
+        quantity = int(data.get('quantity', 0))
+        avg_cost = float(data.get('avg_cost', 0))
+
+        if not code or quantity <= 0 or avg_cost <= 0:
+            return jsonify({'success': False, 'error': '缺少code/quantity/avg_cost'}), 400
+
+        db = get_db_manager()
+        manager = get_portfolio_manager()
+        positions = db.get_all_positions()
+        total_capital = float(db.get_portfolio_setting('total_capital') or 0)
+
+        validation = manager.validate_new_position(
+            code, quantity, avg_cost, total_capital, positions)
+
+        return jsonify({'success': True, 'validation': validation})
+    except Exception as e:
+        logger.error(f'建仓预校验失败: {e}', exc_info=True)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@portfolio_bp.route('/rebalance/suggestions', methods=['GET'])
+def get_rebalance_suggestions():
+    """获取再平衡建议"""
+    try:
+        db = get_db_manager()
+        status = request.args.get('status')  # None = all
+        suggestions = db.get_rebalance_suggestions(status=status)
+        return jsonify({'success': True, 'suggestions': suggestions})
+    except Exception as e:
+        logger.error(f'获取再平衡建议失败: {e}', exc_info=True)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@portfolio_bp.route('/rebalance/suggestions/<int:suggestion_id>', methods=['PUT'])
+def update_rebalance_suggestion(suggestion_id: int):
+    """标记再平衡建议状态 (executed/dismissed)"""
+    try:
+        data = request.get_json() or {}
+        status = data.get('status', 'dismissed')
+        if status not in ('executed', 'dismissed', 'pending'):
+            return jsonify({'success': False, 'error': '无效状态'}), 400
+
+        db = get_db_manager()
+        success = db.update_rebalance_suggestion(suggestion_id, status)
+        if success:
+            return jsonify({'success': True, 'message': f'建议已标记为{status}'})
+        else:
+            return jsonify({'success': False, 'error': '建议不存在'}), 404
+    except Exception as e:
+        logger.error(f'更新再平衡建议失败: {e}', exc_info=True)
         return jsonify({'success': False, 'error': str(e)}), 500

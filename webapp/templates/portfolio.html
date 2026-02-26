@@ -109,6 +109,53 @@
     </div>
 </div>
 
+<!-- 风控仪表盘 -->
+<div class="row g-3 mb-4" id="risk-dashboard" style="display:none">
+    <div class="col-md-3">
+        <div class="card h-100">
+            <div class="card-body py-2 text-center">
+                <h6 class="card-title mb-1"><i class="bi bi-activity"></i> 市况</h6>
+                <span class="badge fs-6" id="risk-regime-badge">-</span>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card h-100">
+            <div class="card-body py-2">
+                <h6 class="card-title mb-1"><i class="bi bi-bar-chart"></i> 仓位</h6>
+                <div class="d-flex align-items-center">
+                    <small class="me-1" id="risk-exposure-label">-</small>
+                    <div class="progress flex-grow-1" style="height:8px">
+                        <div class="progress-bar" id="risk-exposure-bar" style="width:0%"></div>
+                    </div>
+                </div>
+                <small class="text-muted" id="risk-exposure-target">目标: -</small>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card h-100">
+            <div class="card-body py-2 text-center">
+                <h6 class="card-title mb-1"><i class="bi bi-shield-exclamation"></i> 熔断</h6>
+                <span class="fs-5 fw-bold" id="risk-circuit-breaker">OFF</span>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card h-100">
+            <div class="card-body py-2">
+                <div class="d-flex justify-content-between align-items-center mb-1">
+                    <h6 class="card-title mb-0"><i class="bi bi-graph-down"></i> 回撤</h6>
+                    <button class="btn btn-outline-primary btn-sm" id="btn-risk-update" title="更新风控">
+                        <i class="bi bi-arrow-repeat"></i> 更新风控
+                    </button>
+                </div>
+                <span class="fs-5 fw-bold" id="risk-drawdown">-</span>
+            </div>
+        </div>
+    </div>
+</div>
+
 <!-- 标签页导航 -->
 <ul class="nav nav-tabs mb-4" id="portfolioTabs" role="tablist">
     <li class="nav-item">
@@ -185,12 +232,14 @@
                                 <th data-sort="market_value" data-sort-type="number" class="sortable">市值 <i class="bi bi-arrow-down-up sort-icon"></i></th>
                                 <th data-sort="profit_loss" data-sort-type="number" class="sortable">盈亏 <i class="bi bi-arrow-down-up sort-icon"></i></th>
                                 <th data-sort="profit_loss_pct" data-sort-type="number" class="sortable">盈亏% <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th data-sort="stop_loss_price" data-sort-type="number" class="sortable">止损 <i class="bi bi-arrow-down-up sort-icon"></i></th>
+                                <th data-sort="trailing_stop_price" data-sort-type="number" class="sortable">追踪止损 <i class="bi bi-arrow-down-up sort-icon"></i></th>
                                 <th>操作</th>
                             </tr>
                         </thead>
                         <tbody id="positions-tbody">
                             <tr>
-                                <td colspan="10" class="text-center text-muted py-4">
+                                <td colspan="12" class="text-center text-muted py-4">
                                     <i class="bi bi-inbox fs-1"></i>
                                     <p>暂无持仓，点击"添加持仓"开始记录</p>
                                 </td>
@@ -302,6 +351,15 @@
                             </tr>
                         </tbody>
                     </table>
+                </div>
+
+                <!-- 再平衡建议 -->
+                <div class="mt-4" id="rebalance-section" style="display:none">
+                    <h6 class="text-info mb-2">
+                        <i class="bi bi-arrow-repeat"></i> 再平衡建议
+                        <small class="text-muted ms-2" id="rebalance-count"></small>
+                    </h6>
+                    <div id="rebalance-list"></div>
                 </div>
 
                 <!-- 开仓建议 (来自选股报告) -->
@@ -568,9 +626,14 @@
                         <label class="form-label">备注</label>
                         <textarea class="form-control" id="pos-notes" rows="2"></textarea>
                     </div>
+                    <!-- 质量门控预校验结果 -->
+                    <div id="pos-validation-result" style="display:none"></div>
                 </form>
             </div>
             <div class="modal-footer">
+                <button type="button" class="btn btn-outline-info btn-sm me-auto" id="btn-prevalidate">
+                    <i class="bi bi-shield-check"></i> 预校验
+                </button>
                 <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
                 <button type="button" class="btn btn-primary" id="btn-save-position">保存</button>
             </div>
@@ -857,6 +920,8 @@ $(document).ready(function() {
     loadGroups().then(() => {
         loadPositions();
     });
+    loadRiskState();
+    loadRebalanceSuggestions();
 
     // 设置默认日期
     $('#trade-date').val(new Date().toISOString().split('T')[0]);
@@ -869,6 +934,10 @@ $(document).ready(function() {
     $('#btn-confirm-adjust').click(confirmAdjust);
     $('#btn-save-trade').click(saveTrade);
     $('#btn-add-group').click(addGroup);
+
+    // 风控事件
+    $('#btn-risk-update').click(runRiskUpdate);
+    $('#btn-prevalidate').click(prevalidatePosition);
 
     // 导入事件
     $('#btn-parse-csv').click(parseImportCSV);
@@ -1048,7 +1117,7 @@ function renderPositions(positions) {
     if (!positions || positions.length === 0) {
         tbody.html(`
             <tr>
-                <td colspan="10" class="text-center text-muted py-4">
+                <td colspan="12" class="text-center text-muted py-4">
                     <i class="bi bi-inbox fs-1"></i>
                     <p>暂无持仓，点击"添加持仓"开始记录</p>
                 </td>
@@ -1103,6 +1172,8 @@ function renderPositions(positions) {
                 <td>${formatCurrency(pos.market_value)}</td>
                 <td class="${plClass}">${formatCurrency(pos.profit_loss)}</td>
                 <td class="${plClass}">${plIcon} ${(pos.profit_loss_pct || 0).toFixed(2)}%</td>
+                <td class="${pos.stop_loss_price && pos.current_price && pos.current_price <= pos.stop_loss_price * 1.03 ? 'text-danger fw-bold' : 'text-danger'}">${pos.stop_loss_price?.toFixed(2) || '-'}</td>
+                <td class="${pos.trailing_stop_price && pos.current_price && pos.current_price <= pos.trailing_stop_price * 1.03 ? 'text-danger fw-bold' : ''}">${pos.trailing_stop_price?.toFixed(2) || '-'}</td>
                 <td>
                     <div class="btn-group btn-group-sm">
                         <button class="btn btn-outline-success" onclick="openAdjustModal(${pos.id}, 'add')">
@@ -1186,18 +1257,89 @@ function savePosition() {
         data: JSON.stringify(data),
         success: function(response) {
             if (response.success) {
-                showToast(response.message, 'success');
+                let msg = response.message;
+                if (response.validation?.warnings?.length) {
+                    showToast(msg, 'warning');
+                } else {
+                    showToast(msg, 'success');
+                }
                 $('#addPositionModal').modal('hide');
                 $('#add-position-form')[0].reset();
+                $('#pos-validation-result').hide();
                 loadPositions();
+                loadRiskState();
             } else {
+                // 质量门控阻止
+                if (response.validation) {
+                    renderValidationResult(response.validation);
+                }
                 showToast(response.error, 'error');
             }
         },
         error: function(xhr) {
-            showToast(xhr.responseJSON?.error || '添加失败', 'error');
+            const resp = xhr.responseJSON;
+            if (resp?.validation) {
+                renderValidationResult(resp.validation);
+            }
+            showToast(resp?.error || '添加失败', 'error');
         }
     });
+}
+
+function prevalidatePosition() {
+    const code = $('#pos-code').val().trim();
+    const quantity = parseInt($('#pos-quantity').val()) || 0;
+    const avg_cost = parseFloat($('#pos-cost').val()) || 0;
+
+    if (!code) { showToast('请先输入股票代码', 'warning'); return; }
+
+    $.ajax({
+        url: '/api/portfolio/risk/validate',
+        method: 'POST',
+        contentType: 'application/json',
+        data: JSON.stringify({ code, quantity: quantity || 100, avg_cost: avg_cost || 10 }),
+        success: function(response) {
+            if (response.success && response.validation) {
+                renderValidationResult(response.validation);
+            }
+        },
+        error: function(xhr) {
+            showToast('预校验失败', 'error');
+        }
+    });
+}
+
+function renderValidationResult(v) {
+    const container = $('#pos-validation-result');
+    container.empty().show();
+
+    let html = '';
+    // ML评分
+    if (v.ml_score != null) {
+        const mlClass = v.ml_score >= 60 ? 'text-danger' : (v.ml_score >= 45 ? 'text-warning' : 'text-success');
+        html += `<div class="mb-1"><small>ML评分: <strong class="${mlClass}">${v.ml_score.toFixed(1)}</strong> | 行业: ${v.industry || '-'}</small></div>`;
+    }
+    // SL/TP
+    if (v.suggested_sl) {
+        html += `<div class="mb-1"><small>建议止损: <span class="text-danger">${v.suggested_sl.toFixed(2)}</span> | 止盈: <span class="text-success">${v.suggested_tp?.toFixed(2) || '-'}</span></small></div>`;
+    }
+    // Blocks
+    if (v.blocks?.length) {
+        v.blocks.forEach(b => {
+            html += `<div class="alert alert-danger py-1 px-2 mb-1 small"><i class="bi bi-x-circle"></i> ${b}</div>`;
+        });
+    }
+    // Warnings
+    if (v.warnings?.length) {
+        v.warnings.forEach(w => {
+            html += `<div class="alert alert-warning py-1 px-2 mb-1 small"><i class="bi bi-exclamation-triangle"></i> ${w}</div>`;
+        });
+    }
+    if (!v.blocks?.length && !v.warnings?.length) {
+        html += `<div class="alert alert-success py-1 px-2 mb-1 small"><i class="bi bi-check-circle"></i> 质量门控通过</div>`;
+    }
+
+    container.html(html);
 }
 
 function openAdjustModal(positionId, action) {
@@ -2496,6 +2638,153 @@ function formatMetricValue(value, unit, direction) {
         return Math.abs(value) >= 100 ? value.toFixed(0) : value.toFixed(1);
     }
     return String(value);
+}
+
+// ==================== 风控仪表盘 ====================
+
+function loadRiskState() {
+    $.ajax({
+        url: '/api/portfolio/risk/state',
+        success: function(response) {
+            if (response.success && response.state) {
+                renderRiskDashboard(response.state);
+            }
+        }
+    });
+}
+
+function renderRiskDashboard(state) {
+    if (!state) return;
+    $('#risk-dashboard').show();
+
+    // 市况徽章
+    const regimeLabels = {'bull': '牛市', 'neutral': '震荡', 'bear': '熊市'};
+    const regimeColors = {'bull': 'bg-success', 'neutral': 'bg-warning text-dark', 'bear': 'bg-danger'};
+    const regime = state.market_regime || 'neutral';
+    $('#risk-regime-badge')
+        .attr('class', 'badge fs-6 ' + (regimeColors[regime] || 'bg-secondary'))
+        .text(regimeLabels[regime] || regime);
+
+    // 仓位进度条
+    const details = state.details || {};
+    const currentExp = details.current_exposure_pct || 0;
+    const targetExp = state.target_exposure_pct || 70;
+    const expColor = Math.abs(currentExp - targetExp) > 15 ? 'bg-danger' : 'bg-primary';
+    $('#risk-exposure-label').text(currentExp.toFixed(0) + '%');
+    $('#risk-exposure-bar').css('width', Math.min(currentExp, 100) + '%').attr('class', 'progress-bar ' + expColor);
+    $('#risk-exposure-target').text('目标: ' + targetExp.toFixed(0) + '%');
+
+    // 熔断状态
+    const cb = state.circuit_breaker_level || 0;
+    const cbLabels = {0: 'OFF', 1: 'L1 警戒', 2: 'L2 熔断'};
+    const cbColors = {0: 'text-success', 1: 'text-warning', 2: 'text-danger'};
+    $('#risk-circuit-breaker').attr('class', 'fs-5 fw-bold ' + cbColors[cb]).text(cbLabels[cb]);
+
+    // 回撤
+    const drawdown = details.drawdown || 0;
+    const ddPct = (drawdown * 100).toFixed(1) + '%';
+    const ddColor = drawdown < -0.10 ? 'text-danger' : (drawdown < -0.05 ? 'text-warning' : 'text-success');
+    $('#risk-drawdown').attr('class', 'fs-5 fw-bold ' + ddColor).text(ddPct);
+}
+
+function runRiskUpdate() {
+    showLoading('正在更新风控...');
+    $.ajax({
+        url: '/api/portfolio/risk/update',
+        method: 'POST',
+        success: function(response) {
+            hideLoading();
+            if (response.success) {
+                showToast(response.message, 'success');
+                loadRiskState();
+                loadRebalanceSuggestions();
+                loadPositions();  // 刷新SL/TP列
+                // 触发止损提醒
+                const triggered = response.result?.triggered_stops || [];
+                if (triggered.length > 0) {
+                    const codes = triggered.map(t => t.code).join(', ');
+                    showToast(`止损触发: ${codes}`, 'warning');
+                }
+            } else {
+                showToast(response.error, 'error');
+            }
+        },
+        error: function(xhr) {
+            hideLoading();
+            showToast(xhr.responseJSON?.error || '风控更新失败', 'error');
+        }
+    });
+}
+
+// ==================== 再平衡建议 ====================
+
+function loadRebalanceSuggestions() {
+    $.ajax({
+        url: '/api/portfolio/rebalance/suggestions?status=pending',
+        success: function(response) {
+            if (response.success) {
+                renderRebalanceSuggestions(response.suggestions || []);
+            }
+        }
+    });
+}
+
+function renderRebalanceSuggestions(suggestions) {
+    const section = $('#rebalance-section');
+    const list = $('#rebalance-list');
+    list.empty();
+
+    if (!suggestions || !suggestions.length) {
+        section.hide();
+        return;
+    }
+    section.show();
+    $('#rebalance-count').text(`(${suggestions.length}条)`);
+
+    const typeLabels = {
+        'stale_exit': '信号过期', 'weight_rebalance': '权重漂移',
+        'sector_reduce': '行业超配', 'quality_exit': '质量淘汰'
+    };
+    const typeColors = {
+        'stale_exit': 'warning', 'weight_rebalance': 'info',
+        'sector_reduce': 'danger', 'quality_exit': 'danger'
+    };
+
+    suggestions.forEach(function(s) {
+        const label = typeLabels[s.suggestion_type] || s.suggestion_type;
+        const color = typeColors[s.suggestion_type] || 'secondary';
+        list.append(`
+            <div class="alert alert-${color} py-2 px-3 mb-2 d-flex align-items-center">
+                <span class="badge bg-${color} me-2">${label}</span>
+                <small class="flex-grow-1">
+                    ${s.code ? '<code>' + s.code + '</code> ' : ''}${s.reason}
+                </small>
+                <div class="btn-group btn-group-sm ms-2">
+                    <button class="btn btn-outline-success btn-sm" onclick="updateSuggestion(${s.id}, 'executed')" title="已执行">
+                        <i class="bi bi-check"></i>
+                    </button>
+                    <button class="btn btn-outline-secondary btn-sm" onclick="updateSuggestion(${s.id}, 'dismissed')" title="忽略">
+                        <i class="bi bi-x"></i>
+                    </button>
+                </div>
+            </div>
+        `);
+    });
+}
+
+function updateSuggestion(id, status) {
+    $.ajax({
+        url: '/api/portfolio/rebalance/suggestions/' + id,
+        method: 'PUT',
+        contentType: 'application/json',
+        data: JSON.stringify({ status: status }),
+        success: function(response) {
+            if (response.success) {
+                showToast(response.message, 'success');
+                loadRebalanceSuggestions();
+            }
+        }
+    });
 }
 
 function renderImprovements(improvements) {

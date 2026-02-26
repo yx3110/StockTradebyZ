@@ -561,9 +561,13 @@ class PortfolioScorer:
         """止损覆盖率 (%)"""
         if not positions:
             return 0.0
-        # Check from analysis results
         sl_set = 0
         for p in positions:
+            # 优先检查positions表的stop_loss_price (自动风控设置)
+            if p.get('stop_loss_price'):
+                sl_set += 1
+                continue
+            # Fallback: 检查analysis_positions
             code = p.get('code', '')
             for ap in analysis_positions:
                 if ap.get('code') == code and ap.get('stop_loss_price'):
@@ -674,6 +678,11 @@ class PortfolioScorer:
             return 0.0
         both_set = 0
         for p in positions:
+            # 优先检查positions表的SL+TP (自动风控设置)
+            if p.get('stop_loss_price') and p.get('take_profit_price'):
+                both_set += 1
+                continue
+            # Fallback: 检查analysis_positions
             code = p.get('code', '')
             for ap in analysis_positions:
                 if ap.get('code') == code:

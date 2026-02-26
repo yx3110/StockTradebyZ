@@ -140,6 +140,21 @@ class DatabaseManager:
             except:
                 pass  # 列已存在
 
+            # 为已有的positions表添加风控列（如果不存在）
+            risk_columns = [
+                ('stop_loss_price', 'REAL'),
+                ('take_profit_price', 'REAL'),
+                ('trailing_stop_price', 'REAL'),
+                ('target_weight_pct', 'REAL'),
+                ('ml_score_at_entry', 'REAL'),
+                ('last_risk_update', 'DATETIME'),
+            ]
+            for col, coltype in risk_columns:
+                try:
+                    cursor.execute(f'ALTER TABLE positions ADD COLUMN {col} {coltype}')
+                except:
+                    pass  # 列已存在
+
             # 交易记录表
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS trades (
@@ -259,8 +274,37 @@ class DatabaseManager:
                 )
             ''')
 
+            # 组合风控状态表
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS portfolio_risk_state (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    state_date DATE NOT NULL,
+                    market_regime TEXT,
+                    target_exposure_pct REAL,
+                    circuit_breaker_level INTEGER DEFAULT 0,
+                    peak_portfolio_value REAL,
+                    details TEXT,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(state_date)
+                )
+            ''')
+
+            # 再平衡建议表
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS rebalance_suggestions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    suggestion_date DATE NOT NULL,
+                    suggestion_type TEXT NOT NULL,
+                    code TEXT,
+                    reason TEXT,
+                    priority TEXT DEFAULT 'normal',
+                    status TEXT DEFAULT 'pending',
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+
             conn.commit()
-            logger.info('Web应用数据库初始化完成（含持仓管理表+评分表）')
+            logger.info('Web应用数据库初始化完成（含持仓管理表+评分表+风控表）')
 
     # ==================== 主数据库查询方法 ====================
 
@@ -815,7 +859,12 @@ class DatabaseManager:
             # 构建更新语句
             fields = []
             values = []
-            for key in ['quantity', 'avg_cost', 'current_price', 'notes', 'status']:
+            allowed_keys = [
+                'quantity', 'avg_cost', 'current_price', 'notes', 'status',
+                'stop_loss_price', 'take_profit_price', 'trailing_stop_price',
+                'target_weight_pct', 'ml_score_at_entry', 'last_risk_update',
+            ]
+            for key in allowed_keys:
                 if key in data:
                     fields.append(f'{key} = ?')
                     values.append(data[key])
@@ -869,6 +918,116 @@ class DatabaseManager:
         with self.get_webapp_db_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('DELETE FROM positions WHERE id = ?', (position_id,))
+            conn.commit()
+            return cursor.rowcount > 0
+
+    def update_position_risk(self, position_id: int, **kwargs) -> bool:
+        """更新持仓风控列"""
+        allowed = {
+            'stop_loss_price', 'take_profit_price', 'trailing_stop_price',
+            'target_weight_pct', 'ml_score_at_entry', 'last_risk_update',
+        }
+        data = {k: v for k, v in kwargs.items() if k in allowed}
+        if not data:
+            return False
+        return self.update_position(position_id, data)
+
+    def get_portfolio_risk_state(self, date: str = None) -> Optional[Dict]:
+        """获取最新或指定日期的风控状态"""
+        with self.get_webapp_db_connection() as conn:
+            cursor = conn.cursor()
+            if date:
+                cursor.execute(
+                    'SELECT * FROM portfolio_risk_state WHERE state_date = ?', (date,))
+            else:
+                cursor.execute(
+                    'SELECT * FROM portfolio_risk_state ORDER BY state_date DESC LIMIT 1')
+            row = cursor.fetchone()
+            if row:
+                result = dict(row)
+                if result.get('details'):
+                    try:
+                        import json
+                        result['details'] = json.loads(result['details'])
+                    except Exception:
+                        pass
+                return result
+            return None
+
+    def save_portfolio_risk_state(self, state: Dict) -> int:
+        """保存风控状态 (UPSERT by state_date)"""
+        import json
+        with self.get_webapp_db_connection() as conn:
+            cursor = conn.cursor()
+            details = state.get('details')
+            if isinstance(details, dict):
+                details = json.dumps(details, ensure_ascii=False)
+            cursor.execute('''
+                INSERT INTO portfolio_risk_state
+                (state_date, market_regime, target_exposure_pct, circuit_breaker_level,
+                 peak_portfolio_value, details, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(state_date) DO UPDATE SET
+                    market_regime = excluded.market_regime,
+                    target_exposure_pct = excluded.target_exposure_pct,
+                    circuit_breaker_level = excluded.circuit_breaker_level,
+                    peak_portfolio_value = excluded.peak_portfolio_value,
+                    details = excluded.details,
+                    updated_at = CURRENT_TIMESTAMP
+            ''', (
+                state['state_date'],
+                state.get('market_regime', 'neutral'),
+                state.get('target_exposure_pct'),
+                state.get('circuit_breaker_level', 0),
+                state.get('peak_portfolio_value'),
+                details,
+            ))
+            conn.commit()
+            return cursor.lastrowid
+
+    def add_rebalance_suggestion(self, data: Dict) -> int:
+        """添加再平衡建议"""
+        with self.get_webapp_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO rebalance_suggestions
+                (suggestion_date, suggestion_type, code, reason, priority, status)
+                VALUES (?, ?, ?, ?, ?, ?)
+            ''', (
+                data['suggestion_date'],
+                data['suggestion_type'],
+                data.get('code'),
+                data.get('reason', ''),
+                data.get('priority', 'normal'),
+                data.get('status', 'pending'),
+            ))
+            conn.commit()
+            return cursor.lastrowid
+
+    def get_rebalance_suggestions(self, status: str = None, limit: int = 50) -> List[Dict]:
+        """获取再平衡建议"""
+        with self.get_webapp_db_connection() as conn:
+            cursor = conn.cursor()
+            if status:
+                cursor.execute('''
+                    SELECT * FROM rebalance_suggestions
+                    WHERE status = ?
+                    ORDER BY created_at DESC LIMIT ?
+                ''', (status, limit))
+            else:
+                cursor.execute('''
+                    SELECT * FROM rebalance_suggestions
+                    ORDER BY created_at DESC LIMIT ?
+                ''', (limit,))
+            return [dict(row) for row in cursor.fetchall()]
+
+    def update_rebalance_suggestion(self, suggestion_id: int, status: str) -> bool:
+        """更新再平衡建议状态"""
+        with self.get_webapp_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'UPDATE rebalance_suggestions SET status = ? WHERE id = ?',
+                (status, suggestion_id))
             conn.commit()
             return cursor.rowcount > 0
 
