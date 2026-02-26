@@ -224,6 +224,15 @@ class DatabaseManager:
                 )
             ''')
 
+            # 组合设置表 (持久化总资金/现金等配置)
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS portfolio_settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+
             # 组合评分历史表
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS portfolio_scores (
@@ -1164,6 +1173,27 @@ class DatabaseManager:
                 LIMIT ?
             ''', (days,))
             return [dict(row) for row in cursor.fetchall()]
+
+    # ==================== 组合设置方法 ====================
+
+    def get_portfolio_setting(self, key: str, default: str = None) -> Optional[str]:
+        """获取组合设置值"""
+        with self.get_webapp_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'SELECT value FROM portfolio_settings WHERE key = ?', (key,))
+            row = cursor.fetchone()
+            return row['value'] if row else default
+
+    def set_portfolio_setting(self, key: str, value: str):
+        """设置/更新组合设置值"""
+        with self.get_webapp_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT OR REPLACE INTO portfolio_settings (key, value, updated_at)
+                VALUES (?, ?, CURRENT_TIMESTAMP)
+            ''', (key, value))
+            conn.commit()
 
     # ==================== 组合评分方法 ====================
 

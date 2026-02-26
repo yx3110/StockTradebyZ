@@ -68,13 +68,13 @@ METRIC_DEFINITIONS = {
         'description': '盈利持仓占比',
     },
     'score_consistency': {
-        'name': '评分一致性',
+        'name': '持仓质量覆盖',
         'layer': 1,
         'layer_name': '持仓质量',
-        'thresholds': (0.35, 0.28, 0.22, 0.16, 0.10),
-        'direction': 'lower',
-        'unit': 'CV',
-        'description': 'ML评分变异系数(低=质量均匀)',
+        'thresholds': (30, 50, 65, 80, 95),
+        'direction': 'higher',
+        'unit': '%',
+        'description': 'ML评分≥45的持仓占比(高=质量均匀)',
     },
 
     # Layer 2: 风险控制
@@ -274,7 +274,12 @@ class PortfolioScorer:
         """
         total_mv = sum(p.get('market_value') or 0 for p in positions)
         if total_capital <= 0:
-            total_capital = total_mv + cash_amount
+            if cash_amount > 0:
+                total_capital = total_mv + cash_amount
+            else:
+                # Auto-infer: assume 10% cash reserve
+                total_capital = total_mv / 0.9 if total_mv > 0 else 0
+                cash_amount = total_capital - total_mv
 
         # 提取分析结果中的ML评分
         ml_scores = {}
@@ -306,14 +311,15 @@ class PortfolioScorer:
         # Layer 3: 组合效率
         metrics['effective_n'] = self._calc_effective_n(positions, total_mv)
         metrics['cash_ratio'] = self._calc_cash_ratio(cash_amount, total_capital)
-        metrics['risk_reward_ratio'] = self._calc_risk_reward_ratio(positions, ml_scores)
+        metrics['risk_reward_ratio'] = self._calc_risk_reward_ratio(
+            positions, ml_scores, metrics['portfolio_volatility'])
         metrics['capital_utilization'] = self._calc_capital_utilization(total_mv, total_capital)
         metrics['turnover_efficiency'] = self._calc_turnover_efficiency(trades, total_mv)
 
         # Layer 4: 执行纪律
         metrics['recommendation_follow_rate'] = self._calc_recommendation_follow_rate(recommendations)
         metrics['sl_tp_coverage'] = self._calc_sl_tp_coverage(positions, analysis_positions)
-        metrics['holding_period_score'] = self._calc_holding_period_score(positions)
+        metrics['holding_period_score'] = self._calc_holding_period_score(positions, trades)
         metrics['position_sizing_discipline'] = self._calc_position_sizing_discipline(positions, total_mv)
         metrics['regime_adaptiveness'] = self._calc_regime_adaptiveness(
             positions, total_mv, total_capital, analysis_positions)
@@ -361,6 +367,16 @@ class PortfolioScorer:
         # 改进建议
         improvements = self._generate_improvements(scored_metrics, layers)
 
+        # Diversification ratio diagnostic: DR = weighted_avg_vol / portfolio_vol
+        dr = None
+        portfolio_vol = metrics.get('portfolio_volatility', 0)
+        if portfolio_vol > 0.01 and positions:
+            weighted_avg_vol = sum(
+                (p.get('market_value') or 0) / total_mv * self._get_stock_volatility(p.get('code', ''))
+                for p in positions
+            ) if total_mv > 0 else 0
+            dr = round(weighted_avg_vol / portfolio_vol, 2) if weighted_avg_vol > 0 else None
+
         return {
             'total_score': total_score,
             'total_max': total_max,
@@ -374,6 +390,7 @@ class PortfolioScorer:
             'total_market_value': total_mv,
             'total_capital': total_capital,
             'cash_amount': cash_amount,
+            'diversification_ratio': dr,
             'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         }
 
@@ -438,18 +455,20 @@ class PortfolioScorer:
         return winners / len(positions) * 100
 
     def _calc_score_consistency(self, positions: List[Dict], ml_scores: Dict) -> float:
-        """评分一致性: ML评分的变异系数 (CV)"""
-        scores = []
+        """持仓质量覆盖: ML评分>=45的持仓占比 (%)"""
+        if not positions:
+            return 50.0
+        quality_count = 0
+        total_with_score = 0
         for p in positions:
             code = p.get('code', '')
             if code in ml_scores and ml_scores[code].get('ml_score') is not None:
-                scores.append(ml_scores[code]['ml_score'])
-        if len(scores) < 2:
-            return 0.20  # default moderate
-        mean_s = np.mean(scores)
-        if mean_s <= 0:
-            return 0.50
-        return np.std(scores) / mean_s
+                total_with_score += 1
+                if ml_scores[code]['ml_score'] >= 45:
+                    quality_count += 1
+        if total_with_score == 0:
+            return 50.0
+        return quality_count / total_with_score * 100
 
     # ==================== Layer 2: 风险控制 ====================
 
@@ -474,19 +493,68 @@ class PortfolioScorer:
         return hhi
 
     def _calc_portfolio_volatility(self, positions: List[Dict], total_mv: float) -> float:
-        """组合加权年化波动率"""
+        """组合年化波动率: sqrt(w' Σ w) 协方差矩阵法"""
         if not positions or total_mv <= 0:
-            return 0.30  # default moderate
-        weighted_vol = 0.0
-        total_weight = 0.0
-        for p in positions:
-            code = p.get('code', '')
-            mv = p.get('market_value') or 0
-            weight = mv / total_mv if total_mv > 0 else 0
-            vol = self._get_stock_volatility(code)
-            weighted_vol += weight * vol
-            total_weight += weight
-        return weighted_vol if total_weight > 0 else 0.30
+            return 0.30
+        n = len(positions)
+        weights = []
+        returns_matrix = []  # each row = daily returns for one stock
+
+        try:
+            with sqlite3.connect(self.stock_db_path) as conn:
+                cursor = conn.cursor()
+                for p in positions:
+                    code = p.get('code', '')
+                    if '.' in code:
+                        code = code.split('.')[0]
+                    mv = p.get('market_value') or 0
+                    weights.append(mv / total_mv if total_mv > 0 else 0)
+
+                    cursor.execute(
+                        "SELECT id FROM securities WHERE code = ? LIMIT 1", (code,))
+                    row = cursor.fetchone()
+                    if not row:
+                        returns_matrix.append(None)
+                        continue
+                    sec_id = row[0]
+                    cursor.execute("""
+                        SELECT close FROM daily_quotes
+                        WHERE security_id = ? AND close > 0
+                        ORDER BY trade_date DESC LIMIT 21
+                    """, (sec_id,))
+                    rows = cursor.fetchall()
+                    if len(rows) < 6:
+                        returns_matrix.append(None)
+                        continue
+                    prices = [r[0] for r in reversed(rows)]
+                    rets = [(prices[i] - prices[i-1]) / prices[i-1]
+                            for i in range(1, len(prices))]
+                    returns_matrix.append(rets)
+        except Exception:
+            return 0.30
+
+        # Build aligned returns matrix (use min common length)
+        valid = [(w, r) for w, r in zip(weights, returns_matrix) if r is not None]
+        if not valid:
+            return 0.30
+        min_len = min(len(r) for _, r in valid)
+        if min_len < 3:
+            return 0.30
+
+        w_arr = np.array([w for w, _ in valid])
+        w_arr = w_arr / w_arr.sum()  # renormalize after dropping missing
+        ret_arr = np.array([r[-min_len:] for _, r in valid])  # shape: (n_valid, min_len)
+
+        cov_matrix = np.cov(ret_arr)
+        if cov_matrix.ndim == 0:
+            # Single stock: cov returns scalar
+            portfolio_var = float(cov_matrix) * w_arr[0] ** 2
+        else:
+            portfolio_var = float(w_arr @ cov_matrix @ w_arr)
+
+        daily_vol = math.sqrt(max(portfolio_var, 0))
+        annual_vol = daily_vol * math.sqrt(252)
+        return annual_vol
 
     def _calc_stop_loss_coverage(self, positions: List[Dict],
                                   analysis_positions: List[Dict]) -> float:
@@ -532,37 +600,33 @@ class PortfolioScorer:
             return 0.0
         return cash_amount / total_capital * 100
 
-    def _calc_risk_reward_ratio(self, positions: List[Dict], ml_scores: Dict) -> float:
-        """风险收益比: 基于ML评分和盈亏状态综合评估"""
+    def _calc_risk_reward_ratio(self, positions: List[Dict], ml_scores: Dict,
+                                portfolio_vol: float = 0.30) -> float:
+        """风险收益比: Sharpe-like = 加权ML预期收益 / 组合波动率"""
         if not positions:
             return 1.0
 
-        # Approach: Use ML score as proxy for expected return direction
-        # Score > 50 = positive expectation, < 50 = negative
-        # Combine with current P&L momentum
-        reward_signals = 0.0
-        risk_signals = 0.0
-        count = 0
-
+        # Weighted average expected return from ML scores
+        total_weight = 0.0
+        weighted_return = 0.0
         for p in positions:
             code = p.get('code', '')
-            pl_pct = abs(p.get('profit_loss_pct') or 0) / 100.0
-
+            mv = p.get('market_value') or 0
             if code in ml_scores:
                 ml = ml_scores[code].get('ml_score', 50) or 50
-                # ML score contributes to reward (normalized 0-1)
-                reward_signals += ml / 100.0
-                # Volatility + loss contribute to risk
-                vol = self._get_stock_volatility(code)
-                risk_signals += vol * 0.5 + (0.3 if (p.get('profit_loss_pct') or 0) < -5 else 0.1)
+                # Convert ML score (0-100) to annualized expected return proxy
+                # Score 50 = 0% excess, 70 = ~20% annual, 30 = ~-20% annual
+                expected_annual = (ml - 50) / 100.0  # range: -0.5 to +0.5
             else:
-                reward_signals += 0.5  # neutral
-                risk_signals += 0.3
-            count += 1
+                expected_annual = 0.0
+            weighted_return += mv * expected_annual
+            total_weight += mv
 
-        if count == 0 or risk_signals <= 0:
+        if total_weight <= 0 or portfolio_vol <= 0.01:
             return 1.0
-        return (reward_signals / count) / (risk_signals / count)
+        avg_return = weighted_return / total_weight
+        # Shift to make ratio positive: add risk-free proxy ~3%
+        return (avg_return + 0.03) / portfolio_vol
 
     def _calc_capital_utilization(self, total_mv: float, total_capital: float) -> float:
         """仓位利用率 (%)"""
@@ -571,16 +635,23 @@ class PortfolioScorer:
         return total_mv / total_capital * 100
 
     def _calc_turnover_efficiency(self, trades: List[Dict], total_mv: float) -> float:
-        """月度换手率 (%)"""
+        """月度换手率 (%): 仅计算卖出方向，去重(同code+date只计一次)"""
         if not trades or total_mv <= 0:
             return 0.0
-        # Count trade volume in last 30 days
         cutoff = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
+        seen = set()
         recent_volume = 0.0
         for t in trades:
-            if t.get('trade_date', '') >= cutoff:
-                recent_volume += (t.get('amount') or
-                                  (t.get('quantity', 0) * t.get('price', 0)))
+            if t.get('trade_date', '') < cutoff:
+                continue
+            if t.get('action') not in ('sell', 'reduce'):
+                continue
+            dedup_key = (t.get('code', ''), t.get('trade_date', ''))
+            if dedup_key in seen:
+                continue
+            seen.add(dedup_key)
+            recent_volume += (t.get('amount') or
+                              (t.get('quantity', 0) * t.get('price', 0)))
         return recent_volume / total_mv * 100 if total_mv > 0 else 0.0
 
     # ==================== Layer 4: 执行纪律 ====================
@@ -613,18 +684,32 @@ class PortfolioScorer:
                     break
         return both_set / len(positions) * 100
 
-    def _calc_holding_period_score(self, positions: List[Dict]) -> float:
-        """平均持仓天数"""
+    def _calc_holding_period_score(self, positions: List[Dict],
+                                    trades: List[Dict] = None) -> float:
+        """平均持仓天数 (优先从交易记录推算真实买入日)"""
         if not positions:
             return 10.0
         today = datetime.now()
+
+        # Build first buy date per code from trades (more accurate than position field)
+        trade_buy_dates = {}
+        if trades:
+            for t in trades:
+                if t.get('action') in ('buy', 'add'):
+                    code = t.get('code', '')
+                    tdate = t.get('trade_date', '')
+                    if tdate and (code not in trade_buy_dates or tdate < trade_buy_dates[code]):
+                        trade_buy_dates[code] = tdate
+
         days_list = []
         for p in positions:
-            fbd = p.get('first_buy_date')
+            code = p.get('code', '')
+            # Prefer trade-inferred buy date, fallback to position field
+            fbd = trade_buy_dates.get(code) or p.get('first_buy_date')
             if fbd:
                 try:
                     dt = datetime.strptime(str(fbd)[:10], '%Y-%m-%d')
-                    days_list.append((today - dt).days)
+                    days_list.append(max((today - dt).days, 1))
                 except ValueError:
                     days_list.append(10)
             else:
@@ -644,6 +729,37 @@ class PortfolioScorer:
                 compliant += 1
         return compliant / len(positions) * 100
 
+    def _detect_market_regime(self) -> str:
+        """从沪深300指数实际数据判断市场状态 (bull/bear/neutral)"""
+        try:
+            with sqlite3.connect(self.stock_db_path) as conn:
+                cursor = conn.cursor()
+                # CSI 300 index code: 000300.SH or 399300.SZ
+                cursor.execute("""
+                    SELECT dq.close FROM daily_quotes dq
+                    JOIN securities s ON dq.security_id = s.id
+                    WHERE s.code IN ('000300', '399300')
+                    ORDER BY dq.trade_date DESC LIMIT 60
+                """)
+                rows = cursor.fetchall()
+                if len(rows) < 20:
+                    return 'neutral'
+                prices = [r[0] for r in reversed(rows)]
+                # 20-day return
+                ret_20d = (prices[-1] - prices[-20]) / prices[-20]
+                # 60-day MA trend
+                ma20 = np.mean(prices[-20:])
+                ma60 = np.mean(prices) if len(prices) >= 60 else ma20
+
+                if ret_20d > 0.05 and prices[-1] > ma60:
+                    return 'bull'
+                elif ret_20d < -0.05 and prices[-1] < ma60:
+                    return 'bear'
+                else:
+                    return 'neutral'
+        except Exception:
+            return 'neutral'
+
     def _calc_regime_adaptiveness(self, positions: List[Dict],
                                    total_mv: float, total_capital: float,
                                    analysis_positions: List[Dict]) -> float:
@@ -651,13 +767,15 @@ class PortfolioScorer:
         if not analysis_positions:
             return 50.0  # neutral
 
-        # Detect market regime from analysis
-        regime = 'neutral'
-        for ap in analysis_positions:
-            ri = ap.get('regime_info', {})
-            if ri and ri.get('regime'):
-                regime = ri['regime']
-                break
+        # Detect market regime: prefer real index data, fallback to analysis
+        regime = self._detect_market_regime()
+        if regime == 'neutral':
+            # Fallback to analysis-provided regime
+            for ap in analysis_positions:
+                ri = ap.get('regime_info', {})
+                if ri and ri.get('regime'):
+                    regime = ri['regime']
+                    break
 
         # Calculate exposure ratio
         exposure = total_mv / total_capital if total_capital > 0 else 0
@@ -767,6 +885,82 @@ class PortfolioScorer:
                 return grade, label
         return 'D', '需重建'
 
+    # ==================== 建议自动匹配 ====================
+
+    def auto_match_recommendations(self, trades: List[Dict],
+                                    recommendations: List[Dict]) -> List[Dict]:
+        """
+        自动将交易记录匹配到操作建议 (code+action, 3天窗口内)
+        返回更新后的 recommendations 列表 (is_executed 标记已更新)
+        """
+        if not trades or not recommendations:
+            return recommendations
+
+        # Action mapping: trade action -> recommendation action compatibility
+        action_compat = {
+            'buy': ('buy', 'add', '加仓', '建仓'),
+            'add': ('buy', 'add', '加仓', '建仓'),
+            'sell': ('sell', 'reduce', '减仓', '清仓', '止盈', '止损'),
+            'reduce': ('sell', 'reduce', '减仓', '清仓', '止盈', '止损'),
+        }
+
+        for rec in recommendations:
+            if rec.get('is_executed'):
+                continue
+            rec_code = rec.get('code', '')
+            rec_date = rec.get('date', '')
+            rec_action = (rec.get('action') or '').lower()
+            if not rec_date or not rec_code:
+                continue
+
+            try:
+                rec_dt = datetime.strptime(str(rec_date)[:10], '%Y-%m-%d')
+            except ValueError:
+                continue
+
+            for t in trades:
+                t_code = t.get('code', '')
+                t_action = (t.get('action') or '').lower()
+                t_date = t.get('trade_date', '')
+                if not t_date:
+                    continue
+
+                # Code match
+                if t_code != rec_code:
+                    continue
+
+                # Action compatibility
+                compatible_actions = action_compat.get(t_action, ())
+                if rec_action not in compatible_actions and t_action not in action_compat.get(rec_action, ()):
+                    continue
+
+                # Date window (trade within 3 days after recommendation)
+                try:
+                    t_dt = datetime.strptime(str(t_date)[:10], '%Y-%m-%d')
+                except ValueError:
+                    continue
+                delta = (t_dt - rec_dt).days
+                if 0 <= delta <= 3:
+                    rec['is_executed'] = 1
+                    # Persist to DB
+                    self._mark_recommendation_executed(rec.get('id'))
+                    break
+
+        return recommendations
+
+    def _mark_recommendation_executed(self, rec_id: Optional[int]):
+        """标记建议已执行"""
+        if not rec_id:
+            return
+        try:
+            with sqlite3.connect(self.webapp_db_path) as conn:
+                conn.execute(
+                    "UPDATE recommendations SET is_executed = 1, executed_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    (rec_id,))
+                conn.commit()
+        except Exception:
+            pass
+
     # ==================== 改进建议生成 ====================
 
     def _generate_improvements(self, metrics: Dict, layers: Dict) -> List[Dict]:
@@ -802,7 +996,7 @@ class PortfolioScorer:
             'signal_freshness': '部分持仓信号已过期，建议重新评估或设置退出计划',
             'profit_factor': '亏损仓位占比过大，考虑止损清理亏损持仓',
             'win_rate': '盈利持仓比例低，检查选股策略和进场时机',
-            'score_consistency': '持仓质量参差不齐，建议统一选股标准',
+            'score_consistency': '部分持仓ML评分低于45，建议替换为高评分标的',
             'max_position_weight': f'最大单仓占比{value:.0%}过高，建议分批减仓至10%以内',
             'sector_hhi': '行业过于集中，建议增加跨行业分散',
             'portfolio_volatility': '组合波动率偏高，考虑增加低波动标的或减少仓位',

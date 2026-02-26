@@ -1314,6 +1314,17 @@ def calculate_portfolio_score():
         save_score = data.get('save', True)
 
         db = get_db_manager()
+
+        # Auto-load persisted capital settings if not provided in request
+        if total_capital <= 0:
+            saved_capital = db.get_portfolio_setting('total_capital')
+            if saved_capital:
+                total_capital = float(saved_capital)
+        if cash_amount <= 0:
+            saved_cash = db.get_portfolio_setting('cash_amount')
+            if saved_cash:
+                cash_amount = float(saved_cash)
+
         positions = db.get_all_positions()
 
         if not positions:
@@ -1337,6 +1348,10 @@ def calculate_portfolio_score():
             current_app.config['STOCK_DB_PATH'],
             current_app.config['WEBAPP_DB_PATH']
         )
+
+        # Auto-match trades to recommendations before scoring
+        recommendations = scorer.auto_match_recommendations(trades, recommendations)
+
         score_result = scorer.calculate_score(
             positions=positions,
             trades=trades,
@@ -1432,4 +1447,47 @@ def get_score_detail(score_id: int):
 
     except Exception as e:
         logger.error(f'获取评分详情失败: {e}', exc_info=True)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+# ==================== 资金设置 API ====================
+
+@portfolio_bp.route('/settings/capital', methods=['GET'])
+def get_capital_settings():
+    """获取资金设置 (总资金/现金)"""
+    try:
+        db = get_db_manager()
+        total_capital = db.get_portfolio_setting('total_capital')
+        cash_amount = db.get_portfolio_setting('cash_amount')
+        return jsonify({
+            'success': True,
+            'total_capital': float(total_capital) if total_capital else None,
+            'cash_amount': float(cash_amount) if cash_amount else None,
+        })
+    except Exception as e:
+        logger.error(f'获取资金设置失败: {e}', exc_info=True)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@portfolio_bp.route('/settings/capital', methods=['POST'])
+def set_capital_settings():
+    """
+    设置资金参数 (持久化)
+
+    Request Body:
+        {
+            "total_capital": 500000,
+            "cash_amount": 50000
+        }
+    """
+    try:
+        data = request.get_json() or {}
+        db = get_db_manager()
+        if 'total_capital' in data:
+            db.set_portfolio_setting('total_capital', str(data['total_capital']))
+        if 'cash_amount' in data:
+            db.set_portfolio_setting('cash_amount', str(data['cash_amount']))
+        return jsonify({'success': True, 'message': '资金设置已保存'})
+    except Exception as e:
+        logger.error(f'设置资金失败: {e}', exc_info=True)
         return jsonify({'success': False, 'error': str(e)}), 500
