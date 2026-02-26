@@ -985,6 +985,16 @@ class DatabaseManager:
             conn.commit()
             return cursor.lastrowid
 
+    def clear_pending_rebalance_suggestions(self, suggestion_date: str):
+        """清除指定日期的pending建议（每次重新生成前调用）"""
+        with self.get_webapp_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'DELETE FROM rebalance_suggestions WHERE suggestion_date = ? AND status = ?',
+                (suggestion_date, 'pending'))
+            conn.commit()
+            return cursor.rowcount
+
     def add_rebalance_suggestion(self, data: Dict) -> int:
         """添加再平衡建议"""
         with self.get_webapp_db_connection() as conn:

@@ -446,8 +446,8 @@ class PortfolioManager:
         suggestions = self.generate_rebalance_suggestions(
             positions, trades or [], total_mv)
 
-        # 5. 清除旧pending建议，保存新建议
-        # (不删除旧的，只添加新的，用户可手动忽略旧的)
+        # 5. 清除当日旧pending建议，保存新建议
+        db.clear_pending_rebalance_suggestions(today_str)
         for s in suggestions:
             db.add_rebalance_suggestion(s)
 
