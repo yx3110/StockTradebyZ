@@ -3765,8 +3765,8 @@ class TomorrowStockSelector:
         elif hasattr(self, 'scoring_version') and self.scoring_version == "v3.5":
             report += "| 排名 | 股票代码 | 股票名称 | 选中策略 | 量化评分 | 投资建议 | 技术 | 基本 | 表现 | 市场 | 知行 | 知行信号 |\n"
             report += "|------|----------|----------|----------|----------|----------|------|------|------|------|------|----------|\n"
-        elif hasattr(self, 'scoring_version') and self.scoring_version in ["v3.9", "v3.94", "v3.95", "v3.96", "v4.0", "v4.2", "v4.3"]:
-            # 🏆 V3.9.x A/A+ Grade Production Model - 简化表头（类似v3.8格式）
+        elif hasattr(self, 'scoring_version') and self.scoring_version in ["v3.9", "v3.94", "v3.95", "v3.96", "v4.0", "v4.2", "v4.3", "v4.4", "v4.42", "v4.5"]:
+            # 🏆 V3.9.x / V4.x Production Model - 简化表头（类似v3.8格式）
             report += "| 排名 | 股票代码 | 股票名称 | 选中策略 | 综合评分 | 投资建议 | 预测收益 | 置信度 | 风险等级 |\n"
             report += "|------|----------|----------|----------|----------|----------|---------|--------|----------|\n"
         elif hasattr(self, 'scoring_version') and self.scoring_version in ["v3.8", "v3.81"]:
@@ -3854,8 +3854,8 @@ class TomorrowStockSelector:
             factor_scores = stock.get('factor_scores', {})
             
             # 根据评分系统版本处理不同的因子评分
-            if hasattr(self, 'scoring_version') and self.scoring_version in ["v3.9", "v3.94", "v3.95", "v3.96", "v4.0", "v4.2", "v4.3"]:
-                # 🏆 V3.9.x A/A+ Grade Production Model的专用字段
+            if hasattr(self, 'scoring_version') and self.scoring_version in ["v3.9", "v3.94", "v3.95", "v3.96", "v4.0", "v4.2", "v4.3", "v4.4", "v4.42", "v4.5"]:
+                # 🏆 V3.9.x / V4.x Production Model的专用字段
                 predicted_return = stock.get('predicted_return_5d', stock.get('pred_5d', 0.0))  # 预测5日收益率
                 confidence_score = stock.get('confidence_score', 0.0)   # 置信度
                 risk_level = stock.get('risk_level', 'medium')          # 风险等级
@@ -3998,8 +3998,8 @@ class TomorrowStockSelector:
                 market_regime_score = 0  # v2/v3没有市场环境分
             
             # 根据评分系统版本输出不同格式
-            if hasattr(self, 'scoring_version') and self.scoring_version in ["v3.9", "v3.94", "v3.95", "v3.96", "v4.0", "v4.2", "v4.3"]:
-                # 🏆 V3.9.x A/A+ Grade Production Model
+            if hasattr(self, 'scoring_version') and self.scoring_version in ["v3.9", "v3.94", "v3.95", "v3.96", "v4.0", "v4.2", "v4.3", "v4.4", "v4.42", "v4.5"]:
+                # 🏆 V3.9.x / V4.x Production Model
                 predicted_return_pct = predicted_return * 100  # 转换为百分比
                 confidence_pct = confidence_score * 100  # 转换为百分比
                 report += f"| {i} | {stock_code} | {stock_name} | {strategies_str} | {score:.1f} | {recommendation} | {predicted_return_pct:+.2f}% | {confidence_pct:.1f}% | {risk_level} |\n"
