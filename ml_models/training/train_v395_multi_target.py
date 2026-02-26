@@ -181,6 +181,68 @@ class V395MultiTargetTrainer:
         # Phase 2: 风险调整标签融合比例 (0=纯收益, 0.3=推荐, 1=纯Sharpe)
         self.sharpe_label_blend = 0.3
 
+    def _compute_global_quantiles(self, X: np.ndarray, all_results: dict,
+                                    target_weights: dict, n_quantiles: int = 1001) -> np.ndarray:
+        """计算全局 combined_pred 分位数分布 (用于全局百分位评分)
+
+        在全量数据上运行训练好的集成模型, 收集所有 combined_pred,
+        然后计算 n_quantiles 个分位点. 保存到模型文件后, 推理时用
+        np.searchsorted 将新预测映射到全局百分位 (0-100).
+
+        Args:
+            X: 全量特征矩阵 (train+val+test)
+            all_results: 训练好的模型 {target: {'models': {...}, 'weights': {...}}}
+            target_weights: 目标权重 {'label_3d': 0.4, ...}
+            n_quantiles: 分位点数量 (默认1001, 即0.0%到100.0%)
+
+        Returns:
+            np.ndarray: shape=(n_quantiles,), 分位数边界值 (从小到大排列)
+        """
+        logger.info(f"计算全局评分分位数 (n={X.shape[0]:,} 样本, {n_quantiles} 分位点)...")
+
+        predictions = {}
+        for target_key, result in all_results.items():
+            target_pred = np.zeros(X.shape[0])
+            total_weight = 0
+
+            for name, model in result['models'].items():
+                weight = result['weights'].get(name, 0.2)
+                try:
+                    if name == 'xgb':
+                        import xgboost as xgb
+                        pred = model.predict(xgb.DMatrix(X))
+                    else:
+                        pred = model.predict(X)
+                    target_pred += weight * pred
+                    total_weight += weight
+                except Exception as e:
+                    logger.warning(f"  全局分位数: {target_key}/{name} 预测失败: {e}")
+                    continue
+
+            if total_weight > 0:
+                target_pred /= total_weight
+            predictions[target_key] = target_pred
+
+        # 计算 combined_pred (加权融合)
+        combined_pred = np.zeros(X.shape[0])
+        for target_key, pred in predictions.items():
+            w = target_weights.get(f'label_{target_key}', 0)
+            combined_pred += w * pred
+
+        # 计算分位数
+        quantile_points = np.linspace(0, 100, n_quantiles)
+        global_quantiles = np.percentile(combined_pred, quantile_points)
+
+        # 统计信息
+        logger.info(f"  combined_pred 分布: min={combined_pred.min():.6f}, "
+                     f"median={np.median(combined_pred):.6f}, max={combined_pred.max():.6f}")
+        logger.info(f"  P1={global_quantiles[10]:.6f}, P25={global_quantiles[250]:.6f}, "
+                     f"P50={global_quantiles[500]:.6f}, P75={global_quantiles[750]:.6f}, "
+                     f"P99={global_quantiles[990]:.6f}")
+        logger.info(f"  全局分位数计算完成, 将嵌入模型文件")
+
+        return global_quantiles.tolist()
+
     def load_data(self, start_date: str = None, end_date: str = None) -> pd.DataFrame:
         """加载训练数据"""
         logger.info("加载训练数据...")
@@ -1130,6 +1192,9 @@ class V395MultiTargetTrainer:
         # 7. 特征重要性分析
         self._log_feature_importance(all_results)
 
+        # 7.5 计算全局评分分位数
+        global_quantiles = self._compute_global_quantiles(X, all_results, self.target_weights)
+
         # 8. 保存模型
         end_time = datetime.now()
         duration = (end_time - start_time).total_seconds()
@@ -1147,6 +1212,7 @@ class V395MultiTargetTrainer:
             'sharpe_label_blend': self.sharpe_label_blend,
             'market_features': list(self.market_calculator.market_features.columns[1:]),
             'winsorize_bounds': getattr(self, 'winsorize_bounds', None),
+            'global_quantiles': global_quantiles,
             # 模型类型标识 (v2: Robust Z-Score + Industry-Excess)
             'cascade': False,
             'rank_normalized': False,
@@ -1855,6 +1921,9 @@ class V43Trainer(V395MultiTargetTrainer):
         # 6. 特征重要性分析
         self._log_feature_importance(all_results)
 
+        # 6.5 计算全局评分分位数
+        global_quantiles = self._compute_global_quantiles(X, all_results, self.target_weights)
+
         # 7. 保存模型
         end_time = datetime.now()
         duration = (end_time - start_time).total_seconds()
@@ -1870,6 +1939,7 @@ class V43Trainer(V395MultiTargetTrainer):
             'target_weights': self.target_weights,
             'market_features': list(self.market_calculator.market_features.columns[1:]),
             'winsorize_bounds': getattr(self, 'winsorize_bounds', None),
+            'global_quantiles': global_quantiles,
             # 模型类型标识
             'cascade': False,
             'rank_normalized': False,
@@ -2382,6 +2452,9 @@ class V44Trainer(V43Trainer):
         # 8. 特征重要性分析
         self._log_feature_importance(all_results)
 
+        # 8.5 计算全局评分分位数
+        global_quantiles = self._compute_global_quantiles(X, all_results, self.target_weights)
+
         # 9. 保存模型
         end_time = datetime.now()
         duration = (end_time - start_time).total_seconds()
@@ -2397,6 +2470,7 @@ class V44Trainer(V43Trainer):
             'target_weights': self.target_weights,
             'market_features': list(self.market_calculator.market_features.columns[1:]),
             'winsorize_bounds': getattr(self, 'winsorize_bounds', None),
+            'global_quantiles': global_quantiles,
             # 模型类型标识
             'cascade': False,
             'rank_normalized': False,
