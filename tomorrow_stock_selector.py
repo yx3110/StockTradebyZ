@@ -43,7 +43,7 @@ logger = logging.getLogger("tomorrow_selector")
 DEPRECATED_VERSIONS = {'v2', 'v3', 'v3.1', 'v3.2', 'v3.3', 'v3.4', 'v3.41',
                        'v3.5', 'v3.51', 'v3.52', 'v3.53', 'v3.6', 'v3.7',
                        'v3.8', 'v3.81', 'v3.94', 'v4'}
-ACTIVE_VERSIONS = {'v3.9', 'v3.95', 'v3.96', 'v4.0', 'v4.2', 'v4.3', 'v4.4', 'v4.42', 'v5.0'}
+ACTIVE_VERSIONS = {'v3.9', 'v3.95', 'v3.96', 'v4.0', 'v4.2', 'v4.3', 'v4.4', 'v4.42', 'v4.5', 'v5.0'}
 
 
 class TomorrowStockSelector:
@@ -89,6 +89,17 @@ class TomorrowStockSelector:
             from ml_models.v39.strategy_based_return_predictor import StrategyBasedReturnPredictor
             self.strategy_return_predictor = StrategyBasedReturnPredictor()
             logger.info("🔬 已初始化V5.0 Unified Feature Fusion评分系统 (v39+v40+neural)")
+        elif scoring_version == "v4.5":
+            # V4.5: V4.4.1 scorer + CPPI exposure overlay (cppi_floor=0.10, m=10)
+            from ml_models.v39.v44_production_scorer import V44ProductionScorer
+            self.scoring_engine_v44 = V44ProductionScorer(model_type='small_data')
+            self.v44_batch_cache = {}
+            from ml_models.v39.strategy_based_return_predictor import StrategyBasedReturnPredictor
+            self.strategy_return_predictor = StrategyBasedReturnPredictor()
+            self.cppi_floor = 0.10
+            self.cppi_multiplier = 10
+            self.cppi_decay = 0.995  # peak decay per day, half-life ~139d
+            logger.info("🚀 已初始化V4.5评分系统 (V4.4.1+CPPI Trailing Floor, floor=10%, m=10)")
         elif scoring_version == "v4.42":
             # V4.42: V4.4.1 + 三层组合风控 (Module G/H/I)
             from ml_models.v39.v44_production_scorer import V442ProductionScorer
@@ -1777,8 +1788,8 @@ class TomorrowStockSelector:
             if trade_date is None:
                 trade_date = datetime.now().strftime('%Y-%m-%d')
 
-            if self.scoring_version in ("v4.4", "v4.42"):
-                # V4.4/V4.42: V4.3信号+6增强模块(+三层组合风控)
+            if self.scoring_version in ("v4.4", "v4.42", "v4.5"):
+                # V4.4/V4.42/V4.5: V4.3信号+6增强模块(+三层组合风控/CPPI)
                 try:
                     if stock_code in self.v44_batch_cache:
                         result = self.v44_batch_cache[stock_code]
@@ -3141,7 +3152,7 @@ class TomorrowStockSelector:
         stock_with_scores = []
 
         # 🚀 V4.4/V4.42批量评分预计算
-        if hasattr(self, 'scoring_version') and self.scoring_version in ("v4.4", "v4.42") and all_stocks:
+        if hasattr(self, 'scoring_version') and self.scoring_version in ("v4.4", "v4.42", "v4.5") and all_stocks:
             if self.v44_batch_cache:
                 logger.info(f"✅ V4.4使用预填充缓存：{len(self.v44_batch_cache)}只股票")
             else:
@@ -3483,7 +3494,88 @@ class TomorrowStockSelector:
 - **持仓建议**: 单只股票仓位不超过10%
 """
         return detail
-    
+
+    def _compute_cppi_exposure(self, target_date: pd.Timestamp) -> Dict[str, Any]:
+        """计算CPPI Trailing Floor动态仓位建议 (V4.5专用)
+
+        基于沪深300最近60天走势，模拟CPPI overlay:
+        - 从60天前NAV=1.0开始，逐日累积收益
+        - peak_nav按decay衰减 (0.995/day, half-life ~139d)
+        - floor = peak_nav * (1 - cppi_floor)
+        - exposure = min(1.0, max(0.05, m * cushion / nav))
+
+        Returns:
+            dict with keys: exposure, label, nav, peak_nav, drawdown, details
+        """
+        try:
+            # 加载沪深300最近60天数据
+            trade_date_str = target_date.strftime('%Y-%m-%d')
+            hs300_df = self.data_loader.load_stock_data_by_code('000300.SH', days=90, target_date=trade_date_str)
+            if hs300_df is None or len(hs300_df) < 20:
+                logger.warning("CPPI: 无法加载沪深300数据，使用默认exposure=1.0")
+                return {'exposure': 1.0, 'label': '正常', 'nav': 1.0, 'peak_nav': 1.0,
+                        'drawdown': 0.0, 'details': '数据不足，使用默认仓位'}
+
+            # 取最近60个交易日
+            hs300_df = hs300_df.tail(60).copy()
+            if len(hs300_df) < 20:
+                return {'exposure': 1.0, 'label': '正常', 'nav': 1.0, 'peak_nav': 1.0,
+                        'drawdown': 0.0, 'details': '数据不足，使用默认仓位'}
+
+            # 计算日收益率
+            closes = hs300_df['close'].values
+            daily_returns = np.diff(closes) / closes[:-1]
+
+            # 模拟NAV和peak
+            nav = 1.0
+            peak_nav = 1.0
+            cppi_floor = getattr(self, 'cppi_floor', 0.10)
+            cppi_multiplier = getattr(self, 'cppi_multiplier', 10)
+            cppi_decay = getattr(self, 'cppi_decay', 0.995)
+
+            for ret in daily_returns:
+                nav *= (1 + ret)
+                peak_nav = max(nav, peak_nav * cppi_decay)
+
+            # 计算最终exposure
+            floor = peak_nav * (1 - cppi_floor)
+            cushion = nav - floor
+            if cushion <= 0:
+                exposure = 0.05
+            else:
+                exposure = cppi_multiplier * cushion / nav
+            exposure = max(0.05, min(1.0, exposure))
+
+            # 当前回撤
+            drawdown = (nav / peak_nav - 1) if peak_nav > 0 else 0
+
+            # 仓位标签
+            if exposure >= 0.9:
+                label = '激进'
+            elif exposure >= 0.7:
+                label = '正常'
+            elif exposure >= 0.4:
+                label = '保守'
+            else:
+                label = '防御'
+
+            details = (f"沪深300近{len(hs300_df)}日NAV={nav:.4f}, "
+                       f"峰值={peak_nav:.4f}, 回撤={drawdown:.1%}, "
+                       f"CPPI(floor={cppi_floor:.0%},m={cppi_multiplier})")
+
+            return {
+                'exposure': round(exposure, 3),
+                'label': label,
+                'nav': round(nav, 4),
+                'peak_nav': round(peak_nav, 4),
+                'drawdown': round(drawdown, 4),
+                'details': details,
+            }
+        except Exception as e:
+            logger.error(f"CPPI exposure计算失败: {e}")
+            return {'exposure': 1.0, 'label': '正常', 'nav': 1.0, 'peak_nav': 1.0,
+                    'drawdown': 0.0, 'details': f'计算失败: {e}'}
+
     def generate_report(self, analysis: Dict[str, Any], target_date: pd.Timestamp) -> str:
         """生成分析报告"""
         tomorrow = target_date + timedelta(days=1)
@@ -3491,6 +3583,7 @@ class TomorrowStockSelector:
         # 根据评分版本调整标题
         version_titles = {
             "v5.0": "V5.0 Unified Fusion版 (v39+v40+neural, 90特征)",
+            "v4.5": "V4.5 CPPI版 (V4.4.1模型+CPPI Trailing Floor动态仓位管理)",
             "v4.3": "V4.3 增强版 (59特征+强正则+Walk-Forward+4目标+等权集成)",
             "v4.2": "V4.2 Hybrid Alpha版 (行业超额+RobustZScore+V39市场特征+5模型Ensemble)",
             "v4.0": "V4.0 Cross-Sectional Alpha版 (超额收益预测+55个截面特征)",
@@ -3585,8 +3678,32 @@ class TomorrowStockSelector:
         else:
             scoring_explanation = ""
 
+        # V4.5: 计算CPPI仓位建议
+        cppi_section = ""
+        if self.scoring_version == "v4.5":
+            cppi = self._compute_cppi_exposure(target_date)
+            exposure_pct = cppi['exposure'] * 100
+            top_n = len(analysis.get('top_recommendations', []))
+            adjusted_n = max(1, int(top_n * cppi['exposure']))
+            cppi_section = f"""
+## 🛡️ CPPI动态仓位建议
+
+| 指标 | 数值 |
+|------|------|
+| **建议仓位** | **{exposure_pct:.0f}%** ({cppi['label']}) |
+| 沪深300 NAV | {cppi['nav']:.4f} |
+| 峰值 NAV | {cppi['peak_nav']:.4f} |
+| 当前回撤 | {cppi['drawdown']:.1%} |
+| CPPI参数 | floor={getattr(self, 'cppi_floor', 0.10):.0%}, multiplier={getattr(self, 'cppi_multiplier', 10)} |
+| 推荐持仓数 | {adjusted_n}只 (原{top_n}只 x {exposure_pct:.0f}%) |
+
+> **说明**: V4.5使用V4.4.1模型评分 + CPPI Trailing Floor动态仓位管理。
+> 当市场接近回撤极限时自动减仓，远离极限时恢复满仓。
+> {cppi['details']}
+"""
+
         report = f"""# 📈 量化选股分析报告 ({version_title})
-{scoring_explanation}
+{scoring_explanation}{cppi_section}
 ## 📊 分析概览
 - **分析日期**: {target_date.strftime('%Y-%m-%d')}
 - **推荐买入日期**: {tomorrow.strftime('%Y-%m-%d')}
@@ -4308,6 +4425,8 @@ def main(target_date: str = None, scoring_version: str = "v3", stocks_only: bool
     # 根据评分版本选择不同的报告目录
     if scoring_version == "v5.0":
         report_dir = Path("reports/daily_selection_v5.0")
+    elif scoring_version == "v4.5":
+        report_dir = Path("reports/daily_selection_v4.5")
     elif scoring_version == "v4.42":
         report_dir = Path("reports/daily_selection_v4.42")
     elif scoring_version == "v4.4":
@@ -4395,12 +4514,13 @@ if __name__ == "__main__":
                        choices=['v2', 'v3', 'v3.1', 'v3.2', 'v3.3', 'v3.4', 'v3.41',
                                 'v3.5', 'v3.51', 'v3.52', 'v3.53', 'v3.6', 'v3.7',
                                 'v3.8', 'v3.81', 'v3.9', 'v3.94', 'v3.95', 'v3.96',
-                                'v4', 'v4.0', 'v4.2', 'v4.3', 'v4.4', 'v4.42', 'v5.0'],
+                                'v4', 'v4.0', 'v4.2', 'v4.3', 'v4.4', 'v4.42', 'v4.5', 'v5.0'],
                        default='v3.9',
                        help='评分版本 (默认v3.9)。'
                             '活跃版本: v3.9(生产A级), v3.96(Robust Z-Score,ICIR>0.2), '
                             'v4.3(Walk-Forward+强正则), v4.4(V4.3+6增强模块), '
                             'v4.42(V4.4+三层组合风控), '
+                            'v4.5(V4.4.1+CPPI动态仓位,S级84/105), '
                             'v5.0(Unified Fusion,v39+v40+neural)。'
                             '已弃用: v2-v3.81, v3.94, v4 (仍可使用但不推荐)')
     parser.add_argument('--stocks-only', '-s', action='store_true',
