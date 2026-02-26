@@ -72,6 +72,9 @@ class V395ProductionScorer:
         # Winsorization bounds (训练时clip到[1st,99th]分位数)
         self.winsorize_bounds = None
 
+        # 全局分位数 (用于跨日期可比的全局百分位评分)
+        self.global_quantiles = None
+
         self._load_models()
 
     def _load_models(self):
@@ -108,6 +111,11 @@ class V395ProductionScorer:
                 if model_path.exists():
                     with open(model_path, 'rb') as f:
                         self.models[target][name] = pickle.load(f)
+
+        # 全局分位数 (sidecar 文件)
+        quantiles_path = self.model_dir / 'global_quantiles.npy'
+        if quantiles_path.exists():
+            self.global_quantiles = np.load(quantiles_path)
 
         print(f"V3.95 Rolling模型加载完成: {len(self.models)} 个目标")
 
@@ -158,6 +166,16 @@ class V395ProductionScorer:
             self.robust_zscore = model_data.get('robust_zscore', False)
             self.extra_features_from_daily_basic = model_data.get('extra_features_from_daily_basic', None)
 
+            # 全局分位数 (训练时计算的 combined_pred 分布)
+            raw_quantiles = model_data.get('global_quantiles')
+            if raw_quantiles is not None:
+                self.global_quantiles = np.array(raw_quantiles)
+            else:
+                # 尝试加载 sidecar 文件
+                quantiles_path = self.model_dir / 'global_quantiles.npy'
+                if quantiles_path.exists():
+                    self.global_quantiles = np.load(quantiles_path)
+
             # Winsorization bounds (训练时保存的 [1st, 99th] 分位数边界)
             raw_bounds = model_data.get('winsorize_bounds')
             if raw_bounds and self.feature_cols:
@@ -183,7 +201,34 @@ class V395ProductionScorer:
             suffix = " [rank_normalized]"
         else:
             suffix = ""
-        print(f"V3.95 SmallData模型加载完成: {list(self.models.keys())}{suffix}")
+        gq_status = f" [全局评分 {len(self.global_quantiles)}分位]" if self.global_quantiles is not None else " [截面评分]"
+        print(f"V3.95 SmallData模型加载完成: {list(self.models.keys())}{suffix}{gq_status}")
+
+    def _to_global_score(self, combined_pred: np.ndarray) -> np.ndarray:
+        """将 raw combined_pred 映射为 0-100 全局百分位评分
+
+        如果有 global_quantiles (训练时计算的历史分布), 使用全局百分位:
+        - 100分 = 历史 top 0.1% 信号
+        - 50分 = 历史中位数水平
+        - 某天如果全市场信号都很差, 最高可能只有 40-50 分
+        - 某天有极强信号, 可能出现 95+ 分
+
+        如果没有 global_quantiles (旧模型), 回退到每日截面百分位 [30, 90]
+        """
+        if self.global_quantiles is not None and len(self.global_quantiles) > 1:
+            indices = np.searchsorted(self.global_quantiles, combined_pred)
+            scores = np.clip(indices / (len(self.global_quantiles) - 1) * 100, 0, 100)
+            return scores
+        else:
+            # Fallback: 每日截面百分位 → [30, 90] (旧模型兼容)
+            if len(combined_pred) > 1:
+                from scipy import stats
+                ranks = stats.rankdata(combined_pred)
+                percentiles = (ranks - 1) / (len(ranks) - 1) * 100
+                scores = 30 + percentiles * 0.6
+            else:
+                scores = np.array([60.0])
+            return scores
 
     def _rank_normalize_features(self, features_df: pd.DataFrame) -> pd.DataFrame:
         """对个股特征做截面Rank归一化（宏观特征保持原值）"""
@@ -645,14 +690,8 @@ class V395ProductionScorer:
             combined_pred = self._calculate_fallback_scores(features_df, available_cols)
             predictions = self._estimate_predictions_from_features(features_df, available_cols)
 
-        # 转换为百分制评分 (使用百分位排名)
-        if len(combined_pred) > 1:
-            from scipy import stats
-            ranks = stats.rankdata(combined_pred)
-            percentiles = (ranks - 1) / (len(ranks) - 1) * 100
-            scores = 30 + percentiles * 0.6
-        else:
-            scores = np.array([60.0])
+        # 转换为百分制评分 (全局百分位 or 截面百分位 fallback)
+        scores = self._to_global_score(combined_pred)
 
         # 构建结果
         codes = features_df['code'].tolist()
@@ -855,13 +894,7 @@ class V395ProductionScorer:
             combined_pred = self._calculate_fallback_scores(filtered_df, available_cols)
             predictions = self._estimate_predictions_from_features(filtered_df, available_cols)
 
-        if len(combined_pred) > 1:
-            from scipy import stats
-            ranks = stats.rankdata(combined_pred)
-            percentiles = (ranks - 1) / (len(ranks) - 1) * 100
-            scores = 30 + percentiles * 0.6
-        else:
-            scores = np.array([60.0])
+        scores = self._to_global_score(combined_pred)
 
         codes = filtered_df['code'].tolist()
         for i, code in enumerate(codes):

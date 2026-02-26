@@ -606,30 +606,37 @@ class PortfolioScorer:
 
     def _calc_risk_reward_ratio(self, positions: List[Dict], ml_scores: Dict,
                                 portfolio_vol: float = 0.30) -> float:
-        """风险收益比: Sharpe-like = 加权ML预期收益 / 组合波动率"""
+        """风险收益比: Sharpe-like = 加权预期收益 / 组合波动率
+
+        优先使用ML模型的 predicted_return_5d (年化), 否则用ML评分代理。
+        """
         if not positions:
             return 1.0
 
-        # Weighted average expected return from ML scores
         total_weight = 0.0
         weighted_return = 0.0
         for p in positions:
             code = p.get('code', '')
             mv = p.get('market_value') or 0
+            expected_annual = 0.0
             if code in ml_scores:
-                ml = ml_scores[code].get('ml_score', 50) or 50
-                # Convert ML score (0-100) to annualized expected return proxy
-                # Score 50 = 0% excess, 70 = ~20% annual, 30 = ~-20% annual
-                expected_annual = (ml - 50) / 100.0  # range: -0.5 to +0.5
-            else:
-                expected_annual = 0.0
+                ap = ml_scores[code]
+                # Prefer predicted_return_5d from ML model (more accurate)
+                pred_5d = ap.get('predicted_return_5d')
+                if pred_5d is not None and pred_5d != 0:
+                    # Annualize 5-day return: (1+r)^(252/5) - 1 ≈ r * 252/5
+                    expected_annual = float(pred_5d) * 252.0 / 5.0
+                else:
+                    # Fallback: ML score proxy
+                    ml = ap.get('ml_score', 50) or 50
+                    expected_annual = (ml - 50) / 100.0
             weighted_return += mv * expected_annual
             total_weight += mv
 
         if total_weight <= 0 or portfolio_vol <= 0.01:
             return 1.0
         avg_return = weighted_return / total_weight
-        # Shift to make ratio positive: add risk-free proxy ~3%
+        # Add risk-free proxy ~3%
         return (avg_return + 0.03) / portfolio_vol
 
     def _calc_capital_utilization(self, total_mv: float, total_capital: float) -> float:
@@ -661,15 +668,48 @@ class PortfolioScorer:
     # ==================== Layer 4: 执行纪律 ====================
 
     def _calc_recommendation_follow_rate(self, recommendations: List[Dict]) -> float:
-        """建议执行率 (%)"""
+        """建议执行率 (%)
+
+        Excludes 'hold' and 'watch' as non-actionable.
+        Also checks rebalance_suggestions from management engine.
+        """
         if not recommendations:
-            return 50.0  # default moderate when no history
-        # Only count actionable recommendations (not 'hold')
-        actionable = [r for r in recommendations if r.get('action') not in ('hold', None)]
+            # Check rebalance_suggestions as fallback
+            return self._calc_rebalance_follow_rate()
+
+        # 'hold' and 'watch' are not actionable
+        non_actionable = ('hold', 'watch', None)
+        actionable = [r for r in recommendations if r.get('action') not in non_actionable]
         if not actionable:
-            return 80.0  # all holds = no action needed = good
+            return 80.0  # all holds/watches = no action needed
+
         executed = sum(1 for r in actionable if r.get('is_executed'))
-        return executed / len(actionable) * 100
+        rec_rate = executed / len(actionable) * 100
+
+        # Blend with rebalance_suggestions follow rate (if any)
+        rebal_rate = self._calc_rebalance_follow_rate()
+        if rebal_rate is not None:
+            # Weighted average: 60% recommendation + 40% rebalance
+            return rec_rate * 0.6 + rebal_rate * 0.4
+        return rec_rate
+
+    def _calc_rebalance_follow_rate(self) -> Optional[float]:
+        """再平衡建议执行率 (from management engine)"""
+        try:
+            with sqlite3.connect(self.webapp_db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT status, COUNT(*) FROM rebalance_suggestions GROUP BY status")
+                counts = {r[0]: r[1] for r in cursor.fetchall()}
+                total = sum(counts.values())
+                if total == 0:
+                    return None
+                executed = counts.get('executed', 0)
+                dismissed = counts.get('dismissed', 0)
+                # Dismissed counts as "reviewed" (50% credit)
+                return (executed * 100 + dismissed * 50) / total
+        except Exception:
+            return None
 
     def _calc_sl_tp_coverage(self, positions: List[Dict],
                               analysis_positions: List[Dict]) -> float:
@@ -772,53 +812,67 @@ class PortfolioScorer:
     def _calc_regime_adaptiveness(self, positions: List[Dict],
                                    total_mv: float, total_capital: float,
                                    analysis_positions: List[Dict]) -> float:
-        """市场适应性: 仓位与市况匹配度 (0-100)"""
-        if not analysis_positions:
-            return 50.0  # neutral
+        """市场适应性: 仓位与市况匹配度 (0-100)
 
-        # Detect market regime: prefer real index data, fallback to analysis
+        Scores exposure alignment + bonus for active risk management.
+        """
+        # Detect market regime
         regime = self._detect_market_regime()
-        if regime == 'neutral':
-            # Fallback to analysis-provided regime
+        if regime == 'neutral' and analysis_positions:
             for ap in analysis_positions:
                 ri = ap.get('regime_info', {})
                 if ri and ri.get('regime'):
                     regime = ri['regime']
                     break
 
-        # Calculate exposure ratio
         exposure = total_mv / total_capital if total_capital > 0 else 0
 
-        # Scoring based on regime-exposure alignment
+        # Base score from regime-exposure alignment
         if regime == 'bull':
-            # In bull market, higher exposure is better (70-95% ideal)
             if 0.70 <= exposure <= 0.95:
-                score = 80
+                base = 80
             elif 0.50 <= exposure < 0.70:
-                score = 60
+                base = 60
             elif exposure > 0.95:
-                score = 65  # over-exposed
+                base = 65
             else:
-                score = 30  # under-invested in bull
+                base = 30
         elif regime == 'bear':
-            # In bear market, lower exposure is better (20-50% ideal)
             if 0.20 <= exposure <= 0.50:
-                score = 80
+                base = 80
             elif 0.50 < exposure <= 0.65:
-                score = 55
+                base = 55
             elif exposure < 0.20:
-                score = 65  # too defensive
+                base = 65
             else:
-                score = 25  # over-exposed in bear
+                base = 25
         else:
-            # Neutral: moderate exposure (50-80% ideal)
             if 0.50 <= exposure <= 0.80:
-                score = 75
+                base = 75
             elif 0.40 <= exposure < 0.50 or 0.80 < exposure <= 0.90:
-                score = 55
+                base = 55
             else:
-                score = 35
-        return float(score)
+                base = 35
+
+        # Bonus for active risk management (management engine running)
+        bonus = 0
+        try:
+            with sqlite3.connect(self.webapp_db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT market_regime, target_exposure_pct FROM portfolio_risk_state "
+                    "ORDER BY state_date DESC LIMIT 1")
+                row = cursor.fetchone()
+                if row:
+                    # Management engine is active: +10 bonus
+                    bonus += 10
+                    # Extra +5 if regime detection agrees
+                    if row[0] == regime:
+                        bonus += 5
+        except Exception:
+            pass
+
+        return float(min(base + bonus, 100))
 
     # ==================== 评分引擎 ====================
 

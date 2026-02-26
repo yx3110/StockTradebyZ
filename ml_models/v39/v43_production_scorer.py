@@ -97,10 +97,20 @@ class V43ProductionScorer(V395ProductionScorer):
         else:
             self.winsorize_bounds = None
 
+        # 全局分位数
+        raw_quantiles = model_data.get('global_quantiles')
+        if raw_quantiles is not None:
+            self.global_quantiles = np.array(raw_quantiles)
+        else:
+            quantiles_path = self.model_dir / 'global_quantiles.npy'
+            if quantiles_path.exists():
+                self.global_quantiles = np.load(quantiles_path)
+
         # Walk-forward 结果
         wf = model_data.get('walk_forward_metrics', {})
 
-        print(f"V4.3 模型加载完成: {list(self.models.keys())} [robust_zscore+4targets+equal_weight]")
+        gq_status = f"全局评分" if self.global_quantiles is not None else "截面评分"
+        print(f"V4.3 模型加载完成: {list(self.models.keys())} [robust_zscore+4targets+{gq_status}]")
         print(f"  模型文件: {latest.name}")
         if wf:
             for t, m in wf.items():
@@ -267,14 +277,8 @@ class V43ProductionScorer(V395ProductionScorer):
             combined_pred = self._calculate_fallback_scores(features_df, available_cols)
             predictions = self._estimate_predictions_from_features(features_df, available_cols)
 
-        # 映射到 30-60 分制
-        if len(combined_pred) > 1:
-            from scipy import stats
-            ranks = stats.rankdata(combined_pred)
-            percentiles = (ranks - 1) / (len(ranks) - 1) * 100
-            scores = 30 + percentiles * 0.6
-        else:
-            scores = np.array([60.0])
+        # 全局百分位评分 (or 截面百分位 fallback)
+        scores = self._to_global_score(combined_pred)
 
         # 构建结果
         codes = features_df['code'].tolist()
@@ -372,13 +376,7 @@ class V43ProductionScorer(V395ProductionScorer):
             combined_pred = self._calculate_fallback_scores(filtered_df, available_cols)
             predictions = self._estimate_predictions_from_features(filtered_df, available_cols)
 
-        if len(combined_pred) > 1:
-            from scipy import stats
-            ranks = stats.rankdata(combined_pred)
-            percentiles = (ranks - 1) / (len(ranks) - 1) * 100
-            scores = 30 + percentiles * 0.6
-        else:
-            scores = np.array([60.0])
+        scores = self._to_global_score(combined_pred)
 
         codes = filtered_df['code'].tolist()
         for i, code in enumerate(codes):

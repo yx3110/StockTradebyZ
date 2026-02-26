@@ -89,9 +89,19 @@ class V44ProductionScorer(V43ProductionScorer):
         self.bear_models = model_data.get('bear_models', {})
         self.isotonic_calibration = model_data.get('isotonic_calibration', {})
 
+        # 全局分位数
+        raw_quantiles = model_data.get('global_quantiles')
+        if raw_quantiles is not None:
+            self.global_quantiles = np.array(raw_quantiles)
+        else:
+            quantiles_path = self.model_dir / 'global_quantiles.npy'
+            if quantiles_path.exists():
+                self.global_quantiles = np.load(quantiles_path)
+
         wf = model_data.get('walk_forward_metrics', {})
 
-        print(f"V4.4 模型加载完成: {list(self.models.keys())} [v4.3信号+6增强模块]")
+        gq_status = "全局评分" if self.global_quantiles is not None else "截面评分"
+        print(f"V4.4 模型加载完成: {list(self.models.keys())} [v4.3信号+6增强模块+{gq_status}]")
         print(f"  模型文件: {latest.name}")
         print(f"  熊市专家: {list(self.bear_models.keys()) if self.bear_models else '无'}")
         print(f"  保序校准: {list(self.isotonic_calibration.keys()) if self.isotonic_calibration else '无'}")
@@ -421,14 +431,8 @@ class V44ProductionScorer(V43ProductionScorer):
             combined_pred = self._calculate_fallback_scores(features_df, available_cols)
             predictions = self._estimate_predictions_from_features(features_df, available_cols)
 
-        # 映射到 30-90 分制
-        if len(combined_pred) > 1:
-            from scipy import stats
-            ranks = stats.rankdata(combined_pred)
-            percentiles = (ranks - 1) / (len(ranks) - 1) * 100
-            scores = 30 + percentiles * 0.6
-        else:
-            scores = np.array([60.0])
+        # 全局百分位评分 (or 截面百分位 fallback)
+        scores = self._to_global_score(combined_pred)
 
         for i, code in enumerate(codes):
             results[code] = {
@@ -445,7 +449,7 @@ class V44ProductionScorer(V43ProductionScorer):
         # Step 3: Module A — 保序回归校准
         results = self._apply_isotonic_calibration(results, codes)
 
-        # 校准后重新计算综合分数和排名 (V4.4.1: 市况自适应权重)
+        # 校准后重新计算综合分数 (V4.4.1: 市况自适应权重 + 全局百分位)
         if model_predictions_success and self.isotonic_calibration:
             new_combined = np.zeros(len(codes))
             for i, code in enumerate(codes):
@@ -458,11 +462,8 @@ class V44ProductionScorer(V43ProductionScorer):
                         regime_weights.get('label_15d', 0.20) * r.get('pred_15d', 0)
                     )
 
-            if len(new_combined) > 1:
-                from scipy import stats
-                ranks = stats.rankdata(new_combined)
-                percentiles = (ranks - 1) / (len(ranks) - 1) * 100
-                new_scores = 30 + percentiles * 0.6
+            new_scores = self._to_global_score(new_combined)
+            if len(new_scores) > 0:
                 for i, code in enumerate(codes):
                     if code in results:
                         results[code]['score'] = float(new_scores[i])
@@ -564,13 +565,7 @@ class V44ProductionScorer(V43ProductionScorer):
             combined_pred = self._calculate_fallback_scores(filtered_df, available_cols)
             predictions = self._estimate_predictions_from_features(filtered_df, available_cols)
 
-        if len(combined_pred) > 1:
-            from scipy import stats
-            ranks = stats.rankdata(combined_pred)
-            percentiles = (ranks - 1) / (len(ranks) - 1) * 100
-            scores = 30 + percentiles * 0.6
-        else:
-            scores = np.array([60.0])
+        scores = self._to_global_score(combined_pred)
 
         for i, code in enumerate(codes):
             results[code] = {
@@ -587,7 +582,7 @@ class V44ProductionScorer(V43ProductionScorer):
         # Step 3: Module A — 保序回归校准
         results = self._apply_isotonic_calibration(results, codes)
 
-        # 校准后重新排名 (V4.4.1: 市况自适应权重)
+        # 校准后重新评分 (V4.4.1: 市况自适应权重 + 全局百分位)
         if model_predictions_success and self.isotonic_calibration:
             new_combined = np.zeros(len(codes))
             for i, code in enumerate(codes):
@@ -600,11 +595,8 @@ class V44ProductionScorer(V43ProductionScorer):
                         regime_weights.get('label_15d', 0.20) * r.get('pred_15d', 0)
                     )
 
-            if len(new_combined) > 1:
-                from scipy import stats
-                ranks = stats.rankdata(new_combined)
-                percentiles = (ranks - 1) / (len(ranks) - 1) * 100
-                new_scores = 30 + percentiles * 0.6
+            new_scores = self._to_global_score(new_combined)
+            if len(new_scores) > 0:
                 for i, code in enumerate(codes):
                     if code in results:
                         results[code]['score'] = float(new_scores[i])
@@ -905,14 +897,8 @@ class V442ProductionScorer(V44ProductionScorer):
             combined_pred = self._calculate_fallback_scores(features_df, available_cols)
             predictions = self._estimate_predictions_from_features(features_df, available_cols)
 
-        # 映射到 30-90 分制
-        if len(combined_pred) > 1:
-            from scipy import stats
-            ranks = stats.rankdata(combined_pred)
-            percentiles = (ranks - 1) / (len(ranks) - 1) * 100
-            scores = 30 + percentiles * 0.6
-        else:
-            scores = np.array([60.0])
+        # 全局百分位评分
+        scores = self._to_global_score(combined_pred)
 
         for i, code in enumerate(codes):
             results[code] = {
@@ -929,7 +915,7 @@ class V442ProductionScorer(V44ProductionScorer):
         # Step 3: Module A — 保序回归校准
         results = self._apply_isotonic_calibration(results, codes)
 
-        # Step 3b: 校准后重新计算综合分数和排名
+        # Step 3b: 校准后重新评分 (全局百分位)
         if model_predictions_success and self.isotonic_calibration:
             new_combined = np.zeros(len(codes))
             for i, code in enumerate(codes):
@@ -942,11 +928,8 @@ class V442ProductionScorer(V44ProductionScorer):
                         regime_weights.get('label_15d', 0.20) * r.get('pred_15d', 0)
                     )
 
-            if len(new_combined) > 1:
-                from scipy import stats
-                ranks = stats.rankdata(new_combined)
-                percentiles = (ranks - 1) / (len(ranks) - 1) * 100
-                new_scores = 30 + percentiles * 0.6
+            new_scores = self._to_global_score(new_combined)
+            if len(new_scores) > 0:
                 for i, code in enumerate(codes):
                     if code in results:
                         results[code]['score'] = float(new_scores[i])
@@ -1056,13 +1039,7 @@ class V442ProductionScorer(V44ProductionScorer):
             combined_pred = self._calculate_fallback_scores(filtered_df, available_cols)
             predictions = self._estimate_predictions_from_features(filtered_df, available_cols)
 
-        if len(combined_pred) > 1:
-            from scipy import stats
-            ranks = stats.rankdata(combined_pred)
-            percentiles = (ranks - 1) / (len(ranks) - 1) * 100
-            scores = 30 + percentiles * 0.6
-        else:
-            scores = np.array([60.0])
+        scores = self._to_global_score(combined_pred)
 
         for i, code in enumerate(codes):
             results[code] = {
@@ -1079,7 +1056,7 @@ class V442ProductionScorer(V44ProductionScorer):
         # Step 3: Module A — 保序回归校准
         results = self._apply_isotonic_calibration(results, codes)
 
-        # Step 3b: 校准后重新排名
+        # Step 3b: 校准后重新评分 (全局百分位)
         if model_predictions_success and self.isotonic_calibration:
             new_combined = np.zeros(len(codes))
             for i, code in enumerate(codes):
@@ -1092,11 +1069,8 @@ class V442ProductionScorer(V44ProductionScorer):
                         regime_weights.get('label_15d', 0.20) * r.get('pred_15d', 0)
                     )
 
-            if len(new_combined) > 1:
-                from scipy import stats
-                ranks = stats.rankdata(new_combined)
-                percentiles = (ranks - 1) / (len(ranks) - 1) * 100
-                new_scores = 30 + percentiles * 0.6
+            new_scores = self._to_global_score(new_combined)
+            if len(new_scores) > 0:
                 for i, code in enumerate(codes):
                     if code in results:
                         results[code]['score'] = float(new_scores[i])
