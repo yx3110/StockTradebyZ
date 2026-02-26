@@ -49,38 +49,61 @@
     </div>
 </div>
 
-<!-- 持仓汇总卡片 -->
+<!-- 持仓汇总 + PPS评分卡片 -->
 <div class="row g-3 mb-4">
-    <div class="col-md-3">
+    <div class="col-md-2">
         <div class="card text-white bg-primary h-100">
-            <div class="card-body">
-                <h6 class="card-title"><i class="bi bi-cash-stack"></i> 总市值</h6>
-                <h3 id="stat-total-mv">-</h3>
+            <div class="card-body py-2">
+                <h6 class="card-title mb-1"><i class="bi bi-cash-stack"></i> 总市值</h6>
+                <h4 id="stat-total-mv" class="mb-0">-</h4>
             </div>
         </div>
     </div>
-    <div class="col-md-3">
+    <div class="col-md-2">
         <div class="card h-100" id="card-profit-loss">
-            <div class="card-body">
-                <h6 class="card-title"><i class="bi bi-graph-up-arrow"></i> 总盈亏</h6>
-                <h3 id="stat-profit-loss">-</h3>
+            <div class="card-body py-2">
+                <h6 class="card-title mb-1"><i class="bi bi-graph-up-arrow"></i> 总盈亏</h6>
+                <h4 id="stat-profit-loss" class="mb-0">-</h4>
                 <small id="stat-profit-loss-pct" class="text-muted">-</small>
             </div>
         </div>
     </div>
-    <div class="col-md-3">
+    <div class="col-md-2">
         <div class="card text-white bg-info h-100">
-            <div class="card-body">
-                <h6 class="card-title"><i class="bi bi-layers"></i> 持仓数量</h6>
-                <h3 id="stat-position-count">-</h3>
+            <div class="card-body py-2">
+                <h6 class="card-title mb-1"><i class="bi bi-layers"></i> 持仓</h6>
+                <h4 id="stat-position-count" class="mb-0">-</h4>
             </div>
         </div>
     </div>
-    <div class="col-md-3">
+    <div class="col-md-2">
         <div class="card text-white bg-secondary h-100">
-            <div class="card-body">
-                <h6 class="card-title"><i class="bi bi-trophy"></i> 胜率</h6>
-                <h3 id="stat-win-rate">-</h3>
+            <div class="card-body py-2">
+                <h6 class="card-title mb-1"><i class="bi bi-trophy"></i> 胜率</h6>
+                <h4 id="stat-win-rate" class="mb-0">-</h4>
+            </div>
+        </div>
+    </div>
+    <!-- PPS 评分速览 -->
+    <div class="col-md-4">
+        <div class="card h-100 border-warning" id="pps-quick-card" style="cursor:pointer"
+             onclick="$('#score-tab').tab('show');" title="点击查看详情">
+            <div class="card-body py-2">
+                <div class="d-flex justify-content-between align-items-center">
+                    <div>
+                        <h6 class="card-title mb-1"><i class="bi bi-speedometer2"></i> Portfolio Pilot Score</h6>
+                        <div class="d-flex align-items-center">
+                            <span class="fs-3 fw-bold me-2" id="pps-quick-score">-</span>
+                            <span class="badge fs-6" id="pps-quick-grade">-</span>
+                        </div>
+                    </div>
+                    <div id="pps-quick-layers" style="font-size:11px;line-height:16px">
+                        <div>L1 持仓质量 <span id="pps-q-l1" class="fw-bold">-</span></div>
+                        <div>L2 风险控制 <span id="pps-q-l2" class="fw-bold">-</span></div>
+                        <div>L3 组合效率 <span id="pps-q-l3" class="fw-bold">-</span></div>
+                        <div>L4 执行纪律 <span id="pps-q-l4" class="fw-bold">-</span></div>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
@@ -106,6 +129,11 @@
     <li class="nav-item">
         <button class="nav-link" id="evaluations-tab" data-bs-toggle="tab" data-bs-target="#evaluations" type="button">
             <i class="bi bi-star"></i> 事后回顾
+        </button>
+    </li>
+    <li class="nav-item">
+        <button class="nav-link" id="score-tab" data-bs-toggle="tab" data-bs-target="#score" type="button">
+            <i class="bi bi-speedometer2"></i> 组合评分
         </button>
     </li>
 </ul>
@@ -338,6 +366,88 @@
                         </thead>
                         <tbody id="trades-tbody"></tbody>
                     </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 组合评分 (Portfolio Pilot Score) -->
+    <div class="tab-pane fade" id="score" role="tabpanel">
+        <div class="card">
+            <div class="card-header bg-dark text-white">
+                <div class="d-flex justify-content-between align-items-center">
+                    <h5 class="mb-0"><i class="bi bi-speedometer2"></i> Portfolio Pilot Score (仓位领航评分)</h5>
+                    <div>
+                        <button class="btn btn-warning btn-sm me-2" id="btn-calc-score">
+                            <i class="bi bi-calculator"></i> 计算评分
+                        </button>
+                    </div>
+                </div>
+            </div>
+            <div class="card-body">
+                <!-- 评分总览 -->
+                <div id="pps-dashboard" style="display:none">
+                    <div class="row g-3 mb-4">
+                        <!-- 总分圆环 -->
+                        <div class="col-md-3 text-center">
+                            <div class="position-relative d-inline-block">
+                                <canvas id="pps-gauge" width="180" height="180"></canvas>
+                                <div class="position-absolute top-50 start-50 translate-middle text-center">
+                                    <div class="fs-2 fw-bold" id="pps-total-score">-</div>
+                                    <div class="fs-6" id="pps-grade-badge">-</div>
+                                </div>
+                            </div>
+                            <div class="mt-2 text-muted small" id="pps-timestamp"></div>
+                        </div>
+                        <!-- 四层雷达图 -->
+                        <div class="col-md-4 text-center">
+                            <canvas id="pps-radar" width="280" height="240"></canvas>
+                        </div>
+                        <!-- 层级详情 -->
+                        <div class="col-md-5">
+                            <div id="pps-layer-bars"></div>
+                            <!-- 改进建议 -->
+                            <div class="mt-3" id="pps-improvements">
+                                <h6><i class="bi bi-lightbulb"></i> 改进建议</h6>
+                                <div id="pps-improvement-list"></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 20指标详情表 -->
+                    <div class="card">
+                        <div class="card-header bg-light">
+                            <h6 class="mb-0"><i class="bi bi-list-check"></i> 20项指标明细</h6>
+                        </div>
+                        <div class="card-body p-0">
+                            <table class="table table-sm table-hover mb-0" id="pps-metrics-table">
+                                <thead class="table-dark">
+                                    <tr>
+                                        <th style="width:30px">#</th>
+                                        <th>层级</th>
+                                        <th>指标</th>
+                                        <th>当前值</th>
+                                        <th style="width:120px">评分</th>
+                                        <th>说明</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="pps-metrics-tbody"></tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- 评分历史 -->
+                    <div class="mt-4">
+                        <h6><i class="bi bi-graph-up"></i> 评分趋势</h6>
+                        <canvas id="pps-history-chart" height="100"></canvas>
+                    </div>
+                </div>
+
+                <!-- 未评分提示 -->
+                <div id="pps-empty" class="text-center text-muted py-5">
+                    <i class="bi bi-speedometer2 fs-1"></i>
+                    <p class="mt-2">点击"计算评分"为当前组合计算 Portfolio Pilot Score</p>
+                    <p class="small">评分体系: 4层/20指标/100分 | 6档评级(S/A+/A/B/C/D)</p>
                 </div>
             </div>
         </div>
@@ -792,6 +902,7 @@ $(document).ready(function() {
         const target = $(e.target).attr('data-bs-target');
         if (target === '#trades') loadTrades();
         else if (target === '#evaluations') loadEvaluations();
+        else if (target === '#score' && !ppsData) calculatePPS();
     });
 
     // 分组筛选按钮点击
@@ -1337,8 +1448,9 @@ function generateRecommendations() {
                 showToast(response.message, 'success');
                 recommendationsData = response.recommendations;
                 renderRecommendations(response.recommendations, response.analysis_summary, response.ml_version, response.ml_info, response.portfolio_risk);
-                // 同时加载开仓建议
+                // 同时加载开仓建议 + 计算PPS评分
                 loadSelections();
+                calculatePPSQuiet();
             } else {
                 showToast(response.error, 'error');
             }
@@ -2090,6 +2202,448 @@ function renderEvaluations(evaluations) {
 function formatCurrency(value) {
     if (value === null || value === undefined) return '-';
     return value.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+// ==================== Portfolio Pilot Score ====================
+
+let ppsData = null;
+
+$('#btn-calc-score').click(calculatePPS);
+
+// Tab切换加载评分历史
+$('button[data-bs-toggle="tab"]').on('shown.bs.tab', function(e) {
+    const target = $(e.target).attr('data-bs-target');
+    if (target === '#score' && !ppsData) {
+        calculatePPS();
+    }
+});
+
+function calculatePPSQuiet() {
+    // 静默计算PPS (不显示loading, 只更新快览卡片)
+    $.ajax({
+        url: '/api/portfolio/score',
+        method: 'POST',
+        contentType: 'application/json',
+        data: JSON.stringify({save: true}),
+        success: function(response) {
+            if (response.success && response.score) {
+                ppsData = response.score;
+                updatePPSQuickCard(ppsData);
+            }
+        }
+    });
+}
+
+function calculatePPS() {
+    showLoading('正在计算 Portfolio Pilot Score...');
+    $.ajax({
+        url: '/api/portfolio/score',
+        method: 'POST',
+        contentType: 'application/json',
+        data: JSON.stringify({save: true}),
+        success: function(response) {
+            hideLoading();
+            if (response.success && response.score) {
+                ppsData = response.score;
+                renderPPS(ppsData);
+                updatePPSQuickCard(ppsData);
+            } else {
+                showToast(response.message || '无法评分', 'info');
+            }
+        },
+        error: function(xhr) {
+            hideLoading();
+            showToast(xhr.responseJSON?.error || '评分失败', 'error');
+        }
+    });
+}
+
+function updatePPSQuickCard(score) {
+    if (!score) return;
+    const gradeColors = {'S':'bg-danger','A+':'bg-warning text-dark','A':'bg-success','B':'bg-info','C':'bg-secondary','D':'bg-dark'};
+    $('#pps-quick-score').text(score.total_pct.toFixed(0) + '%');
+    $('#pps-quick-grade').attr('class', 'badge fs-6 ' + (gradeColors[score.grade]||'bg-secondary')).text(score.grade + ' ' + score.grade_label);
+    const layers = score.layers || {};
+    $('#pps-q-l1').text((layers['1']?.pct||0).toFixed(0) + '%');
+    $('#pps-q-l2').text((layers['2']?.pct||0).toFixed(0) + '%');
+    $('#pps-q-l3').text((layers['3']?.pct||0).toFixed(0) + '%');
+    $('#pps-q-l4').text((layers['4']?.pct||0).toFixed(0) + '%');
+}
+
+function renderPPS(score) {
+    $('#pps-empty').hide();
+    $('#pps-dashboard').show();
+
+    // 总分
+    $('#pps-total-score').text(score.total_score + '/' + score.total_max);
+    const gradeColors = {'S':'bg-danger','A+':'bg-warning text-dark','A':'bg-success','B':'bg-info','C':'bg-secondary','D':'bg-dark'};
+    $('#pps-grade-badge').html(`<span class="badge ${gradeColors[score.grade]||'bg-secondary'} fs-6">${score.grade} ${score.grade_label}</span>`);
+    $('#pps-timestamp').text(score.timestamp || '');
+
+    // 总分圆环
+    drawGauge('pps-gauge', score.total_pct);
+
+    // 雷达图
+    drawRadar('pps-radar', score.layers);
+
+    // 层级条形图
+    renderLayerBars(score.layers);
+
+    // 20项指标表格
+    renderMetricsTable(score.layers);
+
+    // 改进建议
+    renderImprovements(score.improvements);
+
+    // 加载历史
+    loadScoreHistory();
+}
+
+function drawGauge(canvasId, pct) {
+    const canvas = document.getElementById(canvasId);
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    const w = canvas.width, h = canvas.height;
+    const cx = w/2, cy = h/2, r = 70;
+
+    ctx.clearRect(0, 0, w, h);
+
+    // Background arc
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0.75*Math.PI, 2.25*Math.PI);
+    ctx.strokeStyle = '#e9ecef';
+    ctx.lineWidth = 14;
+    ctx.lineCap = 'round';
+    ctx.stroke();
+
+    // Score arc
+    const angle = 0.75*Math.PI + (pct/100) * 1.5*Math.PI;
+    const color = pct >= 80 ? '#dc3545' : (pct >= 60 ? '#198754' : (pct >= 45 ? '#ffc107' : '#6c757d'));
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0.75*Math.PI, Math.min(angle, 2.25*Math.PI));
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 14;
+    ctx.lineCap = 'round';
+    ctx.stroke();
+}
+
+function drawRadar(canvasId, layers) {
+    const canvas = document.getElementById(canvasId);
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    const w = canvas.width, h = canvas.height;
+    const cx = w/2, cy = h/2 + 5, r = 90;
+
+    ctx.clearRect(0, 0, w, h);
+
+    const labels = ['L1 持仓质量', 'L2 风险控制', 'L3 组合效率', 'L4 执行纪律'];
+    const values = [
+        (layers['1']?.pct||0)/100,
+        (layers['2']?.pct||0)/100,
+        (layers['3']?.pct||0)/100,
+        (layers['4']?.pct||0)/100,
+    ];
+    const n = 4;
+    const angleStep = 2*Math.PI / n;
+
+    // Grid lines
+    for (let level = 0.25; level <= 1.0; level += 0.25) {
+        ctx.beginPath();
+        for (let i = 0; i <= n; i++) {
+            const a = -Math.PI/2 + i * angleStep;
+            const x = cx + Math.cos(a) * r * level;
+            const y = cy + Math.sin(a) * r * level;
+            if (i === 0) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+        }
+        ctx.strokeStyle = '#dee2e6';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+    }
+
+    // Axis lines
+    for (let i = 0; i < n; i++) {
+        const a = -Math.PI/2 + i * angleStep;
+        ctx.beginPath();
+        ctx.moveTo(cx, cy);
+        ctx.lineTo(cx + Math.cos(a)*r, cy + Math.sin(a)*r);
+        ctx.strokeStyle = '#dee2e6';
+        ctx.stroke();
+    }
+
+    // Data polygon
+    ctx.beginPath();
+    for (let i = 0; i <= n; i++) {
+        const idx = i % n;
+        const a = -Math.PI/2 + idx * angleStep;
+        const v = Math.max(values[idx], 0.05);
+        const x = cx + Math.cos(a) * r * v;
+        const y = cy + Math.sin(a) * r * v;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+    }
+    ctx.fillStyle = 'rgba(13, 110, 253, 0.2)';
+    ctx.fill();
+    ctx.strokeStyle = '#0d6efd';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    // Dots and labels
+    ctx.font = '11px sans-serif';
+    ctx.textAlign = 'center';
+    for (let i = 0; i < n; i++) {
+        const a = -Math.PI/2 + i * angleStep;
+        const v = Math.max(values[i], 0.05);
+        const x = cx + Math.cos(a) * r * v;
+        const y = cy + Math.sin(a) * r * v;
+
+        ctx.beginPath();
+        ctx.arc(x, y, 4, 0, 2*Math.PI);
+        ctx.fillStyle = '#0d6efd';
+        ctx.fill();
+
+        // Label
+        const lx = cx + Math.cos(a) * (r + 20);
+        const ly = cy + Math.sin(a) * (r + 20);
+        ctx.fillStyle = '#333';
+        ctx.fillText(labels[i], lx, ly);
+        ctx.fillStyle = '#0d6efd';
+        ctx.fillText((values[i]*100).toFixed(0) + '%', lx, ly + 14);
+    }
+}
+
+function renderLayerBars(layers) {
+    const container = $('#pps-layer-bars');
+    container.empty();
+
+    const layerNames = {1:'持仓质量', 2:'风险控制', 3:'组合效率', 4:'执行纪律'};
+    const layerIcons = {1:'bi-gem', 2:'bi-shield-check', 3:'bi-lightning', 4:'bi-clipboard-check'};
+
+    for (let i = 1; i <= 4; i++) {
+        const layer = layers[String(i)] || {};
+        const pct = layer.pct || 0;
+        const color = pct >= 80 ? '#dc3545' : (pct >= 60 ? '#198754' : (pct >= 45 ? '#ffc107' : '#6c757d'));
+
+        container.append(`
+            <div class="mb-2">
+                <div class="d-flex justify-content-between align-items-center mb-1">
+                    <small><i class="bi ${layerIcons[i]}"></i> L${i} ${layerNames[i]}</small>
+                    <small class="fw-bold">${layer.score||0}/${layer.max_score||25} (${pct.toFixed(0)}%)</small>
+                </div>
+                <div class="progress" style="height:10px">
+                    <div class="progress-bar" style="width:${pct}%;background:${color}" role="progressbar"></div>
+                </div>
+            </div>
+        `);
+    }
+}
+
+function renderMetricsTable(layers) {
+    const tbody = $('#pps-metrics-tbody');
+    tbody.empty();
+
+    let idx = 0;
+    const layerColors = {1:'table-primary', 2:'table-danger', 3:'table-success', 4:'table-warning'};
+
+    for (let layerNum = 1; layerNum <= 4; layerNum++) {
+        const layer = layers[String(layerNum)] || {};
+        const metrics = layer.metrics || {};
+
+        Object.entries(metrics).forEach(([key, m]) => {
+            idx++;
+            const stars = renderStars(m.score, m.max_score);
+            let valueStr = formatMetricValue(m.value, m.unit, m.direction);
+
+            tbody.append(`
+                <tr class="${m.score <= 1 ? 'table-danger' : ''}">
+                    <td class="text-muted">${idx}</td>
+                    <td><small class="badge ${layerColors[layerNum] ? 'bg-opacity-50 text-dark ' + layerColors[layerNum] : ''}">${layer.name}</small></td>
+                    <td><strong>${m.name}</strong></td>
+                    <td>${valueStr}</td>
+                    <td>${stars} <small class="text-muted">${m.score}/${m.max_score}</small></td>
+                    <td class="text-muted small">${m.description}</td>
+                </tr>
+            `);
+        });
+    }
+}
+
+function renderStars(score, max) {
+    let html = '';
+    for (let i = 1; i <= max; i++) {
+        if (i <= score) {
+            html += '<i class="bi bi-star-fill text-warning"></i>';
+        } else {
+            html += '<i class="bi bi-star text-muted" style="opacity:0.3"></i>';
+        }
+    }
+    return html;
+}
+
+function formatMetricValue(value, unit, direction) {
+    if (value === null || value === undefined) return '-';
+    if (unit === 'HHI') return value.toFixed(3);
+    if (unit === 'CV') return value.toFixed(3);
+    if (unit === '年化') return (value * 100).toFixed(1) + '%';
+    if (unit === '%') {
+        // Values like max_position_weight (0.09 = 9%) vs win_rate (57.1 = 57.1%)
+        if (Math.abs(value) <= 1 && direction !== 'moderate') {
+            return (value * 100).toFixed(1) + '%';
+        }
+        return value.toFixed(1) + '%';
+    }
+    if (typeof value === 'number') {
+        return Math.abs(value) >= 100 ? value.toFixed(0) : value.toFixed(1);
+    }
+    return String(value);
+}
+
+function renderImprovements(improvements) {
+    const container = $('#pps-improvement-list');
+    container.empty();
+
+    if (!improvements || !improvements.length) {
+        container.html('<div class="text-success small"><i class="bi bi-check-circle"></i> 组合状况优秀，无需改进</div>');
+        return;
+    }
+
+    improvements.forEach(imp => {
+        const priColor = imp.priority === 'high' ? 'danger' : 'warning';
+        const priLabel = imp.priority === 'high' ? '紧急' : '建议';
+        container.append(`
+            <div class="alert alert-${priColor} py-1 px-2 mb-1 small">
+                <span class="badge bg-${priColor} me-1">${priLabel}</span>
+                <strong>${imp.name}</strong> (${imp.current_score}/5):
+                ${imp.suggestion}
+            </div>
+        `);
+    });
+}
+
+function loadScoreHistory() {
+    $.ajax({
+        url: '/api/portfolio/score/history?days=30',
+        success: function(response) {
+            if (response.success && response.scores && response.scores.length > 1) {
+                drawHistoryChart(response.scores.reverse());
+            }
+        }
+    });
+}
+
+function drawHistoryChart(scores) {
+    const canvas = document.getElementById('pps-history-chart');
+    if (!canvas || !scores.length) return;
+    const ctx = canvas.getContext('2d');
+    const w = canvas.width, h = canvas.height;
+
+    ctx.clearRect(0, 0, w, h);
+
+    const padding = {left:50, right:20, top:20, bottom:30};
+    const chartW = w - padding.left - padding.right;
+    const chartH = h - padding.top - padding.bottom;
+
+    const maxPct = 100;
+    const minPct = 0;
+
+    // Grid
+    ctx.strokeStyle = '#e9ecef';
+    ctx.lineWidth = 1;
+    for (let pct = 20; pct <= 100; pct += 20) {
+        const y = padding.top + chartH * (1 - pct/maxPct);
+        ctx.beginPath();
+        ctx.moveTo(padding.left, y);
+        ctx.lineTo(w - padding.right, y);
+        ctx.stroke();
+
+        ctx.fillStyle = '#999';
+        ctx.font = '10px sans-serif';
+        ctx.textAlign = 'right';
+        ctx.fillText(pct + '%', padding.left - 5, y + 3);
+    }
+
+    // Grade bands
+    const bands = [{y:80,label:'S',c:'rgba(220,53,69,0.08)'},{y:60,label:'A',c:'rgba(25,135,84,0.08)'},{y:45,label:'B',c:'rgba(255,193,7,0.08)'}];
+    bands.forEach(b => {
+        const y = padding.top + chartH * (1 - b.y/maxPct);
+        ctx.setLineDash([4,4]);
+        ctx.strokeStyle = '#ccc';
+        ctx.beginPath();
+        ctx.moveTo(padding.left, y);
+        ctx.lineTo(w - padding.right, y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = '#999';
+        ctx.textAlign = 'left';
+        ctx.fillText(b.label, w - padding.right + 3, y + 3);
+    });
+
+    if (scores.length < 2) return;
+
+    // Data lines - total
+    const stepX = chartW / Math.max(scores.length - 1, 1);
+
+    function drawLine(data, color, key) {
+        ctx.beginPath();
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2;
+        data.forEach((s, i) => {
+            const x = padding.left + i * stepX;
+            const y = padding.top + chartH * (1 - (s[key]||0)/maxPct);
+            if (i === 0) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+        });
+        ctx.stroke();
+    }
+
+    drawLine(scores, '#0d6efd', 'total_pct');
+    drawLine(scores, '#dc354580', 'layer1_pct');
+    drawLine(scores, '#19875480', 'layer2_pct');
+    drawLine(scores, '#ffc10780', 'layer3_pct');
+    drawLine(scores, '#6c757d80', 'layer4_pct');
+
+    // Dots for total
+    scores.forEach((s, i) => {
+        const x = padding.left + i * stepX;
+        const y = padding.top + chartH * (1 - (s.total_pct||0)/maxPct);
+        ctx.beginPath();
+        ctx.arc(x, y, 3, 0, 2*Math.PI);
+        ctx.fillStyle = '#0d6efd';
+        ctx.fill();
+    });
+
+    // X labels
+    ctx.fillStyle = '#999';
+    ctx.font = '9px sans-serif';
+    ctx.textAlign = 'center';
+    const showEvery = Math.max(1, Math.floor(scores.length / 8));
+    scores.forEach((s, i) => {
+        if (i % showEvery === 0 || i === scores.length - 1) {
+            const x = padding.left + i * stepX;
+            const label = (s.score_date || '').slice(5);
+            ctx.fillText(label, x, h - 5);
+        }
+    });
+
+    // Legend
+    const legendY = 12;
+    const legends = [
+        {label:'总分', color:'#0d6efd'},
+        {label:'L1', color:'#dc3545'},
+        {label:'L2', color:'#198754'},
+        {label:'L3', color:'#ffc107'},
+        {label:'L4', color:'#6c757d'},
+    ];
+    let lx = padding.left;
+    ctx.font = '10px sans-serif';
+    legends.forEach(l => {
+        ctx.fillStyle = l.color;
+        ctx.fillRect(lx, legendY - 6, 12, 8);
+        ctx.fillStyle = '#333';
+        ctx.textAlign = 'left';
+        ctx.fillText(l.label, lx + 14, legendY + 2);
+        lx += 45;
+    });
 }
 </script>
 {% endblock %}

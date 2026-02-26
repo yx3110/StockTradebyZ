@@ -11,6 +11,7 @@ from pathlib import Path
 from core.database import DatabaseManager
 from core.position_analyzer import PositionAnalyzer
 from core.portfolio_importer import parse_csv, parse_web_paste, parse_html_table, merge_positions
+from core.portfolio_scorer import PortfolioScorer
 
 logger = logging.getLogger(__name__)
 
@@ -1280,4 +1281,155 @@ def get_today_selections():
 
     except Exception as e:
         logger.error(f'获取选股建议失败: {e}', exc_info=True)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+# ==================== 组合评分 API (Portfolio Pilot Score) ====================
+
+@portfolio_bp.route('/score', methods=['POST'])
+def calculate_portfolio_score():
+    """
+    计算 Portfolio Pilot Score (仓位领航评分)
+
+    4层/20指标/100分评分体系:
+    - L1 持仓质量 (5指标/25分)
+    - L2 风险控制 (5指标/25分)
+    - L3 组合效率 (5指标/25分)
+    - L4 执行纪律 (5指标/25分)
+
+    Request Body (optional):
+        {
+            "total_capital": 500000,  // 总资金(含现金)
+            "cash_amount": 50000,     // 现金金额
+            "save": true              // 是否保存到历史
+        }
+
+    Returns:
+        完整评分报告
+    """
+    try:
+        data = request.get_json() or {}
+        total_capital = data.get('total_capital', 0)
+        cash_amount = data.get('cash_amount', 0)
+        save_score = data.get('save', True)
+
+        db = get_db_manager()
+        positions = db.get_all_positions()
+
+        if not positions:
+            return jsonify({
+                'success': True,
+                'score': None,
+                'message': '当前无持仓，无法评分'
+            })
+
+        # 获取ML分析结果
+        analyzer = get_position_analyzer()
+        portfolio_analysis = analyzer.analyze_portfolio(positions)
+
+        # 获取交易记录和建议
+        trades = db.get_all_trades(limit=200)
+        recommendations = db.get_recommendations()
+        snapshots = db.get_position_snapshots(days=60)
+
+        # 计算评分
+        scorer = PortfolioScorer(
+            current_app.config['STOCK_DB_PATH'],
+            current_app.config['WEBAPP_DB_PATH']
+        )
+        score_result = scorer.calculate_score(
+            positions=positions,
+            trades=trades,
+            recommendations=recommendations,
+            snapshots=snapshots,
+            portfolio_analysis=portfolio_analysis,
+            total_capital=total_capital,
+            cash_amount=cash_amount,
+        )
+
+        # 保存到历史
+        if save_score:
+            db.save_portfolio_score(score_result)
+
+        # 序列化层级数据 (将int keys转为str for JSON)
+        layers_serialized = {}
+        for layer_num, layer_data in score_result['layers'].items():
+            layers_serialized[str(layer_num)] = {
+                'name': layer_data['name'],
+                'score': layer_data['score'],
+                'max_score': layer_data['max_score'],
+                'pct': layer_data['pct'],
+                'metrics': {k: {
+                    'value': round(v['value'], 4) if isinstance(v['value'], float) else v['value'],
+                    'score': v['score'],
+                    'max_score': v['max_score'],
+                    'name': v['name'],
+                    'unit': v['unit'],
+                    'description': v['description'],
+                    'direction': v['direction'],
+                } for k, v in layer_data['metrics'].items()}
+            }
+
+        return jsonify({
+            'success': True,
+            'score': {
+                'total_score': score_result['total_score'],
+                'total_max': score_result['total_max'],
+                'total_pct': score_result['total_pct'],
+                'grade': score_result['grade'],
+                'grade_label': score_result['grade_label'],
+                'layers': layers_serialized,
+                'improvements': score_result['improvements'],
+                'position_count': score_result['position_count'],
+                'total_market_value': score_result['total_market_value'],
+                'timestamp': score_result['timestamp'],
+            }
+        })
+
+    except Exception as e:
+        logger.error(f'计算组合评分失败: {e}', exc_info=True)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@portfolio_bp.route('/score/history', methods=['GET'])
+def get_score_history():
+    """
+    获取组合评分历史
+
+    Query Parameters:
+        days: 获取最近N天 (默认30)
+
+    Returns:
+        评分历史列表
+    """
+    try:
+        days = int(request.args.get('days', 30))
+        db = get_db_manager()
+        scores = db.get_portfolio_scores(days)
+
+        return jsonify({
+            'success': True,
+            'scores': scores,
+            'count': len(scores)
+        })
+
+    except Exception as e:
+        logger.error(f'获取评分历史失败: {e}', exc_info=True)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@portfolio_bp.route('/score/<int:score_id>', methods=['GET'])
+def get_score_detail(score_id: int):
+    """获取评分详情"""
+    try:
+        db = get_db_manager()
+        detail = db.get_portfolio_score_detail(score_id)
+
+        if detail:
+            return jsonify({'success': True, 'detail': detail})
+        else:
+            return jsonify({'success': False, 'error': '评分记录不存在'}), 404
+
+    except Exception as e:
+        logger.error(f'获取评分详情失败: {e}', exc_info=True)
         return jsonify({'success': False, 'error': str(e)}), 500

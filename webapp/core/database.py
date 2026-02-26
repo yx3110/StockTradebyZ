@@ -224,8 +224,34 @@ class DatabaseManager:
                 )
             ''')
 
+            # 组合评分历史表
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS portfolio_scores (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    score_date DATE NOT NULL,
+                    total_score INTEGER,
+                    total_max INTEGER,
+                    total_pct REAL,
+                    grade TEXT,
+                    grade_label TEXT,
+                    layer1_score INTEGER,
+                    layer1_pct REAL,
+                    layer2_score INTEGER,
+                    layer2_pct REAL,
+                    layer3_score INTEGER,
+                    layer3_pct REAL,
+                    layer4_score INTEGER,
+                    layer4_pct REAL,
+                    position_count INTEGER,
+                    total_market_value REAL,
+                    details TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(score_date)
+                )
+            ''')
+
             conn.commit()
-            logger.info('Web应用数据库初始化完成（含持仓管理表）')
+            logger.info('Web应用数据库初始化完成（含持仓管理表+评分表）')
 
     # ==================== 主数据库查询方法 ====================
 
@@ -1138,6 +1164,78 @@ class DatabaseManager:
                 LIMIT ?
             ''', (days,))
             return [dict(row) for row in cursor.fetchall()]
+
+    # ==================== 组合评分方法 ====================
+
+    def save_portfolio_score(self, score_result: Dict) -> Optional[int]:
+        """保存组合评分结果"""
+        import json
+
+        with self.get_webapp_db_connection() as conn:
+            cursor = conn.cursor()
+            layers = score_result.get('layers', {})
+            cursor.execute('''
+                INSERT OR REPLACE INTO portfolio_scores
+                (score_date, total_score, total_max, total_pct,
+                 grade, grade_label,
+                 layer1_score, layer1_pct,
+                 layer2_score, layer2_pct,
+                 layer3_score, layer3_pct,
+                 layer4_score, layer4_pct,
+                 position_count, total_market_value, details)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                datetime.now().strftime('%Y-%m-%d'),
+                score_result.get('total_score'),
+                score_result.get('total_max'),
+                score_result.get('total_pct'),
+                score_result.get('grade'),
+                score_result.get('grade_label'),
+                layers.get(1, {}).get('score'),
+                layers.get(1, {}).get('pct'),
+                layers.get(2, {}).get('score'),
+                layers.get(2, {}).get('pct'),
+                layers.get(3, {}).get('score'),
+                layers.get(3, {}).get('pct'),
+                layers.get(4, {}).get('score'),
+                layers.get(4, {}).get('pct'),
+                score_result.get('position_count'),
+                score_result.get('total_market_value'),
+                json.dumps(score_result, ensure_ascii=False, default=str)
+            ))
+            conn.commit()
+            return cursor.lastrowid
+
+    def get_portfolio_scores(self, days: int = 30) -> List[Dict]:
+        """获取组合评分历史"""
+        with self.get_webapp_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT id, score_date, total_score, total_max, total_pct,
+                       grade, grade_label,
+                       layer1_score, layer1_pct,
+                       layer2_score, layer2_pct,
+                       layer3_score, layer3_pct,
+                       layer4_score, layer4_pct,
+                       position_count, total_market_value
+                FROM portfolio_scores
+                ORDER BY score_date DESC
+                LIMIT ?
+            ''', (days,))
+            return [dict(row) for row in cursor.fetchall()]
+
+    def get_portfolio_score_detail(self, score_id: int) -> Optional[Dict]:
+        """获取评分详情 (含完整JSON)"""
+        import json
+        with self.get_webapp_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'SELECT details FROM portfolio_scores WHERE id = ?',
+                (score_id,))
+            row = cursor.fetchone()
+            if row and row['details']:
+                return json.loads(row['details'])
+            return None
 
     def _normalize_code(self, code: str) -> str:
         """标准化股票代码（移除后缀，因为data_adapter数据库不使用后缀）"""
