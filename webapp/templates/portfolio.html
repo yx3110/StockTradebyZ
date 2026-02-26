@@ -369,8 +369,15 @@
 
                 <!-- 开仓建议 (来自选股报告) -->
                 <div class="mt-4" id="new-positions-section" style="display:none">
-                    <h6 class="text-success mb-2">
-                        <i class="bi bi-plus-circle"></i> 开仓建议
+                    <h6 class="text-success mb-2 d-flex align-items-center flex-wrap">
+                        <i class="bi bi-plus-circle"></i>&nbsp;开仓建议
+                        <select class="form-select form-select-sm ms-2" id="selection-version-select" style="width:auto;font-size:12px" title="选股报告版本">
+                            {% for v in selection_versions %}
+                            {% if '_extended' not in v and '_merged' not in v and '_aligned' not in v and '_model' not in v %}
+                            <option value="{{ v }}">{{ v }}</option>
+                            {% endif %}
+                            {% endfor %}
+                        </select>
                         <small class="text-muted ms-2" id="selection-report-date"></small>
                     </h6>
                     <div class="table-responsive">
@@ -2026,27 +2033,46 @@ function renderRecTable(recommendations) {
 // ==================== 开仓建议 (选股报告) ====================
 
 function loadSelections() {
+    const version = $('#selection-version-select').val();
     $.ajax({
         url: '/api/portfolio/selections/today',
-        data: {top_n: 15, min_score: 60},
+        data: {top_n: 15, min_score: 60, version: version},
         success: function(response) {
             if (response.success) {
+                // 同步下拉框到实际使用的版本
+                if (response.version) {
+                    $('#selection-version-select').val(response.version);
+                }
                 renderSelections(response.selections, response.report_date);
             }
         }
     });
 }
 
+// 版本切换：保存设置 + 重新加载
+$('#selection-version-select').on('change', function() {
+    const version = $(this).val();
+    $.ajax({
+        url: '/api/portfolio/settings/selection-version',
+        method: 'PUT',
+        contentType: 'application/json',
+        data: JSON.stringify({version: version}),
+        success: function() {
+            loadSelections();
+        }
+    });
+});
+
 function renderSelections(selections, reportDate) {
     const section = $('#new-positions-section');
     const tbody = $('#selections-tbody');
     tbody.empty();
 
+    section.show();
     if (!selections || !selections.length) {
-        section.hide();
+        $('#selection-report-date').text('(无可用报告)');
         return;
     }
-    section.show();
 
     // 报告日期
     if (reportDate) {

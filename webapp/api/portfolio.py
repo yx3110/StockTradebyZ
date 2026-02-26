@@ -1403,13 +1403,22 @@ def get_today_selections():
         import glob as glob_mod
         top_n = int(request.args.get('top_n', 15))
         min_score = float(request.args.get('min_score', 60))
+        version = request.args.get('version')
 
-        # 找到最新的analysis_data JSON
+        # 未指定版本时，从用户设置读取
+        if not version:
+            db = get_db_manager()
+            version = db.get_portfolio_setting('selection_version', 'v3.9')
+
+        # 用DAILY_SELECTION_DIRS查找目录，fallback到v3.9
         reports_dir = current_app.config.get('REPORTS_DIR',
                         Path(current_app.config['STOCK_DB_PATH']).parent.parent / 'reports')
-        report_dirs = [
-            reports_dir / 'daily_selection_v3.9',
-        ]
+        selection_dirs = current_app.config.get('DAILY_SELECTION_DIRS', {})
+        if version in selection_dirs:
+            report_dirs = [selection_dirs[version]]
+        else:
+            version = 'v3.9'
+            report_dirs = [reports_dir / 'daily_selection_v3.9']
 
         latest_file = None
         latest_date = ''
@@ -1422,7 +1431,7 @@ def get_today_selections():
 
         if not latest_file:
             return jsonify({'success': True, 'selections': [],
-                           'message': '未找到选股报告'})
+                           'message': '未找到选股报告', 'version': version})
 
         with open(latest_file) as f:
             report_data = json.load(f)
@@ -1474,10 +1483,31 @@ def get_today_selections():
             'report_date': latest_date,
             'total_in_report': len(all_stocks),
             'held_codes': list(held_codes),
+            'version': version,
         })
 
     except Exception as e:
         logger.error(f'获取选股建议失败: {e}', exc_info=True)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@portfolio_bp.route('/settings/selection-version', methods=['PUT'])
+def set_selection_version():
+    """持久化用户选择的选股报告版本"""
+    try:
+        data = request.get_json()
+        version = data.get('version', 'v3.9')
+
+        selection_dirs = current_app.config.get('DAILY_SELECTION_DIRS', {})
+        if version not in selection_dirs:
+            return jsonify({'success': False, 'error': f'未知版本: {version}'}), 400
+
+        db = get_db_manager()
+        db.set_portfolio_setting('selection_version', version)
+        return jsonify({'success': True, 'version': version})
+
+    except Exception as e:
+        logger.error(f'设置选股版本失败: {e}', exc_info=True)
         return jsonify({'success': False, 'error': str(e)}), 500
 
 

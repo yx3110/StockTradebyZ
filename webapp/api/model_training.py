@@ -454,7 +454,7 @@ def get_models_ranking():
     try:
         ranking = []
 
-        for version, report_rel in VERSION_REPORT_DIRS.items():
+        for version in _get_rankable_report_dirs():
             ns = _compute_north_star_v2(version)
             if ns.get('has_data'):
                 ranking.append({
@@ -592,6 +592,7 @@ def _get_model_name(version: str) -> str:
         'v4.0': 'V4.0 基础多目标系统',
         'v4.3': 'V4.3 Walk-Forward验证',
         'v4.4': 'V4.4 六模块增强系统',
+        'v4.5': 'V4.5 CPPI动态风控',
         'v5.0': 'V5.0 下一代系统',
     }
     if version in names:
@@ -616,6 +617,7 @@ def _get_model_description(version: str) -> str:
         'v4.0': '多目标预测基础版，Walk-Forward验证框架',
         'v4.3': 'Walk-Forward交叉验证，59特征，Sharpe融合标签',
         'v4.4': '六增强模块(单调性/熊市/流动性/Sharpe/可执行性/市况自适应)，59特征',
+        'v4.5': '基于V4.4 + CPPI Trailing Floor动态风控overlay，decaying peak机制',
         'v5.0': '下一代预测系统',
     }
     return descriptions.get(version, f'{version} 机器学习评分模型')
@@ -1117,29 +1119,31 @@ def _run_model_training(progress_callback, **params):
 
 # ==================== North Star V2 评分卡 ====================
 
-# 版本 → 报告目录映射
-VERSION_REPORT_DIRS = {
-    'v3.9': 'reports/daily_selection_v3.9',
-    'v3.95': 'reports/daily_selection_v3.95_robust_zscore',
-    'v3.96': 'reports/daily_selection_v3.96_aligned',
-    'v4.3': 'reports/daily_selection_v4.3',
-    'v4.4': 'reports/daily_selection_v4.4_v2',
-    'v5.0': 'reports/daily_selection_v5.0',
-}
+# 衍生目录后缀（不参与北极星排名）
+_DERIVATIVE_SUFFIXES = ('_extended', '_merged', '_aligned')
+
+
+def _get_rankable_report_dirs() -> Dict[str, Path]:
+    """从DAILY_SELECTION_DIRS自动发现可参与排名的报告目录，过滤掉衍生目录"""
+    all_dirs = current_app.config.get('DAILY_SELECTION_DIRS', {})
+    result = {}
+    for key, path in all_dirs.items():
+        if any(s in key for s in _DERIVATIVE_SUFFIXES):
+            continue
+        result[key] = path
+    return result
 
 
 def _compute_north_star_v2(version: str) -> Dict[str, Any]:
     """计算North Star V2评分卡，带文件缓存"""
-    base_dir = current_app.config['BASE_DIR']
-
-    # 检查此版本是否有选股报告
-    report_rel = VERSION_REPORT_DIRS.get(version)
-    if not report_rel:
+    # 从DAILY_SELECTION_DIRS动态查找报告目录
+    all_dirs = current_app.config.get('DAILY_SELECTION_DIRS', {})
+    report_dir = all_dirs.get(version)
+    if not report_dir:
         return {'error': '此版本无选股报告，无法评估', 'has_data': False}
 
-    report_dir = base_dir / report_rel
     if not report_dir.exists():
-        return {'error': f'报告目录不存在: {report_rel}', 'has_data': False}
+        return {'error': f'报告目录不存在: {report_dir}', 'has_data': False}
 
     # 检查缓存
     cache_dir = current_app.config['WEBAPP_DIR'] / 'data'

@@ -1529,9 +1529,9 @@ class TomorrowStockSelector:
                     
             else:  # 单策略
                 # 单策略需要更高标准，但v3.41、v3.81、v3.9和v3.94需要特殊处理
-                if hasattr(self, 'scoring_version') and self.scoring_version in ["v3.9", "v3.94", "v3.95", "v3.96", "v4.0", "v4.2", "v4.3"]:
-                    # 🏆 v3.9/v3.94/v3.95生产版：完全信任ML模型的评分和建议，不做单策略惩罚
-                    # v3.9/v3.94/v3.95是经过充分训练的A/A+级模型，其评分本身已包含质量判断
+                if hasattr(self, 'scoring_version') and self.scoring_version in ["v3.9", "v3.94", "v3.95", "v3.96", "v4.0", "v4.2", "v4.3", "v4.4", "v4.42", "v4.5"]:
+                    # 🏆 生产版：完全信任ML模型的评分和建议，不做单策略惩罚
+                    # 全局评分模型的评分本身已包含质量判断，不应被策略数量降级
                     recommendation = base_recommendation
                     confidence = base_confidence
                     logger.debug(f"V3.9x保持原建议: {recommendation} (评分={score:.1f})")
@@ -1812,7 +1812,7 @@ class TomorrowStockSelector:
                     detailed_info = {
                         'final_score': final_score,
                         'confidence_score': 0.85,
-                        'confidence_level': 'high' if final_score >= 75 else 'medium' if final_score >= 55 else 'low',
+                        'confidence_level': 'high' if final_score >= 70 else 'medium' if final_score >= 55 else 'low',
                         'short_term_score': final_score,
                         'medium_term_score': final_score,
                         'long_term_score': final_score,
@@ -1824,8 +1824,8 @@ class TomorrowStockSelector:
                         'overall_quality': 0.85,
                         'quality_score': 0.85,
                         'risk_level': 'medium',
-                        'recommendation': '买入' if final_score >= 75 else '观望' if final_score >= 55 else '回避',
-                        'confidence': 'high' if final_score >= 75 else 'medium',
+                        'recommendation': '强烈买入' if final_score >= 85 else '买入' if final_score >= 70 else '谨慎买入' if final_score >= 55 else '观望' if final_score >= 40 else '回避',
+                        'confidence': 'high' if final_score >= 70 else 'medium' if final_score >= 55 else 'low',
                         'scoring_method': 'V4.4_Enhanced_6Modules',
                         'exec_filter': result.get('exec_filter', ''),
                         'regime_info': result.get('regime_info', {}),
@@ -1857,7 +1857,7 @@ class TomorrowStockSelector:
                     detailed_info = {
                         'final_score': final_score,
                         'confidence_score': 0.85,
-                        'confidence_level': 'high' if final_score >= 75 else 'medium' if final_score >= 55 else 'low',
+                        'confidence_level': 'high' if final_score >= 70 else 'medium' if final_score >= 55 else 'low',
                         'short_term_score': final_score,
                         'medium_term_score': final_score,
                         'long_term_score': final_score,
@@ -1869,8 +1869,8 @@ class TomorrowStockSelector:
                         'overall_quality': 0.85,
                         'quality_score': 0.85,
                         'risk_level': 'medium',
-                        'recommendation': '买入' if final_score >= 75 else '观望' if final_score >= 55 else '回避',
-                        'confidence': 'high' if final_score >= 75 else 'medium',
+                        'recommendation': '强烈买入' if final_score >= 85 else '买入' if final_score >= 70 else '谨慎买入' if final_score >= 55 else '观望' if final_score >= 40 else '回避',
+                        'confidence': 'high' if final_score >= 70 else 'medium' if final_score >= 55 else 'low',
                         'scoring_method': 'V4.3_Enhanced_WalkForward',
                     }
                     return final_score, detailed_info
@@ -3677,6 +3677,23 @@ class TomorrowStockSelector:
   - **60分以下** → ⚠️ **回避**（模型不看好）
 
 **🎯 核心理念：让机器学习识别市场规律，实现智能量化选股**
+"""
+        elif hasattr(self, 'scoring_version') and self.scoring_version in ["v4.3", "v4.4", "v4.42", "v4.5"]:
+            scoring_explanation = """
+
+## 📊 **全局百分位评分说明**
+
+**评分含义**: 分数代表该股票在2020年以来所有历史预测中的全局排名百分位。
+
+- 📈 **评分指引**：
+  - **85分以上** → **强烈买入**（历史top 15%信号，极强机会）
+  - **70-84分** → **买入**（历史top 30%信号，优质机会）
+  - **55-69分** → **谨慎买入**（高于历史中位数，可关注）
+  - **40-54分** → **观望**（接近历史中位数，信号一般）
+  - **40分以下** → **回避**（低于历史中位数，不建议操作）
+
+- 💡 **与旧版的区别**: 旧版每天都有90分的股票（截面排名），新版只有真正优秀的信号才能获得高分（全局排名）
+- 📉 **弱市表现**: 在市场低迷时，可能没有任何股票超过70分 — 这是正确的，说明当天没有历史级别的好机会
 """
         else:
             scoring_explanation = ""
