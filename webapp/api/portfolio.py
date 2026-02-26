@@ -754,6 +754,13 @@ def generate_recommendations():
         # 按风险评分排序 (高风险优先)
         recommendations.sort(key=lambda x: -(x.get('risk_score') or 0))
 
+        # 顺带更新追踪止损 (保持SL/TP同步最新)
+        try:
+            manager = get_portfolio_manager()
+            manager.update_trailing_stops(positions)
+        except Exception as e:
+            logger.warning(f'追踪止损更新失败: {e}')
+
         # 获取ML版本信息
         ml_version = analyzer.ml_version or 'N/A'
         ml_info = {
@@ -1444,8 +1451,8 @@ def calculate_portfolio_score():
             current_app.config['WEBAPP_DB_PATH']
         )
 
-        # Auto-match trades to recommendations before scoring
-        recommendations = scorer.auto_match_recommendations(trades, recommendations)
+        # Auto-match trades + positions to recommendations before scoring
+        recommendations = scorer.auto_match_recommendations(trades, recommendations, positions)
 
         score_result = scorer.calculate_score(
             positions=positions,

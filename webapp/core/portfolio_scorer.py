@@ -670,26 +670,24 @@ class PortfolioScorer:
     def _calc_recommendation_follow_rate(self, recommendations: List[Dict]) -> float:
         """建议执行率 (%)
 
-        Excludes 'hold' and 'watch' as non-actionable.
-        Also checks rebalance_suggestions from management engine.
+        Counts all recommendation types including 'hold' (auto-matched to positions).
+        Excludes 'watch' (观察，非操作). Blends with rebalance_suggestions.
         """
         if not recommendations:
-            # Check rebalance_suggestions as fallback
-            return self._calc_rebalance_follow_rate()
+            rebal = self._calc_rebalance_follow_rate()
+            return rebal if rebal is not None else 50.0
 
-        # 'hold' and 'watch' are not actionable
-        non_actionable = ('hold', 'watch', None)
-        actionable = [r for r in recommendations if r.get('action') not in non_actionable]
-        if not actionable:
-            return 80.0  # all holds/watches = no action needed
+        # Exclude only 'watch' and None (non-actions)
+        trackable = [r for r in recommendations if r.get('action') not in ('watch', None)]
+        if not trackable:
+            return 80.0
 
-        executed = sum(1 for r in actionable if r.get('is_executed'))
-        rec_rate = executed / len(actionable) * 100
+        executed = sum(1 for r in trackable if r.get('is_executed'))
+        rec_rate = executed / len(trackable) * 100
 
         # Blend with rebalance_suggestions follow rate (if any)
         rebal_rate = self._calc_rebalance_follow_rate()
         if rebal_rate is not None:
-            # Weighted average: 60% recommendation + 40% rebalance
             return rec_rate * 0.6 + rebal_rate * 0.4
         return rec_rate
 
@@ -951,13 +949,22 @@ class PortfolioScorer:
     # ==================== 建议自动匹配 ====================
 
     def auto_match_recommendations(self, trades: List[Dict],
-                                    recommendations: List[Dict]) -> List[Dict]:
+                                    recommendations: List[Dict],
+                                    positions: List[Dict] = None) -> List[Dict]:
         """
-        自动将交易记录匹配到操作建议 (code+action, 3天窗口内)
-        返回更新后的 recommendations 列表 (is_executed 标记已更新)
+        自动将交易记录和持仓匹配到操作建议
+
+        匹配规则:
+        1. 交易记录匹配: code+action, 3天窗口内
+        2. 持仓匹配: 'hold' recommendation = 正在持有即为执行
         """
-        if not trades or not recommendations:
+        if not recommendations:
             return recommendations
+
+        # Build set of currently held codes
+        held_codes = set()
+        if positions:
+            held_codes = {p.get('code', '') for p in positions}
 
         # Action mapping: trade action -> recommendation action compatibility
         action_compat = {
@@ -976,6 +983,16 @@ class PortfolioScorer:
             if not rec_date or not rec_code:
                 continue
 
+            # Rule 2: 'hold' recommendation = holding the stock = executed
+            if rec_action == 'hold' and rec_code in held_codes:
+                rec['is_executed'] = 1
+                self._mark_recommendation_executed(rec.get('id'))
+                continue
+
+            # Rule 1: Trade-based matching
+            if not trades:
+                continue
+
             try:
                 rec_dt = datetime.strptime(str(rec_date)[:10], '%Y-%m-%d')
             except ValueError:
@@ -985,19 +1002,13 @@ class PortfolioScorer:
                 t_code = t.get('code', '')
                 t_action = (t.get('action') or '').lower()
                 t_date = t.get('trade_date', '')
-                if not t_date:
+                if not t_date or t_code != rec_code:
                     continue
 
-                # Code match
-                if t_code != rec_code:
-                    continue
-
-                # Action compatibility
                 compatible_actions = action_compat.get(t_action, ())
                 if rec_action not in compatible_actions and t_action not in action_compat.get(rec_action, ()):
                     continue
 
-                # Date window (trade within 3 days after recommendation)
                 try:
                     t_dt = datetime.strptime(str(t_date)[:10], '%Y-%m-%d')
                 except ValueError:
@@ -1005,7 +1016,6 @@ class PortfolioScorer:
                 delta = (t_dt - rec_dt).days
                 if 0 <= delta <= 3:
                     rec['is_executed'] = 1
-                    # Persist to DB
                     self._mark_recommendation_executed(rec.get('id'))
                     break
 
