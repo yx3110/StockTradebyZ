@@ -527,12 +527,24 @@
             <div class="card-header bg-info text-white">
                 <div class="d-flex justify-content-between align-items-center">
                     <h5 class="mb-0"><i class="bi bi-star-fill"></i> 操作评估</h5>
-                    <button class="btn btn-light btn-sm" id="btn-run-evaluations">
-                        <i class="bi bi-calculator"></i> 执行评估
-                    </button>
+                    <div class="d-flex align-items-center gap-2">
+                        <select id="eval-days-after" class="form-select form-select-sm" style="width: auto;">
+                            <option value="1">1个交易日后</option>
+                            <option value="3">3个交易日后</option>
+                            <option value="5" selected>5个交易日后</option>
+                            <option value="10">10个交易日后</option>
+                            <option value="20">20个交易日后</option>
+                        </select>
+                        <button class="btn btn-light btn-sm" id="btn-run-evaluations">
+                            <i class="bi bi-calculator"></i> 执行评估
+                        </button>
+                    </div>
                 </div>
             </div>
             <div class="card-body">
+                <!-- 评估提示 -->
+                <div id="eval-alert" class="alert d-none mb-3"></div>
+
                 <!-- 评估统计 -->
                 <div class="row g-3 mb-4" id="evaluation-stats">
                     <div class="col-md-3">
@@ -2476,19 +2488,53 @@ function loadEvaluations() {
 }
 
 function runEvaluations() {
+    const daysAfter = parseInt($('#eval-days-after').val()) || 5;
     showLoading('正在评估交易...');
 
     $.ajax({
         url: '/api/portfolio/evaluations/run',
         method: 'POST',
         contentType: 'application/json',
-        data: JSON.stringify({ days_after: 5 }),
+        data: JSON.stringify({ days_after: daysAfter }),
         success: function(response) {
             hideLoading();
             if (response.success) {
                 showToast(response.message, 'success');
                 renderEvaluationStats(response.stats);
                 loadEvaluations();
+
+                // 显示诊断信息
+                const alertEl = $('#eval-alert');
+                if (response.diagnostics) {
+                    const d = response.diagnostics;
+                    let msgs = [];
+                    if (d.evaluated > 0) {
+                        msgs.push(`<strong>本次新评估 ${d.evaluated} 笔交易</strong>`);
+                    }
+                    if (d.already_evaluated > 0) {
+                        msgs.push(`${d.already_evaluated} 笔已有${daysAfter}日评估`);
+                    }
+                    if (d.too_recent > 0) {
+                        msgs.push(`${d.too_recent} 笔交易不足${daysAfter}个交易日，需等待后再评估`);
+                        if (d.earliest_evaluable_date) {
+                            msgs.push(`最早可评估日期: <strong>${d.earliest_evaluable_date}</strong>`);
+                        }
+                    }
+                    if (d.no_price_data > 0) {
+                        msgs.push(`${d.no_price_data} 笔缺少价格数据（ETF/基金可能不在行情库中）`);
+                    }
+
+                    const alertType = d.evaluated > 0 ? 'alert-success' : (d.too_recent > 0 ? 'alert-warning' : 'alert-info');
+                    alertEl.removeClass('d-none alert-success alert-warning alert-info alert-danger')
+                           .addClass(alertType)
+                           .html('<i class="bi bi-info-circle"></i> ' + msgs.join(' | '));
+                } else if (response.evaluated_count === 0) {
+                    alertEl.removeClass('d-none alert-success alert-warning alert-info alert-danger')
+                           .addClass('alert-warning')
+                           .html('<i class="bi bi-exclamation-triangle"></i> 没有可评估的交易。交易需要至少' + daysAfter + '个交易日后才能评估，请稍后再试。');
+                } else {
+                    alertEl.addClass('d-none');
+                }
             }
         },
         error: function() {
@@ -3071,7 +3117,7 @@ function renderRebalanceSuggestions(suggestions) {
             <div class="alert alert-${color} py-2 px-3 mb-2 d-flex align-items-center">
                 <span class="badge bg-${color} me-2">${label}</span>
                 <small class="flex-grow-1">
-                    ${s.code ? '<code>' + s.code + '</code> ' : ''}${s.reason}
+                    ${s.code ? '<code>' + (s.stock_name || '') + '(' + s.code + ')</code> ' : ''}${s.reason}
                 </small>
                 <div class="btn-group btn-group-sm ms-2">
                     <button class="btn btn-outline-success btn-sm" onclick="updateSuggestion(${s.id}, 'executed')" title="已执行">

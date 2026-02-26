@@ -848,11 +848,11 @@ def run_evaluations():
     """
     执行交易评估
 
-    对所有未评估的交易进行评估
+    对所有未评估的交易进行评估，使用交易日计数（非日历日）
 
     Request Body:
         {
-            "days_after": 5  # 评估交易后N天的表现
+            "days_after": 5  # 评估交易后N个交易日的表现
         }
     """
     try:
@@ -863,44 +863,68 @@ def run_evaluations():
         trades = db.get_all_trades(limit=500)
 
         evaluated_count = 0
+        too_recent_count = 0
+        already_evaluated_count = 0
+        no_price_data_count = 0
+        earliest_evaluable_date = None
         today = datetime.now()
         today_str = today.strftime('%Y-%m-%d')
 
         for trade in trades:
-            trade_date = datetime.strptime(trade['trade_date'], '%Y-%m-%d')
-            days_passed = (today - trade_date).days
-
-            # 只评估已经过了足够时间的交易
-            if days_passed < days_after:
-                continue
-
             # 检查是否已评估
             existing = db.get_trade_evaluations(trade['id'])
             if any(e['days_after'] == days_after for e in existing):
+                already_evaluated_count += 1
                 continue
 
-            # 获取交易后的价格
-            end_date = trade_date + timedelta(days=days_after + 5)  # 多取几天以确保有数据
+            # 获取交易日之后的价格数据（使用trade_date的下一天作为起点，确保只取交易后的数据）
+            trade_date = datetime.strptime(trade['trade_date'], '%Y-%m-%d')
+            next_day = trade_date + timedelta(days=1)
+            end_date = trade_date + timedelta(days=days_after * 2 + 10)
             price_history = db.get_stock_price_history(
                 trade['code'],
-                trade['trade_date'],
+                next_day.strftime('%Y-%m-%d'),
                 end_date.strftime('%Y-%m-%d')
             )
 
-            if len(price_history) <= days_after:
+            if not price_history:
+                # 区分：完全无价格数据 vs 交易太新
+                # 检查该股票是否存在于行情库中
+                any_price = db.get_stock_latest_price(trade['code'])
+                if any_price is None:
+                    no_price_data_count += 1
+                else:
+                    too_recent_count += 1
+                    # 至少需要1个交易日后的数据
+                    est_date = today + timedelta(days=2)
+                    est_str = est_date.strftime('%Y-%m-%d')
+                    if earliest_evaluable_date is None or est_str < earliest_evaluable_date:
+                        earliest_evaluable_date = est_str
                 continue
 
-            # 计算评估
+            # price_history 现在只包含交易日之后的数据
+            # price_history[0] = 第1个交易日后, price_history[N-1] = 第N个交易日后
+            if len(price_history) < days_after:
+                too_recent_count += 1
+                # 估算最早可评估日期：还差多少个交易日
+                remaining = days_after - len(price_history)
+                est_date = today + timedelta(days=int(remaining * 1.5) + 1)  # 粗略估算（含周末）
+                est_str = est_date.strftime('%Y-%m-%d')
+                if earliest_evaluable_date is None or est_str < earliest_evaluable_date:
+                    earliest_evaluable_date = est_str
+                continue
+
+            # 计算评估：第N个交易日后的收盘价
             trade_price = trade['price']
-            price_after = price_history[days_after]['close']
+            price_after = price_history[days_after - 1]['close']
 
             if trade['action'] in ['buy', 'add']:
                 return_pct = (price_after - trade_price) / trade_price * 100
             else:  # sell, reduce
                 return_pct = (trade_price - price_after) / trade_price * 100
 
-            # 计算最大盈亏
-            prices = [p['close'] for p in price_history[:days_after + 1]]
+            # 计算最大盈亏（从第1个交易日到第N个交易日）
+            prices = [p['close'] for p in price_history[:days_after]]
             if trade['action'] in ['buy', 'add']:
                 max_profit = (max(prices) - trade_price) / trade_price * 100
                 max_loss = (min(prices) - trade_price) / trade_price * 100
@@ -911,19 +935,19 @@ def run_evaluations():
             # 评分和等级
             if return_pct >= 10:
                 grade, score = 'A', 95
-                comments = '优秀操作，收益超过10%'
+                comments = f'优秀操作，{days_after}个交易日后收益超过10%'
             elif return_pct >= 5:
                 grade, score = 'B', 80
-                comments = '良好操作，收益5-10%'
+                comments = f'良好操作，{days_after}个交易日后收益5-10%'
             elif return_pct >= 0:
                 grade, score = 'C', 65
-                comments = '一般操作，小幅盈利'
+                comments = f'一般操作，{days_after}个交易日后小幅盈利'
             elif return_pct >= -5:
                 grade, score = 'D', 45
-                comments = '较差操作，小幅亏损'
+                comments = f'较差操作，{days_after}个交易日后小幅亏损'
             else:
                 grade, score = 'F', 25
-                comments = '失败操作，亏损超过5%'
+                comments = f'失败操作，{days_after}个交易日后亏损超过5%'
 
             # 保存评估
             eval_data = {
@@ -947,7 +971,16 @@ def run_evaluations():
             'success': True,
             'evaluated_count': evaluated_count,
             'stats': stats,
-            'message': f'已评估{evaluated_count}笔交易'
+            'message': f'已评估{evaluated_count}笔交易',
+            'diagnostics': {
+                'total_trades': len(trades),
+                'evaluated': evaluated_count,
+                'too_recent': too_recent_count,
+                'already_evaluated': already_evaluated_count,
+                'no_price_data': no_price_data_count,
+                'earliest_evaluable_date': earliest_evaluable_date,
+                'days_after': days_after
+            }
         })
 
     except Exception as e:
@@ -1740,6 +1773,11 @@ def get_rebalance_suggestions():
         db = get_db_manager()
         status = request.args.get('status')  # None = all
         suggestions = db.get_rebalance_suggestions(status=status)
+        # Enrich with stock names
+        for s in suggestions:
+            if s.get('code'):
+                name = db.get_stock_name(s['code'])
+                s['stock_name'] = name or ''
         return jsonify({'success': True, 'suggestions': suggestions})
     except Exception as e:
         logger.error(f'获取再平衡建议失败: {e}', exc_info=True)
