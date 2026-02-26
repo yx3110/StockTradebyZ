@@ -1,10 +1,13 @@
 """
-CSV/网页粘贴/HTML 持仓导入器
+CSV/网页粘贴/HTML 持仓导入器 + 成交记录导入器
 
-支持三种输入格式:
+支持三种持仓导入格式:
 1. CSV文件 (东方财富/同花顺导出): 标准CSV, 自动检测GBK/UTF-8编码
 2. 网页粘贴文本 (从券商网页直接复制): 处理多行表头、粘连行、缺失数据
 3. HTML表格 (东方财富模拟交易等网页源码): 结构化解析<table>标签
+
+成交记录导入:
+4. 当日成交HTML表格: 解析券商"当日成交"页面HTML, 支持部分成交合并
 
 核心能力:
 - 自动检测GBK/UTF-8编码
@@ -14,6 +17,7 @@ CSV/网页粘贴/HTML 持仓导入器
 - 检测粘连行 (两只股票挤在一行) 并拆分
 - HTML截断修复: 成本价缺失时从盈亏推算
 - 智能合并已有持仓
+- 成交记录: 同委托编号部分成交合并, 去重导入
 """
 import csv
 import io
@@ -31,6 +35,28 @@ COST_COLUMNS = ['成本价', '参考成本价', '购入价', '买入均价', '�
 PRICE_COLUMNS = ['当前价', '市价', '现价', '最新价', '市场价']
 MARKET_VALUE_COLUMNS = ['市值', '参考市值', '最新市值', '证券市值']
 PNL_COLUMNS = ['持仓盈亏', '盈亏', '浮动盈亏']
+
+# 成交记录列名映射
+TRADE_TIME_COLUMNS = ['成交时间', '时间', '委托时间']
+TRADE_CODE_COLUMNS = ['证券代码', '股票代码', '代码']
+TRADE_NAME_COLUMNS = ['证券名称', '股票名称', '名称']
+TRADE_ACTION_COLUMNS = ['委托方向', '买卖方向', '操作', '方向', '买卖标志']
+TRADE_QTY_COLUMNS = ['成交数量', '数量', '成交量']
+TRADE_PRICE_COLUMNS = ['成交价格', '成交价', '价格', '成交均价']
+TRADE_AMOUNT_COLUMNS = ['成交金额', '金额', '成交额']
+TRADE_ORDER_COLUMNS = ['委托编号', '合同编号', '订单编号', '编号']
+
+# 委托方向映射
+ACTION_MAP = {
+    '证券买入': 'buy',
+    '买入': 'buy',
+    '担保品买入': 'buy',
+    '融资买入': 'buy',
+    '证券卖出': 'sell',
+    '卖出': 'sell',
+    '担保品卖出': 'sell',
+    '融券卖出': 'sell',
+}
 
 # A股/ETF有效代码前2位
 # 00:深主板 30:创业板 60:沪主板 68:科创板 8x:北交所
@@ -685,6 +711,266 @@ def merge_positions(parsed: List[Dict], existing_positions: List[Dict],
     return {
         'added': added,
         'updated': updated,
+        'skipped': skipped,
+        'total': len(parsed),
+        'details': details
+    }
+
+
+# ==================== 成交记录HTML解析 ====================
+
+def parse_trade_html_table(html_text: str) -> Tuple[List[Dict], List[str]]:
+    """
+    解析券商"当日成交"页面的HTML表格
+
+    处理:
+    1. <thead>/<tbody> 结构化表格
+    2. 列名模糊匹配 (成交时间/证券代码/委托方向/成交数量/成交价格/成交金额)
+    3. 委托方向映射 (证券买入→buy, 证券卖出→sell)
+    4. 同委托编号部分成交合并 (加权平均价)
+
+    Returns:
+        (trades, warnings)
+        trades: [{trade_time, code, name, action, quantity, price, amount}, ...]
+    """
+    warnings = []
+
+    # ---- 1. 提取表头 ----
+    headers = []
+    thead = re.search(r'<thead[^>]*>(.*?)</thead>', html_text, re.DOTALL | re.IGNORECASE)
+    if thead:
+        ths = re.findall(r'<th[^>]*>(.*?)</th>', thead.group(1), re.DOTALL | re.IGNORECASE)
+        headers = [re.sub(r'<[^>]+>', '', h).strip() for h in ths]
+
+    if not headers:
+        first_tr = re.search(r'<tr[^>]*>(.*?)</tr>', html_text, re.DOTALL | re.IGNORECASE)
+        if first_tr:
+            cells = re.findall(r'<t[dh][^>]*>(.*?)</t[dh]>', first_tr.group(1),
+                               re.DOTALL | re.IGNORECASE)
+            headers = [re.sub(r'<[^>]+>', '', c).strip() for c in cells]
+
+    if not headers:
+        return [], ['未检测到表头，请检查粘贴内容']
+
+    n_cols = len(headers)
+
+    # ---- 2. 列映射 ----
+    time_idx = _match_column(headers, TRADE_TIME_COLUMNS)
+    code_idx = _match_column(headers, TRADE_CODE_COLUMNS)
+    name_idx = _match_column(headers, TRADE_NAME_COLUMNS)
+    action_idx = _match_column(headers, TRADE_ACTION_COLUMNS)
+    qty_idx = _match_column(headers, TRADE_QTY_COLUMNS)
+    price_idx = _match_column(headers, TRADE_PRICE_COLUMNS)
+    amount_idx = _match_column(headers, TRADE_AMOUNT_COLUMNS)
+    order_idx = _match_column(headers, TRADE_ORDER_COLUMNS)
+
+    mapped = []
+    for label, idx in [('时间', time_idx), ('代码', code_idx), ('名称', name_idx),
+                        ('方向', action_idx), ('数量', qty_idx), ('价格', price_idx),
+                        ('金额', amount_idx), ('委托编号', order_idx)]:
+        if idx is not None:
+            mapped.append(f'{label}=#{idx}({headers[idx]})')
+    warnings.append(f'列映射: {", ".join(mapped)} (共{n_cols}列)')
+
+    if code_idx is None:
+        return [], ['未找到证券代码列，请检查粘贴内容']
+    if qty_idx is None:
+        return [], ['未找到成交数量列，请检查粘贴内容']
+
+    # ---- 3. 提取数据行 ----
+    tbody = re.search(r'<tbody[^>]*>(.*?)</tbody>', html_text, re.DOTALL | re.IGNORECASE)
+    body = tbody.group(1) if tbody else html_text
+    if not tbody and thead:
+        body = html_text[thead.end():]
+    row_htmls = re.findall(r'<tr[^>]*>(.*?)</tr>', body, re.DOTALL | re.IGNORECASE)
+
+    raw_trades = []  # 原始逐笔成交
+    for row_html in row_htmls:
+        cells = _extract_html_cells(row_html)
+
+        # 提取代码
+        code = ''
+        if code_idx is not None and code_idx < len(cells):
+            code = _clean_code(cells[code_idx])
+        if not _is_stock_code(code):
+            row_text = re.sub(r'<[^>]+>', ' ', row_html)
+            m = re.search(r'(\d{6})', row_text)
+            if m and _is_stock_code(m.group(1)):
+                code = m.group(1)
+        if not _is_stock_code(code):
+            continue
+
+        # 提取名称
+        name = ''
+        if name_idx is not None and name_idx < len(cells):
+            name = cells[name_idx]
+
+        # 提取方向
+        action_raw = ''
+        if action_idx is not None and action_idx < len(cells):
+            action_raw = cells[action_idx].strip()
+        action = ACTION_MAP.get(action_raw, '')
+        if not action:
+            # 模糊匹配
+            for key, val in ACTION_MAP.items():
+                if key in action_raw or action_raw in key:
+                    action = val
+                    break
+        if not action:
+            warnings.append(f'{code} {name}: 未识别方向"{action_raw}"，跳过')
+            continue
+
+        # 提取数值
+        def _safe_get(idx):
+            if idx is not None and idx < len(cells):
+                return _parse_number(cells[idx])
+            return None
+
+        quantity = _safe_get(qty_idx)
+        price = _safe_get(price_idx)
+        amount = _safe_get(amount_idx)
+
+        if quantity is None or quantity <= 0:
+            continue
+
+        quantity = int(quantity)
+
+        # 补算金额/价格
+        if amount is None and price is not None:
+            amount = round(quantity * price, 2)
+        if price is None and amount is not None and quantity > 0:
+            price = round(amount / quantity, 4)
+
+        if price is None:
+            warnings.append(f'{code} {name}: 无价格，跳过')
+            continue
+
+        # 成交时间
+        trade_time = ''
+        if time_idx is not None and time_idx < len(cells):
+            trade_time = cells[time_idx].strip()
+
+        # 委托编号 (用于合并部分成交)
+        order_no = ''
+        if order_idx is not None and order_idx < len(cells):
+            order_no = cells[order_idx].strip()
+
+        raw_trades.append({
+            'trade_time': trade_time,
+            'code': code,
+            'name': name,
+            'action': action,
+            'action_raw': action_raw,
+            'quantity': quantity,
+            'price': round(price, 4),
+            'amount': round(amount, 2) if amount else round(quantity * price, 2),
+            'order_no': order_no,
+        })
+
+    # ---- 4. 合并同委托编号的部分成交 ----
+    if any(t['order_no'] for t in raw_trades):
+        merged = {}
+        no_order = []
+        for t in raw_trades:
+            key = t['order_no']
+            if not key:
+                no_order.append(t)
+                continue
+            if key in merged:
+                old = merged[key]
+                # 验证code+action一致
+                if old['code'] == t['code'] and old['action'] == t['action']:
+                    total_amount = old['amount'] + t['amount']
+                    total_qty = old['quantity'] + t['quantity']
+                    old['quantity'] = total_qty
+                    old['amount'] = round(total_amount, 2)
+                    old['price'] = round(total_amount / total_qty, 4) if total_qty > 0 else old['price']
+                    # 取最早时间
+                    if t['trade_time'] < old['trade_time']:
+                        old['trade_time'] = t['trade_time']
+                else:
+                    # 同委托编号但不同股票/方向 (罕见), 不合并
+                    no_order.append(t)
+            else:
+                merged[key] = dict(t)
+
+        before_count = len(raw_trades)
+        trades = list(merged.values()) + no_order
+        after_count = len(trades)
+        if before_count != after_count:
+            warnings.append(f'部分成交合并: {before_count}笔 → {after_count}笔')
+    else:
+        trades = raw_trades
+
+    # 清理输出字段 (移除内部用的order_no和action_raw)
+    for t in trades:
+        t.pop('order_no', None)
+        t.pop('action_raw', None)
+
+    warnings.insert(0, f'成交记录: {len(row_htmls)}行数据，解析出{len(trades)}笔有效成交')
+    return trades, warnings
+
+
+def merge_trades(parsed: List[Dict], trade_date: str, db_manager) -> Dict:
+    """
+    将解析的成交记录导入数据库，跳过重复
+
+    去重规则: 同一天同code+action+quantity+price视为重复
+
+    Args:
+        parsed: parse_trade_html_table返回的解析结果
+        trade_date: 交易日期 (YYYY-MM-DD)
+        db_manager: DatabaseManager实例
+
+    Returns:
+        {added, skipped, details}
+    """
+    added = 0
+    skipped = 0
+    details = []
+
+    # 获取当天已有交易记录用于去重
+    existing_trades = db_manager.get_all_trades(limit=500)
+    existing_keys = set()
+    for t in existing_trades:
+        if t.get('trade_date') == trade_date:
+            key = (t['code'], t['action'], t['quantity'], round(t['price'], 4))
+            existing_keys.add(key)
+
+    for item in parsed:
+        code = item['code']
+        name = item.get('name') or db_manager.get_stock_name(code) or ''
+        action = item['action']
+        quantity = item['quantity']
+        price = item['price']
+
+        # 去重检查
+        dedup_key = (code, action, quantity, round(price, 4))
+        if dedup_key in existing_keys:
+            skipped += 1
+            action_label = '买入' if action in ('buy', 'add') else '卖出'
+            details.append(f'{code} {name}: {action_label} {quantity}股@{price} → 已存在,跳过')
+            continue
+
+        trade_data = {
+            'trade_date': trade_date,
+            'trade_time': item.get('trade_time', ''),
+            'code': code,
+            'name': name,
+            'action': action,
+            'quantity': quantity,
+            'price': price,
+            'reason': '批量导入',
+            'signal_source': 'trade_import',
+        }
+        db_manager.add_trade(trade_data)
+        existing_keys.add(dedup_key)
+        added += 1
+        action_label = '买入' if action in ('buy', 'add') else '卖出'
+        details.append(f'{code} {name}: {action_label} {quantity}股@{price} → 新增')
+
+    return {
+        'added': added,
         'skipped': skipped,
         'total': len(parsed),
         'details': details

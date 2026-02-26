@@ -911,6 +911,76 @@
     </div>
 </div>
 
+<!-- 成交记录导入模态框 -->
+<div class="modal fade" id="tradeImportModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header bg-info text-white">
+                <h5 class="modal-title"><i class="bi bi-upload"></i> 导入当日成交</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <!-- 步骤1: 粘贴HTML -->
+                <div id="trade-import-step1">
+                    <div class="alert alert-info py-2">
+                        <i class="bi bi-info-circle"></i>
+                        从券商"当日成交"页面复制HTML表格内容，粘贴到下方。支持自动合并同委托编号的部分成交。
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">交易日期</label>
+                        <input type="date" class="form-control" id="trade-import-date">
+                    </div>
+                    <textarea class="form-control" id="trade-import-text" rows="8"
+                              placeholder="在此粘贴从券商网页复制的当日成交数据（HTML格式）..."></textarea>
+                    <button class="btn btn-primary mt-2" id="btn-parse-trade-import">
+                        <i class="bi bi-search"></i> 解析预览
+                    </button>
+                </div>
+
+                <!-- 步骤2: 预览确认 -->
+                <div id="trade-import-step2" style="display:none;">
+                    <div id="trade-import-warnings" class="mb-3"></div>
+                    <div class="d-flex justify-content-between align-items-center mb-2">
+                        <h6 class="mb-0">解析结果: <span id="trade-import-count" class="badge bg-primary">0</span> 笔成交</h6>
+                        <button class="btn btn-sm btn-outline-secondary" id="btn-trade-import-back">
+                            <i class="bi bi-arrow-left"></i> 重新粘贴
+                        </button>
+                    </div>
+                    <div class="table-responsive" style="max-height: 400px; overflow-y: auto;">
+                        <table class="table table-sm table-hover">
+                            <thead class="table-light sticky-top">
+                                <tr>
+                                    <th><input type="checkbox" id="trade-import-select-all" checked></th>
+                                    <th>时间</th>
+                                    <th>代码</th>
+                                    <th>名称</th>
+                                    <th>方向</th>
+                                    <th>数量</th>
+                                    <th>价格</th>
+                                    <th>金额</th>
+                                </tr>
+                            </thead>
+                            <tbody id="trade-import-preview-tbody"></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- 步骤3: 导入结果 -->
+                <div id="trade-import-step3" style="display:none;">
+                    <div class="alert alert-success" id="trade-import-result-msg"></div>
+                    <ul id="trade-import-result-details" class="list-group list-group-flush" style="max-height: 300px; overflow-y: auto;"></ul>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
+                <button type="button" class="btn btn-success" id="btn-confirm-trade-import" style="display:none;">
+                    <i class="bi bi-check-lg"></i> 确认导入
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
 {% endblock %}
 
 {% block extra_js %}
@@ -967,6 +1037,24 @@ $(document).ready(function() {
         $('#import-step2, #import-step3, #btn-confirm-import').hide();
         $('#import-file').val('');
         $('#import-paste-text').val('');
+    });
+
+    // 成交导入事件
+    $('#trade-import-date').val(new Date().toISOString().split('T')[0]);
+    $('#btn-parse-trade-import').click(parseTradeImport);
+    $('#btn-confirm-trade-import').click(confirmTradeImport);
+    $('#btn-trade-import-back').click(function() {
+        $('#trade-import-step2').hide();
+        $('#btn-confirm-trade-import').hide();
+        $('#trade-import-step1').show();
+    });
+    $('#trade-import-select-all').change(function() {
+        $('.trade-import-row-check').prop('checked', $(this).is(':checked'));
+    });
+    $('#tradeImportModal').on('hidden.bs.modal', function() {
+        $('#trade-import-step1').show();
+        $('#trade-import-step2, #trade-import-step3, #btn-confirm-trade-import').hide();
+        $('#trade-import-text').val('');
     });
 
     // 股票代码搜索
@@ -2133,6 +2221,130 @@ function confirmImport() {
         },
         error: function(xhr) {
             $('#btn-confirm-import').prop('disabled', false).html('<i class="bi bi-check-lg"></i> 确认导入');
+            showToast(xhr.responseJSON?.error || '导入失败', 'error');
+        }
+    });
+}
+
+// ==================== 成交记录导入 ====================
+
+let tradeImportParsedData = [];
+
+function parseTradeImport() {
+    const text = $('#trade-import-text').val().trim();
+    if (!text) {
+        showToast('请先粘贴成交记录', 'warning');
+        return;
+    }
+
+    $('#btn-parse-trade-import').prop('disabled', true).html('<i class="bi bi-hourglass-split"></i> 解析中...');
+
+    $.ajax({
+        url: '/api/portfolio/trades/import/parse',
+        method: 'POST',
+        contentType: 'application/json',
+        data: JSON.stringify({ text: text }),
+        success: function(response) {
+            $('#btn-parse-trade-import').prop('disabled', false).html('<i class="bi bi-search"></i> 解析预览');
+            if (response.success) {
+                tradeImportParsedData = response.trades;
+                renderTradeImportPreview(response.trades, response.warnings);
+            } else {
+                showToast(response.error, 'error');
+            }
+        },
+        error: function(xhr) {
+            $('#btn-parse-trade-import').prop('disabled', false).html('<i class="bi bi-search"></i> 解析预览');
+            showToast(xhr.responseJSON?.error || '解析失败', 'error');
+        }
+    });
+}
+
+function renderTradeImportPreview(trades, warnings) {
+    const actionLabels = {'buy': '买入', 'sell': '卖出', 'add': '加仓', 'reduce': '减仓'};
+    const actionColors = {'buy': 'text-danger', 'sell': 'text-success'};
+
+    // 显示警告
+    const warningsHtml = warnings.map(w =>
+        `<div class="alert alert-${w.includes('未') || w.includes('失败') ? 'warning' : 'secondary'} py-1 mb-1"><small>${w}</small></div>`
+    ).join('');
+    $('#trade-import-warnings').html(warningsHtml);
+    $('#trade-import-count').text(trades.length);
+
+    // 渲染预览表格
+    const tbody = $('#trade-import-preview-tbody');
+    tbody.empty();
+    trades.forEach(function(t, idx) {
+        const actionLabel = actionLabels[t.action] || t.action;
+        const actionColor = actionColors[t.action] || '';
+        tbody.append(`
+            <tr>
+                <td><input type="checkbox" class="trade-import-row-check" data-idx="${idx}" checked></td>
+                <td>${t.trade_time || '-'}</td>
+                <td><code>${t.code}</code></td>
+                <td>${t.name || '-'}</td>
+                <td class="${actionColor} fw-bold">${actionLabel}</td>
+                <td>${t.quantity?.toLocaleString()}</td>
+                <td>${t.price?.toFixed(4)}</td>
+                <td>${t.amount?.toLocaleString() || '-'}</td>
+            </tr>
+        `);
+    });
+
+    // 切换到步骤2
+    $('#trade-import-step1').hide();
+    $('#trade-import-step2').show();
+    $('#btn-confirm-trade-import').show();
+}
+
+function confirmTradeImport() {
+    const tradeDate = $('#trade-import-date').val();
+    if (!tradeDate) {
+        showToast('请选择交易日期', 'warning');
+        return;
+    }
+
+    // 收集勾选的行
+    const selectedTrades = [];
+    $('.trade-import-row-check:checked').each(function() {
+        const idx = $(this).data('idx');
+        selectedTrades.push(tradeImportParsedData[idx]);
+    });
+
+    if (!selectedTrades.length) {
+        showToast('请至少选择一笔成交', 'warning');
+        return;
+    }
+
+    $('#btn-confirm-trade-import').prop('disabled', true).html('<i class="bi bi-hourglass-split"></i> 导入中...');
+
+    $.ajax({
+        url: '/api/portfolio/trades/import/confirm',
+        method: 'POST',
+        contentType: 'application/json',
+        data: JSON.stringify({ trade_date: tradeDate, trades: selectedTrades }),
+        success: function(response) {
+            $('#btn-confirm-trade-import').prop('disabled', false).hide();
+            if (response.success) {
+                // 显示结果
+                $('#trade-import-step2').hide();
+                $('#trade-import-step3').show();
+                $('#trade-import-result-msg').html(
+                    `<i class="bi bi-check-circle"></i> ${response.message}`
+                );
+                const detailsHtml = (response.details || []).map(d =>
+                    `<li class="list-group-item py-1"><small>${d}</small></li>`
+                ).join('');
+                $('#trade-import-result-details').html(detailsHtml);
+
+                // 刷新交易记录列表
+                loadTrades();
+            } else {
+                showToast(response.error, 'error');
+            }
+        },
+        error: function(xhr) {
+            $('#btn-confirm-trade-import').prop('disabled', false).html('<i class="bi bi-check-lg"></i> 确认导入');
             showToast(xhr.responseJSON?.error || '导入失败', 'error');
         }
     });

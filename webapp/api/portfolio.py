@@ -10,7 +10,7 @@ from pathlib import Path
 
 from core.database import DatabaseManager
 from core.position_analyzer import PositionAnalyzer
-from core.portfolio_importer import parse_csv, parse_web_paste, parse_html_table, merge_positions
+from core.portfolio_importer import parse_csv, parse_web_paste, parse_html_table, merge_positions, parse_trade_html_table, merge_trades
 from core.portfolio_scorer import PortfolioScorer
 from core.portfolio_manager import PortfolioManager
 
@@ -1180,6 +1180,68 @@ def confirm_import():
 
     except Exception as e:
         logger.error(f'导入持仓失败: {e}', exc_info=True)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+# ==================== 成交记录导入 API ====================
+
+@portfolio_bp.route('/trades/import/parse', methods=['POST'])
+def parse_trade_import():
+    """
+    解析粘贴的当日成交HTML文本
+
+    Request Body: {text: "HTML内容"}
+    Returns: {success, trades: [...], warnings: [...], count: N}
+    """
+    try:
+        data = request.get_json()
+        if not data or not data.get('text'):
+            return jsonify({'success': False, 'error': '请粘贴成交记录HTML'}), 400
+
+        text = data['text']
+        if len(text) > 200000:
+            return jsonify({'success': False, 'error': '文本过长(最大200KB)'}), 400
+
+        trades, warnings = parse_trade_html_table(text)
+
+        return jsonify({
+            'success': True,
+            'trades': trades,
+            'warnings': warnings,
+            'count': len(trades)
+        })
+
+    except Exception as e:
+        logger.error(f'解析成交记录失败: {e}', exc_info=True)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@portfolio_bp.route('/trades/import/confirm', methods=['POST'])
+def confirm_trade_import():
+    """
+    确认导入成交记录
+
+    Request Body: {trade_date: "2026-02-26", trades: [{code, name, action, quantity, price, ...}, ...]}
+    Returns: {success, added, skipped, details: [...]}
+    """
+    try:
+        data = request.get_json()
+        if not data or not data.get('trades'):
+            return jsonify({'success': False, 'error': '无导入数据'}), 400
+        if not data.get('trade_date'):
+            return jsonify({'success': False, 'error': '请选择交易日期'}), 400
+
+        db = get_db_manager()
+        result = merge_trades(data['trades'], data['trade_date'], db)
+
+        return jsonify({
+            'success': True,
+            **result,
+            'message': f'导入完成: 新增{result["added"]}笔, 跳过{result["skipped"]}笔(重复)'
+        })
+
+    except Exception as e:
+        logger.error(f'导入成交记录失败: {e}', exc_info=True)
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
