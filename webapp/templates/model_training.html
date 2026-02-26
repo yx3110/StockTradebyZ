@@ -47,6 +47,50 @@
     </div>
 </div>
 
+<!-- 北极星模型排名 -->
+<div class="row mb-4">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header bg-dark text-white">
+                <div class="d-flex justify-content-between align-items-center">
+                    <h5 class="mb-0"><i class="bi bi-trophy-fill"></i> 北极星模型排名</h5>
+                    <button class="btn btn-sm btn-outline-light" onclick="loadModelRanking()" id="btn-refresh-ranking">
+                        <i class="bi bi-arrow-clockwise"></i> 刷新
+                    </button>
+                </div>
+            </div>
+            <div class="card-body">
+                <div id="ranking-loading" class="text-center py-4">
+                    <div class="spinner-border spinner-border-sm"></div>
+                    <span class="ms-2">加载模型排名...</span>
+                </div>
+                <div id="ranking-empty" class="text-center text-muted py-4" style="display:none;">
+                    <i class="bi bi-inbox fs-1"></i>
+                    <p>暂无模型排名数据</p>
+                </div>
+                <div id="ranking-content" style="display:none;">
+                    <div class="table-responsive">
+                        <table class="table table-hover align-middle mb-0" id="ranking-table">
+                            <thead class="table-dark">
+                                <tr>
+                                    <th style="width:5%" class="text-center">排名</th>
+                                    <th style="width:12%">版本</th>
+                                    <th style="width:15%">名称</th>
+                                    <th style="width:8%" class="text-center">等级</th>
+                                    <th style="width:10%" class="text-center">总分</th>
+                                    <th style="width:38%">分层得分</th>
+                                    <th style="width:12%" class="text-center">报告天数</th>
+                                </tr>
+                            </thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
 <!-- 模型版本卡片 -->
 <div class="row mb-4">
     <div class="col-12">
@@ -343,6 +387,7 @@ $(document).ready(function() {
     loadVersionOptions().then(function() {
         loadModelsSummary();
         loadModels();
+        loadModelRanking();
         const defaultVersion = $('#feature-version-select').val();
         if (defaultVersion) {
             loadFeatureImportance(defaultVersion);
@@ -1398,6 +1443,106 @@ function monitorTrainingProgress(taskId) {
         $('#progress-status').removeClass('alert-info').addClass('alert-danger')
             .text('连接中断，请检查训练状态');
     };
+}
+
+// ==================== 北极星模型排名 ====================
+
+function loadModelRanking() {
+    $('#ranking-loading').show();
+    $('#ranking-empty').hide();
+    $('#ranking-content').hide();
+    $('#btn-refresh-ranking').prop('disabled', true);
+
+    $.ajax({
+        url: '/api/models/ranking',
+        timeout: 300000,  // 5min timeout (首次需要计算所有模型)
+        success: function(response) {
+            $('#ranking-loading').hide();
+            $('#btn-refresh-ranking').prop('disabled', false);
+            if (response.success && response.ranking && response.ranking.length > 0) {
+                displayModelRanking(response.ranking);
+            } else {
+                $('#ranking-empty').show();
+            }
+        },
+        error: function() {
+            $('#ranking-loading').hide();
+            $('#btn-refresh-ranking').prop('disabled', false);
+            $('#ranking-empty').show();
+        }
+    });
+}
+
+function displayModelRanking(ranking) {
+    $('#ranking-content').show();
+    const tbody = $('#ranking-table tbody');
+    tbody.empty();
+
+    const LAYER_NAMES = {'1': '信号质量', '2': '组合效率', '3': '风险控制', '4': '盈利鲁棒'};
+    const LAYER_COLORS = {'1': 'primary', '2': 'info', '3': 'warning', '4': 'success'};
+
+    ranking.forEach(function(item) {
+        const gc = GRADE_COLORS[item.grade] || GRADE_COLORS['D'];
+
+        // 排名 medal
+        let rankDisplay;
+        if (item.rank === 1) rankDisplay = '<span class="fs-5">&#x1F947;</span>';
+        else if (item.rank === 2) rankDisplay = '<span class="fs-5">&#x1F948;</span>';
+        else if (item.rank === 3) rankDisplay = '<span class="fs-5">&#x1F949;</span>';
+        else rankDisplay = `<span class="fw-bold text-muted">${item.rank}</span>`;
+
+        // 分层得分条
+        let layerBars = '<div class="d-flex gap-1 align-items-center">';
+        for (const lid of ['1', '2', '3', '4']) {
+            const layer = item.layers[lid];
+            if (!layer) continue;
+            const lPct = layer.max_score > 0 ? (layer.score / layer.max_score * 100).toFixed(0) : 0;
+            const lColor = LAYER_COLORS[lid];
+            layerBars += `
+                <div class="flex-fill" title="L${lid} ${LAYER_NAMES[lid]}: ${layer.score}/${layer.max_score} (${layer.pct}%)">
+                    <div class="small text-muted text-center" style="font-size:0.65rem">L${lid}</div>
+                    <div class="progress" style="height:14px">
+                        <div class="progress-bar bg-${lColor}" style="width:${lPct}%">
+                            <span style="font-size:0.65rem">${layer.score}</span>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+        layerBars += '</div>';
+
+        // 总分进度条颜色
+        const pctBarColor = item.pct >= 80 ? 'bg-warning' :
+                            item.pct >= 70 ? 'bg-danger' :
+                            item.pct >= 60 ? 'bg-success' :
+                            item.pct >= 45 ? 'bg-primary' : 'bg-secondary';
+
+        tbody.append(`
+            <tr style="cursor:pointer" onclick="showModelDetail('${item.version}')">
+                <td class="text-center">${rankDisplay}</td>
+                <td>
+                    <span class="badge bg-primary">${item.version}</span>
+                </td>
+                <td class="small">${item.name}</td>
+                <td class="text-center">
+                    <span class="badge fs-6" style="background:${gc.bg};color:${gc.text}">
+                        ${item.grade}
+                    </span>
+                </td>
+                <td class="text-center">
+                    <div class="fw-bold">${item.total_score}/${item.max_score}</div>
+                    <div class="progress" style="height:6px">
+                        <div class="progress-bar ${pctBarColor}" style="width:${item.pct}%"></div>
+                    </div>
+                    <small class="text-muted">${item.pct}%</small>
+                </td>
+                <td>${layerBars}</td>
+                <td class="text-center">
+                    <small class="text-muted">${item.report_days}天<br>Top${item.top_n} | ${item.focus_days}d</small>
+                </td>
+            </tr>
+        `);
+    });
 }
 
 // ==================== 北极星V2评分卡 ====================

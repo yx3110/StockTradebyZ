@@ -428,6 +428,63 @@ def get_training_history_list(version: str):
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+@model_training_bp.route('/ranking', methods=['GET'])
+def get_models_ranking():
+    """
+    获取所有模型的北极星V2排名
+
+    Returns:
+        {
+            "success": True,
+            "ranking": [
+                {
+                    "version": "v4.4",
+                    "name": "V4.4 六模块增强系统",
+                    "rank": 1,
+                    "total_score": 88,
+                    "max_score": 105,
+                    "pct": 83.8,
+                    "grade": "S",
+                    "report_days": 112,
+                    "layers": {...}
+                }, ...
+            ]
+        }
+    """
+    try:
+        ranking = []
+
+        for version, report_rel in VERSION_REPORT_DIRS.items():
+            ns = _compute_north_star_v2(version)
+            if ns.get('has_data'):
+                ranking.append({
+                    'version': version,
+                    'name': _get_model_name(version),
+                    'total_score': ns['total_score'],
+                    'max_score': ns['max_score'],
+                    'pct': ns['pct'],
+                    'grade': ns['grade'],
+                    'report_days': ns.get('report_days', 0),
+                    'focus_days': ns.get('focus_days', 10),
+                    'top_n': ns.get('top_n', 10),
+                    'layers': ns.get('layers', {}),
+                })
+
+        # 按总分降序排列
+        ranking.sort(key=lambda x: x['total_score'], reverse=True)
+        for i, item in enumerate(ranking):
+            item['rank'] = i + 1
+
+        return jsonify({
+            'success': True,
+            'ranking': ranking
+        })
+
+    except Exception as e:
+        logger.error(f'获取模型排名失败: {e}', exc_info=True)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
 @model_training_bp.route('/summary', methods=['GET'])
 def get_models_summary():
     """
