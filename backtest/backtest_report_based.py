@@ -141,15 +141,28 @@ def get_future_returns(codes, buy_date, holding_days_list=None):
 
     placeholders = ','.join(['?' for _ in codes])
 
-    # 获取买入日开盘价（次日开盘买入）
+    # 获取买入日开盘价和涨停状态（次日开盘买入）
+    # 使用price_change_pct判断涨停（is_limit_up字段填充率<0.01%不可靠）
     buy_prices = {}
+    limit_up_codes = set()
     rows = conn.execute(f"""
-        SELECT s.code, dq.open
+        SELECT s.code, dq.open, dq.price_change_pct
         FROM daily_quotes dq
         JOIN securities s ON dq.security_id = s.id
         WHERE s.code IN ({placeholders}) AND dq.trade_date = ?
     """, list(codes) + [buy_date]).fetchall()
-    for code, open_price in rows:
+    for row in rows:
+        code, open_price, pct = row[0], row[1], row[2]
+        if pct is not None:
+            if code.startswith('30') or code.startswith('688'):
+                threshold = 0.195  # 创业板/科创板 20%
+            elif code.startswith('8'):
+                threshold = 0.295  # 北交所 30%
+            else:
+                threshold = 0.095  # 主板 10%
+            if pct >= threshold:
+                limit_up_codes.add(code)
+                continue  # 涨停股无法买入
         if open_price and open_price > 0:
             buy_prices[code] = open_price
 
@@ -555,6 +568,7 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
     market_ewma_vol = pd.Series(dtype=float)
     nav = 1.0
     peak_nav = 1.0
+    prev_exposure = 1.0
     exposure_history = []
     if overlay_active:
         dates_all_overlay = sorted(reports.keys())
@@ -661,8 +675,13 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
 
         for days in HOLDING_DAYS:
             key = f'return_{days}d'
-            top_returns = [future_returns.get(c, {}).get(key, 0) for c in top_codes
-                          if key in future_returns.get(c, {})]
+            # 退市/缺数据股默认-10%惩罚 (减少存活偏差)
+            top_returns = []
+            for c in top_codes:
+                if c in future_returns and key in future_returns[c]:
+                    top_returns.append(future_returns[c][key])
+                elif c not in future_returns:
+                    top_returns.append(-0.10)  # 退市惩罚
             bottom_returns = [future_returns.get(c, {}).get(key, 0) for c in bottom_codes
                              if key in future_returns.get(c, {})]
 
@@ -719,6 +738,14 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
                            if r['date'] == date and r['days'] == 1]
             if day1_results:
                 nav *= (1 + day1_results[-1]['avg_top_return'])
+
+            # CPPI调仓交易成本: exposure变化意味着实际买卖操作
+            rebal_cost = 0.00302  # 与风险指标交易成本一致
+            exposure_change = abs(exposure - prev_exposure)
+            if exposure_change > 0.01:  # 变化>1%才有实际交易
+                nav *= (1 - rebal_cost * exposure_change)
+            prev_exposure = exposure
+
             # Decaying peak: prevents CPPI trap after prolonged drawdowns
             # Half-life ~139 days (0.995^139 ≈ 0.5)
             peak_nav = max(nav, peak_nav * 0.995)
@@ -809,7 +836,8 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
 
         # 逐日IC序列
         ic_records = []
-        for date in sorted(picks_df['date'].unique()):
+        sorted_dates = sorted(picks_df['date'].unique())
+        for date in sorted_dates:
             day_picks = picks_df[(picks_df['date'] == date) & (picks_df[f'return_{days}d'].notna())]
             if len(day_picks) >= 5:
                 day_ic, day_p = spearmanr(day_picks['score'], day_picks[f'return_{days}d'])
@@ -820,9 +848,16 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
         daily_ic_series[days] = ic_df
 
         # ICIR = mean(daily_IC) / std(daily_IC)
+        # 对多日持仓期，使用非重叠子采样避免自相关导致的ICIR高估
         if len(ic_df) > 5:
-            ic_mean = ic_df['ic'].mean()
-            ic_std = ic_df['ic'].std()
+            if days > 1 and len(ic_df) >= days * 2:
+                # Non-overlapping subsample: take every N-th IC observation
+                ic_subsample = ic_df.iloc[::days]
+                ic_mean = ic_subsample['ic'].mean()
+                ic_std = ic_subsample['ic'].std()
+            else:
+                ic_mean = ic_df['ic'].mean()
+                ic_std = ic_df['ic'].std()
             icir = ic_mean / ic_std if ic_std > 0 else 0
             ic_positive_pct = (ic_df['ic'] > 0).mean() * 100
         else:
@@ -895,8 +930,15 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
         period_ret_series = non_overlap.set_index('date')['avg_top_return'].sort_index()
         period_ret_series.index = pd.to_datetime(period_ret_series.index)
 
-        # --- 风险指标（非重叠period收益，正确年化）---
-        risk = _compute_period_risk_metrics(period_ret_series, days)
+        # 扣除交易成本 (双边佣金0.025% + 卖出印花税0.05% + 双边过户费0.001% + 双边滑点0.1% = ~0.30%)
+        round_trip_cost = (0.00025 * 2   # 佣金双边
+                         + 0.0005         # 印花税(卖出)
+                         + 0.00001 * 2    # 过户费双边
+                         + 0.001 * 2)     # 滑点双边  = 0.00302
+        net_period_ret = period_ret_series - round_trip_cost
+
+        # --- 风险指标（非重叠period收益，正确年化，扣除交易成本）---
+        risk = _compute_period_risk_metrics(net_period_ret, days)
 
         # --- 多偏移量鲁棒月度胜率（消除起始偏移artifact）---
         # 单一偏移量的月度胜率受起始点影响大，改为平均所有可能的偏移量
