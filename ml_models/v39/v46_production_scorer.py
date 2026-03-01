@@ -287,7 +287,11 @@ class V46ProductionScorer(V44ProductionScorer):
 
     def _apply_small_cap_bonus(self, results: Dict[str, Dict], date: str,
                                 codes: List[str]) -> Dict[str, Dict]:
-        """2E: 小盘评分加成 — circ_mv < 截面median → score × 1.05"""
+        """2E: 小盘评分加成 — 连续函数，中位数以下股票获得0-20%加成
+
+        公式: score *= 1 + beta * max(0, 1 - mv/median_mv)
+        beta=0.20: 市值=0时+20%, 市值=median时+0%, 线性过渡
+        """
         circ_mv_data = self._load_daily_basic_for_smallcap(date, codes)
         if not circ_mv_data:
             return results
@@ -297,12 +301,17 @@ class V46ProductionScorer(V44ProductionScorer):
             return results
 
         median_mv = np.median(mv_values)
+        if median_mv <= 0:
+            return results
 
+        beta = 0.20
         for code in codes:
             if code not in results or code not in circ_mv_data:
                 continue
-            if circ_mv_data[code] < median_mv:
-                results[code]['score'] *= 1.05
+            ratio = circ_mv_data[code] / median_mv
+            bonus = beta * max(0, 1 - ratio)
+            if bonus > 0:
+                results[code]['score'] *= (1 + bonus)
 
         return results
 
@@ -448,7 +457,8 @@ class V46ProductionScorer(V44ProductionScorer):
         # Step 8: V4.6 增强可执行性过滤 + 连续流动性折扣
         results = self._apply_enhanced_executability_filters(results, date)
 
-        # Step 9: 小盘评分加成已移除 (V4.6.1: 训练层1.5x已足够, scorer层+5%是double dipping)
+        # Step 9: 小盘评分加成 (连续函数, beta=0.20)
+        results = self._apply_small_cap_bonus(results, date, codes)
 
         # 补全缺失code
         for code in stock_codes:
@@ -596,7 +606,8 @@ class V46ProductionScorer(V44ProductionScorer):
         # Step 8: V4.6 增强可执行性过滤
         results = self._apply_enhanced_executability_filters(results, date)
 
-        # Step 9: 小盘评分加成已移除 (V4.6.1)
+        # Step 9: 小盘评分加成 (连续函数, beta=0.20)
+        results = self._apply_small_cap_bonus(results, date, codes)
 
         # 补全缺失code
         for code in stock_codes:

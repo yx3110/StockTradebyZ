@@ -112,7 +112,8 @@ def generate_reports(scoring_version='v3.95', start_date='2025-09-01', end_date=
 def run_backtest(report_dir, label, top_n=20, benchmark='000905.SH', focus_days=10,
                  retention_bonus=0.0, score_floor=0.0, min_holdings=3,
                  risk_control=False,
-                 vol_target=0.0, cppi_floor=0.0, cppi_multiplier=3.0):
+                 vol_target=0.0, cppi_floor=0.0, cppi_multiplier=3.0,
+                 sector_diversify=0):
     """运行单个模型的回测"""
     from backtest import backtest_report_based as brb
     from backtest import north_star_metrics as nsm
@@ -133,7 +134,8 @@ def run_backtest(report_dir, label, top_n=20, benchmark='000905.SH', focus_days=
         score_floor=score_floor, min_holdings=min_holdings,
         risk_control=risk_control,
         vol_target=vol_target, cppi_floor=cppi_floor,
-        cppi_multiplier=cppi_multiplier
+        cppi_multiplier=cppi_multiplier,
+        sector_diversify=sector_diversify
     )
     return result
 
@@ -225,7 +227,8 @@ def merge_report_dirs(dirs: list, merged_dir: str) -> int:
 def run_extended_backtest(report_dir, extended_dir, label, top_n=20,
                            benchmark='000905.SH', focus_days=10, retention_bonus=0.0,
                            score_floor=0.0, min_holdings=3, risk_control=False,
-                           vol_target=0.0, cppi_floor=0.0, cppi_multiplier=3.0):
+                           vol_target=0.0, cppi_floor=0.0, cppi_multiplier=3.0,
+                           sector_diversify=0):
     """
     扩展窗口回测: 合并现有报告+扩展期报告，运行V2评分
 
@@ -264,7 +267,8 @@ def run_extended_backtest(report_dir, extended_dir, label, top_n=20,
         score_floor=score_floor, min_holdings=min_holdings,
         risk_control=risk_control,
         vol_target=vol_target, cppi_floor=cppi_floor,
-        cppi_multiplier=cppi_multiplier
+        cppi_multiplier=cppi_multiplier,
+        sector_diversify=sector_diversify
     )
     return result
 
@@ -437,6 +441,8 @@ def main():
                         help='V4.5: CPPI最大回撤容忍度 (0=关闭, 推荐0.10)')
     parser.add_argument('--cppi-multiplier', type=float, default=3.0,
                         help='V4.5: CPPI乘数 (默认3.0)')
+    parser.add_argument('--sector-diversify', type=int, default=0,
+                        help='行业分散: 单行业最多N只 (0=关闭, 推荐2)')
     args = parser.parse_args()
 
     if args.generate_reports:
@@ -451,7 +457,8 @@ def main():
                                   args.focus_days, args.retention_bonus,
                                   args.score_floor, args.min_holdings,
                                   args.risk_control,
-                                  args.vol_target, args.cppi_floor, args.cppi_multiplier)
+                                  args.vol_target, args.cppi_floor, args.cppi_multiplier,
+                                  args.sector_diversify)
         else:
             # 默认回测v3.95 RobustZScore
             default_dir = str(PROJECT_ROOT / 'reports' / 'daily_selection_v3.95_robust_zscore')
@@ -459,7 +466,8 @@ def main():
                                   args.focus_days, args.retention_bonus,
                                   args.score_floor, args.min_holdings,
                                   args.risk_control,
-                                  args.vol_target, args.cppi_floor, args.cppi_multiplier)
+                                  args.vol_target, args.cppi_floor, args.cppi_multiplier,
+                                  args.sector_diversify)
 
     if args.regime_analysis:
         report_dir = args.report_dir or str(
@@ -475,7 +483,8 @@ def main():
                 args.report_dir, args.extended_dir, args.label,
                 args.top_n, args.benchmark, args.focus_days, args.retention_bonus,
                 args.score_floor, args.min_holdings, args.risk_control,
-                args.vol_target, args.cppi_floor, args.cppi_multiplier
+                args.vol_target, args.cppi_floor, args.cppi_multiplier,
+                args.sector_diversify
             )
 
     if args.compare:

@@ -437,7 +437,10 @@ def compute_signal_half_life(icir_by_days: Dict[int, float]) -> float:
 def compute_half_period_consistency(period_returns: pd.Series,
                                      holding_days: int) -> Dict:
     """
-    前后半段Sharpe一致性
+    前后半段Sharpe一致性 — 多偏移平均法
+
+    当n较小时，单一中点分割非常脆弱（1个异常值就影响结果）。
+    改为在40%-60%范围内尝试多个分割点，取ratio的平均值。
 
     Args:
         period_returns: 非重叠调仓期收益序列
@@ -445,15 +448,11 @@ def compute_half_period_consistency(period_returns: pd.Series,
 
     Returns:
         dict{ratio, sharpe_h1, sharpe_h2}
-        ratio = min(sharpe_h1, sharpe_h2) / max(sharpe_h1, sharpe_h2)
+        ratio = 多偏移平均的 min(sharpe)/max(sharpe)
     """
     n = len(period_returns)
     if n < 6:
         return {'ratio': 0, 'sharpe_h1': 0, 'sharpe_h2': 0}
-
-    mid = n // 2
-    h1 = period_returns.iloc[:mid]
-    h2 = period_returns.iloc[mid:]
 
     periods_per_year = 252 / holding_days
 
@@ -464,20 +463,27 @@ def compute_half_period_consistency(period_returns: pd.Series,
         annual_vol = rets.std() * np.sqrt(periods_per_year)
         return (annual_ret - 0.02) / annual_vol if annual_vol > 1e-8 else 0
 
-    s1 = _sharpe(h1)
-    s2 = _sharpe(h2)
+    # 多偏移分割: 40%~60% 范围内的所有有效分割点
+    lo = max(3, int(n * 0.40))
+    hi = min(n - 3, int(n * 0.60))
+    if lo > hi:
+        lo = hi = n // 2
 
-    # 如果两个Sharpe都为正，ratio = min/max
-    # 如果一正一负，ratio = 0 (不一致)
-    # 如果都为负，ratio也为0
-    if s1 > 0 and s2 > 0:
-        ratio = min(s1, s2) / max(s1, s2)
-    elif s1 <= 0 and s2 <= 0:
-        ratio = 0
-    else:
-        ratio = 0
+    ratios = []
+    best_s1, best_s2 = 0, 0
+    for mid in range(lo, hi + 1):
+        s1 = _sharpe(period_returns.iloc[:mid])
+        s2 = _sharpe(period_returns.iloc[mid:])
+        if s1 > 0 and s2 > 0:
+            ratios.append(min(s1, s2) / max(s1, s2))
+        else:
+            ratios.append(0)
+        if mid == n // 2:
+            best_s1, best_s2 = s1, s2
 
-    return {'ratio': ratio, 'sharpe_h1': s1, 'sharpe_h2': s2}
+    avg_ratio = np.mean(ratios) if ratios else 0
+
+    return {'ratio': avg_ratio, 'sharpe_h1': best_s1, 'sharpe_h2': best_s2}
 
 
 def compute_worst_rolling_icir(ic_df: pd.DataFrame, window: int = 60) -> Dict:

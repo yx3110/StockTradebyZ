@@ -2587,17 +2587,26 @@ class V46Trainer(V44Trainer):
         super().__init__(db_path=db_path)
 
     def compute_sample_weights(self, df: pd.DataFrame, y: np.ndarray) -> np.ndarray:
-        """V4.6: 父类权重 + 小盘加权×1.5 + 低换手率降权×0.5"""
+        """V4.6: 父类权重 + 四分位分层小盘加权 + 低换手率降权×0.5"""
         weights = super().compute_sample_weights(df, y)
 
-        # 1B: 小盘加权
+        # 1B: 四分位分层小盘加权
         if 'log_market_cap' in df.columns:
             market_cap = df['log_market_cap'].values
-            daily_median = np.nanmedian(market_cap)
-            small_cap_mask = market_cap < daily_median
-            weights[small_cap_mask] *= 1.5
-            n_small = small_cap_mask.sum()
-            logger.info(f"    小盘加权: {n_small:,} 样本 × 1.5 (log_market_cap < median)")
+            q25, q50, q75 = np.nanpercentile(market_cap, [25, 50, 75])
+            # 底部25%: ×2.5, 25-50%: ×1.8, 50-75%: ×1.0, 顶部25%: ×0.7
+            bottom_mask = market_cap < q25
+            lower_mask = (market_cap >= q25) & (market_cap < q50)
+            upper_mask = (market_cap >= q50) & (market_cap < q75)
+            top_mask = market_cap >= q75
+            weights[bottom_mask] *= 2.5
+            weights[lower_mask] *= 1.8
+            # upper: ×1.0 (不变)
+            weights[top_mask] *= 0.7
+            logger.info(f"    四分位小盘加权: bottom25%={bottom_mask.sum():,}×2.5, "
+                        f"lower25%={lower_mask.sum():,}×1.8, "
+                        f"upper25%={upper_mask.sum():,}×1.0, "
+                        f"top25%={top_mask.sum():,}×0.7")
 
         # 低换手率降权 (训练层, 与评分层连续折扣配合)
         if 'turnover_rate' in df.columns:

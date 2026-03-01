@@ -521,7 +521,8 @@ def _compute_overlay_exposure(date, market_ewma_vol, nav, peak_nav,
 def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
                         focus_days=10, retention_bonus=0.0, score_floor=0.0,
                         min_holdings=3, risk_control=False,
-                        vol_target=0.0, cppi_floor=0.0, cppi_multiplier=3.0):
+                        vol_target=0.0, cppi_floor=0.0, cppi_multiplier=3.0,
+                        sector_diversify=0):
     """运行单个报告目录的回测（含北极星指标）
 
     Args:
@@ -551,6 +552,8 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
         print(f"  最少持仓: {min_holdings}只")
     if risk_control:
         print(f"  组合风控: 启用 (熊市减仓+行业集中度)")
+    if sector_diversify > 0:
+        print(f"  行业分散: 单行业最多{sector_diversify}只")
 
     # V4.5 Risk Overlays
     overlay_active = vol_target > 0 or cppi_floor > 0
@@ -588,6 +591,9 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
         market_ret_20d = _load_market_return_20d_bulk(dates_all)
         industry_map = _load_industry_map_bulk()
         print(f"  风控数据预加载: {len(market_ret_20d)}天市场收益, {len(industry_map)}只行业映射")
+    if sector_diversify > 0 and not industry_map:
+        industry_map = _load_industry_map_bulk()
+        print(f"  行业分散数据: {len(industry_map)}只行业映射")
 
     daily_results = []
     all_picks = []
@@ -641,6 +647,18 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
                         ind_count[ind] = ind_count.get(ind, 0) + 1
                 if len(filtered) >= min_holdings:
                     top_stocks = filtered
+
+        # 独立行业分散约束 (无条件限制，不依赖risk_control)
+        if sector_diversify > 0 and industry_map:
+            ind_count = {}
+            filtered = []
+            for s in top_stocks:
+                ind = industry_map.get(s['code'], '未知')
+                if ind_count.get(ind, 0) < sector_diversify:
+                    filtered.append(s)
+                    ind_count[ind] = ind_count.get(ind, 0) + 1
+            if len(filtered) >= min_holdings:
+                top_stocks = filtered
 
         bottom_stocks = stocks[-top_n:] if len(stocks) >= top_n * 2 else stocks[-(len(stocks)//2):]
 
@@ -1642,6 +1660,8 @@ def main():
                         help='最少持仓数 (default: 3)')
     parser.add_argument('--risk-control', action='store_true',
                         help='启用V4.4.2组合风控 (熊市减仓+行业集中度)')
+    parser.add_argument('--sector-diversify', type=int, default=0,
+                        help='行业分散: 单行业最多N只 (0=关闭, 推荐2)')
     args = parser.parse_args()
 
     if args.all:
@@ -1663,7 +1683,8 @@ def main():
                                         args.benchmark, args.focus_days,
                                         score_floor=args.score_floor,
                                         min_holdings=args.min_holdings,
-                                        risk_control=args.risk_control)
+                                        risk_control=args.risk_control,
+                                        sector_diversify=args.sector_diversify)
             if result:
                 results.append(result)
 
@@ -1682,7 +1703,8 @@ def main():
         result_a = run_single_backtest(reports_a, args.label, args.top_n,
                                        args.benchmark, args.focus_days,
                                        score_floor=args.score_floor,
-                                       min_holdings=args.min_holdings)
+                                       min_holdings=args.min_holdings,
+                                       sector_diversify=args.sector_diversify)
 
         results = [result_a] if result_a else []
 
@@ -1692,7 +1714,8 @@ def main():
             result_b = run_single_backtest(reports_b, args.compare_label, args.top_n,
                                            args.benchmark, args.focus_days,
                                            score_floor=args.score_floor,
-                                           min_holdings=args.min_holdings)
+                                           min_holdings=args.min_holdings,
+                                           sector_diversify=args.sector_diversify)
 
             if result_a and result_b:
                 results.append(result_b)
