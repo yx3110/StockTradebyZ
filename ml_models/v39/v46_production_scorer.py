@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
 """
-V4.6 生产评分器
-基于 V4.4 底座 + 5项弱指标针对性增强
+V4.6.1 生产评分器
+基于 V4.6 模型 + scorer后处理调优 (不重训练)
 
-改进点 (相比 V4.4):
+V4.6.1 调整 (修复小盘过度偏移):
+  - 移除小盘评分加成 (训练层1.5x已足够, scorer层+5%是double dipping)
+  - 流动性折扣阈值 2.0% → 1.5%, 底线 0.1 → 0.2
+  - ICIR权重clip到[0.08, 0.50]后重归一化, 防止单模型主导
+
+V4.6 原改进点 (模型层, 保留):
   1A. ICIR最大化集成权重 (替代IC+单调性加权)
   1B. 小盘加权训练 (训练层已处理)
   1C. Combined-Score Isotonic (组合分数保序校准)
   1D. Stacking Meta-Learner (Ridge, 5模型×4目标meta features)
-  2D. 增强流动性过滤: turnover < 2.0% → 连续折扣
-  2E. 小盘评分加成: circ_mv < median → score × 1.05
 """
 
 import numpy as np
@@ -26,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 
 class V46ProductionScorer(V44ProductionScorer):
-    """V4.6 生产评分器 — V4.4底座 + ICIR权重 + Combined Isotonic + Meta-Learner + 增强流动性 + 小盘加成"""
+    """V4.6.1 生产评分器 — V4.6模型 + scorer调优 (移除小盘加成/流动性1.5%/ICIR clip)"""
 
     def __init__(self, model_type: str = 'small_data'):
         self._v46_model_dir = Path(__file__).parent.parent.parent / 'ml_models' / 'trained_models' / 'v46'
@@ -111,6 +114,9 @@ class V46ProductionScorer(V44ProductionScorer):
 
         wf = model_data.get('walk_forward_metrics', {})
 
+        # V4.6.1: ICIR权重clip到[0.08, 0.50]后重归一化, 防止单模型主导
+        self.weights = self._clip_icir_weights(self.weights)
+
         gq_status = "全局评分" if self.global_quantiles is not None else "截面评分"
         meta_status = "有" if self.meta_learner is not None else "无"
         ciso_status = "有" if self.combined_isotonic is not None else "无"
@@ -123,6 +129,22 @@ class V46ProductionScorer(V44ProductionScorer):
         if wf:
             for t, m in wf.items():
                 print(f"  WF {t}: ICIR={m.get('mean_icir', 0):.4f}±{m.get('std_icir', 0):.4f}")
+
+    def _clip_icir_weights(self, weights: Dict) -> Dict:
+        """V4.6.1: clip ICIR权重到[0.08, 0.50]后重归一化, 保持集成多样性"""
+        clipped = {}
+        for target_key, model_weights in weights.items():
+            if not isinstance(model_weights, dict):
+                clipped[target_key] = model_weights
+                continue
+            new_w = {}
+            for name, w in model_weights.items():
+                new_w[name] = np.clip(w, 0.08, 0.50)
+            total = sum(new_w.values())
+            if total > 0:
+                new_w = {k: v / total for k, v in new_w.items()}
+            clipped[target_key] = new_w
+        return clipped
 
     def _get_meta_predictions(self, X: np.ndarray) -> Optional[np.ndarray]:
         """1D: 使用Meta-Learner生成combined_pred"""
@@ -199,11 +221,9 @@ class V46ProductionScorer(V44ProductionScorer):
         return result
 
     def _apply_enhanced_executability_filters(self, results: Dict[str, Dict], date: str) -> Dict[str, Dict]:
-        """V4.6: 增强可执行性过滤 + 连续流动性折扣 + 小盘加成
+        """V4.6.1: 增强可执行性过滤 + 连续流动性折扣
 
-        vs V4.4:
-        - 流动性: turnover < 1.0% 阶梯折扣 → turnover < 2.0% 连续折扣
-        - 新增: 小盘评分加成 (+5%)
+        vs V4.4: 流动性 turnover < 1.0% 阶梯折扣 → turnover < 1.5% 连续折扣 (V4.6.1温和版)
         """
         exec_data_t = self._load_executability_data(date, list(results.keys()))
 
@@ -252,11 +272,11 @@ class V46ProductionScorer(V44ProductionScorer):
                 results[code]['exec_filter'] = 'momentum_risk'
                 continue
 
-            # V4.6: 增强流动性 — 连续折扣 (替代V4.4阶梯折扣)
-            # turnover < 2.0% → score *= max(0.1, turnover/2.0)
+            # V4.6.1: 流动性折扣 — 阈值1.5%、底线0.2 (V4.6是2.0%/0.1, 太激进)
+            # turnover < 1.5% → score *= max(0.2, turnover/1.5)
             turnover = d_t.get('turnover_rate', 999)
-            if turnover < 2.0:
-                discount = max(0.1, turnover / 2.0)
+            if turnover < 1.5:
+                discount = max(0.2, turnover / 1.5)
                 results[code]['score'] *= discount
                 results[code]['exec_filter'] = 'low_liquidity'
                 continue
@@ -428,8 +448,7 @@ class V46ProductionScorer(V44ProductionScorer):
         # Step 8: V4.6 增强可执行性过滤 + 连续流动性折扣
         results = self._apply_enhanced_executability_filters(results, date)
 
-        # Step 9: V4.6 小盘评分加成
-        results = self._apply_small_cap_bonus(results, date, codes)
+        # Step 9: 小盘评分加成已移除 (V4.6.1: 训练层1.5x已足够, scorer层+5%是double dipping)
 
         # 补全缺失code
         for code in stock_codes:
@@ -577,8 +596,7 @@ class V46ProductionScorer(V44ProductionScorer):
         # Step 8: V4.6 增强可执行性过滤
         results = self._apply_enhanced_executability_filters(results, date)
 
-        # Step 9: V4.6 小盘评分加成
-        results = self._apply_small_cap_bonus(results, date, codes)
+        # Step 9: 小盘评分加成已移除 (V4.6.1)
 
         # 补全缺失code
         for code in stock_codes:
