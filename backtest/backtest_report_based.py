@@ -1086,12 +1086,12 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
             # V2新增
             'ic_monotonicity': ic_mono,
             'ic_time_stability': ic_time_stability_cv,
-            'worst_rolling_60d_icir': worst_rolling.get('worst_icir', -999),
+            'worst_rolling_60d_icir': worst_rolling.get('worst_icir', None),
             'half_period_consistency': half_consistency.get('ratio', 0),
             'net_gross_ratio': ngr,
             'limit_up_fail_rate': exec_metrics.get('limit_up_fail_rate', 0),
             'liquidity_coverage': exec_metrics.get('liquidity_coverage', 0),
-            'small_cap_bias_ratio': exec_metrics.get('small_cap_bias_ratio', 0),
+            'cap_balance_ratio': exec_metrics.get('cap_balance_ratio', 0),
             'median_market_cap_bn': exec_metrics.get('median_market_cap_bn', 0),
         })
 
@@ -1153,7 +1153,8 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
 
     if focus_days in summary:
         s = summary[focus_days]
-        _print_scorecard(s, label, focus_days)
+        # V1评分卡已废弃，仅保留V2
+        # _print_scorecard(s, label, focus_days)
         _print_scorecard_v2(s, label, focus_days, n_trading_days=len(reports))
 
     # 月度分解 (5日持仓)
@@ -1303,18 +1304,18 @@ def _print_scorecard_v2(s, label, days, n_trading_days=0):
         'sharpe_ratio':          s.get('sharpe_ratio', 0),
         'sortino_ratio':         s.get('sortino_ratio', 0),
         'calmar_ratio':          s.get('calmar_ratio', 0),
-        'worst_rolling_60d_icir': s.get('worst_rolling_60d_icir', -999),
+        'worst_rolling_60d_icir': s.get('worst_rolling_60d_icir', None),
         'annual_return':         s.get('annual_return', 0),
         'monthly_win_rate':      s.get('monthly_win_rate', 0),
         'half_period_consistency': s.get('half_period_consistency', 0),
-        'small_cap_bias_ratio':  s.get('small_cap_bias_ratio', 0),
+        'cap_balance_ratio':     s.get('cap_balance_ratio', 0),
         'median_market_cap_bn':  s.get('median_market_cap_bn', 0),
     }
 
     # 百分比格式化的指标
     pct_fmt_keys = {'max_drawdown', 'annual_return', 'annual_cost_drag',
                     'net_gross_ratio', 'limit_up_fail_rate', 'liquidity_coverage',
-                    'half_period_consistency', 'small_cap_bias_ratio'}
+                    'half_period_consistency', 'cap_balance_ratio'}
     plain_fmt_keys = {'ic_positive_pct', 'monthly_win_rate', 'annual_turnover',
                       'signal_half_life', 'median_market_cap_bn'}
 
@@ -1389,11 +1390,12 @@ def _print_scorecard_v2(s, label, days, n_trading_days=0):
         # 分层小计
         for layer_id in sorted(V2_LAYER_NAMES.keys()):
             layer_metrics = [k for k, v in NORTH_STAR_TARGETS_V2.items() if v['layer'] == layer_id]
+            scored_metrics = [k for k in layer_metrics if metric_value_map.get(k) is not None]
             layer_score = sum(
                 score_metric_v2(metric_value_map.get(k, 0), NORTH_STAR_TARGETS_V2[k])[0]
-                for k in layer_metrics if k in metric_value_map
+                for k in scored_metrics
             )
-            layer_max = len(layer_metrics) * 5
+            layer_max = len(scored_metrics) * 5
             layer_pct = layer_score / layer_max * 100 if layer_max > 0 else 0
             print(f"    Layer {layer_id} {V2_LAYER_NAMES[layer_id]}: "
                   f"{layer_score}/{layer_max} ({layer_pct:.0f}%)")
@@ -1560,7 +1562,7 @@ def generate_report(results, output_dir='reports/backtest', benchmark_code='0009
                 pct_keys = {'annual_return', 'net_annual_return', 'max_drawdown',
                             'annual_cost_drag', 'alpha', 'net_gross_ratio',
                             'limit_up_fail_rate', 'liquidity_coverage',
-                            'half_period_consistency', 'small_cap_bias_ratio'}
+                            'half_period_consistency', 'cap_balance_ratio'}
                 plain_keys = {'ic_positive_pct', 'monthly_win_rate', 'annual_turnover',
                               'signal_half_life', 'median_market_cap_bn'}
                 if key in pct_keys:

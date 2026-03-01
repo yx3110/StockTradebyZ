@@ -167,7 +167,7 @@ def _compute_v2(s):
         'annual_return': s.get('gross_annual_return', s.get('annual_return', 0)),
         'monthly_win_rate': s.get('monthly_win_rate', 0),
         'half_period_consistency': s.get('half_period_consistency', 0),
-        'small_cap_bias_ratio': s.get('small_cap_bias_ratio', 0),
+        'cap_balance_ratio': s.get('cap_balance_ratio', 0),
         'median_market_cap_bn': s.get('median_market_cap_bn', 0),
     }
     total = 0

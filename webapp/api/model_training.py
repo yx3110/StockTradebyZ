@@ -1556,18 +1556,18 @@ def _run_north_star_evaluation(report_dir: str, version: str,
         'sharpe_ratio':          s.get('sharpe_ratio', 0),
         'sortino_ratio':         s.get('sortino_ratio', 0),
         'calmar_ratio':          s.get('calmar_ratio', 0),
-        'worst_rolling_60d_icir': s.get('worst_rolling_60d_icir', -999),
+        'worst_rolling_60d_icir': s.get('worst_rolling_60d_icir', None),
         'annual_return':         s.get('annual_return', 0),
         'monthly_win_rate':      s.get('monthly_win_rate', 0),
         'half_period_consistency': s.get('half_period_consistency', 0),
-        'small_cap_bias_ratio':  s.get('small_cap_bias_ratio', 0),
+        'cap_balance_ratio':     s.get('cap_balance_ratio', 0),
         'median_market_cap_bn':  s.get('median_market_cap_bn', 0),
     }
 
     # 百分比格式化的指标
     pct_fmt_keys = {'max_drawdown', 'annual_return', 'annual_cost_drag',
                     'net_gross_ratio', 'limit_up_fail_rate', 'liquidity_coverage',
-                    'half_period_consistency', 'small_cap_bias_ratio'}
+                    'half_period_consistency', 'cap_balance_ratio'}
     plain_fmt_keys = {'ic_positive_pct', 'monthly_win_rate', 'annual_turnover',
                       'signal_half_life', 'median_market_cap_bn'}
 

@@ -77,7 +77,7 @@ NORTH_STAR_TARGETS_V2 = {
         'min_days': 120,
     },
     'signal_half_life': {
-        'pass': 4, 'ok': 6, 'good': 8, 'great': 10, 'target': 12,
+        'pass': 3, 'ok': 6, 'good': 8, 'great': 12, 'target': 20,
         'direction': 'higher', 'layer': 1, 'display': '信号半衰期(天)',
     },
 
@@ -141,9 +141,9 @@ NORTH_STAR_TARGETS_V2 = {
         'direction': 'higher', 'layer': 4, 'display': '前后半段一致性',
         'min_days': 120,
     },
-    'small_cap_bias_ratio': {
-        'pass': 0.3, 'ok': 0.4, 'good': 0.5, 'great': 0.6, 'target': 0.8,
-        'direction': 'higher', 'layer': 4, 'display': '小盘偏好比',
+    'cap_balance_ratio': {
+        'pass': 0.3, 'ok': 0.5, 'good': 0.6, 'great': 0.7, 'target': 0.8,
+        'direction': 'higher', 'layer': 4, 'display': '市值均衡度',
     },
     'median_market_cap_bn': {
         'pass': 2.0, 'ok': 3.0, 'good': 5.0, 'great': 8.0, 'target': 10.0,
@@ -395,7 +395,12 @@ def compute_ic_time_stability(ic_df: pd.DataFrame, window: int = 60) -> Dict:
 
     mean_icir = rolling_icir.mean()
     std_icir = rolling_icir.std()
-    cv = abs(std_icir / mean_icir) if abs(mean_icir) > 1e-8 else 999.0
+    if abs(mean_icir) > 1e-8:
+        cv = abs(std_icir / mean_icir)
+    elif std_icir < 0.1:
+        cv = 3.0  # 弱信号但波动小，给中等CV
+    else:
+        cv = 5.0  # 弱信号且波动大，给较差CV（但非999）
 
     result = {
         'cv': cv,
@@ -496,7 +501,11 @@ def compute_half_period_consistency(period_returns: pd.Series,
         s2 = _sharpe(period_returns.iloc[mid:])
         if s1 > 0 and s2 > 0:
             ratios.append(min(s1, s2) / max(s1, s2))
+        elif s1 < 0 and s2 < 0:
+            # 两半段都亏损：比较亏损程度的一致性，×0.3折扣
+            ratios.append(min(abs(s1), abs(s2)) / max(abs(s1), abs(s2)) * 0.3)
         else:
+            # 一正一负：不一致
             ratios.append(0)
         if mid == n // 2:
             best_s1, best_s2 = s1, s2
@@ -523,7 +532,7 @@ def compute_worst_rolling_icir(ic_df: pd.DataFrame, window: int = 60) -> Dict:
         print(f"  ⚠️ 最差滚动ICIR: 仅{n_days}天数据(建议≥120天)")
 
     if ic_df.empty or len(ic_df) < 10:
-        result = {'worst_icir': -999, 'start_date': '', 'end_date': ''}
+        result = {'worst_icir': None, 'start_date': '', 'end_date': ''}
         if n_days < 120:
             result['warning'] = f'仅{n_days}天数据'
         return result
@@ -539,7 +548,7 @@ def compute_worst_rolling_icir(ic_df: pd.DataFrame, window: int = 60) -> Dict:
     rolling_icir = (rolling_mean / rolling_std).replace([np.inf, -np.inf], np.nan).dropna()
 
     if rolling_icir.empty:
-        result = {'worst_icir': -999, 'start_date': '', 'end_date': ''}
+        result = {'worst_icir': None, 'start_date': '', 'end_date': ''}
         if n_days < 120:
             result['warning'] = f'仅{n_days}天数据'
         return result
@@ -566,9 +575,10 @@ def compute_worst_rolling_icir(ic_df: pd.DataFrame, window: int = 60) -> Dict:
 
 def compute_net_gross_ratio(gross_annual: float, net_annual: float) -> float:
     """净/毛收益比"""
-    if abs(gross_annual) < 1e-8:
+    if abs(gross_annual) < 0.01:  # 年化 < 1% 时不可靠
         return 0.0
-    return net_annual / gross_annual
+    ratio = net_annual / gross_annual
+    return max(0.0, min(ratio, 1.0))  # clamp to [0, 1]
 
 
 def compute_top_bottom_spread(scores: pd.Series, returns: pd.Series,
@@ -639,9 +649,9 @@ def compute_turnover(holdings_by_date: Dict[str, List[str]]) -> Dict:
         if not prev and not curr:
             continue
 
-        union = prev | curr
         changed = len(prev.symmetric_difference(curr))
-        turnover = changed / (2 * max(len(union), 1))  # 单边换手
+        avg_size = (len(prev) + len(curr)) / 2
+        turnover = changed / (2 * max(avg_size, 1))  # 单边换手
         turnovers.append(turnover)
 
     avg_turnover = np.mean(turnovers) if turnovers else 0
@@ -752,11 +762,11 @@ def compute_risk_metrics(daily_returns: pd.Series, risk_free_rate: float = 0.02)
     # 波动率
     daily_rf = (1 + risk_free_rate) ** (1 / 252) - 1
     excess_returns = returns - daily_rf
-    annual_volatility = returns.std() * np.sqrt(252)
+    annual_volatility = excess_returns.std() * np.sqrt(252)
 
-    # 下行波动率 (仅负收益)
-    negative_returns = returns[returns < 0]
-    downside_volatility = negative_returns.std() * np.sqrt(252) if len(negative_returns) > 0 else 1e-8
+    # 下行波动率 (仅负超额收益)
+    negative_excess = excess_returns[excess_returns < 0]
+    downside_volatility = negative_excess.std() * np.sqrt(252) if len(negative_excess) > 0 else 1e-8
 
     # Sharpe Ratio
     sharpe_ratio = (annual_return - risk_free_rate) / annual_volatility if annual_volatility > 1e-8 else 0
@@ -1089,22 +1099,26 @@ def batch_load_limit_up_data(buy_dates: List[str], db_path: str = None) -> Dict[
     conn.close()
 
     result = {}
-    for date, group in df.groupby('trade_date'):
-        limit_up_codes = set()
-        for _, row in group.iterrows():
-            code = row['code']
-            pct = row['price_change_pct']  # 小数形式: 0.095 = 9.5%
-            # 创业板(30x) 或 科创板(688x): 20%涨停
-            if code.startswith('30') or code.startswith('688'):
-                threshold = 0.195
-            elif code.startswith('8'):
-                # 北交所: 30%涨停
-                threshold = 0.295
-            else:
-                threshold = 0.095
-            if pct >= threshold:
-                limit_up_codes.add(code)
-        result[date] = limit_up_codes
+    if df.empty:
+        return result
+
+    # 向量化涨停检测
+    conditions = [
+        df['code'].str.startswith('30') | df['code'].str.startswith('688'),
+        df['code'].str.startswith('8'),
+    ]
+    thresholds = [0.195, 0.295]
+    df['threshold'] = np.select(conditions, thresholds, default=0.095)
+    limit_up_df = df[df['price_change_pct'] >= df['threshold']]
+
+    for date, group in limit_up_df.groupby('trade_date'):
+        result[date] = set(group['code'].tolist())
+
+    # 确保所有日期都有条目（即使无涨停）
+    for date in df['trade_date'].unique():
+        if date not in result:
+            result[date] = set()
+
     return result
 
 
@@ -1157,7 +1171,7 @@ def compute_executability_metrics(holdings_by_date: Dict[str, List[str]],
         universe_median_cap: batch_load_universe_median_cap的输出
 
     Returns:
-        dict{limit_up_fail_rate, liquidity_coverage, small_cap_bias_ratio, median_market_cap_bn}
+        dict{limit_up_fail_rate, liquidity_coverage, cap_balance_ratio, median_market_cap_bn}
     """
     total_picks = 0
     limit_up_picks = 0
@@ -1198,15 +1212,18 @@ def compute_executability_metrics(holdings_by_date: Dict[str, List[str]],
 
     if total_picks == 0:
         return {
-            'limit_up_fail_rate': 0,
-            'liquidity_coverage': 1.0,
-            'small_cap_bias_ratio': 0.5,
-            'median_market_cap_bn': 0,
+            'limit_up_fail_rate': None,
+            'liquidity_coverage': None,
+            'cap_balance_ratio': None,
+            'median_market_cap_bn': None,
         }
 
     limit_up_rate = limit_up_picks / total_picks
     liquidity_coverage = liquid_picks / total_picks if total_picks > 0 else 0
     small_cap_ratio = small_cap_picks / total_picks if total_picks > 0 else 0
+
+    # 市值均衡度: 1 - abs(small_cap_ratio - 0.5) * 2, 越接近50%越好
+    cap_balance = 1.0 - abs(small_cap_ratio - 0.5) * 2
 
     # 中位市值 (万元→亿元)
     median_cap_bn = np.median(all_market_caps) / 10000 if all_market_caps else 0
@@ -1214,7 +1231,7 @@ def compute_executability_metrics(holdings_by_date: Dict[str, List[str]],
     return {
         'limit_up_fail_rate': limit_up_rate,
         'liquidity_coverage': liquidity_coverage,
-        'small_cap_bias_ratio': small_cap_ratio,
+        'cap_balance_ratio': cap_balance,
         'median_market_cap_bn': median_cap_bn,
     }
 

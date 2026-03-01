@@ -79,26 +79,32 @@ def module_a_north_star_v2(backtest_result, focus_days):
         'sharpe_ratio': s.get('sharpe_ratio', 0),
         'sortino_ratio': s.get('sortino_ratio', 0),
         'calmar_ratio': s.get('calmar_ratio', 0),
-        'worst_rolling_60d_icir': s.get('worst_rolling_60d_icir', -999),
+        'worst_rolling_60d_icir': s.get('worst_rolling_60d_icir', None),
         'annual_return': s.get('annual_return', 0),
         'monthly_win_rate': s.get('monthly_win_rate', 0),
         'half_period_consistency': s.get('half_period_consistency', 0),
-        'small_cap_bias_ratio': s.get('small_cap_bias_ratio', 0),
+        'cap_balance_ratio': s.get('cap_balance_ratio', 0),
         'median_market_cap_bn': s.get('median_market_cap_bn', 0),
     }
 
     total_score = 0
+    max_score = 0
     metrics = {}
     layers = {}
 
     for layer_id in sorted(V2_LAYER_NAMES.keys()):
         layer_metrics = [(k, v) for k, v in NORTH_STAR_TARGETS_V2.items() if v['layer'] == layer_id]
         layer_score = 0
+        layer_scored_count = 0
         for metric_key, target_info in layer_metrics:
-            current = metric_value_map.get(metric_key, 0)
+            current = metric_value_map.get(metric_key)
+            if current is None:
+                continue
             score, grade_str = score_metric_v2(current, target_info)
             total_score += score
+            max_score += 5
             layer_score += score
+            layer_scored_count += 1
             metrics[metric_key] = {
                 'value': current, 'score': score, 'grade': grade_str,
                 'display': target_info['display'],
@@ -106,10 +112,9 @@ def module_a_north_star_v2(backtest_result, focus_days):
         layers[layer_id] = {
             'name': V2_LAYER_NAMES[layer_id],
             'score': layer_score,
-            'max': len(layer_metrics) * 5,
+            'max': layer_scored_count * 5,
         }
 
-    max_score = 105
     grade = compute_v2_grade(total_score, max_score)
 
     return {
@@ -690,12 +695,14 @@ def generate_report(version, focus_days, top_n, start_date, end_date,
         for metric_key, target_info in NORTH_STAR_TARGETS_V2.items():
             if target_info['layer'] != layer_id:
                 continue
-            m = ns_result['metrics'].get(metric_key, {})
+            m = ns_result['metrics'].get(metric_key)
+            if m is None:
+                continue  # 跳过None指标（数据不足）
             val = m.get('value', 0)
             # Format value
             pct_keys = {'max_drawdown', 'annual_return', 'annual_cost_drag',
                         'net_gross_ratio', 'limit_up_fail_rate', 'liquidity_coverage',
-                        'half_period_consistency', 'small_cap_bias_ratio'}
+                        'half_period_consistency', 'cap_balance_ratio'}
             if metric_key in pct_keys:
                 val_str = f"{val:.1%}"
             elif metric_key in {'ic_positive_pct', 'monthly_win_rate', 'annual_turnover',
