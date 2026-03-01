@@ -45,9 +45,21 @@ sys.path.insert(0, str(PROJECT_ROOT))
 DB_PATH = str(PROJECT_ROOT / 'data_adapter' / 'stock_data.db')
 
 
-def generate_reports(scoring_version='v3.95', start_date='2025-09-01', end_date='2026-02-13'):
+def generate_reports(scoring_version='v3.95', start_date='auto', end_date='auto'):
     """批量生成选股报告 (并行版)"""
     import subprocess
+
+    # auto 日期: 从数据库获取最新可用范围
+    if start_date == 'auto' or end_date == 'auto':
+        all_dates = _get_trading_dates('2020-01-01', '2030-12-31')
+        if all_dates:
+            if start_date == 'auto':
+                start_date = all_dates[0]
+            if end_date == 'auto':
+                end_date = all_dates[-1]
+        else:
+            print("  ⚠️ 无法从数据库检测日期范围")
+            return
 
     print(f"\n{'='*60}")
     print(f"  批量生成 {scoring_version} 报告: {start_date} → {end_date}")
@@ -126,6 +138,10 @@ def run_backtest(report_dir, label, top_n=20, benchmark='000905.SH', focus_days=
     if not reports:
         print(f"  ⚠️ 无报告: {report_dir}")
         return None
+
+    # 打印评估窗口摘要
+    all_dates = sorted(reports.keys())
+    print(f"  评估窗口: {all_dates[0]} → {all_dates[-1]} ({len(all_dates)} 交易日)")
 
     result = brb.run_single_backtest(
         reports, label, top_n=top_n,
@@ -259,7 +275,9 @@ def run_extended_backtest(report_dir, extended_dir, label, top_n=20,
         print(f"  ⚠️ 加载报告失败: {merged_dir}")
         return None
 
+    ext_dates = sorted(reports.keys())
     print(f"\n  扩展回测: {label} ({len(reports)} 交易日)")
+    print(f"  评估窗口: {ext_dates[0]} → {ext_dates[-1]} ({len(ext_dates)} 交易日)")
     result = brb.run_single_backtest(
         reports, f"{label} (扩展)", top_n=top_n,
         benchmark_code=benchmark, focus_days=focus_days,
@@ -347,8 +365,16 @@ def run_regime_analysis(report_dir, label, benchmark='000905.SH', focus_days=10,
 
 
 def generate_extended_reports(scoring_version='v3.95',
-                               start_date='2024-01-01', end_date='2025-08-31'):
-    """生成扩展期报告 (2024-01~2025-08)"""
+                               start_date='2024-01-01', end_date='auto'):
+    """生成扩展期报告 (2024-01~扩展期结束)"""
+    if end_date == 'auto':
+        # 默认: 使用数据库中可用的最新日期
+        all_dates = _get_trading_dates('2020-01-01', '2030-12-31')
+        if all_dates:
+            end_date = all_dates[-1]
+        else:
+            end_date = '2025-08-31'
+            print(f"  ⚠️ 无法自动检测日期, 使用默认 {end_date}")
     # 根据版本选择不同的生成方式
     if scoring_version in ('v3.95', 'v3.96'):
         # 使用batch_generate_v395_reports.py
@@ -402,6 +428,40 @@ def _get_trading_dates(start_date, end_date):
     return dates
 
 
+def _detect_report_date_range(report_dir):
+    """
+    自动检测报告目录中的日期范围
+
+    扫描 analysis_data_*.json 和 选股分析报告_*.md 文件提取日期。
+
+    Returns:
+        (min_date, max_date, count) 或 (None, None, 0) 如果无报告
+    """
+    report_path = Path(report_dir)
+    if not report_path.exists():
+        return None, None, 0
+
+    dates = set()
+
+    # 扫描 JSON 报告
+    for f in report_path.glob('analysis_data_*.json'):
+        date_str = f.stem.replace('analysis_data_', '')
+        if len(date_str) == 8 and date_str.isdigit():
+            dates.add(f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:]}")
+
+    # 扫描 Markdown 报告
+    for f in report_path.glob('选股分析报告_*.md'):
+        date_str = f.stem.replace('选股分析报告_', '')
+        if len(date_str) == 8 and date_str.isdigit():
+            dates.add(f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:]}")
+
+    if not dates:
+        return None, None, 0
+
+    sorted_dates = sorted(dates)
+    return sorted_dates[0], sorted_dates[-1], len(sorted_dates)
+
+
 def main():
     parser = argparse.ArgumentParser(description='北极星指标快速评估 (V2)')
     parser.add_argument('--generate-reports', action='store_true', help='生成选股报告')
@@ -420,12 +480,14 @@ def main():
     parser.add_argument('--top-n', type=int, default=20, help='Top N选股')
     parser.add_argument('--benchmark', type=str, default='000905.SH', help='基准指数')
     parser.add_argument('--focus-days', type=int, default=10, help='重点持仓天数')
-    parser.add_argument('--start-date', type=str, default='2025-09-01', help='开始日期')
-    parser.add_argument('--end-date', type=str, default='2026-02-13', help='结束日期')
+    parser.add_argument('--start-date', type=str, default='auto',
+                        help='开始日期 (default: auto, 从报告目录检测)')
+    parser.add_argument('--end-date', type=str, default='auto',
+                        help='结束日期 (default: auto, 从报告目录检测)')
     parser.add_argument('--extended-start', type=str, default='2024-01-01',
                         help='扩展期开始日期')
-    parser.add_argument('--extended-end', type=str, default='2025-08-31',
-                        help='扩展期结束日期')
+    parser.add_argument('--extended-end', type=str, default='auto',
+                        help='扩展期结束日期 (default: auto, 标准窗口start前一天)')
     parser.add_argument('--scoring-version', type=str, default='v3.95', help='评分版本')
     parser.add_argument('--retention-bonus', type=float, default=0.0,
                         help='持仓保留加分比例 (0.0-1.0)')
@@ -445,11 +507,44 @@ def main():
                         help='行业分散: 单行业最多N只 (0=关闭, 推荐2)')
     args = parser.parse_args()
 
+    # ── auto 日期解析 ──
+    # 如果指定了 --report-dir 且日期为 auto，从报告目录自动检测
+    resolved_start = args.start_date
+    resolved_end = args.end_date
+    resolved_ext_end = args.extended_end
+
+    if args.report_dir and (resolved_start == 'auto' or resolved_end == 'auto'):
+        min_d, max_d, n = _detect_report_date_range(args.report_dir)
+        if n > 0:
+            if resolved_start == 'auto':
+                resolved_start = min_d
+            if resolved_end == 'auto':
+                resolved_end = max_d
+            print(f"  📅 自动检测报告日期: {min_d} → {max_d} ({n} 份报告)")
+        else:
+            print(f"  ⚠️ 无法从 {args.report_dir} 检测日期范围, 使用数据库最新")
+            all_dates = _get_trading_dates('2020-01-01', '2030-12-31')
+            if all_dates:
+                if resolved_start == 'auto':
+                    resolved_start = all_dates[0]
+                if resolved_end == 'auto':
+                    resolved_end = all_dates[-1]
+
+    # extended-end auto: 标准窗口 start 的前一天
+    if resolved_ext_end == 'auto' and resolved_start != 'auto':
+        from datetime import datetime as dt, timedelta
+        try:
+            start_dt = dt.strptime(resolved_start, '%Y-%m-%d')
+            ext_end_dt = start_dt - timedelta(days=1)
+            resolved_ext_end = ext_end_dt.strftime('%Y-%m-%d')
+        except ValueError:
+            resolved_ext_end = '2025-08-31'
+
     if args.generate_reports:
-        generate_reports(args.scoring_version, args.start_date, args.end_date)
+        generate_reports(args.scoring_version, resolved_start, resolved_end)
 
     if args.generate_extended:
-        generate_extended_reports(args.scoring_version, args.extended_start, args.extended_end)
+        generate_extended_reports(args.scoring_version, args.extended_start, resolved_ext_end)
 
     if args.backtest:
         if args.report_dir:
@@ -479,6 +574,13 @@ def main():
         if not args.report_dir:
             print("  ⚠️ --extended 需要 --report-dir")
         else:
+            # 如果有 extended-dir，也检测其日期范围
+            if args.extended_dir and resolved_ext_end == 'auto':
+                _, ext_max, ext_n = _detect_report_date_range(args.extended_dir)
+                if ext_n > 0:
+                    resolved_ext_end = ext_max
+                    print(f"  📅 扩展报告日期检测: → {ext_max} ({ext_n} 份)")
+
             run_extended_backtest(
                 args.report_dir, args.extended_dir, args.label,
                 args.top_n, args.benchmark, args.focus_days, args.retention_bonus,

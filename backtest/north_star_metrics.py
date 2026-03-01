@@ -74,6 +74,7 @@ NORTH_STAR_TARGETS_V2 = {
     'ic_time_stability': {
         'pass': 2.0, 'ok': 1.5, 'good': 1.0, 'great': 0.8, 'target': 0.6,
         'direction': 'lower', 'layer': 1, 'display': 'IC稳定性(CV)',
+        'min_days': 120,
     },
     'signal_half_life': {
         'pass': 4, 'ok': 6, 'good': 8, 'great': 10, 'target': 12,
@@ -122,12 +123,14 @@ NORTH_STAR_TARGETS_V2 = {
     'worst_rolling_60d_icir': {
         'pass': -0.10, 'ok': 0.0, 'good': 0.10, 'great': 0.20, 'target': 0.30,
         'direction': 'higher', 'layer': 3, 'display': '最差60日ICIR',
+        'min_days': 120,
     },
 
     # Layer 4: 盈利与鲁棒性 (5项)
     'annual_return': {
         'pass': 0.15, 'ok': 0.20, 'good': 0.30, 'great': 0.40, 'target': 0.50,
         'direction': 'higher', 'layer': 4, 'display': '年化收益',
+        'min_days': 200,
     },
     'monthly_win_rate': {
         'pass': 55, 'ok': 60, 'good': 67, 'great': 75, 'target': 83,
@@ -136,6 +139,7 @@ NORTH_STAR_TARGETS_V2 = {
     'half_period_consistency': {
         'pass': 0.35, 'ok': 0.50, 'good': 0.60, 'great': 0.70, 'target': 0.80,
         'direction': 'higher', 'layer': 4, 'display': '前后半段一致性',
+        'min_days': 120,
     },
     'small_cap_bias_ratio': {
         'pass': 0.3, 'ok': 0.4, 'good': 0.5, 'great': 0.6, 'target': 0.8,
@@ -360,14 +364,22 @@ def compute_ic_time_stability(ic_df: pd.DataFrame, window: int = 60) -> Dict:
         window: 滚动窗口大小
 
     Returns:
-        dict{cv, rolling_icir_series, mean, std}
+        dict{cv, rolling_icir_series, mean, std, warning?}
         cv越低越好 (更稳定)
     """
+    n_days = len(ic_df) if not ic_df.empty else 0
+
+    if n_days < 120:
+        print(f"  ⚠️ IC稳定性: 仅{n_days}天数据(建议≥120天), 结果可能不可靠")
+
     if ic_df.empty or len(ic_df) < window:
         # 短窗口自适应
         window = max(10, len(ic_df) // 2) if len(ic_df) >= 20 else len(ic_df)
         if window < 10:
-            return {'cv': 999.0, 'mean': 0, 'std': 0, 'rolling_icir_series': pd.Series(dtype=float)}
+            result = {'cv': 999.0, 'mean': 0, 'std': 0, 'rolling_icir_series': pd.Series(dtype=float)}
+            if n_days < 120:
+                result['warning'] = f'仅{n_days}天数据'
+            return result
 
     ic_series = ic_df.set_index('date')['ic'].sort_index()
     rolling_mean = ic_series.rolling(window, min_periods=max(10, window // 2)).mean()
@@ -376,18 +388,24 @@ def compute_ic_time_stability(ic_df: pd.DataFrame, window: int = 60) -> Dict:
     rolling_icir = rolling_icir.replace([np.inf, -np.inf], np.nan).dropna()
 
     if len(rolling_icir) < 3:
-        return {'cv': 999.0, 'mean': 0, 'std': 0, 'rolling_icir_series': pd.Series(dtype=float)}
+        result = {'cv': 999.0, 'mean': 0, 'std': 0, 'rolling_icir_series': pd.Series(dtype=float)}
+        if n_days < 120:
+            result['warning'] = f'仅{n_days}天数据'
+        return result
 
     mean_icir = rolling_icir.mean()
     std_icir = rolling_icir.std()
     cv = abs(std_icir / mean_icir) if abs(mean_icir) > 1e-8 else 999.0
 
-    return {
+    result = {
         'cv': cv,
         'mean': mean_icir,
         'std': std_icir,
         'rolling_icir_series': rolling_icir,
     }
+    if n_days < 120:
+        result['warning'] = f'自适应窗口{window}天'
+    return result
 
 
 def compute_signal_half_life(icir_by_days: Dict[int, float]) -> float:
@@ -451,6 +469,8 @@ def compute_half_period_consistency(period_returns: pd.Series,
         ratio = 多偏移平均的 min(sharpe)/max(sharpe)
     """
     n = len(period_returns)
+    if n < 20:
+        print(f"  ⚠️ 前后半段一致性: 仅{n}个调仓期(建议≥20)")
     if n < 6:
         return {'ratio': 0, 'sharpe_h1': 0, 'sharpe_h2': 0}
 
@@ -495,10 +515,18 @@ def compute_worst_rolling_icir(ic_df: pd.DataFrame, window: int = 60) -> Dict:
         window: 滚动窗口
 
     Returns:
-        dict{worst_icir, start_date, end_date}
+        dict{worst_icir, start_date, end_date, warning?}
     """
+    n_days = len(ic_df) if not ic_df.empty else 0
+
+    if n_days < 120:
+        print(f"  ⚠️ 最差滚动ICIR: 仅{n_days}天数据(建议≥120天)")
+
     if ic_df.empty or len(ic_df) < 10:
-        return {'worst_icir': -999, 'start_date': '', 'end_date': ''}
+        result = {'worst_icir': -999, 'start_date': '', 'end_date': ''}
+        if n_days < 120:
+            result['warning'] = f'仅{n_days}天数据'
+        return result
 
     # 自适应窗口
     window = min(window, len(ic_df) // 2)
@@ -511,7 +539,10 @@ def compute_worst_rolling_icir(ic_df: pd.DataFrame, window: int = 60) -> Dict:
     rolling_icir = (rolling_mean / rolling_std).replace([np.inf, -np.inf], np.nan).dropna()
 
     if rolling_icir.empty:
-        return {'worst_icir': -999, 'start_date': '', 'end_date': ''}
+        result = {'worst_icir': -999, 'start_date': '', 'end_date': ''}
+        if n_days < 120:
+            result['warning'] = f'仅{n_days}天数据'
+        return result
 
     worst_idx = rolling_icir.idxmin()
     worst_val = rolling_icir.min()
@@ -523,11 +554,14 @@ def compute_worst_rolling_icir(ic_df: pd.DataFrame, window: int = 60) -> Dict:
     start_pos = max(0, pos - window + 1)
     start_date = str(ic_series.index[start_pos])
 
-    return {
+    result = {
         'worst_icir': worst_val,
         'start_date': start_date,
         'end_date': str(worst_idx),
     }
+    if n_days < 120:
+        result['warning'] = f'仅{n_days}天数据'
+    return result
 
 
 def compute_net_gross_ratio(gross_annual: float, net_annual: float) -> float:

@@ -508,10 +508,10 @@ def build_markdown_summary(analysis: dict, date: str) -> str:
 def main():
     parser = argparse.ArgumentParser(
         description='V3.95 快速批量报告生成器 (纯ML评分模式)')
-    parser.add_argument('--start-date', default='2025-09-01',
-                        help='开始日期 YYYY-MM-DD (default: 2025-09-01)')
-    parser.add_argument('--end-date', default='2026-02-13',
-                        help='结束日期 YYYY-MM-DD (default: 2026-02-13)')
+    parser.add_argument('--start-date', default='auto',
+                        help='开始日期 YYYY-MM-DD (default: auto, 从特征缓存检测)')
+    parser.add_argument('--end-date', default='auto',
+                        help='结束日期 YYYY-MM-DD (default: auto, 从特征缓存检测)')
     parser.add_argument('--output-dir', default=None,
                         help='输出目录 (default: reports/daily_selection_v{version}_fast)')
     parser.add_argument('--version', default='v3.95',
@@ -535,15 +535,36 @@ def main():
         output_dir = Path('reports') / dir_name
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # auto 日期解析: 从特征缓存检测可用范围
+    start_date = args.start_date
+    end_date = args.end_date
+    if start_date == 'auto' or end_date == 'auto':
+        table = 'alpha158_feature_cache' if args.version == 'alpha158' else 'v39_feature_cache'
+        conn = sqlite3.connect(DB_PATH)
+        row = conn.execute(f"""
+            SELECT MIN(trade_date), MAX(trade_date), COUNT(DISTINCT trade_date)
+            FROM {table}
+        """).fetchone()
+        conn.close()
+        if row and row[0]:
+            if start_date == 'auto':
+                start_date = row[0]
+            if end_date == 'auto':
+                end_date = row[1]
+            print(f"  📅 自动检测特征缓存日期: {row[0]} → {row[1]} ({row[2]} 天)")
+        else:
+            print("  ⚠️ 无法从特征缓存检测日期, 请手动指定 --start-date / --end-date")
+            return
+
     print(f"V3.95 快速批量报告生成器")
     print(f"  版本:     {args.version}")
-    print(f"  日期范围: {args.start_date} ~ {args.end_date}")
+    print(f"  日期范围: {start_date} ~ {end_date}")
     print(f"  输出目录: {output_dir}")
     print()
 
     # ========== 1. 获取交易日列表 ==========
     t0 = time.time()
-    dates = get_trading_dates(args.start_date, args.end_date, version=args.version)
+    dates = get_trading_dates(start_date, end_date, version=args.version)
     if not dates:
         print(f"未找到 {args.start_date} ~ {args.end_date} 范围内的交易日数据")
         return

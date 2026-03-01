@@ -544,7 +544,10 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
     """
     print(f"\n{'='*80}")
     print(f"  报告回测: {label}")
+    _all_report_dates = sorted(reports.keys())
     print(f"  报告天数: {len(reports)}, Top N: {top_n}")
+    if len(_all_report_dates) >= 2:
+        print(f"  评估窗口: {_all_report_dates[0]} → {_all_report_dates[-1]} ({len(_all_report_dates)} 交易日)")
     if retention_bonus > 0:
         print(f"  持仓保留加分: {retention_bonus:.0%}")
     if score_floor > 0:
@@ -1151,7 +1154,7 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
     if focus_days in summary:
         s = summary[focus_days]
         _print_scorecard(s, label, focus_days)
-        _print_scorecard_v2(s, label, focus_days)
+        _print_scorecard_v2(s, label, focus_days, n_trading_days=len(reports))
 
     # 月度分解 (5日持仓)
     sub5 = df[df['days'] == 5].copy()
@@ -1277,7 +1280,7 @@ def _print_scorecard(s, label, days):
     print(f"  {'═'*60}")
 
 
-def _print_scorecard_v2(s, label, days):
+def _print_scorecard_v2(s, label, days, n_trading_days=0):
     """打印V2北极星评分卡 (21项, 6档, /105)"""
     print(f"\n  {'═'*70}")
     print(f"  北极星评分卡 V2: {label} ({days}日持仓)")
@@ -1356,10 +1359,28 @@ def _print_scorecard_v2(s, label, days):
                 t_str = f"{target_val:.3f}"
                 p_str = f"{pass_val:.3f}"
 
-            print(f"  │ {display:<18s} {c_str:>10s} {p_str:>8s} {t_str:>8s} {score}/5  {grade_str}")
+            # 短窗口标注
+            short_warn = ''
+            min_days = target_info.get('min_days', 0)
+            if min_days > 0 and n_trading_days > 0 and n_trading_days < min_days:
+                short_warn = ' ⚠短'
+
+            print(f"  │ {display:<18s} {c_str:>10s} {p_str:>8s} {t_str:>8s} {score}/5  {grade_str}{short_warn}")
 
     # 总分
     print(f"\n  {'─'*70}")
+
+    # 数据充分性说明
+    has_short_warn = False
+    if n_trading_days > 0:
+        for metric_key, target_info in NORTH_STAR_TARGETS_V2.items():
+            min_days = target_info.get('min_days', 0)
+            if min_days > 0 and n_trading_days < min_days:
+                has_short_warn = True
+                break
+    if has_short_warn:
+        print(f"  ⚠短 = 数据不足(当前{n_trading_days}天), 该指标可信度较低")
+
     if max_score > 0:
         pct = total_score / max_score * 100
         grade = compute_v2_grade(total_score, max_score)
