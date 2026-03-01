@@ -15,9 +15,11 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 import sqlite3
 from datetime import datetime, timedelta
+import logging
 import warnings
 
 warnings.filterwarnings('ignore')
+logger = logging.getLogger(__name__)
 
 # 添加项目路径
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -798,11 +800,12 @@ class V395ProductionScorer:
             return results
 
         # 五种路径: robust_zscore > cascade > dual_stream > rank_normalized > raw
+        # 与 predict_scores() 保持一致
         if self.robust_zscore:
             features_df = self._robust_zscore_normalize_features(features_df.copy())
             features_df = self._load_daily_basic_features(features_df, date)
         elif self.cascade or self.rank_normalized:
-            features_df = self._rank_normalize_features(features_df.copy())
+            features_df = self._create_dual_stream_features(features_df.copy())
         elif self.dual_stream:
             features_df = self._create_dual_stream_features(features_df.copy())
 

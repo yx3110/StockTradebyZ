@@ -1020,7 +1020,7 @@ def batch_load_limit_up_data(buy_dates: List[str], db_path: str = None) -> Dict[
     """
     批量加载涨停股票数据
 
-    涨停判定: 主板≥9.5%, 创业板(30x)/科创板(688x)≥19.5%
+    涨停判定 (小数格式): 主板≥0.095, 创业板(30x)/科创板(688x)≥0.195, 北交所(8x)≥0.295
 
     Args:
         buy_dates: 买入日期列表
@@ -1053,12 +1053,15 @@ def batch_load_limit_up_data(buy_dates: List[str], db_path: str = None) -> Dict[
         limit_up_codes = set()
         for _, row in group.iterrows():
             code = row['code']
-            pct = row['price_change_pct']  # 百分比形式: 9.5 = 9.5%
+            pct = row['price_change_pct']  # 小数形式: 0.095 = 9.5%
             # 创业板(30x) 或 科创板(688x): 20%涨停
             if code.startswith('30') or code.startswith('688'):
-                threshold = 19.5
+                threshold = 0.195
+            elif code.startswith('8'):
+                # 北交所: 30%涨停
+                threshold = 0.295
             else:
-                threshold = 9.5
+                threshold = 0.095
             if pct >= threshold:
                 limit_up_codes.add(code)
         result[date] = limit_up_codes

@@ -24,10 +24,10 @@ def compute_kdj(df: pd.DataFrame, n: int = 9) -> pd.DataFrame:
     high_n = df["high"].rolling(window=n, min_periods=1).max() # HHV(HIGH,9)
     rsv = (df["close"] - low_n) / (high_n - low_n + 1e-9) * 100
 
-    # 使用SMA方式计算K和D (SMA(X,N,1)相当于简单移动平均)
-    # SMA(RSV,3,1) 表示RSV的3周期简单移动平均
-    K = rsv.rolling(window=3, min_periods=1).mean()
-    D = K.rolling(window=3, min_periods=1).mean()
+    # 通达信 SMA(X,N,1) = 递归平滑: Y = (1/N)*X + (1-1/N)*Y_prev
+    # 等价于 ewm(alpha=1/N, adjust=False), 与 technical_indicator_calculator.py 保持一致
+    K = rsv.ewm(alpha=1/3, adjust=False).mean()
+    D = K.ewm(alpha=1/3, adjust=False).mean()
     
     # 计算J值：J = 3*K - 2*D
     J = 3 * K - 2 * D
@@ -387,7 +387,7 @@ class SuperB1Selector(BaseSelector):
                 stable_seg = hist.loc[tm_idx : hist.index[-2], "close"]
                 if len(stable_seg) < 3:
                     tm_idx = None
-                    break
+                    continue  # 继续搜索更早的匹配，而非终止
                 high, low = stable_seg.max(), stable_seg.min()
                 if low <= 0 or (high / low - 1) > self.close_vol_pct:
                     tm_idx = None

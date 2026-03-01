@@ -44,6 +44,8 @@ import warnings
 import logging
 from pathlib import Path
 import joblib
+
+_DEFAULT_DB_PATH = str(Path(__file__).parent.parent.parent / 'data_adapter' / 'stock_data.db')
 from typing import Dict, List, Optional, Union, Any, Tuple
 warnings.filterwarnings('ignore')
 
@@ -372,7 +374,7 @@ class V390EnhancedFeatureMLSystem:
             LIMIT ?
             """
 
-            conn = sqlite3.connect('data_adapter/stock_data.db')
+            conn = sqlite3.connect(_DEFAULT_DB_PATH)
             df = pd.read_sql_query(
                 query,
                 conn,
@@ -412,7 +414,7 @@ class V390EnhancedFeatureMLSystem:
 
         # 获取股票列表
         if sample_stocks is None:
-            conn = sqlite3.connect('data_adapter/stock_data.db')
+            conn = sqlite3.connect(_DEFAULT_DB_PATH)
             cursor = conn.cursor()
             cursor.execute("SELECT DISTINCT code FROM securities WHERE type='A股' LIMIT 1000")
             stock_list = [row[0] for row in cursor.fetchall()]
@@ -423,7 +425,7 @@ class V390EnhancedFeatureMLSystem:
         self.logger.info(f"股票数量: {len(stock_list)}")
 
         # 获取交易日列表
-        conn = sqlite3.connect('data_adapter/stock_data.db')
+        conn = sqlite3.connect(_DEFAULT_DB_PATH)
         cursor = conn.cursor()
         cursor.execute("""
             SELECT DISTINCT trade_date
@@ -565,7 +567,7 @@ class V390EnhancedFeatureMLSystem:
             LIMIT ?
             """
 
-            conn = sqlite3.connect('data_adapter/stock_data.db')
+            conn = sqlite3.connect(_DEFAULT_DB_PATH)
             df = pd.read_sql_query(
                 query,
                 conn,
@@ -607,7 +609,7 @@ class V390EnhancedFeatureMLSystem:
             LIMIT ?
             """
 
-            conn = sqlite3.connect('data_adapter/stock_data.db')
+            conn = sqlite3.connect(_DEFAULT_DB_PATH)
             df = pd.read_sql_query(
                 query,
                 conn,

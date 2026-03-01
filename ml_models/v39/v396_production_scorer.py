@@ -77,6 +77,21 @@ class V396ProductionScorer(V395ProductionScorer):
         self.robust_zscore = model_data.get('robust_zscore', False)
         self.extra_features_from_daily_basic = model_data.get('extra_features_from_daily_basic', None)
 
+        # Winsorize bounds
+        raw_bounds = model_data.get('winsorize_bounds')
+        if raw_bounds:
+            self.winsorize_bounds = {k: tuple(v) for k, v in raw_bounds.items()} if isinstance(raw_bounds, dict) else raw_bounds
+
+        # 全局分位数
+        raw_quantiles = model_data.get('global_quantiles')
+        if raw_quantiles is not None:
+            self.global_quantiles = np.array(raw_quantiles)
+        else:
+            quantiles_path = self.model_dir / 'global_quantiles.npy'
+            if quantiles_path.exists():
+                import numpy as np
+                self.global_quantiles = np.load(quantiles_path)
+
         suffix = " [robust_zscore+industry_excess]" if self.robust_zscore else ""
         print(f"V3.96 模型加载完成: {list(self.models.keys())}{suffix}")
         print(f"  模型文件: {latest.name}")

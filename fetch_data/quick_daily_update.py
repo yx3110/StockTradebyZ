@@ -119,6 +119,11 @@ def batch_update_stocks(date_str: str, batch_size: int = 500):
                 if security_id:
                     trade_date = pd.to_datetime(row['trade_date'], format='%Y%m%d').strftime('%Y-%m-%d')
                     pct_val = row.get('pct_chg')
+                    vol = row['vol']
+
+                    # 停牌检测: volume=0 且 pct_chg 缺失
+                    is_suspended = (vol == 0 or pd.isna(vol)) and pd.isna(pct_val)
+
                     data_to_insert.append({
                         'security_id': security_id,
                         'trade_date': trade_date,
@@ -126,10 +131,11 @@ def batch_update_stocks(date_str: str, batch_size: int = 500):
                         'close': row['close'],
                         'high': row['high'],
                         'low': row['low'],
-                        'volume': row['vol'],
-                        'price_change_pct': pct_val / 100 if pd.notna(pct_val) else 0,
+                        'volume': vol,
+                        'price_change_pct': None if is_suspended else (pct_val / 100 if pd.notna(pct_val) else 0),
                         'is_limit_up': row.get('limit') == 'U' if row.get('limit') else False,
-                        'is_limit_down': row.get('limit') == 'D' if row.get('limit') else False
+                        'is_limit_down': row.get('limit') == 'D' if row.get('limit') else False,
+                        'is_suspend': 1 if is_suspended else 0
                     })
                     success_count += 1
 
@@ -713,7 +719,15 @@ def quick_daily_update(date: str = None, skip_financial: bool = True):
 
     # 1. 批量更新市场行情（A股）
     logger.info("【步骤1/12】更新A股市场行情...")
-    stats['quotes'] += batch_update_stocks(date)
+    quotes_count = batch_update_stocks(date)
+    stats['quotes'] += quotes_count
+
+    # 非交易日检测: 如果A股行情返回0条，说明今天非交易日，跳过后续步骤
+    if quotes_count == 0:
+        logger.info(f"⚠️ {date} 非交易日或无数据，跳过后续更新步骤")
+        elapsed = time.time() - start_time
+        logger.info(f"数据更新完成 (非交易日)，耗时: {elapsed:.1f}秒")
+        return stats
 
     # API限流等待
     time.sleep(2)

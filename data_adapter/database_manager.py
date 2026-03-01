@@ -218,6 +218,11 @@ class DatabaseManager:
         'squeeze_days', 'recent_releases',
         'squeeze_momentum', 'momentum_direction', 'momentum_strength',
         'momentum_acceleration', 'momentum_consistency',
+        # 知行线指标
+        'zhixing_short_trend', 'zhixing_multi_kong',
+        # 额外MA/技术指标
+        'ma14', 'ma28', 'ma57', 'ma114',
+        'cci_14', 'atr_14',
     })
 
     def update_technical_indicators(self, security_id: int, date: str, indicators: Dict[str, float]):

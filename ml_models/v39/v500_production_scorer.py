@@ -106,6 +106,20 @@ class V500ProductionScorer(V395ProductionScorer):
         self.stock_rank_cols = model_data.get('stock_feature_cols', None)
         self.extra_features_from_daily_basic = model_data.get('extra_features_from_daily_basic', None)
 
+        # Winsorize bounds
+        raw_bounds = model_data.get('winsorize_bounds')
+        if raw_bounds:
+            self.winsorize_bounds = {k: tuple(v) for k, v in raw_bounds.items()} if isinstance(raw_bounds, dict) else raw_bounds
+
+        # 全局分位数
+        raw_quantiles = model_data.get('global_quantiles')
+        if raw_quantiles is not None:
+            self.global_quantiles = np.array(raw_quantiles)
+        else:
+            quantiles_path = self.model_dir / 'global_quantiles.npy'
+            if quantiles_path.exists():
+                self.global_quantiles = np.load(quantiles_path)
+
         # V5.0 specific metadata
         self.v40_selected_features = model_data.get('v40_selected_features', [])
         self.v40_rank_cols = model_data.get('v40_rank_cols', [])

@@ -253,6 +253,12 @@ def score_all_stocks_from_preloaded(
         all_codes = features_df['code'].tolist()
         return scorer.predict_scores_from_preloaded(all_codes, date, features_df)
 
+    # V4.6: 必须使用 scorer 自带的 predict_scores_from_preloaded
+    # (Meta-Learner/Combined Isotonic/增强流动性/小盘加成在scorer中)
+    if version == 'v4.6':
+        all_codes = features_df['code'].tolist()
+        return scorer.predict_scores_from_preloaded(all_codes, date, features_df)
+
     # V4.42: 必须使用 scorer 自带的 predict_scores_from_preloaded
     # (模块G/H/I在scorer中, 不能绕过)
     if version == 'v4.42':
@@ -509,7 +515,7 @@ def main():
     parser.add_argument('--output-dir', default=None,
                         help='输出目录 (default: reports/daily_selection_v{version}_fast)')
     parser.add_argument('--version', default='v3.95',
-                        choices=['v3.9', 'v3.95', 'v4.3', 'v4.4', 'v4.42', 'v5.0', 'alpha158'],
+                        choices=['v3.9', 'v3.95', 'v4.3', 'v4.4', 'v4.42', 'v4.6', 'v5.0', 'alpha158'],
                         help='评分版本 (default: v3.95)')
     parser.add_argument('--force', action='store_true',
                         help='强制覆盖已有报告')
@@ -570,6 +576,9 @@ def main():
     elif args.version == 'v3.9':
         from ml_models.v39.v390_production_scorer import V390ProductionScorer
         scorer = V390ProductionScorer()
+    elif args.version == 'v4.6':
+        from ml_models.v39.v46_production_scorer import V46ProductionScorer
+        scorer = V46ProductionScorer()
     elif args.version == 'v4.42':
         from ml_models.v39.v44_production_scorer import V442ProductionScorer
         scorer = V442ProductionScorer()

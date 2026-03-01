@@ -107,7 +107,7 @@ class MarketFeaturesV39:
             # 注意：这里简化处理，实际应该使用北向资金数据
             northbound_query = """
             SELECT
-                SUM(dq.volume * dq.close * dq.price_change_pct / 100.0) as estimated_flow
+                SUM(dq.volume * dq.close * dq.price_change_pct) as estimated_flow
             FROM daily_quotes dq
             JOIN securities s ON dq.security_id = s.id
             WHERE dq.trade_date = ? AND s.code IN ('510300.SH', '159919.SZ')

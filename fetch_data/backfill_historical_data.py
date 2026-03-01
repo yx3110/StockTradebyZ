@@ -248,11 +248,15 @@ def backfill_index_data(db_path: str = None, config_path: str = None):
                     if trade_date in existing_dates:
                         continue
 
+                    # pct_chg from Tushare is percentage (9.5=9.5%), convert to decimal (0.095)
+                    raw_pct = row.get('pct_chg')
+                    pct_decimal = raw_pct / 100.0 if pd.notna(raw_pct) else None
+
                     rows_to_insert.append((
                         sid, trade_date,
                         row.get('open'), row.get('high'), row.get('low'), row.get('close'),
                         row.get('vol'), row.get('amount'),
-                        row.get('change'), row.get('pct_chg'),
+                        row.get('change'), pct_decimal,
                         0, 0, 0, 0
                     ))
 

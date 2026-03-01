@@ -77,12 +77,12 @@ class V39FeatureCacheUpdaterOptimized:
         self._northbound_flow_cache = None  # {flow_5d: float}
 
     def get_stock_list(self) -> List[str]:
-        """获取所有A股代码"""
+        """获取所有A股和ETF代码"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         cursor.execute("""
             SELECT code FROM securities
-            WHERE type = 'A股'
+            WHERE type IN ('A股', 'ETF_基金')
             ORDER BY code
         """)
         stocks = [row[0] for row in cursor.fetchall()]
@@ -104,12 +104,12 @@ class V39FeatureCacheUpdaterOptimized:
 
         conn = sqlite3.connect(self.db_path)
 
-        # 一次性获取所有A股的历史数据
+        # 一次性获取所有A股和ETF的历史数据
         query = """
         SELECT s.code, q.trade_date, q.open, q.high, q.low, q.close, q.volume, q.price_change_pct
         FROM daily_quotes q
         JOIN securities s ON q.security_id = s.id
-        WHERE s.type = 'A股'
+        WHERE s.type IN ('A股', 'ETF_基金')
         AND q.trade_date >= ?
         AND q.trade_date <= ?
         ORDER BY s.code, q.trade_date
@@ -1044,8 +1044,8 @@ class V39FeatureCacheUpdaterOptimized:
             conn.close()
             return 0
 
-        # 预加载所有股票的 security_id 映射
-        cursor.execute("SELECT code, id FROM securities WHERE type = 'A股'")
+        # 预加载所有股票和ETF的 security_id 映射
+        cursor.execute("SELECT code, id FROM securities WHERE type IN ('A股', 'ETF_基金')")
         code_to_sid = {row[0]: row[1] for row in cursor.fetchall()}
 
         # 预加载停牌日数据: (security_id, trade_date) 的 volume
@@ -1166,8 +1166,8 @@ class V39FeatureCacheUpdaterOptimized:
         total = len(rows)
         logger.info(f"总记录数: {total:,}")
 
-        # 预加载 security_id 映射
-        cursor.execute("SELECT code, id FROM securities WHERE type = 'A股'")
+        # 预加载 security_id 映射 (A股 + ETF)
+        cursor.execute("SELECT code, id FROM securities WHERE type IN ('A股', 'ETF_基金')")
         code_to_sid = {row[0]: row[1] for row in cursor.fetchall()}
 
         updated = 0
@@ -1548,13 +1548,13 @@ class V39FeatureCacheUpdaterOptimized:
 
         conn = sqlite3.connect(self.db_path)
 
-        # 1a. 全部A股行情
+        # 1a. 全部A股+ETF行情
         logger.info(f"  加载行情数据 ({lookback_start} ~ {future_end})...")
         all_quotes = pd.read_sql_query("""
             SELECT s.code, q.trade_date, q.open, q.high, q.low, q.close, q.volume, q.price_change_pct
             FROM daily_quotes q
             JOIN securities s ON q.security_id = s.id
-            WHERE s.type = 'A股' AND q.trade_date >= ? AND q.trade_date <= ?
+            WHERE s.type IN ('A股', 'ETF_基金') AND q.trade_date >= ? AND q.trade_date <= ?
             ORDER BY s.code, q.trade_date
         """, conn, params=(lookback_start, future_end))
         logger.info(f"  行情: {len(all_quotes):,} 条")

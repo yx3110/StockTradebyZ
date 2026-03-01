@@ -13,6 +13,7 @@ V4.4 生产评分器
 """
 
 import json
+import logging
 import pickle
 import joblib
 import numpy as np
@@ -21,6 +22,8 @@ import sqlite3
 from pathlib import Path
 from typing import Dict, List, Optional
 from .v43_production_scorer import V43ProductionScorer
+
+logger = logging.getLogger(__name__)
 
 
 class V44ProductionScorer(V43ProductionScorer):
@@ -84,6 +87,11 @@ class V44ProductionScorer(V43ProductionScorer):
         self.extra_features_from_daily_basic = model_data.get('extra_features_from_daily_basic', None)
         self.extra_tech_features = model_data.get('extra_features_from_tech_indicators', None)
         self.stock_rank_cols = model_data.get('stock_feature_cols', None)
+
+        # Winsorize bounds
+        raw_bounds = model_data.get('winsorize_bounds')
+        if raw_bounds:
+            self.winsorize_bounds = {k: tuple(v) for k, v in raw_bounds.items()} if isinstance(raw_bounds, dict) else raw_bounds
 
         # V4.4 新增组件
         self.bear_models = model_data.get('bear_models', {})
@@ -266,9 +274,10 @@ class V44ProductionScorer(V43ProductionScorer):
             d_t = exec_data_t.get(code, {})
             d_t1 = exec_data_t1.get(code, {})
 
-            # 判定涨停阈值 (百分比形式: 9.5 = 9.5%)
+            # 判定涨停阈值 (小数形式: 0.095 = 9.5%)
             is_cyb_kc = code.startswith('30') or code.startswith('688')
-            limit_threshold = 19.5 if is_cyb_kc else 9.5
+            is_bse = code.startswith('8')
+            limit_threshold = 0.195 if is_cyb_kc else (0.295 if is_bse else 0.095)
 
             # T+1实际涨停 → 评分清零 (买入日不可买入, 直接匹配北极星判定)
             pct_t1 = d_t1.get('pct_change', 0)
@@ -285,19 +294,19 @@ class V44ProductionScorer(V43ProductionScorer):
                 continue
 
             # T+1近涨停 (涨幅>5%) → 大幅降权
-            if pct_t1 > 5.0:
+            if pct_t1 > 0.05:
                 results[code]['score'] *= 0.2
                 results[code]['exec_filter'] = 'near_limit_up_t1'
                 continue
 
             # T日近涨停 (涨幅>5%) → 降权 (T+1追高风险)
-            if pct_t > 5.0:
+            if pct_t > 0.05:
                 results[code]['score'] *= 0.3
                 results[code]['exec_filter'] = 'near_limit_up'
                 continue
 
             # T日涨幅>3% → 轻度降权 (追涨风险)
-            if pct_t > 3.0:
+            if pct_t > 0.03:
                 results[code]['score'] *= 0.7
                 results[code]['exec_filter'] = 'momentum_risk'
                 continue
@@ -355,6 +364,9 @@ class V44ProductionScorer(V43ProductionScorer):
 
     def predict_scores(self, stock_codes: List[str], date: str) -> Dict[str, Dict]:
         """V4.4 评分管线: V4.3基础 → 熊市混合 → 保序校准 → 可执行性过滤"""
+        # 日期格式标准化: YYYYMMDD → YYYY-MM-DD
+        if isinstance(date, str) and len(date) == 8 and date.isdigit():
+            date = f"{date[:4]}-{date[4:6]}-{date[6:]}"
         results = {}
 
         # Step 1: V4.3 基础评分 (全截面 robust_zscore + daily_basic + tech features + 4目标)

@@ -13,6 +13,7 @@ V4.3 生产评分器
 """
 
 import json
+import logging
 import pickle
 import joblib
 import numpy as np
@@ -21,6 +22,8 @@ import sqlite3
 from pathlib import Path
 from typing import Dict, List, Optional
 from .v395_production_scorer import V395ProductionScorer
+
+logger = logging.getLogger(__name__)
 
 
 class V43ProductionScorer(V395ProductionScorer):
@@ -201,6 +204,9 @@ class V43ProductionScorer(V395ProductionScorer):
 
     def predict_scores(self, stock_codes: List[str], date: str) -> Dict[str, Dict]:
         """预测股票评分 — V4.3: 全截面 + robust_zscore + daily_basic + tech features + 4目标"""
+        # 日期格式标准化: YYYYMMDD → YYYY-MM-DD
+        if isinstance(date, str) and len(date) == 8 and date.isdigit():
+            date = f"{date[:4]}-{date[4:6]}-{date[6:]}"
         results = {}
 
         # 加载全截面 → robust z-score → daily_basic → tech features → 过滤

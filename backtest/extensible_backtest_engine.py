@@ -661,7 +661,7 @@ class ExtensibleBacktestEngine:
                  initial_capital: float = 5000000,
                  max_workers: int = 6,
                  commission_rate: float = 0.0003,
-                 stamp_tax: float = 0.001,
+                 stamp_tax: float = 0.0005,  # 2023年8月28日起印花税减半至0.05%
                  min_score_threshold: float = 80.0):
         """
         初始化可扩展回测引擎

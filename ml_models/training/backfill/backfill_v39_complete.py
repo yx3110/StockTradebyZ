@@ -366,7 +366,7 @@ class CompleteV39FeatureComputer:
             if len(dq) > 0:
                 adv, dec = (dq['price_change_pct'] > 0).sum(), (dq['price_change_pct'] < 0).sum()
                 mkt['advance_decline_ratio'] = adv / (dec + 1) if dec > 0 else float(adv)
-                mkt['market_return'] = dq['price_change_pct'].mean() / 100 if len(dq) > 0 else 0
+                mkt['market_return'] = dq['price_change_pct'].mean() if len(dq) > 0 else 0
                 if 'is_limit_up' in dq.columns:
                     lu = dq['is_limit_up'].sum()
                     mkt['limit_up_count'] = min(lu / 100.0, 1.0)

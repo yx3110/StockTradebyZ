@@ -675,6 +675,88 @@ def _load_feature_importance(version: str) -> List[Dict[str, Any]]:
             except Exception as e:
                 logger.error(f'加载特征重要性JSON失败: {e}')
 
+        # 回退: 从pkl模型文件中提取特征重要性 (v4.3/v4.4等)
+        features = _extract_feature_importance_from_pkl(version_dir)
+        if features:
+            return features
+
+    return features
+
+
+def _extract_feature_importance_from_pkl(version_dir) -> List[Dict[str, Any]]:
+    """从pkl模型文件中提取特征重要性（支持walk-forward多算法模型）"""
+    import numpy as np
+    try:
+        import joblib
+    except ImportError:
+        return []
+
+    pkl_files = sorted(version_dir.glob('*.pkl'), key=lambda f: f.stat().st_mtime, reverse=True)
+    if not pkl_files:
+        return []
+
+    try:
+        model_data = joblib.load(pkl_files[0])
+    except Exception as e:
+        logger.error(f'加载pkl模型失败: {e}')
+        return []
+
+    if not isinstance(model_data, dict):
+        return []
+
+    feature_names = model_data.get('feature_names', [])
+    if not feature_names:
+        return []
+
+    n_features = len(feature_names)
+    importance_sum = np.zeros(n_features)
+    count = 0
+
+    models_dict = model_data.get('models', {})
+    for target, target_data in models_dict.items():
+        if not isinstance(target_data, dict):
+            continue
+        algo_models = target_data.get('models', target_data)
+        if not isinstance(algo_models, dict):
+            continue
+        for algo_name, m in algo_models.items():
+            fi = None
+            try:
+                # LightGBM Booster
+                if hasattr(m, 'feature_importance'):
+                    fi = m.feature_importance(importance_type='gain')
+                # XGBoost Booster
+                elif hasattr(m, 'get_score'):
+                    score = m.get_score(importance_type='gain')
+                    fi = np.zeros(n_features)
+                    for fname, val in score.items():
+                        if fname in feature_names:
+                            fi[feature_names.index(fname)] = val
+                # CatBoost
+                elif hasattr(m, 'get_feature_importance'):
+                    fi = m.get_feature_importance()
+                # sklearn (RandomForest etc.)
+                elif hasattr(m, 'feature_importances_'):
+                    fi = m.feature_importances_
+            except Exception:
+                continue
+
+            if fi is not None and len(fi) == n_features:
+                # 归一化到 [0, 1] 再累加
+                fi = np.array(fi, dtype=float)
+                fi_sum = fi.sum()
+                if fi_sum > 0:
+                    importance_sum += fi / fi_sum
+                    count += 1
+
+    if count == 0:
+        return []
+
+    avg_importance = importance_sum / count
+    features = []
+    for name, imp in zip(feature_names, avg_importance):
+        features.append({'name': name, 'importance': round(float(imp), 6)})
+    features.sort(key=lambda x: x['importance'], reverse=True)
     return features
 
 
@@ -962,34 +1044,277 @@ def _get_version_dir(version: str) -> Optional[Path]:
     return model_dirs.get(version)
 
 
+def _synthesize_wf_models(history: dict) -> dict:
+    """从walk_forward_summary/final_metrics和ensemble_weights合成模型展示数据"""
+    summary = history.get('summary', {})
+    wf = summary.get('walk_forward_summary', {})
+    fm = summary.get('final_metrics', {})
+    ensemble_weights = history.get('ensemble_weights', {})
+
+    models = {}
+
+    # Walk-Forward模型: 每个target展示ICIR
+    if wf:
+        for target, data in wf.items():
+            icir = data.get('mean_icir', 0)
+            ic = data.get('mean_ic', 0)
+            n_windows = data.get('n_windows', 0)
+            models[f'{target} (ICIR={icir:.3f})'] = {
+                'metric_name': 'IC',
+                'final_val_loss': ic,
+                'final_train_loss': icir,
+                'best_iteration': n_windows,
+                'n_features': summary.get('feature_count'),
+            }
+    # 回退: final_metrics (v3.95等滚动训练)
+    elif fm:
+        for target, data in fm.items():
+            if not isinstance(data, dict):
+                continue
+            ic = data.get('daily_ic_mean', 0)
+            icir = data.get('daily_icir', 0)
+            rmse = data.get('rmse', 0)
+            label = f'{target} (ICIR={icir:.3f})' if icir else f'{target}'
+            models[label] = {
+                'metric_name': 'IC' if ic else 'RMSE',
+                'final_val_loss': ic if ic else rmse,
+                'final_train_loss': icir,
+                'best_iteration': 0,
+                'n_features': summary.get('feature_count'),
+            }
+
+    if not models:
+        return {}
+
+    # ensemble_weights: 各算法权重
+    if ensemble_weights:
+        first_target = list(ensemble_weights.keys())[0] if ensemble_weights else None
+        if first_target and isinstance(ensemble_weights[first_target], dict):
+            algos = ensemble_weights[first_target]
+            for algo, weight in algos.items():
+                models[f'{algo} (权重)'] = {
+                    'metric_name': 'weight',
+                    'final_val_loss': weight,
+                    'best_iteration': 0,
+                }
+
+    return models
+
+
+def _synthesize_from_eval_json(version_dir) -> Optional[Dict[str, Any]]:
+    """从 evaluation_*.json + weights_*.json 合成训练曲线数据 (v4.0)"""
+    eval_files = sorted(version_dir.glob('*_evaluation_*.json'), reverse=True)
+    if not eval_files:
+        return None
+
+    try:
+        with open(eval_files[0], 'r', encoding='utf-8') as f:
+            eval_data = json.load(f)
+    except Exception:
+        return None
+
+    ic = eval_data.get('daily_ic_mean', 0)
+    icir = eval_data.get('ic_ir', 0)
+    ic_pos = eval_data.get('ic_positive_pct', 0)
+
+    models = {
+        f'融合 (ICIR={icir:.3f})': {
+            'metric_name': 'IC',
+            'final_val_loss': ic,
+            'final_train_loss': icir,
+            'best_iteration': 0,
+        },
+    }
+
+    # 加载 weights 获取算法列表和特征数
+    feature_count = None
+    weights_files = sorted(version_dir.glob('*_weights_*.json'), reverse=True)
+    if weights_files:
+        try:
+            with open(weights_files[0], 'r', encoding='utf-8') as f:
+                w = json.load(f)
+            feature_count = len(w.get('feature_names', []))
+            model_names = w.get('model_names', [])
+            n_algos = len(model_names)
+            for name in model_names:
+                models[f'{name} (算法)'] = {
+                    'metric_name': 'weight',
+                    'final_val_loss': 1.0 / n_algos if n_algos else 0,
+                    'best_iteration': 0,
+                }
+        except Exception:
+            pass
+
+    return {
+        'models': models,
+        'meta_model': None,
+        'summary': {
+            'feature_count': feature_count,
+            'final_metrics': {
+                'fused': {
+                    'daily_ic_mean': ic,
+                    'daily_icir': icir,
+                    'ic_positive_pct': ic_pos,
+                }
+            }
+        },
+        'start_time': None,
+        'end_time': None,
+        'duration_seconds': None,
+        'status': 'completed'
+    }
+
+
+def _synthesize_from_pkl(version_dir) -> Optional[Dict[str, Any]]:
+    """从pkl模型文件合成基本训练信息 (v3.96/v5.0等无训练历史的版本)"""
+    try:
+        import joblib
+    except ImportError:
+        return None
+
+    pkl_files = sorted(version_dir.glob('*.pkl'), key=lambda f: f.stat().st_mtime, reverse=True)
+    if not pkl_files:
+        return None
+
+    try:
+        model_data = joblib.load(pkl_files[0])
+    except Exception:
+        return None
+
+    if not isinstance(model_data, dict):
+        return None
+
+    feature_names = model_data.get('feature_names', [])
+    target_weights = model_data.get('target_weights', {})
+    models_dict = model_data.get('models', {})
+
+    if not models_dict:
+        return None
+
+    models = {}
+    # 每个target展示其包含的算法数量和target权重
+    for target in sorted(models_dict.keys()):
+        td = models_dict[target]
+        if not isinstance(td, dict):
+            continue
+        algo_models = td.get('models', td)
+        if isinstance(algo_models, dict):
+            n_algos = len(algo_models)
+            w = target_weights.get(f'label_{target}', target_weights.get(target, 0))
+            models[f'{target} (权重={w:.2f})'] = {
+                'metric_name': 'target_weight',
+                'final_val_loss': w,
+                'final_train_loss': n_algos,
+                'best_iteration': 0,
+                'n_features': len(feature_names),
+            }
+
+    # 取第一个target的算法权重
+    first_target = list(models_dict.keys())[0] if models_dict else None
+    if first_target:
+        td = models_dict[first_target]
+        algo_models = td.get('models', td) if isinstance(td, dict) else {}
+        if isinstance(algo_models, dict):
+            weights = td.get('weights', {})
+            for algo in algo_models:
+                w = weights.get(algo, 1.0 / len(algo_models)) if weights else 1.0 / len(algo_models)
+                models[f'{algo} (权重)'] = {
+                    'metric_name': 'weight',
+                    'final_val_loss': w,
+                    'best_iteration': 0,
+                }
+
+    if not models:
+        return None
+
+    return {
+        'models': models,
+        'meta_model': None,
+        'summary': {
+            'feature_count': len(feature_names),
+            'target_weights': target_weights,
+        },
+        'start_time': None,
+        'end_time': None,
+        'duration_seconds': None,
+        'status': 'completed'
+    }
+
+
 def _load_training_curves(version: str) -> Dict[str, Any]:
     """
     加载训练曲线数据
 
     从 training_history_latest.json 文件加载训练过程中的loss曲线数据
+    对Walk-Forward模型(v4.3+)，从walk_forward_summary合成展示数据
     """
     models_dir = current_app.config['MODELS_DIR']
     version_clean = version.replace('.', '').replace('v', 'v')
 
+    # v4.5 CPPI overlay → 继承v4.4训练数据
+    if version == 'v4.5':
+        v44_result = _load_training_curves('v4.4')
+        if v44_result and v44_result.get('models'):
+            v44_result.setdefault('summary', {})['note'] = 'V4.5 基于V4.4模型 + CPPI overlay'
+            return v44_result
+
     # 尝试从 training_history_latest.json 加载
     version_dir = _get_version_dir(version)
     if version_dir and version_dir.exists():
+        history = None
         history_file = version_dir / 'training_history_latest.json'
         if history_file.exists():
             try:
                 with open(history_file, 'r', encoding='utf-8') as f:
                     history = json.load(f)
+            except Exception as e:
+                logger.error(f'加载训练历史失败: {e}')
+
+        # 回退: 扫描 training_history_*.json (非latest)，取最新时间戳
+        if history is None:
+            history_files = sorted(
+                [f for f in version_dir.glob('training_history_*.json')
+                 if 'latest' not in f.name and 'rolling' not in f.name],
+                key=lambda f: f.stat().st_mtime, reverse=True
+            )
+            if history_files:
+                try:
+                    with open(history_files[0], 'r', encoding='utf-8') as f:
+                        history = json.load(f)
+                except Exception as e:
+                    logger.error(f'加载训练历史回退失败: {e}')
+
+        if history:
+            models = history.get('models', {})
+            summary = history.get('summary', {})
+
+            # Walk-Forward模型没有逐轮loss，从walk_forward_summary合成
+            if not models:
+                models = _synthesize_wf_models(history)
+
+            if models:
                 return {
-                    'models': history.get('models', {}),
+                    'models': models,
                     'meta_model': history.get('meta_model'),
-                    'summary': history.get('summary', {}),
+                    'summary': summary,
                     'start_time': history.get('start_time'),
                     'end_time': history.get('end_time'),
                     'duration_seconds': history.get('duration_seconds'),
                     'status': history.get('status')
                 }
-            except Exception as e:
-                logger.error(f'加载训练历史失败: {e}')
+
+        # 回退: 从 evaluation_*.json + weights_*.json 合成 (v4.0)
+        if version_dir and version_dir.exists():
+            result = _synthesize_from_eval_json(version_dir)
+            if result:
+                return result
+
+        # 回退: 从pkl模型文件合成基本信息 (v3.96/v5.0等)
+        if version_dir and version_dir.exists():
+            result = _synthesize_from_pkl(version_dir)
+            if result:
+                return result
+
 
     # 尝试从level4_model_metadata.json获取 (v3.81)
     if version == 'v3.81':
