@@ -30,6 +30,8 @@ from .v394_production_scorer import V394ProductionScorer
 from .v500_production_scorer import V500ProductionScorer
 from .v44_production_scorer import V44ProductionScorer, V442ProductionScorer
 from .v46_production_scorer import V46ProductionScorer
+from .v47_production_scorer import V47ProductionScorer
+from .v471_production_scorer import V471ProductionScorer
 from .alpha158_production_scorer import Alpha158ProductionScorer
 
 # 导出
@@ -41,5 +43,7 @@ __all__ = [
     'V44ProductionScorer',
     'V442ProductionScorer',
     'V46ProductionScorer',
+    'V47ProductionScorer',
+    'V471ProductionScorer',
     'Alpha158ProductionScorer',
 ]

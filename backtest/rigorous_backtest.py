@@ -1022,11 +1022,21 @@ def main():
     reports = load_reports(report_dir)
     print(f"  加载 {len(reports)} 天报告")
 
+    # Optimize: limit HOLDING_DAYS to reduce computation
+    # Full [1,3,5,7,10,15] takes 5h+ for 1390 days; [3,5,10,15] takes ~2h
+    import backtest.backtest_report_based as _brb
+    _original_holding_days = _brb.HOLDING_DAYS
+    _brb.HOLDING_DAYS = [3, 5, 10, 15]
+    print(f"  持仓期: {_brb.HOLDING_DAYS} (优化模式，跳过1d/7d)")
+
     backtest_result = run_single_backtest(
         reports, label=f'{args.version.upper()} Long-Term',
         top_n=args.top_n, benchmark_code=args.benchmark,
         focus_days=args.focus_days,
     )
+
+    # Restore
+    _brb.HOLDING_DAYS = _original_holding_days
 
     if not backtest_result:
         print("  回测失败!")

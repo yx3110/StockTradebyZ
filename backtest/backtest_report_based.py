@@ -62,7 +62,7 @@ from backtest.north_star_metrics import (
     classify_market_regime, compute_regime_conditional_metrics,
 )
 
-HOLDING_DAYS = [1, 3, 5, 7, 10, 15]
+HOLDING_DAYS = [1, 3, 5, 7, 10, 15, 20]
 
 
 def load_reports(report_dir):
@@ -522,7 +522,8 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
                         focus_days=10, retention_bonus=0.0, score_floor=0.0,
                         min_holdings=3, risk_control=False,
                         vol_target=0.0, cppi_floor=0.0, cppi_multiplier=3.0,
-                        sector_diversify=0):
+                        sector_diversify=0,
+                        min_turnover_rate=0.0, replace_threshold=0.0):
     """运行单个报告目录的回测（含北极星指标）
 
     Args:
@@ -541,6 +542,11 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
         cppi_floor: V4.5 CPPI最大回撤容忍度 (0=关闭, 推荐0.10)。
                    Overlay B: 接近回撤极限时自动减仓 (Grossman-Zhou)
         cppi_multiplier: V4.5 CPPI乘数 (默认3.0)
+        min_turnover_rate: 最低换手率过滤 (0=不过滤, 推荐0.5)。
+                          过滤换手率低于此阈值的股票，提升流动性覆盖率。
+        replace_threshold: 替换门槛 (0=无门槛, 推荐0.1-0.3)。
+                          仅当新股评分比旧持仓评分高出此比例时才替换,
+                          减少不必要的换手。不修改scores(保护IC)。
     """
     print(f"\n{'='*80}")
     print(f"  报告回测: {label}")
@@ -557,6 +563,10 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
         print(f"  组合风控: 启用 (熊市减仓+行业集中度)")
     if sector_diversify > 0:
         print(f"  行业分散: 单行业最多{sector_diversify}只")
+    if min_turnover_rate > 0:
+        print(f"  流动性过滤: 换手率<{min_turnover_rate:.1f}%的股票不入选")
+    if replace_threshold > 0:
+        print(f"  替换门槛: 新股评分需超出旧持仓{replace_threshold:.0%}才替换")
 
     # V4.5 Risk Overlays
     overlay_active = vol_target > 0 or cppi_floor > 0
@@ -598,6 +608,13 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
         industry_map = _load_industry_map_bulk()
         print(f"  行业分散数据: {len(industry_map)}只行业映射")
 
+    # 预加载换手率数据 (用于流动性过滤)
+    turnover_data = {}
+    if min_turnover_rate > 0:
+        dates_all_tr = sorted(reports.keys())
+        turnover_data = batch_load_market_cap_data(dates_all_tr)
+        print(f"  流动性过滤数据: {len(turnover_data)}天换手率数据")
+
     daily_results = []
     all_picks = []
     holdings_by_date = {}  # 用于换手率计算
@@ -607,6 +624,18 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
     dates = sorted(reports.keys())
     for i, date in enumerate(dates):
         stocks = reports[date]
+
+        # 流动性过滤: 剔除换手率过低的股票 (在top-N选择之前)
+        if min_turnover_rate > 0 and turnover_data:
+            tr_df = turnover_data.get(date, pd.DataFrame())
+            if not tr_df.empty:
+                low_liq_codes = set(
+                    tr_df.loc[tr_df['turnover_rate'].fillna(0) < min_turnover_rate, 'code']
+                )
+                if low_liq_codes:
+                    stocks_filtered = [s for s in stocks if s['code'] not in low_liq_codes]
+                    if len(stocks_filtered) >= top_n:
+                        stocks = stocks_filtered
 
         # 持仓保留加分: 已持有股票的score乘以(1+bonus)
         if retention_bonus > 0 and prev_top_codes:
@@ -620,6 +649,45 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
             top_stocks = adjusted_stocks[:top_n]
         else:
             top_stocks = stocks[:top_n]
+
+        # 替换门槛: 仅当新股评分显著高于被替换旧持仓时才替换 (不修改scores)
+        if replace_threshold > 0 and prev_top_codes and len(top_stocks) == top_n:
+            # 构建当前评分查找表 (使用原始scores, 非retention调整后的)
+            score_map = {s['code']: s['score'] for s in stocks}
+            new_codes = set(s['code'] for s in top_stocks)
+            dropped = prev_top_codes - new_codes  # 被踢出的旧持仓
+            added = new_codes - prev_top_codes     # 新入选的股票
+
+            if dropped and added:
+                # 按评分从低到高排列新入选股 (边际入选者)
+                added_sorted = sorted(added, key=lambda c: score_map.get(c, 0))
+                # 按评分从高到低排列被踢出旧持仓 (最接近入选的)
+                dropped_sorted = sorted(dropped, key=lambda c: score_map.get(c, 0), reverse=True)
+
+                kept_back = []
+                for old_code, new_code in zip(dropped_sorted, added_sorted):
+                    old_score = score_map.get(old_code, 0)
+                    new_score = score_map.get(new_code, 0)
+                    # 仅当新股评分超出旧股 replace_threshold 比例时才替换
+                    if old_score > 0 and new_score < old_score * (1 + replace_threshold):
+                        kept_back.append(old_code)
+
+                if kept_back:
+                    # 用保留的旧持仓替换边际新入选
+                    kept_set = set(kept_back)
+                    # 移除被替换的新入选 (从末尾开始)
+                    n_to_remove = len(kept_back)
+                    top_codes_current = [s['code'] for s in top_stocks]
+                    remove_codes = set(added_sorted[:n_to_remove])
+                    top_stocks = [s for s in top_stocks if s['code'] not in remove_codes]
+                    # 添加保留的旧持仓
+                    for code in kept_back:
+                        entry = next((s for s in stocks if s['code'] == code), None)
+                        if entry:
+                            top_stocks.append(entry)
+                    # 重新按分数排序
+                    top_stocks.sort(key=lambda x: x['score'], reverse=True)
+                    top_stocks = top_stocks[:top_n]
 
         # Module J: 评分门槛过滤 + 现金仓位
         actual_top_n = top_n
