@@ -77,6 +77,9 @@ class V395ProductionScorer:
         # 全局分位数 (用于跨日期可比的全局百分位评分)
         self.global_quantiles = None
 
+        # 投资建议阈值 (基于历史composite百分位)
+        self.recommendation_thresholds = None
+
         self._load_models()
 
     def _load_models(self):
@@ -118,6 +121,13 @@ class V395ProductionScorer:
         quantiles_path = self.model_dir / 'global_quantiles.npy'
         if quantiles_path.exists():
             self.global_quantiles = np.load(quantiles_path)
+
+        # 投资建议阈值 (sidecar 文件)
+        rec_path = self.model_dir / 'recommendation_thresholds.json'
+        if rec_path.exists():
+            import json as _json
+            with open(rec_path, 'r') as f:
+                self.recommendation_thresholds = _json.load(f)
 
         print(f"V3.95 Rolling模型加载完成: {len(self.models)} 个目标")
 
@@ -178,6 +188,9 @@ class V395ProductionScorer:
                 if quantiles_path.exists():
                     self.global_quantiles = np.load(quantiles_path)
 
+            # 投资建议阈值 (基于历史composite百分位)
+            self.recommendation_thresholds = model_data.get('recommendation_thresholds')
+
             # Winsorization bounds (训练时保存的 [1st, 99th] 分位数边界)
             raw_bounds = model_data.get('winsorize_bounds')
             if raw_bounds and self.feature_cols:
@@ -231,6 +244,65 @@ class V395ProductionScorer:
             else:
                 scores = np.array([60.0])
             return scores
+
+    def _recommendation_from_composite(self, pred_3d: float, pred_5d: float,
+                                        pred_10d: float, pred_15d: float = 0.0) -> str:
+        """基于composite score的历史百分位阈值生成投资建议
+
+        Composite = pred_3d×0.1 + pred_5d×0.2 + pred_10d×0.4 + pred_15d×0.3
+        阈值从模型pkl加载(recommendation_thresholds), 基于全市场历史数据校准:
+          强烈买入: Top 5% (P95)
+          买入: Top 20% (P80)
+          谨慎买入: Top 40% (P60)
+          观望: Top 60% (P40)
+          回避: Bottom 40%
+        """
+        composite = pred_3d * 0.1 + pred_5d * 0.2 + pred_10d * 0.4 + pred_15d * 0.3
+
+        t = self.recommendation_thresholds
+        if t:
+            if composite >= t['strong_buy']:
+                return '强烈买入'
+            elif composite >= t['buy']:
+                return '买入'
+            elif composite >= t['cautious']:
+                return '谨慎买入'
+            elif composite >= t['hold']:
+                return '观望'
+            else:
+                return '回避'
+
+        # fallback: 无阈值时基于 composite 绝对值（预测收益率）
+        if composite >= 0.015:
+            return '强烈买入'
+        elif composite >= 0.008:
+            return '买入'
+        elif composite >= 0.003:
+            return '谨慎买入'
+        elif composite >= -0.002:
+            return '观望'
+        return '回避'
+
+    def _risk_level_from_composite(self, pred_3d: float, pred_5d: float,
+                                    pred_10d: float, pred_15d: float = 0.0) -> str:
+        """基于composite score的历史百分位阈值生成风险等级"""
+        composite = pred_3d * 0.1 + pred_5d * 0.2 + pred_10d * 0.4 + pred_15d * 0.3
+
+        t = self.recommendation_thresholds
+        if t:
+            if composite >= t['buy']:
+                return 'low'
+            elif composite >= t['hold']:
+                return 'medium'
+            else:
+                return 'high'
+
+        # fallback
+        if composite >= 0.008:
+            return 'low'
+        elif composite >= -0.002:
+            return 'medium'
+        return 'high'
 
     def _rank_normalize_features(self, features_df: pd.DataFrame) -> pd.DataFrame:
         """对个股特征做截面Rank归一化（宏观特征保持原值）"""
@@ -541,23 +613,47 @@ class V395ProductionScorer:
         Returns:
             (ensemble_pred, success): 集成预测结果和是否成功标志
         """
-        target_pred = np.zeros(len(X_input))
-        total_weight = 0
-        success_count = 0
-
+        # 先收集所有预测
+        preds = {}
         for name, model in models.items():
             try:
-                pred = model.predict(X_input)
-                weight = weights.get(name, 0.2)
-                target_pred += weight * pred
-                total_weight += weight
-                success_count += 1
+                preds[name] = model.predict(X_input)
             except Exception:
                 continue
 
+        if not preds:
+            return np.zeros(len(X_input)), False
+
+        # Rescale rank模型(lgb_rank/lgb_listnet)到回归模型尺度
+        # LambdaRank/ListNet输出排名分数,尺度与收益率预测不同
+        regression_names = [n for n in preds if n not in ('lgb_rank', 'lgb_listnet')]
+        rank_names = [n for n in preds if n in ('lgb_rank', 'lgb_listnet')]
+
+        if regression_names and rank_names:
+            # 计算回归模型的平均mean和std作为目标尺度
+            reg_means = [np.mean(preds[n]) for n in regression_names]
+            reg_stds = [max(np.std(preds[n]), 1e-8) for n in regression_names]
+            target_mean = np.mean(reg_means)
+            target_std = np.mean(reg_stds)
+
+            for rn in rank_names:
+                rp = preds[rn]
+                rp_std = max(np.std(rp), 1e-8)
+                rp_mean = np.mean(rp)
+                # z-score归一化后映射到回归模型尺度
+                preds[rn] = (rp - rp_mean) / rp_std * target_std + target_mean
+
+        # 加权集成
+        target_pred = np.zeros(len(X_input))
+        total_weight = 0
+        for name, pred in preds.items():
+            weight = weights.get(name, 0.2)
+            target_pred += weight * pred
+            total_weight += weight
+
         if total_weight > 0:
             target_pred /= total_weight
-            return target_pred, success_count > 0
+            return target_pred, True
         return target_pred, False
 
     def predict_scores(self, stock_codes: List[str], date: str) -> Dict[str, Dict]:

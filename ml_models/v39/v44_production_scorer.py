@@ -106,6 +106,15 @@ class V44ProductionScorer(V43ProductionScorer):
             if quantiles_path.exists():
                 self.global_quantiles = np.load(quantiles_path)
 
+        # 投资建议阈值
+        self.recommendation_thresholds = model_data.get('recommendation_thresholds')
+        if not self.recommendation_thresholds:
+            rec_path = self.model_dir / 'recommendation_thresholds.json'
+            if rec_path.exists():
+                import json as _json
+                with open(rec_path, 'r') as f:
+                    self.recommendation_thresholds = _json.load(f)
+
         wf = model_data.get('walk_forward_metrics', {})
 
         gq_status = "全局评分" if self.global_quantiles is not None else "截面评分"

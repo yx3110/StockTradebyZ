@@ -125,7 +125,7 @@ def run_backtest(report_dir, label, top_n=20, benchmark='000905.SH', focus_days=
                  retention_bonus=0.0, score_floor=0.0, min_holdings=3,
                  risk_control=False,
                  vol_target=0.0, cppi_floor=0.0, cppi_multiplier=3.0,
-                 sector_diversify=0):
+                 sector_diversify=0, rank_field='auto', hold_buffer=0):
     """运行单个模型的回测"""
     from backtest import backtest_report_based as brb
     from backtest import north_star_metrics as nsm
@@ -134,7 +134,7 @@ def run_backtest(report_dir, label, top_n=20, benchmark='000905.SH', focus_days=
     nsm.DB_PATH = DB_PATH
     brb.DB_PATH = DB_PATH
 
-    reports = brb.load_reports(report_dir)
+    reports = brb.load_reports(report_dir, rank_field=rank_field)
     if not reports:
         print(f"  ⚠️ 无报告: {report_dir}")
         return None
@@ -151,7 +151,8 @@ def run_backtest(report_dir, label, top_n=20, benchmark='000905.SH', focus_days=
         risk_control=risk_control,
         vol_target=vol_target, cppi_floor=cppi_floor,
         cppi_multiplier=cppi_multiplier,
-        sector_diversify=sector_diversify
+        sector_diversify=sector_diversify,
+        hold_buffer=hold_buffer
     )
     return result
 
@@ -174,7 +175,7 @@ def run_comparison(top_n=20, benchmark='000905.SH', focus_days=10):
         'v3.96-merged': 'daily_selection_v3.95_merged',
         'v4.3': 'daily_selection_v4.3',
         'v4.4': 'daily_selection_v4.4',
-        'v4.42': 'daily_selection_v4.42',
+        'v4.4.2': 'daily_selection_v4.4.2',
         'v5.0': 'daily_selection_v5.0',
     }
     for label, dirname in extra_dirs.items():
@@ -244,7 +245,7 @@ def run_extended_backtest(report_dir, extended_dir, label, top_n=20,
                            benchmark='000905.SH', focus_days=10, retention_bonus=0.0,
                            score_floor=0.0, min_holdings=3, risk_control=False,
                            vol_target=0.0, cppi_floor=0.0, cppi_multiplier=3.0,
-                           sector_diversify=0):
+                           sector_diversify=0, rank_field='auto', hold_buffer=0):
     """
     扩展窗口回测: 合并现有报告+扩展期报告，运行V2评分
 
@@ -252,6 +253,8 @@ def run_extended_backtest(report_dir, extended_dir, label, top_n=20,
         report_dir: 现有报告目录 (e.g. reports/daily_selection_v4.3)
         extended_dir: 扩展期报告目录 (e.g. reports/daily_selection_v4.3_extended)
         label: 标签名
+        rank_field: 排名字段 ('auto'=优先pred_10d, 'score'=全局百分位, 'composite'=多周期)
+        hold_buffer: 持仓缓冲区倍数
     """
     from backtest import backtest_report_based as brb
     from backtest import north_star_metrics as nsm
@@ -270,7 +273,7 @@ def run_extended_backtest(report_dir, extended_dir, label, top_n=20,
         return None
 
     # 回测合并后的报告
-    reports = brb.load_reports(merged_dir)
+    reports = brb.load_reports(merged_dir, rank_field=rank_field)
     if not reports:
         print(f"  ⚠️ 加载报告失败: {merged_dir}")
         return None
@@ -286,7 +289,8 @@ def run_extended_backtest(report_dir, extended_dir, label, top_n=20,
         risk_control=risk_control,
         vol_target=vol_target, cppi_floor=cppi_floor,
         cppi_multiplier=cppi_multiplier,
-        sector_diversify=sector_diversify
+        sector_diversify=sector_diversify,
+        hold_buffer=hold_buffer
     )
     return result
 
@@ -505,6 +509,10 @@ def main():
                         help='V4.5: CPPI乘数 (默认3.0)')
     parser.add_argument('--sector-diversify', type=int, default=0,
                         help='行业分散: 单行业最多N只 (0=关闭, 推荐2)')
+    parser.add_argument('--rank-field', type=str, default='auto',
+                        help='排名字段: auto=优先pred_10d, score=全局百分位, composite=多周期融合')
+    parser.add_argument('--hold-buffer', type=float, default=0,
+                        help='持仓缓冲区倍数 (0=关闭, 推荐2-3). 现有持仓在top_n*(1+buffer)内保留')
     args = parser.parse_args()
 
     # ── auto 日期解析 ──
@@ -553,7 +561,8 @@ def main():
                                   args.score_floor, args.min_holdings,
                                   args.risk_control,
                                   args.vol_target, args.cppi_floor, args.cppi_multiplier,
-                                  args.sector_diversify)
+                                  args.sector_diversify, args.rank_field,
+                                  args.hold_buffer)
         else:
             # 默认回测v3.95 RobustZScore
             default_dir = str(PROJECT_ROOT / 'reports' / 'daily_selection_v3.95_robust_zscore')
@@ -562,7 +571,8 @@ def main():
                                   args.score_floor, args.min_holdings,
                                   args.risk_control,
                                   args.vol_target, args.cppi_floor, args.cppi_multiplier,
-                                  args.sector_diversify)
+                                  args.sector_diversify, args.rank_field,
+                                  args.hold_buffer)
 
     if args.regime_analysis:
         report_dir = args.report_dir or str(
@@ -586,7 +596,7 @@ def main():
                 args.top_n, args.benchmark, args.focus_days, args.retention_bonus,
                 args.score_floor, args.min_holdings, args.risk_control,
                 args.vol_target, args.cppi_floor, args.cppi_multiplier,
-                args.sector_diversify
+                args.sector_diversify, args.rank_field, args.hold_buffer
             )
 
     if args.compare:

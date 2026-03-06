@@ -65,8 +65,17 @@ from backtest.north_star_metrics import (
 HOLDING_DAYS = [1, 3, 5, 7, 10, 15, 20]
 
 
-def load_reports(report_dir):
-    """加载所有JSON报告，返回 {date: [{code, score, predicted_return_5d}, ...]}"""
+def load_reports(report_dir, rank_field='auto'):
+    """加载所有JSON报告，返回 {date: [{code, score, pred_3d, ..., rank_score}, ...]}
+
+    Args:
+        report_dir: 报告目录
+        rank_field: 排名字段。
+            'auto'      = 优先用pred_10d(若存在)否则score
+            'score'     = 强制用全局百分位分
+            'pred_Xd'   = 用原始预测值 (e.g. pred_10d, pred_15d)
+            'composite' = 多周期加权排名融合 (pred_3d/5d/10d/15d)
+    """
     report_dir = Path(report_dir)
     reports = {}
 
@@ -92,20 +101,77 @@ def load_reports(report_dir):
             score = s.get('score', 0)
             pred_ret = s.get('predicted_return_5d', None)
             if code and score > 0:
-                stock_list.append({
+                entry = {
                     'code': code,
                     'score': score,
                     'predicted_return_5d': pred_ret,
+                    'pred_3d': s.get('pred_3d'),
+                    'pred_5d': s.get('pred_5d'),
+                    'pred_10d': s.get('pred_10d'),
+                    'pred_15d': s.get('pred_15d'),
                     'strategies': s.get('strategies', []),
                     'n_strategies': s.get('selected_by_strategies', 1),
-                })
+                }
+                # rank_score: 用于排名的连续值 (避免全局分位数离散化导致同分)
+                if rank_field in ('auto', 'composite'):
+                    # auto/composite: 先设为pred_10d, composite后续会覆写
+                    entry['rank_score'] = entry.get('pred_10d') or score
+                elif rank_field == 'score':
+                    entry['rank_score'] = score
+                elif rank_field.startswith('pred_'):
+                    entry['rank_score'] = entry.get(rank_field) or score
+                else:
+                    entry['rank_score'] = score
+                stock_list.append(entry)
+
+        # composite: 多周期加权排名融合
+        if rank_field == 'composite' and stock_list:
+            _apply_composite_ranking(stock_list)
 
         if stock_list:
-            # 按分数排序
-            stock_list.sort(key=lambda x: x['score'], reverse=True)
+            # 按rank_score排序 (连续预测值, 无同分)
+            stock_list.sort(key=lambda x: x['rank_score'], reverse=True)
             reports[date] = stock_list
 
     return reports
+
+
+# 多周期共识排名的权重
+COMPOSITE_WEIGHTS = {
+    'pred_3d': 0.10,
+    'pred_5d': 0.20,
+    'pred_10d': 0.40,
+    'pred_15d': 0.30,
+}
+
+
+def _apply_composite_ranking(stock_list):
+    """多周期加权排名融合：对每个pred_Xd计算百分位排名，加权合并。
+
+    只有在所有周期都排名靠前的股票才能获得高composite分。
+    单周期异常高（噪声）但其他周期一般的股票会被自然降权。
+    """
+    n = len(stock_list)
+    if n < 2:
+        return
+
+    for field, weight in COMPOSITE_WEIGHTS.items():
+        # 提取该周期的预测值
+        values = [(i, s.get(field) or 0) for i, s in enumerate(stock_list)]
+        # 按值排序，赋百分位排名 [0, 1]
+        values.sort(key=lambda x: x[1])
+        for rank_pos, (idx, _) in enumerate(values):
+            stock_list[idx][f'_rank_{field}'] = rank_pos / max(n - 1, 1)
+
+    # 加权合并
+    for s in stock_list:
+        s['rank_score'] = sum(
+            s.get(f'_rank_{field}', 0) * weight
+            for field, weight in COMPOSITE_WEIGHTS.items()
+        )
+        # 清理临时字段
+        for field in COMPOSITE_WEIGHTS:
+            s.pop(f'_rank_{field}', None)
 
 
 def get_next_trading_date(trade_date):
@@ -523,7 +589,8 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
                         min_holdings=3, risk_control=False,
                         vol_target=0.0, cppi_floor=0.0, cppi_multiplier=3.0,
                         sector_diversify=0,
-                        min_turnover_rate=0.0, replace_threshold=0.0):
+                        min_turnover_rate=0.0, replace_threshold=0.0,
+                        hold_buffer=0):
     """运行单个报告目录的回测（含北极星指标）
 
     Args:
@@ -547,6 +614,9 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
         replace_threshold: 替换门槛 (0=无门槛, 推荐0.1-0.3)。
                           仅当新股评分比旧持仓评分高出此比例时才替换,
                           减少不必要的换手。不修改scores(保护IC)。
+        hold_buffer: 持仓缓冲区 (0=关闭, 推荐2-3)。
+                    现有持仓只要仍在top_n*(1+hold_buffer)内就保留，
+                    只有跌出缓冲区才卖出。减少因排名微小波动导致的噪声换手。
     """
     print(f"\n{'='*80}")
     print(f"  报告回测: {label}")
@@ -567,6 +637,8 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
         print(f"  流动性过滤: 换手率<{min_turnover_rate:.1f}%的股票不入选")
     if replace_threshold > 0:
         print(f"  替换门槛: 新股评分需超出旧持仓{replace_threshold:.0%}才替换")
+    if hold_buffer > 0:
+        print(f"  持仓缓冲: 现有持仓在top {top_n*(1+hold_buffer):.0f}内保留 (buffer={hold_buffer})")
 
     # V4.5 Risk Overlays
     overlay_active = vol_target > 0 or cppi_floor > 0
@@ -637,23 +709,46 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
                     if len(stocks_filtered) >= top_n:
                         stocks = stocks_filtered
 
-        # 持仓保留加分: 已持有股票的score乘以(1+bonus)
+        # 持仓保留加分: 已持有股票的rank_score乘以(1+bonus)
         if retention_bonus > 0 and prev_top_codes:
             adjusted_stocks = []
             for s in stocks:
                 s_copy = dict(s)
                 if s['code'] in prev_top_codes:
-                    s_copy['score'] = s['score'] * (1 + retention_bonus)
+                    s_copy['rank_score'] = s['rank_score'] * (1 + retention_bonus)
                 adjusted_stocks.append(s_copy)
-            adjusted_stocks.sort(key=lambda x: x['score'], reverse=True)
+            adjusted_stocks.sort(key=lambda x: x['rank_score'], reverse=True)
             top_stocks = adjusted_stocks[:top_n]
         else:
             top_stocks = stocks[:top_n]
 
-        # 替换门槛: 仅当新股评分显著高于被替换旧持仓时才替换 (不修改scores)
+        # 持仓缓冲: 现有持仓仍在top_n*(1+buffer)内则保留
+        if hold_buffer > 0 and prev_top_codes:
+            buffer_n = int(top_n * (1 + hold_buffer))
+            buffer_codes = set(s['code'] for s in stocks[:buffer_n])
+            # 现有持仓中仍在缓冲区内的 → 保留
+            retained = [s for s in stocks if s['code'] in prev_top_codes
+                        and s['code'] in buffer_codes]
+            retained_codes = set(s['code'] for s in retained)
+            # 需要几个新股补满top_n
+            n_new_needed = top_n - len(retained)
+            if n_new_needed > 0:
+                # 从top排名中补入不在retained中的新股
+                new_entries = [s for s in stocks if s['code'] not in retained_codes][:n_new_needed]
+                top_stocks = retained + new_entries
+                top_stocks.sort(key=lambda x: x['rank_score'], reverse=True)
+            elif n_new_needed == 0:
+                top_stocks = retained
+                top_stocks.sort(key=lambda x: x['rank_score'], reverse=True)
+            # else: retained已超过top_n, 取排名最高的top_n
+            else:
+                retained.sort(key=lambda x: x['rank_score'], reverse=True)
+                top_stocks = retained[:top_n]
+
+        # 替换门槛: 仅当新股评分显著高于被替换旧持仓时才替换 (不修改rank_scores)
         if replace_threshold > 0 and prev_top_codes and len(top_stocks) == top_n:
-            # 构建当前评分查找表 (使用原始scores, 非retention调整后的)
-            score_map = {s['code']: s['score'] for s in stocks}
+            # 构建当前评分查找表 (使用原始rank_scores, 非retention调整后的)
+            score_map = {s['code']: s['rank_score'] for s in stocks}
             new_codes = set(s['code'] for s in top_stocks)
             dropped = prev_top_codes - new_codes  # 被踢出的旧持仓
             added = new_codes - prev_top_codes     # 新入选的股票
@@ -685,8 +780,8 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
                         entry = next((s for s in stocks if s['code'] == code), None)
                         if entry:
                             top_stocks.append(entry)
-                    # 重新按分数排序
-                    top_stocks.sort(key=lambda x: x['score'], reverse=True)
+                    # 重新按rank_score排序
+                    top_stocks.sort(key=lambda x: x['rank_score'], reverse=True)
                     top_stocks = top_stocks[:top_n]
 
         # Module J: 评分门槛过滤 + 现金仓位
@@ -810,7 +905,7 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
                 'date': date,
                 'buy_date': buy_date,
                 'code': s['code'],
-                'score': s['score'],
+                'score': s['rank_score'],  # 用rank_score (原始预测值) 计算IC
                 'predicted_return_5d': s.get('predicted_return_5d'),
                 'n_strategies': s.get('n_strategies', 1),
                 'is_top': s['code'] in top_code_set,

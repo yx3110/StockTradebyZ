@@ -47,17 +47,22 @@ DB_PATH = PROJECT_ROOT / 'data_adapter' / 'stock_data.db'
 
 def load_model_and_config(version: str):
     """加载模型文件, 返回 (models, weights, target_weights, feature_names, scaler, model_dir, extra_config)"""
-    if version == 'v3.96':
-        model_dir = PROJECT_ROOT / 'ml_models' / 'trained_models' / 'v396'
-        model_files = list(model_dir.glob('v396_*.pkl')) + list(model_dir.glob('v395_multi_target_*.pkl'))
-    elif version == 'v4.3':
-        model_dir = PROJECT_ROOT / 'ml_models' / 'trained_models' / 'v43'
-        model_files = list(model_dir.glob('v43_*.pkl'))
-    elif version == 'v4.4':
-        model_dir = PROJECT_ROOT / 'ml_models' / 'trained_models' / 'v44'
-        model_files = list(model_dir.glob('v44_*.pkl'))
-    else:
-        raise ValueError(f"Unknown version: {version}")
+    version_map = {
+        'v3.96': ('v396', ['v396_*.pkl', 'v395_multi_target_*.pkl']),
+        'v4.3': ('v43', ['v43_*.pkl']),
+        'v4.4': ('v44', ['v44_*.pkl']),
+        'v4.6': ('v46', ['v46_*.pkl']),
+        'v4.7.3': ('v473', ['v473_*.pkl']),
+        'v4.8': ('v48', ['v48_*.pkl']),
+    }
+    if version not in version_map:
+        raise ValueError(f"Unknown version: {version}. Supported: {list(version_map.keys())}")
+
+    dir_name, patterns = version_map[version]
+    model_dir = PROJECT_ROOT / 'ml_models' / 'trained_models' / dir_name
+    model_files = []
+    for pat in patterns:
+        model_files.extend(model_dir.glob(pat))
 
     if not model_files:
         raise FileNotFoundError(f"No model files found in {model_dir}")
@@ -78,7 +83,7 @@ def load_model_and_config(version: str):
     for target, target_data in raw_models.items():
         if isinstance(target_data, dict) and 'models' in target_data:
             models[target] = target_data['models']
-            if not weights:
+            if f'label_{target}' not in weights:
                 weights[f'label_{target}'] = target_data.get('weights', {})
         else:
             models[target] = target_data
@@ -199,12 +204,17 @@ def apply_winsorization(X: np.ndarray, feature_cols: list, winsorize_bounds: dic
     return X
 
 
-def compute_combined_pred_for_date(features_df: pd.DataFrame, models: dict, weights: dict,
-                                     target_weights: dict, feature_names: list,
-                                     extra_config: dict) -> np.ndarray:
-    """对单日数据计算 combined_pred"""
+def compute_predictions_for_date(features_df: pd.DataFrame, models: dict, weights: dict,
+                                   target_weights: dict, feature_names: list,
+                                   extra_config: dict) -> tuple:
+    """对单日数据计算 per-target predictions 和 combined_pred
+
+    Returns:
+        (combined_pred, per_target_preds): combined_pred 是加权融合, per_target_preds 是 {target_key: np.ndarray}
+        如果数据无效返回 (np.array([]), {})
+    """
     if features_df.empty or len(features_df) < 5:
-        return np.array([])
+        return np.array([]), {}
 
     # Robust Z-Score
     if extra_config.get('robust_zscore'):
@@ -213,7 +223,7 @@ def compute_combined_pred_for_date(features_df: pd.DataFrame, models: dict, weig
     # 准备特征矩阵
     available_cols = [c for c in feature_names if c in features_df.columns]
     if len(available_cols) < len(feature_names) * 0.5:
-        return np.array([])
+        return np.array([]), {}
 
     X = features_df[available_cols].fillna(0).values
 
@@ -234,21 +244,38 @@ def compute_combined_pred_for_date(features_df: pd.DataFrame, models: dict, weig
     # 集成预测
     predictions = {}
     for target_key, target_models in models.items():
-        target_pred = np.zeros(X.shape[0])
-        total_weight = 0
-
+        # 先收集所有预测
+        preds = {}
         for name, model in target_models.items():
-            w = weights.get(f'label_{target_key}', {}).get(name, 0.2)
             try:
                 if name == 'xgb':
                     import xgboost as xgb
-                    pred = model.predict(xgb.DMatrix(X))
+                    preds[name] = model.predict(xgb.DMatrix(X))
                 else:
-                    pred = model.predict(X)
-                target_pred += w * pred
-                total_weight += w
+                    preds[name] = model.predict(X)
             except Exception:
                 continue
+
+        # Rescale rank模型到回归模型尺度
+        regression_names = [n for n in preds if n not in ('lgb_rank', 'lgb_listnet')]
+        rank_names = [n for n in preds if n in ('lgb_rank', 'lgb_listnet')]
+        if regression_names and rank_names:
+            reg_means = [np.mean(preds[n]) for n in regression_names]
+            reg_stds = [max(np.std(preds[n]), 1e-8) for n in regression_names]
+            t_mean = np.mean(reg_means)
+            t_std = np.mean(reg_stds)
+            for rn in rank_names:
+                rp = preds[rn]
+                rp_std = max(np.std(rp), 1e-8)
+                preds[rn] = (rp - np.mean(rp)) / rp_std * t_std + t_mean
+
+        target_pred = np.zeros(X.shape[0])
+        total_weight = 0
+        target_w = weights.get(f'label_{target_key}', {})
+        for name, pred in preds.items():
+            w = target_w.get(name, 0.2)
+            target_pred += w * pred
+            total_weight += w
 
         if total_weight > 0:
             target_pred /= total_weight
@@ -260,13 +287,19 @@ def compute_combined_pred_for_date(features_df: pd.DataFrame, models: dict, weig
         w = target_weights.get(f'label_{target_key}', 0)
         combined += w * pred
 
+    return combined, predictions
+
+
+def compute_combined_pred_for_date(features_df, models, weights, target_weights, feature_names, extra_config):
+    """兼容旧接口"""
+    combined, _ = compute_predictions_for_date(features_df, models, weights, target_weights, feature_names, extra_config)
     return combined
 
 
-def calibrate_version(version: str, n_quantiles: int = 1001):
-    """对指定版本模型进行全局分位数校准"""
+def calibrate_version(version: str, n_quantiles: int = 1001, with_recommendation: bool = False):
+    """对指定版本模型进行全局分位数校准 + 可选composite推荐阈值"""
     print(f"\n{'=' * 60}")
-    print(f"校准 {version} 模型的全局分位数")
+    print(f"校准 {version} 模型的全局分位数" + (" + 推荐阈值" if with_recommendation else ""))
     print(f"{'=' * 60}")
 
     models, weights, target_weights, feature_names, scaler, model_dir, extra_config = \
@@ -276,21 +309,32 @@ def calibrate_version(version: str, n_quantiles: int = 1001):
     market_feature_cols = extra_config.get('market_feature_cols', [])
 
     all_combined_preds = []
+    all_composite_scores = [] if with_recommendation else None
     n_stocks_total = 0
     n_dates_success = 0
+
+    # Composite 权重: 3d×0.1 + 5d×0.2 + 10d×0.4 + 15d×0.3
+    composite_weights = {'3d': 0.1, '5d': 0.2, '10d': 0.4, '15d': 0.3}
 
     for date in tqdm(dates, desc=f"校准 {version}"):
         features_df = load_features_for_date(date, feature_names, market_feature_cols, extra_config)
         if features_df.empty:
             continue
 
-        combined = compute_combined_pred_for_date(
+        combined, per_target = compute_predictions_for_date(
             features_df, models, weights, target_weights, feature_names, extra_config)
 
         if len(combined) > 0:
             all_combined_preds.append(combined)
             n_stocks_total += len(combined)
             n_dates_success += 1
+
+            if with_recommendation and per_target:
+                composite = np.zeros(len(combined))
+                for target_key, w in composite_weights.items():
+                    if target_key in per_target:
+                        composite += w * per_target[target_key]
+                all_composite_scores.append(composite)
 
     if not all_combined_preds:
         print(f"  ❌ 无有效预测数据, 跳过")
@@ -324,15 +368,80 @@ def calibrate_version(version: str, n_quantiles: int = 1001):
         threshold = global_quantiles[int(p / 100 * (n_quantiles - 1))]
         print(f"  全局 P{p:2d} (combined_pred={threshold:+.6f}) → 评分 {p}")
 
+    # 计算推荐阈值 (基于composite score百分位)
+    if with_recommendation and all_composite_scores:
+        all_composites = np.concatenate(all_composite_scores)
+        rec_thresholds = {
+            'strong_buy': float(np.percentile(all_composites, 95)),   # Top 5%
+            'buy': float(np.percentile(all_composites, 80)),          # Top 20%
+            'cautious': float(np.percentile(all_composites, 60)),     # Top 40%
+            'hold': float(np.percentile(all_composites, 40)),         # Top 60%
+        }
+
+        print(f"\n📊 Composite推荐阈值 (基于{n_stocks_total:,}样本):")
+        print(f"  composite = pred_3d×0.1 + pred_5d×0.2 + pred_10d×0.4 + pred_15d×0.3")
+        print(f"  composite 分布: min={all_composites.min():.6f}, P50={np.percentile(all_composites, 50):.6f}, max={all_composites.max():.6f}")
+        print(f"  强烈买入 (Top  5%): composite ≥ {rec_thresholds['strong_buy']:.6f}")
+        print(f"  买入     (Top 20%): composite ≥ {rec_thresholds['buy']:.6f}")
+        print(f"  谨慎买入 (Top 40%): composite ≥ {rec_thresholds['cautious']:.6f}")
+        print(f"  观望     (Top 60%): composite ≥ {rec_thresholds['hold']:.6f}")
+        print(f"  回避     (Bottom 40%)")
+
+        # 保存为 JSON sidecar
+        rec_path = model_dir / 'recommendation_thresholds.json'
+        with open(rec_path, 'w') as f:
+            json.dump(rec_thresholds, f, indent=2)
+        print(f"\n✅ 推荐阈值已保存: {rec_path}")
+
+        # 嵌入模型 pkl
+        _embed_thresholds_in_model(model_dir, rec_thresholds, version)
+
+
+def _embed_thresholds_in_model(model_dir: Path, rec_thresholds: dict, version: str):
+    """将 recommendation_thresholds 嵌入模型 pkl 文件"""
+    version_map = {
+        'v3.96': ['v396_*.pkl', 'v395_multi_target_*.pkl'],
+        'v4.3': ['v43_*.pkl'],
+        'v4.4': ['v44_*.pkl'],
+        'v4.6': ['v46_*.pkl'],
+        'v4.7.3': ['v473_*.pkl'],
+        'v4.8': ['v48_*.pkl'],
+    }
+    patterns = version_map.get(version, [])
+    model_files = []
+    for pat in patterns:
+        model_files.extend(model_dir.glob(pat))
+
+    if not model_files:
+        print(f"  ⚠️ 无模型文件可嵌入阈值")
+        return
+
+    latest = max(model_files, key=lambda f: f.stat().st_mtime)
+    print(f"  嵌入阈值到: {latest.name}")
+
+    try:
+        model_data = joblib.load(latest)
+    except Exception:
+        with open(latest, 'rb') as f:
+            model_data = pickle.load(f)
+
+    model_data['recommendation_thresholds'] = rec_thresholds
+    joblib.dump(model_data, latest)
+    print(f"  ✅ 阈值已嵌入模型文件 ({latest.stat().st_size / 1024 / 1024:.1f} MB)")
+
 
 def main():
+    all_versions = ['v3.96', 'v4.3', 'v4.4', 'v4.6', 'v4.7.3', 'v4.8']
+
     parser = argparse.ArgumentParser(description='为已有模型计算全局分位数校准')
-    parser.add_argument('--version', choices=['v3.96', 'v4.3', 'v4.4'],
+    parser.add_argument('--version', choices=all_versions,
                         help='模型版本')
     parser.add_argument('--all', action='store_true',
                         help='校准所有活跃版本')
     parser.add_argument('--n-quantiles', type=int, default=1001,
                         help='分位点数量 (默认1001)')
+    parser.add_argument('--with-recommendation', action='store_true',
+                        help='同时计算composite推荐阈值 (强烈买入/买入/谨慎/观望/回避)')
 
     args = parser.parse_args()
 
@@ -344,13 +453,13 @@ def main():
     start = datetime.now()
 
     if args.all:
-        for v in ['v3.96', 'v4.3', 'v4.4']:
+        for v in all_versions:
             try:
-                calibrate_version(v, args.n_quantiles)
+                calibrate_version(v, args.n_quantiles, args.with_recommendation)
             except Exception as e:
                 print(f"  ⚠️ {v} 校准失败: {e}")
     else:
-        calibrate_version(args.version, args.n_quantiles)
+        calibrate_version(args.version, args.n_quantiles, args.with_recommendation)
 
     elapsed = (datetime.now() - start).total_seconds()
     print(f"\n校准完成, 总耗时: {elapsed:.0f}秒 ({elapsed / 60:.1f}分钟)")

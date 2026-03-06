@@ -112,6 +112,15 @@ class V46ProductionScorer(V44ProductionScorer):
             if quantiles_path.exists():
                 self.global_quantiles = np.load(quantiles_path)
 
+        # 投资建议阈值
+        self.recommendation_thresholds = model_data.get('recommendation_thresholds')
+        if not self.recommendation_thresholds:
+            rec_path = self.model_dir / 'recommendation_thresholds.json'
+            if rec_path.exists():
+                import json as _json
+                with open(rec_path, 'r') as f:
+                    self.recommendation_thresholds = _json.load(f)
+
         wf = model_data.get('walk_forward_metrics', {})
 
         # V4.6.1: ICIR权重clip到[0.08, 0.50]后重归一化, 防止单模型主导

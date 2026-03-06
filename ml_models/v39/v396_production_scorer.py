@@ -55,7 +55,7 @@ class V396ProductionScorer(V395ProductionScorer):
         for target, target_data in raw_models.items():
             if isinstance(target_data, dict) and 'models' in target_data:
                 self.models[target] = target_data['models']
-                if not self.weights:
+                if f'label_{target}' not in self.weights:
                     self.weights[f'label_{target}'] = target_data.get('weights', {})
             else:
                 self.models[target] = target_data
@@ -91,6 +91,15 @@ class V396ProductionScorer(V395ProductionScorer):
             if quantiles_path.exists():
                 import numpy as np
                 self.global_quantiles = np.load(quantiles_path)
+
+        # Recommendation thresholds
+        self.recommendation_thresholds = model_data.get('recommendation_thresholds')
+        if not self.recommendation_thresholds:
+            import json as _json
+            rec_path = self.model_dir / 'recommendation_thresholds.json'
+            if rec_path.exists():
+                with open(rec_path) as f:
+                    self.recommendation_thresholds = _json.load(f)
 
         suffix = " [robust_zscore+industry_excess]" if self.robust_zscore else ""
         print(f"V3.96 模型加载完成: {list(self.models.keys())}{suffix}")
