@@ -67,9 +67,11 @@ class V473ProductionScorer(V44ProductionScorer):
         self.scaler = model_data.get('scaler')
         self.feature_cols = model_data.get('feature_names', model_data.get('feature_cols', []))
         self.market_feature_cols = model_data.get('market_features', model_data.get('market_feature_cols', []))
-        self.target_weights = model_data.get('target_weights', {
-            'label_3d': 0.20, 'label_5d': 0.25, 'label_10d': 0.35, 'label_15d': 0.20
-        })
+        # V4.7.3 optimal: 10d+15d after ablation (511 days, 2024-01~2026-02)
+        # 10d+15d: AnnRet +97.3%, Sharpe 1.576 vs default: +83.8%, 1.499
+        self.target_weights = {
+            'label_3d': 0.00, 'label_5d': 0.00, 'label_10d': 0.60, 'label_15d': 0.40
+        }
 
         # 元数据
         self.cascade = False
@@ -94,6 +96,7 @@ class V473ProductionScorer(V44ProductionScorer):
 
         # V4.4 组件 (继承)
         self.bear_models = model_data.get('bear_models', {})
+        # V4.7.3: 使用isotonic校准用于评分/推荐, 原始值通过raw_pred_Xd保留给报告展示
         self.isotonic_calibration = model_data.get('isotonic_calibration', {})
 
         # V4.7.3: 无Meta-Learner, 无Combined Isotonic (核心设计)

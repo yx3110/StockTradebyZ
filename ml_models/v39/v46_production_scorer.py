@@ -75,9 +75,11 @@ class V46ProductionScorer(V44ProductionScorer):
         self.scaler = model_data.get('scaler')
         self.feature_cols = model_data.get('feature_names', model_data.get('feature_cols', []))
         self.market_feature_cols = model_data.get('market_features', model_data.get('market_feature_cols', []))
-        self.target_weights = model_data.get('target_weights', {
-            'label_3d': 0.20, 'label_5d': 0.25, 'label_10d': 0.35, 'label_15d': 0.20
-        })
+        # V4.6 optimal: 10d+15d after ablation (511 days, 2024-01~2026-02)
+        # 10d+15d: AnnRet +77.5%, Sharpe 1.345 vs default: +68.5%, 1.212
+        self.target_weights = {
+            'label_3d': 0.00, 'label_5d': 0.00, 'label_10d': 0.60, 'label_15d': 0.40
+        }
 
         # 元数据
         self.cascade = False
