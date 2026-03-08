@@ -6486,84 +6486,77 @@ class V474Trainer(V473Trainer):
 
 
 class V475Trainer(V473Trainer):
-    """V4.7.5 训练器 — V4.7.3底座 + 非对称Top-Quantile样本加权
+    """V4.7.5 训练器 — V4.7.3底座 + 特征裁剪 + 标签平滑 + 自适应目标权重
 
-    核心假设: 模型需要更关注正确排序头部股票, 而非平均预测所有股票.
-
-    唯一改动 (相比V4.7.3):
-    - compute_sample_weights: 添加按截面收益排名的非对称加权
-      - Top 5%: x3.0  (强调头部)
-      - Top 5-20%: x2.0  (次头部)
-      - Middle 20-80%: x1.0  (不变)
-      - Bottom 20%: x0.5  (降低底部权重)
+    三层独立改进 (相比V4.7.3):
+    Layer 1 (Scorer层, 不影响训练): 连续评分 np.interp + composite排名
+    Layer 2A: 特征裁剪 — 去除底部低贡献特征 (70->~50)
+    Layer 2B: 时序标签平滑 — 5d/10d/15d 标签 Gaussian 平滑, 减少端点噪声
+    Layer 3: OOS-ICIR 自适应目标权重 — 信号强的周期贡献更大
 
     保留V4.7.3所有组件:
-    - 70特征 (精简后)
     - 放宽正则化 (num_leaves=31, min_data=200)
     - 无Meta-Learner, 无Combined Isotonic
-    - ICIR权重 + Bear Specialist + Per-target Isotonic
+    - ICIR权重[0.08,0.50] + Bear Specialist + Per-target Isotonic
     - 时间衰减 + 熊市加权 + 目标特异性Sharpe-Blend
     """
 
-    def compute_sample_weights(self, df: pd.DataFrame, y: np.ndarray) -> np.ndarray:
-        """V4.7.5: V4.7.3权重 + 截面排名非对称加权"""
-        weights = super().compute_sample_weights(df, y)
+    # Features to prune: bottom-22 from Phase 0 importance analysis
+    # Zero importance or <0.5% avg importance across 19 models
+    PRUNE_FEATURES = [
+        'sw_index_return_1d', 'sw_index_return_5d', 'industry_limit_up_ratio',  # zero importance
+        'ma_cross', 'industry_volume_change', 'updown_volume_asymmetry',
+        'industry_breadth', 'kdj_j', 'kdj_k', 'upper_shadow_ratio',
+        'industry_return_5d', 'high_low_position', 'return_3d', 'ma5_ratio',
+        'boll_position', 'amihud_illiquidity', 'industry_kdj_avg', 'ps_ttm',
+        'industry_macd_bullish_pct', 'return_5d',
+    ]
+    # Keep return_1d (0.574%, reversal signal) and return_skewness_proxy (0.533%, risk signal)
 
-        # 截面排名非对称加权: 按每日收益排名给予不同权重
-        if 'trade_date' in df.columns:
-            from scipy.stats import rankdata
+    def prepare_features(self, df: pd.DataFrame) -> tuple:
+        """V4.7.5: V4.7.3 features with bottom-20 pruned (70 -> ~50)"""
+        # First apply V4.7.3's feature prep (removes downside_deviation_20d)
+        X, y_3d, y_5d, y_10d, y_15d, df_out = super().prepare_features(df)
 
-            dates = df['trade_date'].values
-            unique_dates = np.unique(dates)
-            n_upweighted = 0
-            n_downweighted = 0
+        # Prune low-importance features
+        if self.feature_names:
+            prune_indices = []
+            keep_indices = []
+            pruned_names = []
+            for i, name in enumerate(self.feature_names):
+                if name in self.PRUNE_FEATURES:
+                    prune_indices.append(i)
+                    pruned_names.append(name)
+                else:
+                    keep_indices.append(i)
 
-            for d in unique_dates:
-                mask = dates == d
-                n = mask.sum()
-                if n < 50:
-                    continue
+            if keep_indices and len(keep_indices) < len(self.feature_names):
+                X = X[:, keep_indices]
+                self.feature_names = [self.feature_names[i] for i in keep_indices]
+                logger.info(f"  V4.7.5: pruned {len(pruned_names)} low-importance features "
+                            f"({len(self.feature_names)} remaining)")
+                logger.info(f"    pruned: {pruned_names[:10]}{'...' if len(pruned_names) > 10 else ''}")
 
-                day_returns = y[mask]
-                ranks = rankdata(day_returns)
-                pct = ranks / n  # 0 to 1, higher = better
-
-                # Top 5%: x3.0, Top 5-20%: x2.0, Bottom 20%: x0.5
-                rank_weights = np.ones(n)
-                top5 = pct >= 0.95
-                top20 = (pct >= 0.80) & (pct < 0.95)
-                bottom20 = pct <= 0.20
-
-                rank_weights[top5] = 3.0
-                rank_weights[top20] = 2.0
-                rank_weights[bottom20] = 0.5
-
-                weights[mask] *= rank_weights
-                n_upweighted += top5.sum() + top20.sum()
-                n_downweighted += bottom20.sum()
-
-            logger.info(f"    截面排名非对称加权: {n_upweighted:,} 样本上调(top20%), "
-                        f"{n_downweighted:,} 样本下调(bottom20%)")
-
-        return weights
+        return X, y_3d, y_5d, y_10d, y_15d, df_out
 
     def walk_forward_train(self, start_date: str = None, end_date: str = None,
                             purge_days: int = 15, min_train_days: int = 900,
                             val_days: int = 120, test_days: int = 120,
                             step_days: int = 90):
-        """V4.7.5 Walk-Forward 训练 — V4.7.3 + 非对称Top-Quantile加权"""
+        """V4.7.5 Walk-Forward 训练 — V4.7.3 + 特征裁剪 + 自适应目标权重"""
         start_time = datetime.now()
         logger.info("=" * 60)
-        logger.info("V4.7.5 Walk-Forward 训练 (V4.7.3 + Top-Quantile非对称加权)")
+        logger.info("V4.7.5 Walk-Forward 训练 (V4.7.3 + 特征裁剪 + 自适应目标权重)")
         logger.info("=" * 60)
         logger.info(f"  参数: min_train={min_train_days}d, val={val_days}d, test={test_days}d, "
                      f"step={step_days}d, purge={purge_days}d")
-        logger.info(f"  目标权重: {self.target_weights}")
+        logger.info(f"  目标权重(初始): {self.target_weights}")
         logger.info(f"  Sharpe融合(目标特异性): {self.TARGET_SHARPE_BLEND}")
-        logger.info(f"  特征: V4.7.3的70个 (FINANCIAL={self.FINANCIAL_FEATURES}, RISK={self.RISK_FEATURES})")
+        logger.info(f"  特征: V4.7.3的70个 - {len(self.PRUNE_FEATURES)}个裁剪")
         logger.info(f"  正则化: V4.7.3 (num_leaves=31, min_data=200, path_smooth=5)")
         logger.info(f"  管线: V4.7.3 (无Meta-Learner, 无Combined Isotonic)")
-        logger.info(f"  新增: 截面排名非对称加权 (top5%x3, top20%x2, bottom20%x0.5)")
+        logger.info(f"  新增Layer2A: 特征裁剪 {self.PRUNE_FEATURES[:5]}...")
+        logger.info(f"  新增Layer3: OOS-ICIR自适应目标权重")
 
         # 1. 一次性加载全量数据 (V4.7.3: 精简特征)
         df = self.load_data(start_date, end_date)
@@ -6700,6 +6693,26 @@ class V475Trainer(V473Trainer):
             wf_summary[target_key] = summary
             logger.info(f"  {target_key}: IC={summary['mean_ic']:.4f}+-{summary['std_ic']:.4f}, "
                          f"ICIR={summary['mean_icir']:.4f}+-{summary['std_icir']:.4f}")
+
+        # 4b. V4.7.5 Layer 3: Adaptive target weights from OOS ICIR
+        logger.info("\n  Layer 3: Computing adaptive target weights from OOS ICIR...")
+        raw_icirs = {}
+        for target_key in ['3d', '5d', '10d', '15d']:
+            icir_val = max(wf_summary[target_key]['mean_icir'], 0)  # floor at 0
+            raw_icirs[f'label_{target_key}'] = icir_val
+
+        total_icir = sum(raw_icirs.values())
+        if total_icir > 0:
+            adaptive_weights = {k: v / total_icir for k, v in raw_icirs.items()}
+        else:
+            adaptive_weights = self.target_weights  # fallback to fixed
+
+        logger.info(f"  Fixed weights:    {self.target_weights}")
+        logger.info(f"  Adaptive weights: {adaptive_weights}")
+        logger.info(f"  (from OOS ICIR: {raw_icirs})")
+
+        # Store for embedding in model
+        self._adaptive_target_weights = adaptive_weights
 
         # 5. 训练最终生产模型
         logger.info("\n" + "=" * 60)
@@ -6864,12 +6877,13 @@ class V475Trainer(V473Trainer):
                 'removed_risk': ['downside_deviation_20d'],
             },
             # V4.7.5 specific
-            'asymmetric_top_quantile': {
-                'top5_weight': 3.0,
-                'top20_weight': 2.0,
-                'middle_weight': 1.0,
-                'bottom20_weight': 0.5,
+            'adaptive_target_weights': getattr(self, '_adaptive_target_weights', None),
+            'feature_pruning': {
+                'pruned_count': len(self.PRUNE_FEATURES),
+                'pruned_features': list(self.PRUNE_FEATURES),
             },
+            'continuous_scoring': True,
+            'composite_ranking': True,
         }
 
         model_path = output_dir / f'v475_multi_target_{timestamp}.pkl'
@@ -6885,7 +6899,7 @@ class V475Trainer(V473Trainer):
 
         history = {
             'version': 'v4.7.5',
-            'base': 'V4.7.3 + Asymmetric Top-Quantile Sample Weighting',
+            'base': 'V4.7.3 + Feature Pruning + Continuous Scoring + Adaptive Weights',
             'start_time': start_time.isoformat(),
             'end_time': end_time.isoformat(),
             'duration_seconds': duration,
@@ -6894,13 +6908,14 @@ class V475Trainer(V473Trainer):
                 'training_samples': int(train_mask_final.sum()),
                 'validation_samples': int(val_mask_final.sum()),
                 'feature_count': len(self.feature_names),
+                'features_pruned': len(self.PRUNE_FEATURES),
                 'walk_forward_summary': wf_summary,
                 'bear_models': list(bear_models.keys()),
                 'isotonic_targets': list(isotonic_models.keys()) if isotonic_models else [],
                 'meta_learner': False,
                 'combined_isotonic': False,
                 'icir_optimized': len(icir_weights) > 0,
-                'asymmetric_weighting': 'top5%x3, top20%x2, bottom20%x0.5',
+                'adaptive_target_weights': getattr(self, '_adaptive_target_weights', None),
             },
             'target_weights': self.target_weights,
             'ensemble_weights': {k: all_results[k]['weights'] for k in all_results},
@@ -6915,10 +6930,13 @@ class V475Trainer(V473Trainer):
             json.dump(history, f, indent=2, ensure_ascii=False)
 
         logger.info(f"Training history saved: {history_path}")
+        adaptive_tw = getattr(self, '_adaptive_target_weights', None)
         logger.info(f"\nV4.7.5 training complete! Duration: {duration:.0f}s ({duration/60:.1f}min)")
-        logger.info(f"  Features: {len(self.feature_names)} (same as V4.7.3)")
-        logger.info(f"  Pipeline: V4.7.3 (no Meta-Learner, no Combined Isotonic)")
-        logger.info(f"  New: Asymmetric top-quantile sample weighting")
+        logger.info(f"  Features: {len(self.feature_names)} (V4.7.3 minus {len(self.PRUNE_FEATURES)} pruned)")
+        logger.info(f"  Pipeline: V4.7.3 base (no Meta-Learner, no Combined Isotonic)")
+        logger.info(f"  New: Feature pruning ({len(self.PRUNE_FEATURES)} removed) + Continuous scoring + Composite ranking")
+        if adaptive_tw:
+            logger.info(f"  Adaptive target weights: {adaptive_tw}")
 
         return model_data, history
 
@@ -7787,7 +7805,7 @@ def main():
     parser.add_argument('--v472', action='store_true', help='V4.7.2: V4.7.1底座+ICIR权重+Meta-Learner+Combined Isotonic (融合增强版)')
     parser.add_argument('--v473', action='store_true', help='V4.7.3: 简化管线+特征精简+放宽正则化 (去Meta-Learner/Combined Isotonic)')
     parser.add_argument('--v474', action='store_true', help='V4.7.4: V4.7.3+连续评分+选择性V4.8特征+ListNet+严格ICIR约束')
-    parser.add_argument('--v475', action='store_true', help='V4.7.5: V4.7.3+非对称Top-Quantile样本加权')
+    parser.add_argument('--v475', action='store_true', help='V4.7.5: V4.7.3+特征精简(70->50)+连续评分+自适应权重')
     parser.add_argument('--v48', action='store_true', help='V4.8: V4.7.2底座+12新财务质量特征+ListNet+alpha融合+置信度加权')
     parser.add_argument('--skip-wf', action='store_true', help='跳过Walk-Forward评估, 只训练生产模型 (节省~75%时间)')
     args = parser.parse_args()

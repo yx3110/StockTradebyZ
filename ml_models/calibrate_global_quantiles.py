@@ -53,6 +53,7 @@ def load_model_and_config(version: str):
         'v4.4': ('v44', ['v44_*.pkl']),
         'v4.6': ('v46', ['v46_*.pkl']),
         'v4.7.3': ('v473', ['v473_*.pkl']),
+        'v4.7.5': ('v475', ['v475_*.pkl']),
         'v4.8': ('v48', ['v48_*.pkl']),
     }
     if version not in version_map:
@@ -95,6 +96,9 @@ def load_model_and_config(version: str):
         target_weights = model_data.get('dynamic_weights',
                                          model_data.get('target_weights',
                                                         {'label_3d': 0.4, 'label_5d': 0.35, 'label_10d': 0.25}))
+    elif version in ('v4.7.5', 'v4.6', 'v4.7.3'):
+        # 10d+15d optimal weights (ablation confirmed across all models)
+        target_weights = {'label_3d': 0.0, 'label_5d': 0.0, 'label_10d': 0.6, 'label_15d': 0.4}
     else:
         target_weights = model_data.get('target_weights', {
             'label_3d': 0.25, 'label_5d': 0.30, 'label_10d': 0.25, 'label_15d': 0.20
@@ -313,8 +317,11 @@ def calibrate_version(version: str, n_quantiles: int = 1001, with_recommendation
     n_stocks_total = 0
     n_dates_success = 0
 
-    # Composite 权重: 3d×0.1 + 5d×0.2 + 10d×0.4 + 15d×0.3
-    composite_weights = {'3d': 0.1, '5d': 0.2, '10d': 0.4, '15d': 0.3}
+    # Composite 权重
+    if version in ('v4.7.5', 'v4.6', 'v4.7.3'):
+        composite_weights = {'3d': 0.0, '5d': 0.0, '10d': 0.6, '15d': 0.4}
+    else:
+        composite_weights = {'3d': 0.1, '5d': 0.2, '10d': 0.4, '15d': 0.3}
 
     for date in tqdm(dates, desc=f"校准 {version}"):
         features_df = load_features_for_date(date, feature_names, market_feature_cols, extra_config)
@@ -379,7 +386,8 @@ def calibrate_version(version: str, n_quantiles: int = 1001, with_recommendation
         }
 
         print(f"\n📊 Composite推荐阈值 (基于{n_stocks_total:,}样本):")
-        print(f"  composite = pred_3d×0.1 + pred_5d×0.2 + pred_10d×0.4 + pred_15d×0.3")
+        cw_str = " + ".join(f"pred_{k}×{v}" for k, v in composite_weights.items() if v > 0)
+        print(f"  composite = {cw_str}")
         print(f"  composite 分布: min={all_composites.min():.6f}, P50={np.percentile(all_composites, 50):.6f}, max={all_composites.max():.6f}")
         print(f"  强烈买入 (Top  5%): composite ≥ {rec_thresholds['strong_buy']:.6f}")
         print(f"  买入     (Top 20%): composite ≥ {rec_thresholds['buy']:.6f}")
@@ -405,6 +413,7 @@ def _embed_thresholds_in_model(model_dir: Path, rec_thresholds: dict, version: s
         'v4.4': ['v44_*.pkl'],
         'v4.6': ['v46_*.pkl'],
         'v4.7.3': ['v473_*.pkl'],
+        'v4.7.5': ['v475_*.pkl'],
         'v4.8': ['v48_*.pkl'],
     }
     patterns = version_map.get(version, [])
@@ -431,7 +440,7 @@ def _embed_thresholds_in_model(model_dir: Path, rec_thresholds: dict, version: s
 
 
 def main():
-    all_versions = ['v3.96', 'v4.3', 'v4.4', 'v4.6', 'v4.7.3', 'v4.8']
+    all_versions = ['v3.96', 'v4.3', 'v4.4', 'v4.6', 'v4.7.3', 'v4.7.5', 'v4.8']
 
     parser = argparse.ArgumentParser(description='为已有模型计算全局分位数校准')
     parser.add_argument('--version', choices=all_versions,

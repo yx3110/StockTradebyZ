@@ -1592,18 +1592,26 @@ class TomorrowStockSelector:
             volatility = stock_info.get('volatility', 0) 
             risk_reward_ratio = stock_info.get('risk_reward_ratio', 1.0)
             
-            # 综合决策逻辑：结合新评分系统 + 策略交集
+            # 综合决策逻辑
             base_recommendation = new_recommendation
             base_confidence = confidence
-            
-            # 策略加成调整
-            if strategy_count >= 3 or 'SuperB1战法' in strategies:
-                # 多策略确认，提升推荐等级
+
+            # V3.9+ 生产版本: 完全信任composite阈值系统的推荐，不做任何策略加成/惩罚
+            # 回测证明composite阈值(强烈买入=Top5%, 买入=Top20%)比策略数+score混合逻辑更可靠
+            if hasattr(self, 'scoring_version') and self.scoring_version in [
+                "v3.9", "v3.94", "v3.95", "v3.96", "v4.0", "v4.2", "v4.3",
+                "v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7", "v4.7.1", "v4.7.2",
+                "v4.7.3", "v4.7.4", "v4.7.5", "v4.8", "v5.0"]:
+                recommendation = base_recommendation
+                confidence = base_confidence
+
+            # 旧版本: 保留策略交集加成逻辑
+            elif strategy_count >= 3 or 'SuperB1战法' in strategies:
                 if base_recommendation == "观望" and score >= 65:
                     recommendation = "谨慎买入"
                     confidence = "中"
                 elif base_recommendation == "谨慎买入" and score >= 75:
-                    recommendation = "买入"  
+                    recommendation = "买入"
                     confidence = "高"
                 elif base_recommendation == "买入" and score >= 80 and risk_reward_ratio >= 3.0:
                     recommendation = "强烈买入"
@@ -1611,9 +1619,7 @@ class TomorrowStockSelector:
                 else:
                     recommendation = base_recommendation
                     confidence = base_confidence
-                    
             elif strategy_count == 2:
-                # 双策略温和提升
                 if base_recommendation == "观望" and score >= 68:
                     recommendation = "谨慎买入"
                     confidence = "中"
@@ -1623,33 +1629,21 @@ class TomorrowStockSelector:
                 else:
                     recommendation = base_recommendation
                     confidence = base_confidence
-                    
-            else:  # 单策略
-                # 单策略需要更高标准，但v3.41、v3.81、v3.9和v3.94需要特殊处理
-                if hasattr(self, 'scoring_version') and self.scoring_version in ["v3.9", "v3.94", "v3.95", "v3.96", "v4.0", "v4.2", "v4.3", "v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.4", "v4.7.5", "v4.8", "v5.0"]:
-                    # 🏆 生产版：完全信任ML模型的评分和建议，不做单策略惩罚
-                    # 全局评分模型的评分本身已包含质量判断，不应被策略数量降级
-                    recommendation = base_recommendation
-                    confidence = base_confidence
-                    logger.debug(f"V3.9x保持原建议: {recommendation} (评分={score:.1f})")
-                elif hasattr(self, 'scoring_version') and self.scoring_version == "v3.41":
-                    # v3.41反向评分：降低单策略的惩罚，因为评分逻辑已经反转
-                    if base_recommendation == "买入" and score < 60:  # 降低阈值从75到60
+            else:
+                if hasattr(self, 'scoring_version') and self.scoring_version == "v3.41":
+                    if base_recommendation == "买入" and score < 60:
                         recommendation = "谨慎买入"
                         confidence = "中"
-                    elif base_recommendation == "谨慎买入" and score < 50:  # 降低阈值从65到50
+                    elif base_recommendation == "谨慎买入" and score < 50:
                         recommendation = "观望"
                         confidence = "低"
                     else:
                         recommendation = base_recommendation
                         confidence = base_confidence
                 elif hasattr(self, 'scoring_version') and self.scoring_version == "v3.81":
-                    # v3.81 Level 4质量评分版本：完全使用V3.81已生成的投资建议，不覆盖
-                    # 🎯 关键修复：V3.81的投资建议已经在批处理阶段正确生成，不应重新计算
                     if 'recommendation' in detailed_info:
                         recommendation = detailed_info.get('recommendation', base_recommendation)
                         confidence = detailed_info.get('confidence', base_confidence)
-                        logger.debug(f"使用V3.81内置推荐: {recommendation}")
                         return {
                             'recommendation': recommendation,
                             'confidence': confidence,
@@ -1657,7 +1651,6 @@ class TomorrowStockSelector:
                             'detailed_info': detailed_info
                         }
                     else:
-                        # 如果没有V3.81特定推荐，使用调整后的阈值
                         if score >= 75:
                             recommendation = "买入"
                             confidence = "高"
@@ -1668,7 +1661,6 @@ class TomorrowStockSelector:
                             recommendation = base_recommendation
                             confidence = base_confidence
                 else:
-                    # 其他版本保持原有逻辑
                     if base_recommendation == "买入" and score < 75:
                         recommendation = "谨慎买入"
                         confidence = "中"
@@ -1712,6 +1704,12 @@ class TomorrowStockSelector:
                 'pred_3d': detailed_info.get('pred_3d', 0.0),
                 'pred_5d': detailed_info.get('pred_5d', 0.0),
                 'pred_10d': detailed_info.get('pred_10d', 0.0),
+                'pred_15d': detailed_info.get('pred_15d', 0.0),
+                # 原始预测值(校准前), 用于报告展示; 校准后的pred_Xd用于评分/推荐
+                'raw_pred_3d': detailed_info.get('raw_pred_3d', detailed_info.get('pred_3d', 0.0)),
+                'raw_pred_5d': detailed_info.get('raw_pred_5d', detailed_info.get('pred_5d', 0.0)),
+                'raw_pred_10d': detailed_info.get('raw_pred_10d', detailed_info.get('pred_10d', 0.0)),
+                'raw_pred_15d': detailed_info.get('raw_pred_15d', detailed_info.get('pred_15d', 0.0)),
                 'confidence_score': detailed_info.get('confidence_score', 0.0),
                 'risk_level': detailed_info.get('risk_level', 'medium'),
                 'scoring_system': 'v2.0 - 基于3949只股票实际表现优化'
@@ -1918,6 +1916,11 @@ class TomorrowStockSelector:
                         'pred_5d': pred_5d,
                         'pred_10d': pred_10d,
                         'pred_15d': pred_15d,
+                        # 原始预测值(校准前), 用于报告展示
+                        'raw_pred_3d': result.get('raw_pred_3d', pred_3d),
+                        'raw_pred_5d': result.get('raw_pred_5d', pred_5d),
+                        'raw_pred_10d': result.get('raw_pred_10d', pred_10d),
+                        'raw_pred_15d': result.get('raw_pred_15d', pred_15d),
                         'overall_quality': 0.85,
                         'quality_score': 0.85,
                         'risk_level': self._get_risk_level(pred_3d, pred_5d, pred_10d, pred_15d),
@@ -3423,6 +3426,13 @@ class TomorrowStockSelector:
                 investment_rec = self.generate_investment_recommendation(stock_info)
                 stock_info.update(investment_rec)
 
+                # 计算composite用于统一排序 (与recommendation阈值一致)
+                _p3 = stock_info.get('pred_3d', 0) or 0
+                _p5 = stock_info.get('pred_5d', 0) or 0
+                _p10 = stock_info.get('pred_10d', 0) or 0
+                _p15 = stock_info.get('pred_15d', 0) or 0
+                stock_info['composite'] = _p3 * 0.1 + _p5 * 0.2 + _p10 * 0.4 + _p15 * 0.3
+
                 # 🎯 V3.95: 使用策略驱动预测器重新计算预测收益（基于12,655历史样本统计）
                 # 注意：必须在 generate_investment_recommendation 之后执行，因为它会覆盖 predicted_return_5d
                 if hasattr(self, 'strategy_return_predictor') and self.scoring_version in ("v3.95", "v3.96", "v4.3"):
@@ -3519,22 +3529,13 @@ class TomorrowStockSelector:
             else:
                 return 1
 
-        # 按推荐等级和内部评分排序
-        if hasattr(self, 'scoring_version') and self.scoring_version in ["v3.9", "v3.94", "v3.95", "v3.96", "v4.0", "v4.2", "v4.3", "v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v5.0"]:
-            # 🏆 V3.9x+ ML评分系统：以评分为主要排序依据
-            # 失败的股票（置信度0或有error）排在最后
-            def v39_sort_key(x):
-                has_error = 'error' in x.get('factor_scores', {}) or x.get('confidence_score', 1) == 0
-                if has_error:
-                    return (0, 0, 0)  # 失败的股票排最后
-                return (1, x.get('score', 0), get_recommendation_weight(x))
-            stock_with_scores.sort(key=v39_sort_key, reverse=True)
-        elif hasattr(self, 'scoring_version') and self.scoring_version == "v3.41":
-            # v3.41反向评分已修正：现在高分=好机会，评分按降序排序
-            stock_with_scores.sort(key=lambda x: (get_recommendation_weight(x), x.get('score', 0)), reverse=True)
-        else:
-            # 其他版本：高分=好机会，评分按降序排序
-            stock_with_scores.sort(key=lambda x: (get_recommendation_weight(x), x.get('score', 0)), reverse=True)
+        # 按composite排序 (与recommendation阈值一致，回测验证最可靠)
+        def composite_sort_key(x):
+            has_error = 'error' in x.get('factor_scores', {}) or x.get('confidence_score', 1) == 0
+            if has_error:
+                return (0, 0)
+            return (1, x.get('composite', 0))
+        stock_with_scores.sort(key=composite_sort_key, reverse=True)
         
         logger.info(f"投资建议生成完成，强烈买入: {len([s for s in stock_with_scores if s.get('recommendation') == '强烈买入'])}, 买入: {len([s for s in stock_with_scores if s.get('recommendation') == '买入'])}")
         
@@ -3542,27 +3543,9 @@ class TomorrowStockSelector:
         multi_strategy_stocks = [stock for stock in stock_with_scores if stock["selected_by_strategies"] > 1]
         single_strategy_stocks = [stock for stock in stock_with_scores if stock["selected_by_strategies"] == 1]
         
-        # 多策略股票按被选中次数和推荐等级排序
-        if hasattr(self, 'scoring_version') and self.scoring_version in ["v3.9", "v3.94", "v3.95", "v3.96", "v4.0", "v4.2", "v4.3"]:
-            # 🏆 V3.9x ML评分系统：以评分为主要排序依据，失败的排最后
-            multi_strategy_stocks.sort(key=v39_sort_key, reverse=True)
-        elif hasattr(self, 'scoring_version') and self.scoring_version == "v3.41":
-            # v3.41反向评分已修正：现在高分=好机会，评分按降序排序
-            multi_strategy_stocks.sort(key=lambda x: (x["selected_by_strategies"], get_recommendation_weight(x), x.get('score', 0)), reverse=True)
-        else:
-            # 其他版本：高分=好机会，评分按降序排序
-            multi_strategy_stocks.sort(key=lambda x: (x["selected_by_strategies"], get_recommendation_weight(x), x.get('score', 0)), reverse=True)
-
-        # 单策略股票按评分排序（用于选取前20只）
-        if hasattr(self, 'scoring_version') and self.scoring_version in ["v3.9", "v3.94", "v3.95", "v3.96", "v4.0", "v4.2", "v4.3"]:
-            # 🏆 V3.9x ML评分系统：以评分为主要排序依据，失败的排最后
-            single_strategy_stocks.sort(key=v39_sort_key, reverse=True)
-        elif hasattr(self, 'scoring_version') and self.scoring_version == "v3.41":
-            # v3.41反向评分已修正：现在高分=好机会，评分按降序排序
-            single_strategy_stocks.sort(key=lambda x: (get_recommendation_weight(x), x.get('score', 0)), reverse=True)
-        else:
-            # 其他版本：高分=好机会，评分按降序排序
-            single_strategy_stocks.sort(key=lambda x: (get_recommendation_weight(x), x.get('score', 0)), reverse=True)
+        # 多策略和单策略均按composite排序
+        multi_strategy_stocks.sort(key=composite_sort_key, reverse=True)
+        single_strategy_stocks.sort(key=composite_sort_key, reverse=True)
         
         # 标记需要详细分析的股票
         for stock in multi_strategy_stocks:
@@ -3933,9 +3916,9 @@ class TomorrowStockSelector:
             report += "| 排名 | 股票代码 | 股票名称 | 选中策略 | 量化评分 | 投资建议 | 技术 | 基本 | 表现 | 市场 | 知行 | 知行信号 |\n"
             report += "|------|----------|----------|----------|----------|----------|------|------|------|------|------|----------|\n"
         elif hasattr(self, 'scoring_version') and self.scoring_version in ["v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.4", "v4.7.5", "v4.8", "v5.0"]:
-            # V4.4+ 多目标预测 - 展示3d/5d/10d预测收益
-            report += "| 排名 | 股票代码 | 股票名称 | 选中策略 | 综合评分 | 投资建议 | 预测3d | 预测5d | 预测10d | 风险等级 |\n"
-            report += "|------|----------|----------|----------|----------|----------|--------|--------|---------|----------|\n"
+            # V4.4+ 多目标预测 - 按composite排序，展示composite+各周期预测
+            report += "| 排名 | 股票代码 | 股票名称 | 选中策略 | Composite | 投资建议 | 预测3d | 预测5d | 预测10d | 预测15d | 风险等级 |\n"
+            report += "|------|----------|----------|----------|-----------|----------|--------|--------|---------|---------|----------|\n"
         elif hasattr(self, 'scoring_version') and self.scoring_version in ["v3.9", "v3.94", "v3.95", "v3.96", "v4.0", "v4.2", "v4.3"]:
             # 🏆 V3.9.x Production Model - 简化表头
             report += "| 排名 | 股票代码 | 股票名称 | 选中策略 | 综合评分 | 投资建议 | 预测5d收益 | 置信度 | 风险等级 |\n"
@@ -4026,10 +4009,10 @@ class TomorrowStockSelector:
             
             # 根据评分系统版本处理不同的因子评分
             if hasattr(self, 'scoring_version') and self.scoring_version in ["v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.4", "v4.7.5", "v4.8", "v5.0"]:
-                # V4.4+ 多目标预测字段
-                pred_3d = stock.get('pred_3d', 0.0)
-                predicted_return = stock.get('predicted_return_5d', stock.get('pred_5d', 0.0))
-                pred_10d = stock.get('pred_10d', 0.0)
+                # V4.4+ 多目标预测字段 — 报告展示用原始值(校准前)
+                pred_3d = stock.get('raw_pred_3d', stock.get('pred_3d', 0.0))
+                predicted_return = stock.get('raw_pred_5d', stock.get('predicted_return_5d', stock.get('pred_5d', 0.0)))
+                pred_10d = stock.get('raw_pred_10d', stock.get('pred_10d', 0.0))
                 risk_level = stock.get('risk_level', 'medium')
             elif hasattr(self, 'scoring_version') and self.scoring_version in ["v3.9", "v3.94", "v3.95", "v3.96", "v4.0", "v4.2", "v4.3"]:
                 # 🏆 V3.9.x Production Model的专用字段
@@ -4176,11 +4159,10 @@ class TomorrowStockSelector:
             
             # 根据评分系统版本输出不同格式
             if hasattr(self, 'scoring_version') and self.scoring_version in ["v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.4", "v4.7.5", "v4.8", "v5.0"]:
-                # V4.4+ 多目标预测
-                pred_3d_pct = pred_3d * 100
-                predicted_return_pct = predicted_return * 100
-                pred_10d_pct = pred_10d * 100
-                report += f"| {i} | {stock_code} | {stock_name} | {strategies_str} | {score:.1f} | {recommendation} | {pred_3d_pct:+.2f}% | {predicted_return_pct:+.2f}% | {pred_10d_pct:+.2f}% | {risk_level} |\n"
+                # V4.4+ 多目标预测 - composite排序
+                composite_val = stock.get('composite', 0)
+                pred_15d = stock.get('raw_pred_15d', stock.get('pred_15d', 0)) or 0
+                report += f"| {i} | {stock_code} | {stock_name} | {strategies_str} | {composite_val:.6f} | {recommendation} | {pred_3d*100:+.2f}% | {predicted_return*100:+.2f}% | {pred_10d*100:+.2f}% | {pred_15d*100:+.2f}% | {risk_level} |\n"
             elif hasattr(self, 'scoring_version') and self.scoring_version in ["v3.9", "v3.94", "v3.95", "v3.96", "v4.0", "v4.2", "v4.3"]:
                 # 🏆 V3.9.x Production Model
                 predicted_return_pct = predicted_return * 100  # 转换为百分比
@@ -4612,6 +4594,8 @@ def main(target_date: str = None, scoring_version: str = "v3", stocks_only: bool
         report_dir = Path("reports/daily_selection_v4.7.1")
     elif scoring_version == "v4.8":
         report_dir = Path("reports/daily_selection_v4.8")
+    elif scoring_version == "v4.7.5":
+        report_dir = Path("reports/daily_selection_v4.7.5")
     elif scoring_version == "v4.7.3":
         report_dir = Path("reports/daily_selection_v4.7.3")
     elif scoring_version == "v4.7.2":
@@ -4707,7 +4691,7 @@ if __name__ == "__main__":
                        choices=['v2', 'v3', 'v3.1', 'v3.2', 'v3.3', 'v3.4', 'v3.41',
                                 'v3.5', 'v3.51', 'v3.52', 'v3.53', 'v3.6', 'v3.7',
                                 'v3.8', 'v3.81', 'v3.9', 'v3.94', 'v3.95', 'v3.96',
-                                'v4', 'v4.0', 'v4.2', 'v4.3', 'v4.4', 'v4.4.2', 'v4.5', 'v4.6', 'v4.7.1', 'v4.7.2', 'v4.7.3', 'v4.8', 'v5.0'],
+                                'v4', 'v4.0', 'v4.2', 'v4.3', 'v4.4', 'v4.4.2', 'v4.5', 'v4.6', 'v4.7.1', 'v4.7.2', 'v4.7.3', 'v4.7.5', 'v4.8', 'v5.0'],
                        default='v3.9',
                        help='评分版本 (默认v3.9)。'
                             '活跃版本: v3.9(生产A级), v3.96(Robust Z-Score,ICIR>0.2), '

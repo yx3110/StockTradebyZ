@@ -241,9 +241,28 @@ class V44ProductionScorer(V43ProductionScorer):
 
     def _apply_isotonic_calibration(self, results: Dict[str, Dict],
                                      codes: List[str]) -> Dict[str, Dict]:
-        """Module A: 保序回归校准 — 确保高分→高预期收益"""
+        """Module A: 保序回归校准 — 确保高分→高预期收益
+
+        校准前的原始预测值保存为 raw_pred_Xd, 用于报告展示。
+        校准后的值覆盖 pred_Xd, 用于评分/推荐/composite计算。
+        """
         if not self.isotonic_calibration:
+            # 无校准时, raw_pred = pred (原始值)
+            for code in codes:
+                if code in results:
+                    for t in ['3d', '5d', '10d', '15d']:
+                        pk = f'pred_{t}'
+                        if pk in results[code]:
+                            results[code][f'raw_pred_{t}'] = results[code][pk]
             return results
+
+        # 先保存所有原始预测值
+        for code in codes:
+            if code in results:
+                for t in ['3d', '5d', '10d', '15d']:
+                    pk = f'pred_{t}'
+                    if pk in results[code]:
+                        results[code][f'raw_pred_{t}'] = results[code][pk]
 
         for target_key, iso_model in self.isotonic_calibration.items():
             pred_key = f'pred_{target_key}'

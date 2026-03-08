@@ -253,3 +253,54 @@ class V475ProductionScorer(V473ProductionScorer):
         for code, data in results.items():
             data['rank_score'] = 0.60 * data.get('pred_10d', 0) + 0.40 * data.get('pred_15d', 0)
         return results
+
+    # ========== V4.7.5: recommendation overrides (10d+15d composite) ==========
+
+    def _recommendation_from_composite(self, pred_3d: float, pred_5d: float,
+                                        pred_10d: float, pred_15d: float = 0.0) -> str:
+        """投资建议 -- 基于 0.6*10d + 0.4*15d composite"""
+        composite = 0.6 * pred_10d + 0.4 * pred_15d
+
+        t = self.recommendation_thresholds
+        if t:
+            if composite >= t['strong_buy']:
+                return '强烈买入'
+            elif composite >= t['buy']:
+                return '买入'
+            elif composite >= t['cautious']:
+                return '谨慎买入'
+            elif composite >= t['hold']:
+                return '观望'
+            else:
+                return '回避'
+
+        # fallback: 基于 composite 绝对值
+        if composite >= 0.008:
+            return '强烈买入'
+        elif composite >= 0.005:
+            return '买入'
+        elif composite >= 0.002:
+            return '谨慎买入'
+        elif composite >= -0.001:
+            return '观望'
+        return '回避'
+
+    def _risk_level_from_composite(self, pred_3d: float, pred_5d: float,
+                                    pred_10d: float, pred_15d: float = 0.0) -> str:
+        """风险等级 -- 基于 0.6*10d + 0.4*15d composite"""
+        composite = 0.6 * pred_10d + 0.4 * pred_15d
+
+        t = self.recommendation_thresholds
+        if t:
+            if composite >= t['buy']:
+                return 'low'
+            elif composite >= t['hold']:
+                return 'medium'
+            else:
+                return 'high'
+
+        if composite >= 0.005:
+            return 'low'
+        elif composite >= -0.001:
+            return 'medium'
+        return 'high'
