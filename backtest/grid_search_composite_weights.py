@@ -232,10 +232,19 @@ def evaluate_weights(all_data, weights, price_lookup, all_dates, date_idx,
     periods_per_year = 252 / hold_days
     ann_ret = (1 + total_ret) ** (periods_per_year / max(n_periods, 1)) - 1
 
-    # Sharpe (using period returns)
+    # Sharpe (Newey-West adjusted for overlapping returns)
     ret_arr = np.array(daily_returns)
-    if len(ret_arr) > 1 and ret_arr.std() > 0:
-        sharpe = ret_arr.mean() / ret_arr.std() * np.sqrt(periods_per_year)
+    if len(ret_arr) > 1:
+        r_mean = ret_arr.mean()
+        demeaned = ret_arr - r_mean
+        n_r = len(ret_arr)
+        gamma0 = np.sum(demeaned**2) / n_r
+        nw_var = gamma0
+        for lag in range(1, min(hold_days, n_r)):
+            gamma_lag = np.sum(demeaned[lag:] * demeaned[:-lag]) / n_r
+            nw_var += 2 * (1 - lag / hold_days) * gamma_lag
+        nw_std = np.sqrt(max(nw_var, 0))
+        sharpe = r_mean / nw_std * np.sqrt(periods_per_year) if nw_std > 0 else 0
     else:
         sharpe = 0
 

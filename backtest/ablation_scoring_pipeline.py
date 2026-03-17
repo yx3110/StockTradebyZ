@@ -396,14 +396,29 @@ def main():
         ic_pos = np.mean(ics > 0) * 100 if len(ics) > 0 else 0
 
         avg_ret = np.mean(top_rets) if len(top_rets) > 0 else 0
-        # Annualized: assume ~245 trading days, rebalance every hold_days
-        periods_per_year = 245 / args.hold_days
-        ann_ret = (1 + avg_ret) ** periods_per_year - 1
+        periods_per_year = 245.0 / args.hold_days
         hit_rate = np.mean(hits / args.top_n) * 100 if len(hits) > 0 else 0
 
-        # Sharpe of top-N returns
-        ret_std = np.std(top_rets) if len(top_rets) > 1 else 1
-        sharpe = avg_ret / ret_std * np.sqrt(periods_per_year) if ret_std > 0 else 0
+        # Non-overlapping annualized return (cumulative NAV)
+        non_overlap = top_rets[::args.hold_days]
+        nav = np.cumprod(1 + non_overlap)
+        total_years = len(top_rets) / 245.0
+        ann_ret = nav[-1] ** (1 / total_years) - 1 if total_years > 0 and len(nav) > 0 and nav[-1] > 0 else 0
+
+        # Newey-West adjusted Sharpe
+        n_r = len(top_rets)
+        if n_r > 1:
+            demeaned = top_rets - avg_ret
+            gamma0 = np.sum(demeaned**2) / n_r
+            nw_var = gamma0
+            for lag in range(1, args.hold_days):
+                if lag < n_r:
+                    gamma_lag = np.sum(demeaned[lag:] * demeaned[:-lag]) / n_r
+                    nw_var += 2 * (1 - lag / args.hold_days) * gamma_lag
+            nw_std = np.sqrt(max(nw_var, 0))
+            sharpe = avg_ret / nw_std * np.sqrt(periods_per_year) if nw_std > 0 else 0
+        else:
+            sharpe = 0
 
         print(f"{config_name:<25} {ic_mean:>7.4f} {icir:>7.3f} {ic_pos:>6.1f}% {avg_ret:>+7.2%} {ann_ret:>+7.1%} {hit_rate:>7.1f}% {sharpe:>7.3f}")
 

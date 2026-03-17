@@ -119,7 +119,23 @@ def score_date(scorer, features_df, date):
     return codes, preds
 
 
-def evaluate_config(daily_data, weights, top_n=10):
+def _newey_west_std(rets, max_lag=9):
+    """Newey-West adjusted std for overlapping return series"""
+    n = len(rets)
+    if n < 2:
+        return np.std(rets)
+    mean = np.mean(rets)
+    demeaned = rets - mean
+    gamma0 = np.sum(demeaned**2) / n
+    nw_var = gamma0
+    for lag in range(1, min(max_lag + 1, n)):
+        gamma_lag = np.sum(demeaned[lag:] * demeaned[:-lag]) / n
+        bartlett_weight = 1 - lag / (max_lag + 1)
+        nw_var += 2 * bartlett_weight * gamma_lag
+    return np.sqrt(max(nw_var, 0))
+
+
+def evaluate_config(daily_data, weights, top_n=10, hold_days=10):
     ics, top_rets = [], []
     for dd in daily_data:
         preds, actual, valid = dd['predictions'], dd['actual_returns'], dd['valid_mask']
@@ -136,11 +152,20 @@ def evaluate_config(daily_data, weights, top_n=10):
     ics, top_rets = np.array(ics), np.array(top_rets)
     ic_mean = np.mean(ics)
     icir = ic_mean / np.std(ics) if np.std(ics) > 0 else 0
-    avg_ret = np.mean(top_rets)
-    ann_ret = (1 + avg_ret) ** 24.5 - 1
-    sharpe = avg_ret / np.std(top_rets) * np.sqrt(24.5) if np.std(top_rets) > 0 else 0
+
+    # Non-overlapping annualized return (cumulative NAV)
+    non_overlap = top_rets[::hold_days]
+    nav = np.cumprod(1 + non_overlap)
+    total_years = len(top_rets) / 245.0
+    ann_ret = nav[-1] ** (1 / total_years) - 1 if total_years > 0 and nav[-1] > 0 else 0
+
+    # Newey-West adjusted Sharpe (correct for overlapping returns)
+    nw_std = _newey_west_std(top_rets, max_lag=hold_days - 1)
+    periods_per_year = 245.0 / hold_days
+    sharpe = np.mean(top_rets) / nw_std * np.sqrt(periods_per_year) if nw_std > 0 else 0
+
     return {'ic': ic_mean, 'icir': icir, 'ic_pos': np.mean(ics > 0),
-            'avg_ret': avg_ret, 'ann_ret': ann_ret, 'sharpe': sharpe,
+            'avg_ret': np.mean(top_rets), 'ann_ret': ann_ret, 'sharpe': sharpe,
             'hit_rate': np.mean(top_rets > 0)}
 
 

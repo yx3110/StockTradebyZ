@@ -300,6 +300,81 @@ def compute_combined_pred_for_date(features_df, models, weights, target_weights,
     return combined
 
 
+def _get_scorer_for_version(version: str):
+    """获取版本对应的 scorer 实例
+
+    用途:
+    1. 加载完整特征 (daily_basic/tech/financial 等额外特征)
+    2. 提供 isotonic_calibration 用于推荐阈值校准 (确保阈值与推理尺度一致)
+    """
+    versions_needing_scorer = ('v4.4', 'v4.6', 'v4.7.3', 'v4.7.5', 'v4.8')
+    if version not in versions_needing_scorer:
+        return None
+    try:
+        if version == 'v4.7.5':
+            from ml_models.v39.v475_production_scorer import V475ProductionScorer
+            scorer = V475ProductionScorer()
+        elif version == 'v4.7.3':
+            from ml_models.v39.v473_production_scorer import V473ProductionScorer
+            scorer = V473ProductionScorer()
+        else:
+            from ml_models.v39.v473_production_scorer import V473ProductionScorer
+            scorer = V473ProductionScorer()
+        has_iso = hasattr(scorer, 'isotonic_calibration') and bool(scorer.isotonic_calibration)
+        print(f"  使用 {version} scorer 特征管线 (isotonic={'ON' if has_iso else 'OFF'})")
+        return scorer
+    except Exception as e:
+        print(f"  ⚠️ 无法加载 scorer, 将使用基础特征: {e}")
+        return None
+
+
+def _apply_scorer_calibration(scorer, per_target: dict) -> dict:
+    """Apply scorer's isotonic calibration to raw per-target predictions.
+
+    This ensures recommendation thresholds are computed on the same scale as
+    inference-time pred_Xd values. Without this, V4.7.3's isotonic inflates
+    pred_Xd ~3x at inference but thresholds are computed on raw scale.
+    """
+    if not scorer or not hasattr(scorer, 'isotonic_calibration') or not scorer.isotonic_calibration:
+        return per_target
+
+    calibrated = dict(per_target)
+    for target_key in list(calibrated.keys()):
+        if target_key in scorer.isotonic_calibration:
+            raw = calibrated[target_key]
+            try:
+                calibrated[target_key] = scorer.isotonic_calibration[target_key].predict(raw)
+            except Exception:
+                pass  # keep raw if calibration fails
+    return calibrated
+
+
+def _load_features_with_scorer(scorer, date: str) -> pd.DataFrame:
+    """使用 scorer 的完整特征管线加载单日数据 (与生产评分完全对齐)"""
+    import sqlite3 as _sqlite3
+    conn = _sqlite3.connect(DB_PATH)
+    codes = [r[0] for r in conn.execute(
+        "SELECT DISTINCT code FROM v39_feature_cache WHERE trade_date = ?", (date,)
+    ).fetchall()]
+    conn.close()
+
+    if not codes:
+        return pd.DataFrame()
+
+    features_df = scorer._get_features(codes, date, load_full_cross_section=True)
+    if features_df is None or len(features_df) == 0:
+        return pd.DataFrame()
+
+    features_df = scorer._robust_zscore_normalize_features(features_df)
+    features_df = scorer._load_daily_basic_features(features_df, date)
+    features_df = scorer._load_technical_features(features_df, date)
+    features_df = scorer._load_financial_features(features_df, date)
+    features_df = scorer._load_daily_basic_extra(features_df, date)
+    features_df = scorer._compute_microstructure_features(features_df, date)
+
+    return features_df
+
+
 def calibrate_version(version: str, n_quantiles: int = 1001, with_recommendation: bool = False):
     """对指定版本模型进行全局分位数校准 + 可选composite推荐阈值"""
     print(f"\n{'=' * 60}")
@@ -312,6 +387,10 @@ def calibrate_version(version: str, n_quantiles: int = 1001, with_recommendation
     dates = load_all_feature_cache_dates()
     market_feature_cols = extra_config.get('market_feature_cols', [])
 
+    # V4.7.3+ 需要 scorer 的完整特征管线 (daily_basic, tech, financial, microstructure)
+    # 否则 17/50 特征缺失, 校准的分位数/阈值与生产评分不对齐
+    scorer = _get_scorer_for_version(version)
+
     all_combined_preds = []
     all_composite_scores = [] if with_recommendation else None
     n_stocks_total = 0
@@ -323,13 +402,22 @@ def calibrate_version(version: str, n_quantiles: int = 1001, with_recommendation
     else:
         composite_weights = {'3d': 0.1, '5d': 0.2, '10d': 0.4, '15d': 0.3}
 
+    # When using scorer feature pipeline, features are already z-score normalized
+    # so we must skip re-normalization in compute_predictions_for_date
+    cal_extra_config = dict(extra_config)
+    if scorer:
+        cal_extra_config['robust_zscore'] = False  # already normalized by scorer
+
     for date in tqdm(dates, desc=f"校准 {version}"):
-        features_df = load_features_for_date(date, feature_names, market_feature_cols, extra_config)
-        if features_df.empty:
+        if scorer:
+            features_df = _load_features_with_scorer(scorer, date)
+        else:
+            features_df = load_features_for_date(date, feature_names, market_feature_cols, extra_config)
+        if features_df is None or features_df.empty:
             continue
 
         combined, per_target = compute_predictions_for_date(
-            features_df, models, weights, target_weights, feature_names, extra_config)
+            features_df, models, weights, target_weights, feature_names, cal_extra_config)
 
         if len(combined) > 0:
             all_combined_preds.append(combined)
@@ -337,10 +425,14 @@ def calibrate_version(version: str, n_quantiles: int = 1001, with_recommendation
             n_dates_success += 1
 
             if with_recommendation and per_target:
+                # Apply scorer's isotonic calibration so thresholds match inference scale
+                # V4.7.3: isotonic amplifies pred_Xd ~3x; without this, thresholds are too low
+                # V4.7.5: isotonic disabled, _apply_scorer_calibration is a no-op
+                cal_per_target = _apply_scorer_calibration(scorer, per_target)
                 composite = np.zeros(len(combined))
                 for target_key, w in composite_weights.items():
-                    if target_key in per_target:
-                        composite += w * per_target[target_key]
+                    if target_key in cal_per_target:
+                        composite += w * cal_per_target[target_key]
                 all_composite_scores.append(composite)
 
     if not all_combined_preds:
@@ -375,6 +467,9 @@ def calibrate_version(version: str, n_quantiles: int = 1001, with_recommendation
         threshold = global_quantiles[int(p / 100 * (n_quantiles - 1))]
         print(f"  全局 P{p:2d} (combined_pred={threshold:+.6f}) → 评分 {p}")
 
+    # 嵌入 global_quantiles 到模型 pkl (无论是否有推荐阈值)
+    _embed_global_quantiles_in_model(model_dir, global_quantiles, version)
+
     # 计算推荐阈值 (基于composite score百分位)
     if with_recommendation and all_composite_scores:
         all_composites = np.concatenate(all_composite_scores)
@@ -401,12 +496,12 @@ def calibrate_version(version: str, n_quantiles: int = 1001, with_recommendation
             json.dump(rec_thresholds, f, indent=2)
         print(f"\n✅ 推荐阈值已保存: {rec_path}")
 
-        # 嵌入模型 pkl
-        _embed_thresholds_in_model(model_dir, rec_thresholds, version)
+        # 嵌入模型 pkl (阈值 + 全局分位数)
+        _embed_in_model(model_dir, rec_thresholds, global_quantiles, version)
 
 
-def _embed_thresholds_in_model(model_dir: Path, rec_thresholds: dict, version: str):
-    """将 recommendation_thresholds 嵌入模型 pkl 文件"""
+def _embed_global_quantiles_in_model(model_dir: Path, global_quantiles: np.ndarray, version: str):
+    """将 global_quantiles 嵌入模型 pkl 文件 (独立于推荐阈值)"""
     version_map = {
         'v3.96': ['v396_*.pkl', 'v395_multi_target_*.pkl'],
         'v4.3': ['v43_*.pkl'],
@@ -422,11 +517,45 @@ def _embed_thresholds_in_model(model_dir: Path, rec_thresholds: dict, version: s
         model_files.extend(model_dir.glob(pat))
 
     if not model_files:
-        print(f"  ⚠️ 无模型文件可嵌入阈值")
+        print(f"  ⚠️ 无模型文件可嵌入分位数")
         return
 
     latest = max(model_files, key=lambda f: f.stat().st_mtime)
-    print(f"  嵌入阈值到: {latest.name}")
+    print(f"  嵌入 global_quantiles 到: {latest.name}")
+
+    try:
+        model_data = joblib.load(latest)
+    except Exception:
+        with open(latest, 'rb') as f:
+            model_data = pickle.load(f)
+
+    model_data['global_quantiles'] = global_quantiles.tolist()
+    joblib.dump(model_data, latest)
+    print(f"  ✅ 分位数已嵌入模型文件 ({latest.stat().st_size / 1024 / 1024:.1f} MB)")
+
+
+def _embed_in_model(model_dir: Path, rec_thresholds: dict, global_quantiles: np.ndarray, version: str):
+    """将 recommendation_thresholds + global_quantiles 嵌入模型 pkl 文件"""
+    version_map = {
+        'v3.96': ['v396_*.pkl', 'v395_multi_target_*.pkl'],
+        'v4.3': ['v43_*.pkl'],
+        'v4.4': ['v44_*.pkl'],
+        'v4.6': ['v46_*.pkl'],
+        'v4.7.3': ['v473_*.pkl'],
+        'v4.7.5': ['v475_*.pkl'],
+        'v4.8': ['v48_*.pkl'],
+    }
+    patterns = version_map.get(version, [])
+    model_files = []
+    for pat in patterns:
+        model_files.extend(model_dir.glob(pat))
+
+    if not model_files:
+        print(f"  ⚠️ 无模型文件可嵌入")
+        return
+
+    latest = max(model_files, key=lambda f: f.stat().st_mtime)
+    print(f"  嵌入阈值+分位数到: {latest.name}")
 
     try:
         model_data = joblib.load(latest)
@@ -435,8 +564,9 @@ def _embed_thresholds_in_model(model_dir: Path, rec_thresholds: dict, version: s
             model_data = pickle.load(f)
 
     model_data['recommendation_thresholds'] = rec_thresholds
+    model_data['global_quantiles'] = global_quantiles.tolist()
     joblib.dump(model_data, latest)
-    print(f"  ✅ 阈值已嵌入模型文件 ({latest.stat().st_size / 1024 / 1024:.1f} MB)")
+    print(f"  ✅ 阈值+分位数已嵌入模型文件 ({latest.stat().st_size / 1024 / 1024:.1f} MB)")
 
 
 def main():

@@ -253,6 +253,21 @@ def score_all_stocks_from_preloaded(
         all_codes = features_df['code'].tolist()
         return scorer.predict_scores_from_preloaded(all_codes, date, features_df)
 
+    # V4.7.8: Dual-model ensemble (V4.7.6×90% + V4.7.7×10%)
+    if version == 'v4.7.8':
+        all_codes = features_df['code'].tolist()
+        return scorer.predict_scores_from_preloaded(all_codes, date, features_df)
+
+    # V4.7.7: Huber+DART+180d + V4.7.6 scorer
+    if version == 'v4.7.7':
+        all_codes = features_df['code'].tolist()
+        return scorer.predict_scores_from_preloaded(all_codes, date, features_df)
+
+    # V4.7.6: V4.7.5 + Top-K Focused + Confidence Discount + Vol-Adjusted
+    if version == 'v4.7.6':
+        all_codes = features_df['code'].tolist()
+        return scorer.predict_scores_from_preloaded(all_codes, date, features_df)
+
     # V4.7.5: V4.7.3 + Asymmetric Top-Quantile Weighting
     if version == 'v4.7.5':
         all_codes = features_df['code'].tolist()
@@ -545,7 +560,7 @@ def main():
     parser.add_argument('--output-dir', default=None,
                         help='输出目录 (default: reports/daily_selection_v{version}_fast)')
     parser.add_argument('--version', default='v3.95',
-                        choices=['v3.9', 'v3.95', 'v3.96', 'v4.3', 'v4.4', 'v4.4.2', 'v4.6', 'v4.7', 'v4.7.1', 'v4.7.2', 'v4.7.3', 'v4.7.4', 'v4.7.5', 'v4.8', 'v5.0', 'alpha158'],
+                        choices=['v3.9', 'v3.95', 'v3.96', 'v4.3', 'v4.4', 'v4.4.2', 'v4.6', 'v4.7', 'v4.7.1', 'v4.7.2', 'v4.7.3', 'v4.7.4', 'v4.7.5', 'v4.7.6', 'v4.7.7', 'v4.7.8', 'v4.8', 'v5.0', 'alpha158'],
                         help='评分版本 (default: v3.95)')
     parser.add_argument('--force', action='store_true',
                         help='强制覆盖已有报告')
@@ -630,6 +645,15 @@ def main():
     elif args.version == 'v3.96':
         from ml_models.v39.v396_production_scorer import V396ProductionScorer
         scorer = V396ProductionScorer(model_type='small_data')
+    elif args.version == 'v4.7.8':
+        from ml_models.v39.v478_production_scorer import V478ProductionScorer
+        scorer = V478ProductionScorer()
+    elif args.version == 'v4.7.7':
+        from ml_models.v39.v477_production_scorer import V477ProductionScorer
+        scorer = V477ProductionScorer()
+    elif args.version == 'v4.7.6':
+        from ml_models.v39.v476_production_scorer import V476ProductionScorer
+        scorer = V476ProductionScorer()
     elif args.version == 'v4.7.5':
         from ml_models.v39.v475_production_scorer import V475ProductionScorer
         scorer = V475ProductionScorer()

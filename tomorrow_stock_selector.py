@@ -43,19 +43,20 @@ logger = logging.getLogger("tomorrow_selector")
 DEPRECATED_VERSIONS = {'v2', 'v3', 'v3.1', 'v3.2', 'v3.3', 'v3.4', 'v3.41',
                        'v3.5', 'v3.51', 'v3.52', 'v3.53', 'v3.6', 'v3.7',
                        'v3.8', 'v3.81', 'v3.94', 'v4'}
-ACTIVE_VERSIONS = {'v3.9', 'v3.95', 'v3.96', 'v4.0', 'v4.2', 'v4.3', 'v4.4', 'v4.4.2', 'v4.5', 'v4.6', 'v4.7.1', 'v4.7.2', 'v4.7.3', 'v4.7.4', 'v4.7.5', 'v4.8', 'v5.0'}
+ACTIVE_VERSIONS = {'v3.9', 'v3.95', 'v3.96', 'v4.0', 'v4.2', 'v4.3', 'v4.4', 'v4.4.2', 'v4.5', 'v4.6', 'v4.7.1', 'v4.7.2', 'v4.7.3', 'v4.7.4', 'v4.7.5', 'v4.7.6', 'v4.7.7', 'v4.7.8', 'v4.8', 'v5.0'}
 
 
 class TomorrowStockSelector:
     """明日股票选择器"""
 
-    def __init__(self, scoring_version: str = "v3.9", stocks_only: bool = False, **kwargs):
+    def __init__(self, scoring_version: str = "v3.9", stocks_only: bool = False, skip_strategies: bool = False, **kwargs):
         self.use_database = True  # 强制使用数据库模式
         self.selectors = {}
         self.data_cache = {}
         self.securities_info = {}  # 证券基本信息缓存
         self.scoring_version = scoring_version
         self.stocks_only = stocks_only  # 是否只考虑股票，不包括ETF基金
+        self.skip_strategies = skip_strategies  # 跳过策略筛选，全市场ML评分
 
         # Deprecation warning for old versions
         if scoring_version in DEPRECATED_VERSIONS:
@@ -97,6 +98,27 @@ class TomorrowStockSelector:
             from ml_models.v39.strategy_based_return_predictor import StrategyBasedReturnPredictor
             self.strategy_return_predictor = StrategyBasedReturnPredictor()
             logger.info("🚀 已初始化V4.8评分系统 (V4.6+财务质量+LambdaRank+ListNet+置信度加权)")
+        elif scoring_version == "v4.7.8":
+            from ml_models.v39.v478_production_scorer import V478ProductionScorer
+            self.scoring_engine_v44 = V478ProductionScorer(model_type='small_data')
+            self.v44_batch_cache = {}
+            from ml_models.v39.strategy_based_return_predictor import StrategyBasedReturnPredictor
+            self.strategy_return_predictor = StrategyBasedReturnPredictor()
+            logger.info("V4.7.8 (双模型融合: V4.7.6×90% + V4.7.7×10%)")
+        elif scoring_version == "v4.7.7":
+            from ml_models.v39.v477_production_scorer import V477ProductionScorer
+            self.scoring_engine_v44 = V477ProductionScorer(model_type='small_data')
+            self.v44_batch_cache = {}
+            from ml_models.v39.strategy_based_return_predictor import StrategyBasedReturnPredictor
+            self.strategy_return_predictor = StrategyBasedReturnPredictor()
+            logger.info("V4.7.7 (Huber+DART+180d衰减 + V4.7.6 scorer后处理)")
+        elif scoring_version == "v4.7.6":
+            from ml_models.v39.v476_production_scorer import V476ProductionScorer
+            self.scoring_engine_v44 = V476ProductionScorer(model_type='small_data')
+            self.v44_batch_cache = {}
+            from ml_models.v39.strategy_based_return_predictor import StrategyBasedReturnPredictor
+            self.strategy_return_predictor = StrategyBasedReturnPredictor()
+            logger.info("V4.7.6 (V4.7.5 + Top-K聚焦 + 置信度折扣 + 波动率调整)")
         elif scoring_version == "v4.7.5":
             from ml_models.v39.v475_production_scorer import V475ProductionScorer
             self.scoring_engine_v44 = V475ProductionScorer(model_type='small_data')
@@ -1601,7 +1623,33 @@ class TomorrowStockSelector:
         stock_info['reward_pct'] = round((final_reward / tech_buy) * 100, 2) if tech_buy > 0 else 0
         stock_info['risk_reward_ratio'] = round(final_reward / final_risk, 2) if final_risk > 0 else 0
 
+        # 仓位建议
+        stock_info['position_pct'] = self._suggest_position_size(stock_info)
+
         return stock_info
+
+    def _suggest_position_size(self, stock_info: dict) -> int:
+        """基于风险等级和投资建议计算仓位百分比
+
+        原则:
+        - 总仓位上限10只股票, 单只最大10%
+        - 强信号低风险给满仓, 弱信号高风险给最小仓或不建仓
+        - 回避/卖出类建议 → 0%
+        """
+        rec = stock_info.get('recommendation', '观望')
+        risk = stock_info.get('risk_level', 'medium')
+
+        # 回避类直接0
+        if rec in ('回避', '卖出', '谨慎卖出', '强烈卖出'):
+            return 0
+
+        # 基础仓位: 按建议
+        base = {'强烈买入': 10, '买入': 8, '谨慎买入': 6, '观望': 3}.get(rec, 3)
+
+        # 风险调整
+        risk_adj = {'low': 0, 'medium': -2, 'high': -4}.get(risk, -2)
+
+        return max(base + risk_adj, 0)
 
     def _calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
         """计算技术指标"""
@@ -1713,7 +1761,7 @@ class TomorrowStockSelector:
             if hasattr(self, 'scoring_version') and self.scoring_version in [
                 "v3.9", "v3.94", "v3.95", "v3.96", "v4.0", "v4.2", "v4.3",
                 "v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7", "v4.7.1", "v4.7.2",
-                "v4.7.3", "v4.7.4", "v4.7.5", "v4.8", "v5.0"]:
+                "v4.7.3", "v4.7.4", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.8", "v5.0"]:
                 recommendation = base_recommendation
                 confidence = base_confidence
 
@@ -1824,6 +1872,7 @@ class TomorrowStockSelector:
                 'raw_pred_15d': detailed_info.get('raw_pred_15d', detailed_info.get('pred_15d', 0.0)),
                 'confidence_score': detailed_info.get('confidence_score', 0.0),
                 'risk_level': detailed_info.get('risk_level', 'medium'),
+                'rank_score': detailed_info.get('rank_score'),
                 'scoring_system': 'v2.0 - 基于3949只股票实际表现优化'
             }
             
@@ -1998,7 +2047,7 @@ class TomorrowStockSelector:
             if trade_date is None:
                 trade_date = datetime.now().strftime('%Y-%m-%d')
 
-            if self.scoring_version in ("v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.4", "v4.7.5", "v4.8", "v5.0"):
+            if self.scoring_version in ("v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.4", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.8", "v5.0"):
                 # V4.4+: V4.3信号+增强模块
                 try:
                     if stock_code in self.v44_batch_cache:
@@ -2028,19 +2077,16 @@ class TomorrowStockSelector:
                         'pred_5d': pred_5d,
                         'pred_10d': pred_10d,
                         'pred_15d': pred_15d,
-                        # 原始预测值(校准前), 用于报告展示
-                        'raw_pred_3d': result.get('raw_pred_3d', pred_3d),
-                        'raw_pred_5d': result.get('raw_pred_5d', pred_5d),
-                        'raw_pred_10d': result.get('raw_pred_10d', pred_10d),
-                        'raw_pred_15d': result.get('raw_pred_15d', pred_15d),
                         'overall_quality': 0.85,
                         'quality_score': 0.85,
+                        # 推荐阈值已校准到与pred_Xd相同尺度(含isotonic)
                         'risk_level': self._get_risk_level(pred_3d, pred_5d, pred_10d, pred_15d),
                         'recommendation': self._get_recommendation(pred_3d, pred_5d, pred_10d, pred_15d),
                         'confidence': 'high' if final_score >= 70 else 'medium' if final_score >= 55 else 'low',
                         'scoring_method': 'V4.4_Enhanced_6Modules',
                         'exec_filter': result.get('exec_filter', ''),
                         'regime_info': result.get('regime_info', {}),
+                        'rank_score': result.get('rank_score'),
                     }
                     return final_score, detailed_info
 
@@ -3322,42 +3368,60 @@ class TomorrowStockSelector:
         
     def analyze_results(self, results: Dict[str, List[str]], data: Dict[str, pd.DataFrame], target_date: pd.Timestamp = None) -> Dict[str, Any]:
         """分析选股结果"""
+        # 区分真实策略和虚拟的"全市场ML评分"
+        VIRTUAL_STRATEGY = "全市场ML评分"
+        real_strategies = {k: v for k, v in results.items() if k != VIRTUAL_STRATEGY}
+        has_full_market = VIRTUAL_STRATEGY in results
+
         analysis = {
-            "total_strategies": len(results),
+            "total_strategies": len(real_strategies),
             "strategy_results": {},
-            "strategy_details": results,  # 保存每个策略的详细选股结果
+            "strategy_details": real_strategies,  # 只保存真实策略的详细选股结果
             "multi_strategy_stocks": {},
             "top_recommendations": [],
-            "all_stocks_with_scores": []  # 新增：记录所有股票及其评分
+            "all_stocks_with_scores": [],  # 新增：记录所有股票及其评分
+            "full_market_mode": has_full_market,
         }
-        
-        # 统计每个策略的结果
+
+        # 统计每个真实策略的结果
         all_picks = set()
-        for strategy, picks in results.items():
+        for strategy, picks in real_strategies.items():
             analysis["strategy_results"][strategy] = len(picks)
             all_picks.update(picks)
-            
-        # 找出被多个策略选中的股票
+
+        # 全市场模式：加入非策略股票
+        if has_full_market:
+            full_market_stocks = results[VIRTUAL_STRATEGY]
+            all_picks.update(full_market_stocks)
+            analysis["strategy_stock_count"] = len(all_picks) - len(full_market_stocks)
+            analysis["full_market_extra_count"] = len(full_market_stocks)
+
+        # 找出被多个真实策略选中的股票（不计虚拟策略）
         stock_counts = {}
-        for strategy, picks in results.items():
+        for strategy, picks in real_strategies.items():
             for stock in picks:
                 stock_counts[stock] = stock_counts.get(stock, 0) + 1
-                
-        # 按被选中次数排序
+        # 全市场非策略股票计数为0
+        if has_full_market:
+            for stock in full_market_stocks:
+                if stock not in stock_counts:
+                    stock_counts[stock] = 0
+
+        # 按被选中次数排序（策略股在前，非策略股在后）
         sorted_stocks = sorted(stock_counts.items(), key=lambda x: x[1], reverse=True)
-        
-        # 生成多策略股票统计
-        for count in range(len(results), 0, -1):
+
+        # 生成多策略股票统计（只统计真实策略）
+        for count in range(len(real_strategies), 0, -1):
             stocks_with_count = [stock for stock, c in sorted_stocks if c == count]
             if stocks_with_count:
                 analysis["multi_strategy_stocks"][f"{count}个策略"] = stocks_with_count
-                
+
         # 生成推荐股票 - 对所有候选股票进行综合评分排序
         all_stocks = [stock for stock, _ in sorted_stocks]  # 获取所有候选股票
         stock_with_scores = []
 
         # 🚀 V4.4/V4.4.2批量评分预计算
-        if hasattr(self, 'scoring_version') and self.scoring_version in ("v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.4", "v4.7.5", "v4.8", "v5.0") and all_stocks:
+        if hasattr(self, 'scoring_version') and self.scoring_version in ("v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.4", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.8", "v5.0") and all_stocks:
             if self.v44_batch_cache:
                 logger.info(f"✅ V4.4使用预填充缓存：{len(self.v44_batch_cache)}只股票")
             else:
@@ -3532,18 +3596,28 @@ class TomorrowStockSelector:
             stock_info = self.get_stock_info(stock, data, target_date)
             if stock_info:
                 stock_info["selected_by_strategies"] = stock_counts[stock]
-                stock_info["strategies"] = [s for s, picks in results.items() if stock in picks]
+                stock_info["strategies"] = [s for s, picks in real_strategies.items() if stock in picks]
 
                 # 生成投资建议
                 investment_rec = self.generate_investment_recommendation(stock_info)
                 stock_info.update(investment_rec)
 
-                # 计算composite用于统一排序 (与recommendation阈值一致)
-                _p3 = stock_info.get('pred_3d', 0) or 0
-                _p5 = stock_info.get('pred_5d', 0) or 0
-                _p10 = stock_info.get('pred_10d', 0) or 0
-                _p15 = stock_info.get('pred_15d', 0) or 0
-                stock_info['composite'] = _p3 * 0.1 + _p5 * 0.2 + _p10 * 0.4 + _p15 * 0.3
+                # 计算composite用于统一排序 (推荐阈值已校准到pred_Xd同一尺度)
+                # V4.7.6+: 优先使用scorer返回的rank_score (含consistency_bonus + vol_discount)
+                _rank_score = stock_info.get('rank_score')
+                if _rank_score is not None:
+                    stock_info['composite'] = _rank_score
+                else:
+                    _p3 = stock_info.get('pred_3d', 0) or 0
+                    _p5 = stock_info.get('pred_5d', 0) or 0
+                    _p10 = stock_info.get('pred_10d', 0) or 0
+                    _p15 = stock_info.get('pred_15d', 0) or 0
+                    # V4.6/V4.7.x scorer 使用 0.6*10d + 0.4*15d composite
+                    if hasattr(self, 'scoring_version') and self.scoring_version in (
+                        'v4.6', 'v4.7', 'v4.7.1', 'v4.7.2', 'v4.7.3', 'v4.7.4', 'v4.7.5', 'v4.7.6', 'v4.7.7', 'v4.7.8'):
+                        stock_info['composite'] = _p10 * 0.6 + _p15 * 0.4
+                    else:
+                        stock_info['composite'] = _p3 * 0.1 + _p5 * 0.2 + _p10 * 0.4 + _p15 * 0.3
 
                 # 🎯 V3.95: 使用策略驱动预测器重新计算预测收益（基于12,655历史样本统计）
                 # 注意：必须在 generate_investment_recommendation 之后执行，因为它会覆盖 predicted_return_5d
@@ -3584,8 +3658,9 @@ class TomorrowStockSelector:
 
                 stock_with_scores.append(stock_info)
             
-            # 进度显示
-            if i % 10 == 0:
+            # 进度显示（全市场模式每500只，策略模式每10只）
+            progress_interval = 500 if len(all_stocks) > 500 else 10
+            if i % progress_interval == 0:
                 logger.info(f"已计算 {i}/{len(all_stocks)} 只股票的评分...")
         
         # 过滤 ST股/涨停板/停牌股 (T+1不可买入)
@@ -3656,19 +3731,21 @@ class TomorrowStockSelector:
         
         logger.info(f"投资建议生成完成，强烈买入: {len([s for s in stock_with_scores if s.get('recommendation') == '强烈买入'])}, 买入: {len([s for s in stock_with_scores if s.get('recommendation') == '买入'])}")
         
-        # 分离多策略股票和单策略股票
+        # 分离多策略股票、单策略股票和全市场非策略股票
         multi_strategy_stocks = [stock for stock in stock_with_scores if stock["selected_by_strategies"] > 1]
         single_strategy_stocks = [stock for stock in stock_with_scores if stock["selected_by_strategies"] == 1]
-        
-        # 多策略和单策略均按composite排序
+        no_strategy_stocks = [stock for stock in stock_with_scores if stock["selected_by_strategies"] == 0]
+
+        # 均按composite排序
         multi_strategy_stocks.sort(key=composite_sort_key, reverse=True)
         single_strategy_stocks.sort(key=composite_sort_key, reverse=True)
-        
+        no_strategy_stocks.sort(key=composite_sort_key, reverse=True)
+
         # 标记需要详细分析的股票
         for stock in multi_strategy_stocks:
             stock["needs_detailed_analysis"] = True
             stock["analysis_reason"] = "多策略选中"
-        
+
         # 只对前20只单策略股票做详细分析
         TOP_SINGLE_STRATEGY_STOCKS = 20
         for i, stock in enumerate(single_strategy_stocks):
@@ -3678,12 +3755,25 @@ class TomorrowStockSelector:
             else:
                 stock["needs_detailed_analysis"] = False
                 stock["analysis_reason"] = "单策略排名靠后"
-        
-        # 组合最终推荐：所有多策略股票 + 前20只单策略股票（用于详细分析）
-        detailed_analysis_stocks = multi_strategy_stocks + single_strategy_stocks[:TOP_SINGLE_STRATEGY_STOCKS]
-        
+
+        # 全市场非策略股票：前10只做详细分析
+        TOP_NO_STRATEGY_STOCKS = 10
+        for i, stock in enumerate(no_strategy_stocks):
+            if i < TOP_NO_STRATEGY_STOCKS:
+                stock["needs_detailed_analysis"] = True
+                stock["analysis_reason"] = f"全市场ML TOP{i+1}"
+            else:
+                stock["needs_detailed_analysis"] = False
+                stock["analysis_reason"] = "全市场排名靠后"
+
+        # 组合最终推荐：多策略 + 单策略前20 + 全市场前10（用于详细分析）
+        detailed_analysis_stocks = (multi_strategy_stocks
+                                    + single_strategy_stocks[:TOP_SINGLE_STRATEGY_STOCKS]
+                                    + no_strategy_stocks[:TOP_NO_STRATEGY_STOCKS])
+
         analysis["multi_strategy_recommendations"] = multi_strategy_stocks
         analysis["single_strategy_recommendations"] = single_strategy_stocks
+        analysis["no_strategy_recommendations"] = no_strategy_stocks
         analysis["top_recommendations"] = detailed_analysis_stocks  # 只包含需要详细分析的股票
         analysis["total_unique_stocks"] = len(stock_with_scores)
         analysis["all_stock_details"] = stock_with_scores  # 保存所有股票的详细信息
@@ -3718,7 +3808,7 @@ class TomorrowStockSelector:
 
 **选股策略**
 - **通过策略数**: {stock['selected_by_strategies']}个
-- **策略名称**: {', '.join(stock['strategies'])}
+- **策略名称**: {', '.join(stock['strategies']) if stock['strategies'] else '无（仅ML评分）'}
 
 **分析评价**
 - **技术面评价**: {stock.get('technical_rating', '中性')}
@@ -3969,17 +4059,30 @@ class TomorrowStockSelector:
 > {cppi['details']}
 """
 
+        is_full_market = analysis.get('full_market_mode', False)
+        if is_full_market:
+            mode_label = "全市场+策略标注"
+            strategy_stock_count = analysis.get('strategy_stock_count', 0)
+            full_market_extra = analysis.get('full_market_extra_count', 0)
+            overview_extra = f"""- **策略选中股票**: {strategy_stock_count}只
+- **全市场ML补充**: {full_market_extra}只
+- **全市场总股票**: {analysis.get('total_unique_stocks', 0)}只"""
+        else:
+            mode_label = "策略筛选"
+            overview_extra = f"""- **独特股票**: {analysis.get('total_unique_stocks', 0)}只"""
+
         report = f"""# 📈 量化选股分析报告 ({version_title})
 {scoring_explanation}{cppi_section}
 ## 📊 分析概览
 - **分析日期**: {target_date.strftime('%Y-%m-%d')}
 - **推荐买入日期**: {tomorrow.strftime('%Y-%m-%d')}
+- **运行模式**: {mode_label}
 - **分析策略**: {analysis['total_strategies']}个
 - **总股票池**: {sum(v.get('count', 0) if isinstance(v, dict) else v for v in analysis['strategy_results'].values())}只(含重复)
-- **独特股票**: {analysis.get('total_unique_stocks', 0)}只
+{overview_extra}
 - **多策略选中**: {len(analysis.get('multi_strategy_recommendations', []))}只
 - **单策略选中**: {len(analysis.get('single_strategy_recommendations', []))}只
-- **详细分析股票数**: {analysis.get('detailed_analysis_count', 0)}只（多策略全部 + 单策略前20）
+- **详细分析股票数**: {analysis.get('detailed_analysis_count', 0)}只（多策略全部 + 单策略前20{' + 全市场ML前10' if is_full_market else ''}）
 - **推荐股票总数**: {len(analysis.get('top_recommendations', []))}只
 
 ## 🎯 各策略筛选结果
@@ -4012,13 +4115,20 @@ class TomorrowStockSelector:
                 report += "### 无多策略交集股票\n\n"
                 
         # 所有股票评分列表（包含策略信息）
-        report += "## 📊 所有选中股票评分排名\n\n"
+        if is_full_market:
+            report += "## 📊 全市场股票评分排名\n\n"
+        else:
+            report += "## 📊 所有选中股票评分排名\n\n"
         # 选择正确的股票数据源
         if hasattr(self, 'scoring_version') and self.scoring_version in ["v3.8", "v3.81"]:
             stocks_data = analysis.get('detailed_stocks', [])
         else:
             stocks_data = analysis.get('all_stocks_with_scores', [])
-        report += f"*共有 {len(stocks_data)} 只股票被选中，以下显示所有股票的量化评分和策略信息：*\n\n"
+        if is_full_market:
+            strategy_count = len([s for s in stocks_data if s.get('selected_by_strategies', 0) > 0])
+            report += f"*全市场 {len(stocks_data)} 只股票ML评分排名，其中 {strategy_count} 只被策略选中（策略列标注具体策略名称，\"-\" 表示仅ML评分）：*\n\n"
+        else:
+            report += f"*共有 {len(stocks_data)} 只股票被选中，以下显示所有股票的量化评分和策略信息：*\n\n"
         # 根据评分系统版本设置表头
         if hasattr(self, 'scoring_version') and self.scoring_version == "v3.51":
             report += "| 排名 | 股票代码 | 股票名称 | 选中策略 | 量化评分 | 投资建议 | 波动 | 市值 | 动量 | PB | PE | RSI6 | KDJ_K | BBI | KDJ_D | 知行趋势 | 成交量 | 知行多均 |\n"
@@ -4032,14 +4142,14 @@ class TomorrowStockSelector:
         elif hasattr(self, 'scoring_version') and self.scoring_version == "v3.5":
             report += "| 排名 | 股票代码 | 股票名称 | 选中策略 | 量化评分 | 投资建议 | 技术 | 基本 | 表现 | 市场 | 知行 | 知行信号 |\n"
             report += "|------|----------|----------|----------|----------|----------|------|------|------|------|------|----------|\n"
-        elif hasattr(self, 'scoring_version') and self.scoring_version in ["v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.4", "v4.7.5", "v4.8", "v5.0"]:
+        elif hasattr(self, 'scoring_version') and self.scoring_version in ["v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.4", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.8", "v5.0"]:
             # V4.4+ 多目标预测 - 按composite排序，展示composite+各周期预测
-            report += "| 排名 | 股票代码 | 股票名称 | 选中策略 | Composite | 投资建议 | 预测10d | 风险等级 | 止损价 | 目标价 |\n"
-            report += "|------|----------|----------|----------|-----------|----------|---------|----------|--------|--------|\n"
+            report += "| 排名 | 股票代码 | 股票名称 | 选中策略 | Composite | 投资建议 | 预测10d | 收盘价 | 买入价 | 止损价 | 目标价 | 仓位 |\n"
+            report += "|------|----------|----------|----------|-----------|----------|---------|--------|--------|--------|--------|------|\n"
         elif hasattr(self, 'scoring_version') and self.scoring_version in ["v3.9", "v3.94", "v3.95", "v3.96", "v4.0", "v4.2", "v4.3"]:
             # 🏆 V3.9.x Production Model - 简化表头
-            report += "| 排名 | 股票代码 | 股票名称 | 选中策略 | 综合评分 | 投资建议 | 预测5d | 风险等级 | 止损价 | 目标价 |\n"
-            report += "|------|----------|----------|----------|----------|----------|--------|----------|--------|--------|\n"
+            report += "| 排名 | 股票代码 | 股票名称 | 选中策略 | 综合评分 | 投资建议 | 预测5d | 收盘价 | 买入价 | 止损价 | 目标价 | 仓位 |\n"
+            report += "|------|----------|----------|----------|----------|----------|--------|--------|--------|--------|--------|------|\n"
         elif hasattr(self, 'scoring_version') and self.scoring_version in ["v3.8", "v3.81"]:
             # 检查是否为混合模式
             if analysis.get("v38_mixed_mode", False):
@@ -4070,7 +4180,31 @@ class TomorrowStockSelector:
             report += "| 排名 | 股票代码 | 股票名称 | 选中策略 | 量化评分 | 投资建议 | 动量 | 回归 | 突破 | 相对 | 稳定 |\n"
             report += "|------|----------|----------|----------|----------|----------|------|------|------|------|------|\n"
         
-        for i, stock in enumerate(stocks_data, 1):
+        # 全市场模式：显示前200 + 所有策略股（即使排名靠后也保留）
+        if is_full_market:
+            TABLE_TOP_N = 200
+            # 构建需要显示的行集合：前200 + 所有策略股
+            show_indices = set(range(min(TABLE_TOP_N, len(stocks_data))))
+            strategy_indices = []
+            for idx, s in enumerate(stocks_data):
+                if s.get('selected_by_strategies', 0) > 0 and idx >= TABLE_TOP_N:
+                    strategy_indices.append(idx)
+                    show_indices.add(idx)
+            total_show = len(show_indices)
+            if len(stocks_data) > TABLE_TOP_N:
+                extra_strategy = len(strategy_indices)
+                report += f"*（显示ML评分前 {TABLE_TOP_N} 只 + {extra_strategy} 只策略股，共 {total_show} 行。完整数据见 analysis_data JSON 文件）*\n\n"
+        else:
+            show_indices = set(range(len(stocks_data)))
+
+        prev_was_gap = False
+        for i, stock in enumerate(stocks_data):
+            if i not in show_indices:
+                if not prev_was_gap and is_full_market:
+                    report += f"| ... | ... | *（省略排名 {i+1}-后的非策略股票）* | ... | ... | ... | ... | ... | ... | ... | ... | ... |\n"
+                    prev_was_gap = True
+                continue
+            prev_was_gap = False
             # 处理不同评分版本的字段名差异
             if hasattr(self, 'scoring_version') and self.scoring_version in ["v3.8", "v3.81"]:
                 stock_code = stock.get('code', stock.get('stock_code', ''))
@@ -4112,7 +4246,7 @@ class TomorrowStockSelector:
                     strategy_names.append('V3.81')  # 如果出现V3.81评分策略，显示V3.81
                 else:
                     strategy_names.append(s[:4])  # 取前4个字符
-            strategies_str = ', '.join(strategy_names) if strategy_names else '未知'
+            strategies_str = ', '.join(strategy_names) if strategy_names else ('-' if is_full_market else '未知')
             # 处理不同评分版本的评分字段差异
             if hasattr(self, 'scoring_version') and self.scoring_version in ["v3.8", "v3.81"]:
                 score = stock.get('final_score', 0)  # V3.8使用final_score
@@ -4125,11 +4259,11 @@ class TomorrowStockSelector:
             factor_scores = stock.get('factor_scores', {})
             
             # 根据评分系统版本处理不同的因子评分
-            if hasattr(self, 'scoring_version') and self.scoring_version in ["v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.4", "v4.7.5", "v4.8", "v5.0"]:
-                # V4.4+ 多目标预测字段 — 报告展示用原始值(校准前)
-                pred_3d = stock.get('raw_pred_3d', stock.get('pred_3d', 0.0))
-                predicted_return = stock.get('raw_pred_5d', stock.get('predicted_return_5d', stock.get('pred_5d', 0.0)))
-                pred_10d = stock.get('raw_pred_10d', stock.get('pred_10d', 0.0))
+            if hasattr(self, 'scoring_version') and self.scoring_version in ["v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.4", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.8", "v5.0"]:
+                # V4.4+ 多目标预测字段 (推荐阈值已校准到post-isotonic尺度)
+                pred_3d = stock.get('pred_3d', 0.0)
+                predicted_return = stock.get('predicted_return_5d', stock.get('pred_5d', 0.0))
+                pred_10d = stock.get('pred_10d', 0.0)
                 risk_level = stock.get('risk_level', 'medium')
             elif hasattr(self, 'scoring_version') and self.scoring_version in ["v3.9", "v3.94", "v3.95", "v3.96", "v4.0", "v4.2", "v4.3"]:
                 # 🏆 V3.9.x Production Model的专用字段
@@ -4275,44 +4409,51 @@ class TomorrowStockSelector:
                 market_regime_score = 0  # v2/v3没有市场环境分
             
             # 根据评分系统版本输出不同格式
-            if hasattr(self, 'scoring_version') and self.scoring_version in ["v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.4", "v4.7.5", "v4.8", "v5.0"]:
+            if hasattr(self, 'scoring_version') and self.scoring_version in ["v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.4", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.8", "v5.0"]:
                 # V4.4+ 多目标预测 - composite排序
                 composite_val = stock.get('composite', 0)
-                pred_15d = stock.get('raw_pred_15d', stock.get('pred_15d', 0)) or 0
+                close_price = stock.get('close_price', 0)
+                buy_price = stock.get('suggested_buy_price', 0)
                 stop_loss = stock.get('stop_loss_price', 0)
                 target = stock.get('take_profit_price', 0)
-                report += f"| {i} | {stock_code} | {stock_name} | {strategies_str} | {composite_val:.6f} | {recommendation} | {pred_10d*100:+.2f}% | {risk_level} | {stop_loss:.2f} | {target:.2f} |\n"
+                pos_pct = stock.get('position_pct', 0)
+                pos_str = f"{pos_pct}%" if pos_pct > 0 else "—"
+                report += f"| {i+1} | {stock_code} | {stock_name} | {strategies_str} | {composite_val:.6f} | {recommendation} | {pred_10d*100:+.2f}% | {close_price:.2f} | {buy_price:.2f} | {stop_loss:.2f} | {target:.2f} | {pos_str} |\n"
             elif hasattr(self, 'scoring_version') and self.scoring_version in ["v3.9", "v3.94", "v3.95", "v3.96", "v4.0", "v4.2", "v4.3"]:
                 # 🏆 V3.9.x Production Model
                 predicted_return_pct = predicted_return * 100  # 转换为百分比
                 confidence_pct = confidence_score * 100  # 转换为百分比
+                close_price = stock.get('close_price', 0)
+                buy_price = stock.get('suggested_buy_price', 0)
                 stop_loss = stock.get('stop_loss_price', 0)
                 target = stock.get('take_profit_price', 0)
-                report += f"| {i} | {stock_code} | {stock_name} | {strategies_str} | {score:.1f} | {recommendation} | {predicted_return_pct:+.2f}% | {risk_level} | {stop_loss:.2f} | {target:.2f} |\n"
+                pos_pct = stock.get('position_pct', 0)
+                pos_str = f"{pos_pct}%" if pos_pct > 0 else "—"
+                report += f"| {i+1} | {stock_code} | {stock_name} | {strategies_str} | {score:.1f} | {recommendation} | {predicted_return_pct:+.2f}% | {close_price:.2f} | {buy_price:.2f} | {stop_loss:.2f} | {target:.2f} | {pos_str} |\n"
             elif hasattr(self, 'scoring_version') and self.scoring_version in ["v3.8", "v3.81"]:
                 # 检查是否为混合模式
                 if analysis.get("v38_mixed_mode", False):
                     # 混合模式：包含传统策略和策略数量
-                    report += f"| {i} | {stock_code} | {stock_name} | {strategies_str} | {strategy_count} | {score:.1f} | {recommendation} | {confidence_score:.3f} | {short_term_score:.1f} | {medium_term_score:.1f} | {long_term_score:.1f} | {risk_level} | {overall_quality:.2f} |\n"
+                    report += f"| {i+1} | {stock_code} | {stock_name} | {strategies_str} | {strategy_count} | {score:.1f} | {recommendation} | {confidence_score:.3f} | {short_term_score:.1f} | {medium_term_score:.1f} | {long_term_score:.1f} | {risk_level} | {overall_quality:.2f} |\n"
                 else:
                     # 纯V3.8模式
-                    report += f"| {i} | {stock_code} | {stock_name} | {strategies_str} | {score:.1f} | {recommendation} | {confidence_score:.3f} | {short_term_score:.1f} | {medium_term_score:.1f} | {long_term_score:.1f} | {risk_level} | {overall_quality:.2f} |\n"
+                    report += f"| {i+1} | {stock_code} | {stock_name} | {strategies_str} | {score:.1f} | {recommendation} | {confidence_score:.3f} | {short_term_score:.1f} | {medium_term_score:.1f} | {long_term_score:.1f} | {risk_level} | {overall_quality:.2f} |\n"
             elif hasattr(self, 'scoring_version') and self.scoring_version == "v3.7":
-                report += f"| {i} | {stock_code} | {stock_name} | {strategies_str} | {score:.1f} | {recommendation} | {technical_score:.1f} | {fundamental_score:.1f} | {macro_score:.1f} | {sentiment_score:.1f} | {temporal_score:.1f} |\n"
+                report += f"| {i+1} | {stock_code} | {stock_name} | {strategies_str} | {score:.1f} | {recommendation} | {technical_score:.1f} | {fundamental_score:.1f} | {macro_score:.1f} | {sentiment_score:.1f} | {temporal_score:.1f} |\n"
             elif hasattr(self, 'scoring_version') and self.scoring_version == "v3.5":
-                report += f"| {i} | {stock_code} | {stock_name} | {strategies_str} | {score:.1f} | {recommendation} | {technical_score:.1f} | {fundamental_score:.1f} | {performance_score:.1f} | {market_regime_score:.1f} | {zhixing_score:.1f} | {signal_strength} |\n"
+                report += f"| {i+1} | {stock_code} | {stock_name} | {strategies_str} | {score:.1f} | {recommendation} | {technical_score:.1f} | {fundamental_score:.1f} | {performance_score:.1f} | {market_regime_score:.1f} | {zhixing_score:.1f} | {signal_strength} |\n"
             elif hasattr(self, 'scoring_version') and self.scoring_version in ["v3.4", "v3.41"]:
-                report += f"| {i} | {stock_code} | {stock_name} | {strategies_str} | {score:.1f} | {recommendation} | {technical_score:.1f} | {fundamental_score:.1f} | {performance_score:.1f} | {market_regime_score:.1f} |\n"
+                report += f"| {i+1} | {stock_code} | {stock_name} | {strategies_str} | {score:.1f} | {recommendation} | {technical_score:.1f} | {fundamental_score:.1f} | {performance_score:.1f} | {market_regime_score:.1f} |\n"
             elif hasattr(self, 'scoring_version') and self.scoring_version == "v3.3":
-                report += f"| {i} | {stock_code} | {stock_name} | {strategies_str} | {score:.1f} | {recommendation} | {technical_score:.1f} | {volume_momentum_score:.1f} | {fundamental_score:.1f} | {sentiment_capital_score:.1f} | {risk_control_score:.1f} | {market_environment_score:.1f} |\n"
+                report += f"| {i+1} | {stock_code} | {stock_name} | {strategies_str} | {score:.1f} | {recommendation} | {technical_score:.1f} | {volume_momentum_score:.1f} | {fundamental_score:.1f} | {sentiment_capital_score:.1f} | {risk_control_score:.1f} | {market_environment_score:.1f} |\n"
             elif hasattr(self, 'scoring_version') and self.scoring_version == "v3.2":
-                report += f"| {i} | {stock_code} | {stock_name} | {strategies_str} | {score:.1f} | {recommendation} | {technical_score:.1f} | {squeeze_score:.1f} | {fundamental_score:.1f} | {performance_score:.1f} | {sentiment_score:.1f} | {risk_control_score:.1f} | {market_regime_score:.1f} |\n"
+                report += f"| {i+1} | {stock_code} | {stock_name} | {strategies_str} | {score:.1f} | {recommendation} | {technical_score:.1f} | {squeeze_score:.1f} | {fundamental_score:.1f} | {performance_score:.1f} | {sentiment_score:.1f} | {risk_control_score:.1f} | {market_regime_score:.1f} |\n"
             elif hasattr(self, 'scoring_version') and self.scoring_version == "v3.51":
-                report += f"| {i} | {stock_code} | {stock_name} | {strategies_str} | {score:.1f} | {recommendation} | {volatility_risk_score:.1f} | {market_cap_score:.1f} | {price_momentum_score:.1f} | {pb_score:.1f} | {pe_ttm_score:.1f} | {rsi6_score:.1f} | {kdj_k_score:.1f} | {bbi_score:.1f} | {kdj_d_score:.1f} | {zhixing_trend_score:.1f} | {volume_surge_score:.1f} | {zhixing_multiavg_score:.1f} |\n"
+                report += f"| {i+1} | {stock_code} | {stock_name} | {strategies_str} | {score:.1f} | {recommendation} | {volatility_risk_score:.1f} | {market_cap_score:.1f} | {price_momentum_score:.1f} | {pb_score:.1f} | {pe_ttm_score:.1f} | {rsi6_score:.1f} | {kdj_k_score:.1f} | {bbi_score:.1f} | {kdj_d_score:.1f} | {zhixing_trend_score:.1f} | {volume_surge_score:.1f} | {zhixing_multiavg_score:.1f} |\n"
             elif hasattr(self, 'scoring_version') and self.scoring_version == "v3.53":
-                report += f"| {i} | {stock_code} | {stock_name} | {strategies_str} | {score:.1f} | {recommendation} | {score_1d:.1f} | {score_3d:.1f} | {score_5d:.1f} | {score_10d:.1f} | {score_15d:.1f} | {main_factors_str} |\n"
+                report += f"| {i+1} | {stock_code} | {stock_name} | {strategies_str} | {score:.1f} | {recommendation} | {score_1d:.1f} | {score_3d:.1f} | {score_5d:.1f} | {score_10d:.1f} | {score_15d:.1f} | {main_factors_str} |\n"
             elif hasattr(self, 'scoring_version') and self.scoring_version == "v3.52":
-                report += f"| {i} | {stock_code} | {stock_name} | {strategies_str} | {score:.1f} | {recommendation} | {volatility_risk_score:.1f} | {market_cap_score:.1f} | {price_momentum_score:.1f} | {pb_score:.1f} | {pe_ttm_score:.1f} | {rsi6_score:.1f} | {kdj_k_score:.1f} | {bbi_score:.1f} | {kdj_d_score:.1f} | {zhixing_trend_score:.1f} | {volume_surge_score:.1f} | {zhixing_multiavg_score:.1f} |\n"
+                report += f"| {i+1} | {stock_code} | {stock_name} | {strategies_str} | {score:.1f} | {recommendation} | {volatility_risk_score:.1f} | {market_cap_score:.1f} | {price_momentum_score:.1f} | {pb_score:.1f} | {pe_ttm_score:.1f} | {rsi6_score:.1f} | {kdj_k_score:.1f} | {bbi_score:.1f} | {kdj_d_score:.1f} | {zhixing_trend_score:.1f} | {volume_surge_score:.1f} | {zhixing_multiavg_score:.1f} |\n"
             elif hasattr(self, 'scoring_version') and self.scoring_version == "v3.6":
                 # v3.6机器学习特征显示 - 使用原始值和变换值的混合
                 bbi_score = factor_scores.get('bbi', 40)
@@ -4350,11 +4491,11 @@ class TomorrowStockSelector:
                 # RSI显示（0.0-100.0范围内都是有效值）
                 rsi_display = f"{rsi_score:.1f}"
                 
-                report += f"| {i} | {stock_code} | {stock_name} | {strategies_str} | {score:.1f} | {recommendation} | {bbi_score:.1f} | {volume_surge_score:.1f} | {price_momentum_score:.1f} | {zhixing_multiavg_score:.1f} | {rsi_display} | {market_cap_display} | {kdj_cross_score:.1f} | {pb_display:.1f} | {turnover_rate_score:.1f} | {volatility_risk_score:.1f} | {relative_strength_score:.1f} | {pe_display:.1f} |\n"
+                report += f"| {i+1} | {stock_code} | {stock_name} | {strategies_str} | {score:.1f} | {recommendation} | {bbi_score:.1f} | {volume_surge_score:.1f} | {price_momentum_score:.1f} | {zhixing_multiavg_score:.1f} | {rsi_display} | {market_cap_display} | {kdj_cross_score:.1f} | {pb_display:.1f} | {turnover_rate_score:.1f} | {volatility_risk_score:.1f} | {relative_strength_score:.1f} | {pe_display:.1f} |\n"
             elif hasattr(self, 'scoring_version') and self.scoring_version == "v3.1":
-                report += f"| {i} | {stock_code} | {stock_name} | {strategies_str} | {score:.1f} | {recommendation} | {momentum:.0f} | {mean_reversion:.0f} | {volume_breakout:.0f} | {relative_performance:.0f} | {stability:.0f} | {market_regime_score:.0f} |\n"
+                report += f"| {i+1} | {stock_code} | {stock_name} | {strategies_str} | {score:.1f} | {recommendation} | {momentum:.0f} | {mean_reversion:.0f} | {volume_breakout:.0f} | {relative_performance:.0f} | {stability:.0f} | {market_regime_score:.0f} |\n"
             else:
-                report += f"| {i} | {stock_code} | {stock_name} | {strategies_str} | {score:.1f} | {recommendation} | {momentum:.0f} | {mean_reversion:.0f} | {volume_breakout:.0f} | {relative_performance:.0f} | {stability:.0f} |\n"
+                report += f"| {i+1} | {stock_code} | {stock_name} | {strategies_str} | {score:.1f} | {recommendation} | {momentum:.0f} | {mean_reversion:.0f} | {volume_breakout:.0f} | {relative_performance:.0f} | {stability:.0f} |\n"
         
         report += "\n"
         
@@ -4378,12 +4519,23 @@ class TomorrowStockSelector:
         if single_detailed:
             report += "### 📊 单策略推荐股票（TOP 20）\n\n"
             report += f"*单策略选中股票共 {len(analysis.get('single_strategy_recommendations', []))} 只，以下显示前20只的详细分析*\n\n"
-            
+
             for i, stock in enumerate(single_detailed, 1):
                 report += f"#### {i}. {stock['stock_code']} - {stock.get('stock_name', '未知')}\n\n"
                 report += self._generate_stock_detail(stock)
                 report += "\n---\n\n"
-        
+
+        # 全市场ML推荐股票详细分析（TOP 10）
+        no_strategy_detailed = [s for s in analysis.get("no_strategy_recommendations", []) if s.get('needs_detailed_analysis', False)]
+        if no_strategy_detailed:
+            report += "### 🌐 全市场ML推荐股票（TOP 10）\n\n"
+            report += f"*以下股票未被任何策略选中，但ML评分排名靠前（共 {len(analysis.get('no_strategy_recommendations', []))} 只非策略股票）*\n\n"
+
+            for i, stock in enumerate(no_strategy_detailed, 1):
+                report += f"#### {i}. {stock['stock_code']} - {stock.get('stock_name', '未知')}\n\n"
+                report += self._generate_stock_detail(stock)
+                report += "\n---\n\n"
+
         report += """## ⚠️ 风险提示
 
 ### 市场风险
@@ -4478,16 +4630,18 @@ def is_trading_day(date_str: str) -> bool:
         except:
             return True
 
-def main(target_date: str = None, scoring_version: str = "v3", stocks_only: bool = False):
+def main(target_date: str = None, scoring_version: str = "v3", stocks_only: bool = False, skip_strategies: bool = False, full_market: bool = False):
     """主函数
-    
+
     Args:
         target_date: 分析日期，格式YYYY-MM-DD
         scoring_version: 评分版本，'v2'、'v3'或'v4'，默认'v3'
         stocks_only: 是否只考虑股票，不包括ETF基金，默认False
+        skip_strategies: 跳过策略筛选，全市场ML评分，默认False
+        full_market: 全市场ML评分 + 策略标注模式，默认False
     """
     # v3.6、v3.7、v3.8、v3.9、v3.94、v3.95版本应该只评价股票，因为ETF等因子无法与股票直接对比
-    if scoring_version in ["v3.6", "v3.7", "v3.8", "v3.81", "v3.9", "v3.94", "v3.95", "v3.96", "v4.0", "v4.2", "v4.3", "v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v5.0"] and not stocks_only:
+    if scoring_version in ["v3.6", "v3.7", "v3.8", "v3.81", "v3.9", "v3.94", "v3.95", "v3.96", "v4.0", "v4.2", "v4.3", "v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.8", "v5.0"] and not stocks_only:
         stocks_only = True
         logger.info(f"🔍 {scoring_version}机器学习版本自动开启仅股票模式（ETF等因子与股票不可比）")
     
@@ -4504,7 +4658,7 @@ def main(target_date: str = None, scoring_version: str = "v3", stocks_only: bool
         logger.info(f"=== 最新日期股票选股分析开始 (评分版本: {scoring_version}) ===")
     
     # 创建选股器，传入评分版本和股票筛选选项
-    selector = TomorrowStockSelector(scoring_version=scoring_version, stocks_only=stocks_only)
+    selector = TomorrowStockSelector(scoring_version=scoring_version, stocks_only=stocks_only, skip_strategies=skip_strategies)
     
     # 获取分析日期
     if target_date:
@@ -4696,9 +4850,30 @@ def main(target_date: str = None, scoring_version: str = "v3", stocks_only: bool
         analysis = selector.analyze_v38_mixed_results(traditional_results, evaluation_result, data, latest_date)
 
     else:
-        # 传统选股策略
-        logger.info("运行选股策略...")
-        results = selector.run_selectors(data, latest_date)
+        if full_market:
+            # 全市场+策略标注模式：先跑策略获取标注，再对全市场所有股票ML评分
+            logger.info("🌐 全市场+策略标注模式：运行策略筛选 + 全市场ML评分...")
+            strategy_results = selector.run_selectors(data, latest_date)
+            strategy_stocks = set()
+            for picks in strategy_results.values():
+                strategy_stocks.update(picks)
+            all_codes = list(data.keys())
+            non_strategy = [c for c in all_codes if c not in strategy_stocks]
+            logger.info(f"  策略选中: {len(strategy_stocks)} 只, 全市场补充: {len(non_strategy)} 只, 总计: {len(all_codes)} 只")
+            # 添加全市场非策略股票到虚拟策略组
+            strategy_results["全市场ML评分"] = non_strategy
+            results = strategy_results
+        elif selector.skip_strategies:
+            # 全市场ML评分模式：跳过策略筛选，所有股票直接进入ML评分
+            logger.info("🌐 全市场ML评分模式：跳过8大策略筛选...")
+            all_codes = list(data.keys())
+            logger.info(f"  候选股票: {len(all_codes)} 只 (全市场)")
+            # 构造一个虚拟的 results，让 analyze_results 对全部股票评分
+            results = {"全市场ML评分": all_codes}
+        else:
+            # 传统选股策略
+            logger.info("运行选股策略...")
+            results = selector.run_selectors(data, latest_date)
 
         # 分析结果
         logger.info("分析选股结果...")
@@ -4715,6 +4890,12 @@ def main(target_date: str = None, scoring_version: str = "v3", stocks_only: bool
         report_dir = Path("reports/daily_selection_v4.7.1")
     elif scoring_version == "v4.8":
         report_dir = Path("reports/daily_selection_v4.8")
+    elif scoring_version == "v4.7.8":
+        report_dir = Path("reports/daily_selection_v4.7.8")
+    elif scoring_version == "v4.7.7":
+        report_dir = Path("reports/daily_selection_v4.7.7")
+    elif scoring_version == "v4.7.6":
+        report_dir = Path("reports/daily_selection_v4.7.6")
     elif scoring_version == "v4.7.5":
         report_dir = Path("reports/daily_selection_v4.7.5")
     elif scoring_version == "v4.7.3":
@@ -4775,6 +4956,11 @@ def main(target_date: str = None, scoring_version: str = "v3", stocks_only: bool
         report_dir = Path("reports/daily_selection_v3")
     else:
         report_dir = Path("reports/daily_selection")
+
+    # 全市场模式：报告目录加 _fullmarket 后缀
+    if skip_strategies or full_market:
+        report_dir = Path(str(report_dir) + "_fullmarket")
+
     report_dir.mkdir(parents=True, exist_ok=True)
     
     report_filename = f"选股分析报告_{latest_date.strftime('%Y%m%d')}.md"
@@ -4812,7 +4998,7 @@ if __name__ == "__main__":
                        choices=['v2', 'v3', 'v3.1', 'v3.2', 'v3.3', 'v3.4', 'v3.41',
                                 'v3.5', 'v3.51', 'v3.52', 'v3.53', 'v3.6', 'v3.7',
                                 'v3.8', 'v3.81', 'v3.9', 'v3.94', 'v3.95', 'v3.96',
-                                'v4', 'v4.0', 'v4.2', 'v4.3', 'v4.4', 'v4.4.2', 'v4.5', 'v4.6', 'v4.7.1', 'v4.7.2', 'v4.7.3', 'v4.7.5', 'v4.8', 'v5.0'],
+                                'v4', 'v4.0', 'v4.2', 'v4.3', 'v4.4', 'v4.4.2', 'v4.5', 'v4.6', 'v4.7.1', 'v4.7.2', 'v4.7.3', 'v4.7.5', 'v4.7.6', 'v4.7.7', 'v4.8', 'v5.0'],
                        default='v3.9',
                        help='评分版本 (默认v3.9)。'
                             '活跃版本: v3.9(生产A级), v3.96(Robust Z-Score,ICIR>0.2), '
@@ -4825,7 +5011,13 @@ if __name__ == "__main__":
                             '已弃用: v2-v3.81, v3.94, v4 (仍可使用但不推荐)')
     parser.add_argument('--stocks-only', '-s', action='store_true',
                        help='只考虑A股股票，不包括ETF基金等')
-    
+    parser.add_argument('--skip-strategies', action='store_true',
+                       help='跳过8大量化策略筛选，直接对全市场所有股票进行ML评分')
+    parser.add_argument('--full-market', action='store_true',
+                       help='全市场ML评分+策略标注模式：对全市场所有股票ML评分，同时运行策略并在报告中标注')
+
     args = parser.parse_args()
-    
-    main(target_date=args.date, scoring_version=args.scoring_version, stocks_only=args.stocks_only)
+
+    main(target_date=args.date, scoring_version=args.scoring_version,
+         stocks_only=args.stocks_only, skip_strategies=args.skip_strategies,
+         full_market=args.full_market)

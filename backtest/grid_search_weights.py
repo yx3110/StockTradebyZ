@@ -232,10 +232,26 @@ def evaluate_weights(daily_data: List[dict], weights: Tuple[float, float, float,
     ic_pos = np.mean(ics > 0)
 
     avg_ret = np.mean(top_rets)
-    periods_per_year = 245 / 10  # hold_days=10
-    ann_ret = (1 + avg_ret) ** periods_per_year - 1
-    ret_std = np.std(top_rets)
-    sharpe = avg_ret / ret_std * np.sqrt(periods_per_year) if ret_std > 0 else 0
+    hold_days = 10
+    periods_per_year = 245.0 / hold_days
+
+    # Non-overlapping annualized return (cumulative NAV)
+    non_overlap = top_rets[::hold_days]
+    nav = np.cumprod(1 + non_overlap)
+    total_years = len(top_rets) / 245.0
+    ann_ret = nav[-1] ** (1 / total_years) - 1 if total_years > 0 and nav[-1] > 0 else 0
+
+    # Newey-West adjusted Sharpe
+    n = len(top_rets)
+    demeaned = top_rets - avg_ret
+    gamma0 = np.sum(demeaned**2) / n
+    nw_var = gamma0
+    for lag in range(1, hold_days):
+        gamma_lag = np.sum(demeaned[lag:] * demeaned[:-lag]) / n
+        bartlett_weight = 1 - lag / hold_days
+        nw_var += 2 * bartlett_weight * gamma_lag
+    nw_std = np.sqrt(max(nw_var, 0))
+    sharpe = avg_ret / nw_std * np.sqrt(periods_per_year) if nw_std > 0 else 0
     hit_rate = np.mean(top_rets > 0)
 
     return {

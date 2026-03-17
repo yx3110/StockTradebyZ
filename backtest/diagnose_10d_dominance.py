@@ -365,9 +365,12 @@ def main():
         for h in horizons:
             avg_ret = np.mean(topn_returns[t][h])
             print(f"  {avg_ret:>+.3%}", end='')
-        # Annualized 10d return
-        avg_10d = np.mean(topn_returns[t][10])
-        ann_10d = (1 + avg_10d) ** 24.5 - 1
+        # Annualized 10d return (non-overlapping cumulative NAV)
+        rets_10d = np.array(topn_returns[t][10])
+        non_overlap = rets_10d[::10]
+        nav = np.cumprod(1 + non_overlap)
+        total_years = len(rets_10d) / 245.0
+        ann_10d = nav[-1] ** (1 / total_years) - 1 if total_years > 0 and nav[-1] > 0 else 0
         print(f"  {ann_10d:>+18.1%}")
 
     # 5. Signal-to-Noise Analysis
