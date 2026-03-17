@@ -513,6 +513,10 @@ def main():
                         help='排名字段: auto=优先pred_10d, score=全局百分位, composite=多周期融合')
     parser.add_argument('--hold-buffer', type=float, default=0,
                         help='持仓缓冲区倍数 (0=关闭, 推荐2-3). 现有持仓在top_n*(1+buffer)内保留')
+    parser.add_argument('--score-version', type=str, default='both', choices=['v2', 'v3', 'both'],
+                        help='评分卡版本: v2=传统等权, v3=加权+统计鲁棒性, both=两者都打印 (default: both)')
+    parser.add_argument('--n-trials', type=int, default=10,
+                        help='DSR多重测试校正: 尝试过的策略变体数 (default: 10)')
     args = parser.parse_args()
 
     # ── auto 日期解析 ──

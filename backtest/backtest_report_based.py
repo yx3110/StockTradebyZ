@@ -60,6 +60,14 @@ from backtest.north_star_metrics import (
     batch_load_market_cap_data, batch_load_limit_up_data,
     batch_load_universe_median_cap, compute_executability_metrics,
     classify_market_regime, compute_regime_conditional_metrics,
+    # V3 imports
+    NORTH_STAR_TARGETS_V3, V3_LAYER_WEIGHTS, V3_LAYER_NAMES,
+    score_metric_v3, compute_v3_score, compute_v3_grade,
+    compute_probabilistic_sharpe, compute_deflated_sharpe,
+    compute_tail_ratio, compute_max_consecutive_loss_periods,
+    compute_bear_icir, compute_ic_decay_ratio,
+    compute_cumulative_quantile_monotonicity,
+    compute_backtest_length_factor,
 )
 
 HOLDING_DAYS = [1, 3, 5, 7, 10, 15, 20]
@@ -1215,6 +1223,32 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
             rebal_holdings_for_exec, market_cap_data, limit_up_data, universe_median_cap
         )
 
+        # --- V3新增指标 ---
+        # 尾部比率
+        v3_tail_ratio = compute_tail_ratio(period_ret_series)
+
+        # 最大连续亏损期数
+        v3_max_consec_loss = compute_max_consecutive_loss_periods(period_ret_series)
+
+        # 熊市ICIR
+        v3_bear_icir = compute_bear_icir(ic_df_days, benchmark_daily_ret)
+
+        # IC衰减比 (H2/H1)
+        v3_ic_decay = compute_ic_decay_ratio(ic_df_days)
+
+        # 改进版IC单调性 (累积分位)
+        v3_ic_mono = 0
+        if len(sub_picks_days) > 50:
+            v3_ic_mono = compute_cumulative_quantile_monotonicity(
+                sub_picks_days['score'], sub_picks_days[f'return_{days}d'],
+                sub_picks_days['date']
+            )
+
+        # PSR / DSR (使用非重叠收益序列)
+        ppy = 252 / days  # periods per year
+        v3_psr = compute_probabilistic_sharpe(period_ret_series, 0.0, ppy)
+        v3_dsr = compute_deflated_sharpe(period_ret_series, n_trials=10, periods_per_year=ppy)
+
         # 合并到summary
         summary[days].update({
             # 风险指标
@@ -1256,6 +1290,14 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
             'liquidity_coverage': exec_metrics.get('liquidity_coverage', 0),
             'cap_balance_ratio': exec_metrics.get('cap_balance_ratio', 0),
             'median_market_cap_bn': exec_metrics.get('median_market_cap_bn', 0),
+            # V3新增
+            'tail_ratio': v3_tail_ratio,
+            'max_consecutive_loss_periods': v3_max_consec_loss,
+            'bear_icir': v3_bear_icir,
+            'ic_decay_ratio': v3_ic_decay,
+            'ic_monotonicity_v3': v3_ic_mono,
+            'probabilistic_sharpe': v3_psr,
+            'deflated_sharpe': v3_dsr,
         })
 
         north_star[days] = summary[days]
@@ -1316,9 +1358,10 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
 
     if focus_days in summary:
         s = summary[focus_days]
-        # V1评分卡已废弃，仅保留V2
-        # _print_scorecard(s, label, focus_days)
+        # V2评分卡 (向后兼容)
         _print_scorecard_v2(s, label, focus_days, n_trading_days=len(reports))
+        # V3评分卡 (加权层级 + 统计鲁棒性)
+        _print_scorecard_v3(s, label, focus_days, n_trading_days=len(reports))
 
     # 月度分解 (5日持仓)
     sub5 = df[df['days'] == 5].copy()
@@ -1564,6 +1607,154 @@ def _print_scorecard_v2(s, label, days, n_trading_days=0):
                   f"{layer_score}/{layer_max} ({layer_pct:.0f}%)")
 
     print(f"  {'═'*70}")
+
+
+def _print_scorecard_v3(s, label, days, n_trading_days=0, n_trials=10):
+    """打印V3北极星评分卡 (25项, 加权层级, 统计鲁棒性)"""
+    print(f"\n  {'═'*74}")
+    print(f"  北极星评分卡 V3: {label} ({days}日持仓)")
+    print(f"  {'═'*74}")
+
+    # 映射 summary key → V3 metric value
+    # V3中ic_monotonicity用改进版(v3), 如果没有则fallback到V2版
+    ic_mono_val = s.get('ic_monotonicity_v3')
+    if ic_mono_val is None or ic_mono_val == 0:
+        ic_mono_val = s.get('ic_monotonicity', 0)
+
+    metric_value_map = {
+        'daily_ic':              s.get('ic_mean', 0),
+        'icir':                  s.get('icir', 0),
+        'ic_positive_pct':       s.get('ic_positive_pct', 0),
+        'ic_monotonicity':       ic_mono_val,
+        'ic_time_stability':     s.get('ic_time_stability', 999),
+        'signal_half_life':      s.get('signal_half_life', 0),
+        'bear_icir':             s.get('bear_icir'),
+        'ic_decay_ratio':        s.get('ic_decay_ratio', 0),
+        'annual_turnover':       s.get('annual_turnover', 0),
+        'annual_cost_drag':      s.get('annual_cost_drag', 0),
+        'net_gross_ratio':       s.get('net_gross_ratio', 0),
+        'limit_up_fail_rate':    s.get('limit_up_fail_rate', 0),
+        'liquidity_coverage':    s.get('liquidity_coverage', 0),
+        'max_drawdown':          s.get('max_drawdown', 0),
+        'sharpe_ratio':          s.get('sharpe_ratio', 0),
+        'sortino_ratio':         s.get('sortino_ratio', 0),
+        'calmar_ratio':          s.get('calmar_ratio', 0),
+        'worst_rolling_60d_icir': s.get('worst_rolling_60d_icir', None),
+        'tail_ratio':            s.get('tail_ratio', 0),
+        'max_consecutive_loss_periods': s.get('max_consecutive_loss_periods', 0),
+        'annual_return':         s.get('annual_return', 0),
+        'monthly_win_rate':      s.get('monthly_win_rate', 0),
+        'half_period_consistency': s.get('half_period_consistency', 0),
+        'probabilistic_sharpe':  s.get('probabilistic_sharpe', 0),
+        'deflated_sharpe':       s.get('deflated_sharpe', 0),
+    }
+
+    # 格式分类
+    pct_fmt_keys = {'max_drawdown', 'annual_return', 'annual_cost_drag',
+                    'net_gross_ratio', 'limit_up_fail_rate', 'liquidity_coverage',
+                    'half_period_consistency', 'probabilistic_sharpe', 'deflated_sharpe',
+                    'ic_decay_ratio', 'tail_ratio'}
+    plain_fmt_keys = {'ic_positive_pct', 'monthly_win_rate', 'annual_turnover',
+                      'signal_half_life', 'max_consecutive_loss_periods'}
+
+    # 计算V3评分
+    v3_result = compute_v3_score(metric_value_map, n_trading_days, n_trials)
+
+    for layer_id in sorted(V3_LAYER_NAMES.keys()):
+        layer_name = V3_LAYER_NAMES[layer_id]
+        weight = V3_LAYER_WEIGHTS[layer_id]
+        ld = v3_result['layer_details'][layer_id]
+        layer_metrics = [(k, v) for k, v in NORTH_STAR_TARGETS_V3.items()
+                         if v['layer'] == layer_id]
+        if not layer_metrics:
+            continue
+
+        print(f"\n  ┌─ L{layer_id} {layer_name} (权重{weight:.0%})"
+              f"  [{ld['score']}/{ld['max']} = {ld['pct']:.0f}%]")
+        print(f"  │ {'指标':<20s} {'当前值':>10s} {'及格':>8s} {'目标':>8s} {'分数':>4s} {'评级':>10s}")
+        print(f"  │ {'─'*62}")
+
+        for metric_key, target_info in layer_metrics:
+            ms = v3_result['metric_scores'].get(metric_key, (0, '☆☆☆☆☆', None))
+            score, grade_str, value = ms
+
+            display = target_info['display']
+            target_val = target_info['target']
+            pass_val = target_info['pass']
+
+            if value is None:
+                c_str = "N/A"
+            elif metric_key in pct_fmt_keys:
+                c_str = f"{value:.1%}" if abs(value) < 10 else f"{value:.0%}"
+            elif metric_key in plain_fmt_keys:
+                c_str = f"{value:.1f}"
+            else:
+                c_str = f"{value:.3f}"
+
+            if metric_key in pct_fmt_keys:
+                t_str = f"{target_val:.1%}" if abs(target_val) < 10 else f"{target_val:.0%}"
+                p_str = f"{pass_val:.1%}" if abs(pass_val) < 10 else f"{pass_val:.0%}"
+            elif metric_key in plain_fmt_keys:
+                t_str = f"{target_val:.1f}"
+                p_str = f"{pass_val:.1f}"
+            else:
+                t_str = f"{target_val:.3f}"
+                p_str = f"{pass_val:.3f}"
+
+            # 短窗口标注
+            short_warn = ''
+            min_days = target_info.get('min_days', 0)
+            if min_days > 0 and n_trading_days > 0 and n_trading_days < min_days:
+                short_warn = ' ⚠短'
+
+            # 新指标标记
+            new_mark = ''
+            if metric_key in ('bear_icir', 'ic_decay_ratio', 'tail_ratio',
+                              'max_consecutive_loss_periods', 'probabilistic_sharpe',
+                              'deflated_sharpe'):
+                new_mark = ' NEW'
+
+            print(f"  │ {display:<20s} {c_str:>10s} {p_str:>8s} {t_str:>8s}"
+                  f" {score}/5  {grade_str}{short_warn}{new_mark}")
+
+    # 总分 + 加权
+    print(f"\n  {'─'*74}")
+
+    length_factor = v3_result['length_factor']
+    raw_pct = v3_result['raw_pct']
+    final_pct = v3_result['final_pct']
+    grade = v3_result['grade']
+
+    # 数据充分性
+    if n_trading_days > 0 and n_trading_days < 500:
+        print(f"  回测长度: {n_trading_days}天 → 折扣因子 {length_factor:.2f}"
+              f" (≥500天无惩罚)")
+
+    has_short_warn = any(
+        t.get('min_days', 0) > 0 and n_trading_days > 0 and n_trading_days < t.get('min_days', 0)
+        for t in NORTH_STAR_TARGETS_V3.values()
+    )
+    if has_short_warn:
+        print(f"  ⚠短 = 数据不足(当前{n_trading_days}天), 该指标可信度较低")
+
+    print(f"\n  加权评分: {raw_pct:.1f}%"
+          + (f" × {length_factor:.2f} = {final_pct:.1f}%" if length_factor < 1.0 else "")
+          + f" → 等级 {grade}")
+
+    # 分层小计 (含权重)
+    for layer_id in sorted(V3_LAYER_NAMES.keys()):
+        ld = v3_result['layer_details'][layer_id]
+        weight = V3_LAYER_WEIGHTS[layer_id]
+        contribution = ld['pct'] * weight
+        print(f"    L{layer_id} {V3_LAYER_NAMES[layer_id]:8s}: "
+              f"{ld['score']:2d}/{ld['max']:2d} ({ld['pct']:5.1f}%) "
+              f"× {weight:.0%} = {contribution:5.1f}%")
+
+    # V2 vs V3 对比
+    total_v3 = v3_result['total_score']
+    max_v3 = v3_result['max_score']
+    print(f"\n  原始总分: {total_v3}/{max_v3} (未加权{total_v3/max_v3*100:.0f}%)")
+    print(f"  {'═'*74}")
 
 
 def compare_results(result_a, result_b, focus_days=10):

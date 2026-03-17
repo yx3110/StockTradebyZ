@@ -1319,6 +1319,478 @@ def compute_regime_conditional_metrics(ic_df: pd.DataFrame,
 
 
 # ═══════════════════════════════════════════════════════
+# V3 北极星指标 (25项, 加权层级, 统计鲁棒性)
+# ═══════════════════════════════════════════════════════
+
+V3_LAYER_WEIGHTS = {1: 0.40, 2: 0.20, 3: 0.25, 4: 0.15}
+V3_LAYER_NAMES = {1: '信号质量', 2: '组合效率', 3: '风险控制', 4: '统计鲁棒性'}
+
+NORTH_STAR_TARGETS_V3 = {
+    # ── Layer 1: 信号质量 (8 metrics × 5pts = 40pts) ──
+    'daily_ic': {
+        'pass': 0.03, 'ok': 0.04, 'good': 0.05, 'great': 0.06, 'target': 0.08,
+        'direction': 'higher', 'layer': 1, 'display': 'Daily IC',
+    },
+    'icir': {
+        'pass': 0.25, 'ok': 0.35, 'good': 0.45, 'great': 0.55, 'target': 0.70,
+        'direction': 'higher', 'layer': 1, 'display': 'ICIR',
+    },
+    'ic_positive_pct': {
+        'pass': 55, 'ok': 57, 'good': 60, 'great': 63, 'target': 68,
+        'direction': 'higher', 'layer': 1, 'display': 'IC>0%',
+    },
+    'ic_monotonicity': {
+        'pass': 2.5, 'ok': 3.0, 'good': 3.5, 'great': 4.0, 'target': 4.5,
+        'direction': 'higher', 'layer': 1, 'display': 'IC单调性',
+    },
+    'ic_time_stability': {
+        'pass': 2.0, 'ok': 1.5, 'good': 1.0, 'great': 0.8, 'target': 0.6,
+        'direction': 'lower', 'layer': 1, 'display': 'IC稳定性(CV)',
+        'min_days': 120,
+    },
+    'signal_half_life': {
+        'pass': 3, 'ok': 6, 'good': 8, 'great': 12, 'target': 20,
+        'direction': 'higher', 'layer': 1, 'display': '信号半衰期(天)',
+    },
+    'bear_icir': {
+        'pass': 0.05, 'ok': 0.10, 'good': 0.15, 'great': 0.25, 'target': 0.35,
+        'direction': 'higher', 'layer': 1, 'display': '熊市ICIR',
+        'min_days': 30,
+    },
+    'ic_decay_ratio': {
+        'pass': 0.50, 'ok': 0.65, 'good': 0.80, 'great': 0.90, 'target': 0.95,
+        'direction': 'higher', 'layer': 1, 'display': 'IC衰减比(H2/H1)',
+        'min_days': 120,
+    },
+
+    # ── Layer 2: 组合效率 (5 metrics × 5pts = 25pts) ──
+    'annual_turnover': {
+        'pass': 45, 'ok': 35, 'good': 30, 'great': 25, 'target': 20,
+        'direction': 'lower', 'layer': 2, 'display': '年化换手',
+    },
+    'annual_cost_drag': {
+        'pass': 0.13, 'ok': 0.10, 'good': 0.08, 'great': 0.07, 'target': 0.05,
+        'direction': 'lower', 'layer': 2, 'display': '年化成本',
+    },
+    'net_gross_ratio': {
+        'pass': 0.60, 'ok': 0.70, 'good': 0.75, 'great': 0.80, 'target': 0.85,
+        'direction': 'higher', 'layer': 2, 'display': '净/毛收益比',
+    },
+    'limit_up_fail_rate': {
+        'pass': 0.15, 'ok': 0.10, 'good': 0.08, 'great': 0.05, 'target': 0.02,
+        'direction': 'lower', 'layer': 2, 'display': '涨停失败率',
+    },
+    'liquidity_coverage': {
+        'pass': 0.70, 'ok': 0.80, 'good': 0.85, 'great': 0.90, 'target': 0.95,
+        'direction': 'higher', 'layer': 2, 'display': '流动性覆盖',
+    },
+
+    # ── Layer 3: 风险控制 (7 metrics × 5pts = 35pts) ──
+    'max_drawdown': {
+        'pass': -0.25, 'ok': -0.18, 'good': -0.12, 'great': -0.10, 'target': -0.08,
+        'direction': 'higher', 'layer': 3, 'display': '最大回撤',
+    },
+    'sharpe_ratio': {
+        'pass': 1.0, 'ok': 1.5, 'good': 2.0, 'great': 2.5, 'target': 3.0,
+        'direction': 'higher', 'layer': 3, 'display': 'Sharpe',
+    },
+    'sortino_ratio': {
+        'pass': 1.5, 'ok': 2.0, 'good': 2.5, 'great': 3.0, 'target': 4.0,
+        'direction': 'higher', 'layer': 3, 'display': 'Sortino',
+    },
+    'calmar_ratio': {
+        'pass': 1.0, 'ok': 2.0, 'good': 2.5, 'great': 3.0, 'target': 4.0,
+        'direction': 'higher', 'layer': 3, 'display': 'Calmar',
+    },
+    'worst_rolling_60d_icir': {
+        'pass': -0.10, 'ok': 0.0, 'good': 0.10, 'great': 0.20, 'target': 0.30,
+        'direction': 'higher', 'layer': 3, 'display': '最差60日ICIR',
+        'min_days': 120,
+    },
+    'tail_ratio': {
+        'pass': 0.8, 'ok': 1.0, 'good': 1.2, 'great': 1.5, 'target': 2.0,
+        'direction': 'higher', 'layer': 3, 'display': '尾部比率(P95/|P5|)',
+    },
+    'max_consecutive_loss_periods': {
+        'pass': 15, 'ok': 10, 'good': 8, 'great': 5, 'target': 3,
+        'direction': 'lower', 'layer': 3, 'display': '最大连续亏损期数',
+    },
+
+    # ── Layer 4: 统计鲁棒性 (5 metrics × 5pts = 25pts) ──
+    'annual_return': {
+        'pass': 0.15, 'ok': 0.20, 'good': 0.30, 'great': 0.40, 'target': 0.50,
+        'direction': 'higher', 'layer': 4, 'display': '年化收益',
+        'min_days': 200,
+    },
+    'monthly_win_rate': {
+        'pass': 55, 'ok': 60, 'good': 67, 'great': 75, 'target': 83,
+        'direction': 'higher', 'layer': 4, 'display': '月度胜率%',
+    },
+    'half_period_consistency': {
+        'pass': 0.35, 'ok': 0.50, 'good': 0.60, 'great': 0.70, 'target': 0.80,
+        'direction': 'higher', 'layer': 4, 'display': '前后半段一致性',
+        'min_days': 120,
+    },
+    'probabilistic_sharpe': {
+        'pass': 0.80, 'ok': 0.85, 'good': 0.90, 'great': 0.95, 'target': 0.99,
+        'direction': 'higher', 'layer': 4, 'display': 'PSR概率Sharpe',
+    },
+    'deflated_sharpe': {
+        'pass': 0.70, 'ok': 0.80, 'good': 0.85, 'great': 0.90, 'target': 0.95,
+        'direction': 'higher', 'layer': 4, 'display': 'DSR(多重测试校正)',
+    },
+}
+
+
+# ── V3 新计算函数 ──
+
+def compute_probabilistic_sharpe(returns: pd.Series,
+                                  benchmark_sharpe: float = 0.0,
+                                  periods_per_year: float = 25.2) -> float:
+    """
+    Probabilistic Sharpe Ratio (Bailey & López de Prado, 2012).
+
+    PSR = Φ((SR̂ - SR*) · √(n-1) / √(1 - γ₃·SR̂ + (γ₄-1)/4 · SR̂²))
+
+    Returns probability that true Sharpe > benchmark_sharpe.
+    """
+    from scipy.stats import norm, skew, kurtosis
+
+    returns = returns.dropna()
+    n = len(returns)
+    if n < 10:
+        return 0.0
+
+    # Observed Sharpe (annualized)
+    mean_ret = returns.mean()
+    std_ret = returns.std(ddof=1)
+    if std_ret < 1e-10:
+        return 0.0
+
+    sr_hat = (mean_ret / std_ret) * np.sqrt(periods_per_year)
+
+    # De-annualize benchmark to per-period scale for comparison
+    # SR̂ and SR* must be on same scale; keep annualized
+    sr_star = benchmark_sharpe
+
+    # Skewness and excess kurtosis of returns
+    gamma3 = skew(returns, bias=False)
+    gamma4 = kurtosis(returns, bias=False, fisher=True)  # excess kurtosis
+
+    # PSR denominator: adjust for non-normality
+    denom_sq = 1.0 - gamma3 * sr_hat / np.sqrt(periods_per_year) + \
+               (gamma4 - 1) / 4.0 * (sr_hat / np.sqrt(periods_per_year)) ** 2
+    if denom_sq <= 0:
+        denom_sq = 1.0  # fallback to normal assumption
+
+    z = (sr_hat - sr_star) * np.sqrt(n - 1) / np.sqrt(denom_sq)
+    psr = float(norm.cdf(z))
+
+    return max(0.0, min(1.0, psr))
+
+
+def compute_deflated_sharpe(returns: pd.Series,
+                             n_trials: int = 10,
+                             benchmark_sharpe: float = 0.0,
+                             periods_per_year: float = 25.2) -> float:
+    """
+    Deflated Sharpe Ratio (Harvey & Liu, 2015).
+
+    Corrects for multiple testing: the more strategies you try,
+    the higher the expected maximum Sharpe under the null.
+    Uses expected max of N iid standard normals as deflated benchmark.
+
+    Args:
+        returns: per-period return series
+        n_trials: number of strategy variants tested (model iterations)
+        benchmark_sharpe: base benchmark Sharpe (before deflation)
+        periods_per_year: annualization factor
+    """
+    from scipy.stats import norm
+
+    returns = returns.dropna()
+    n = len(returns)
+    if n < 10 or n_trials < 1:
+        return 0.0
+
+    std_ret = returns.std(ddof=1)
+    if std_ret < 1e-10:
+        return 0.0
+
+    # Expected maximum of N iid standard normals (Euler-Mascheroni approximation)
+    # E[max] ≈ (1-γ)·Φ⁻¹(1-1/N) + γ·Φ⁻¹(1-1/(N·e))
+    # where γ ≈ 0.5772 (Euler-Mascheroni constant)
+    gamma_em = 0.5772156649
+    if n_trials <= 1:
+        e_max_sr = 0.0
+    else:
+        p1 = max(1e-10, 1.0 - 1.0 / n_trials)
+        p2 = max(1e-10, 1.0 - 1.0 / (n_trials * np.e))
+        e_max_sr = (1 - gamma_em) * norm.ppf(p1) + gamma_em * norm.ppf(p2)
+
+    # Variance of SR estimator: Var(SR̂) ≈ (1 + SR²/2) / (n-1)
+    sr_per_period = returns.mean() / std_ret
+    var_sr = (1.0 + 0.5 * sr_per_period ** 2) / max(1, n - 1)
+
+    # Deflated benchmark: inflate null by expected max × std(SR̂)
+    sr_star_deflated = benchmark_sharpe + e_max_sr * np.sqrt(var_sr) * np.sqrt(periods_per_year)
+
+    # Now compute PSR against deflated benchmark
+    return compute_probabilistic_sharpe(returns, sr_star_deflated, periods_per_year)
+
+
+def compute_tail_ratio(returns: pd.Series) -> float:
+    """
+    Tail Ratio = P95 / |P5|.
+
+    >1.0 means upside tail is fatter than downside (positive asymmetry).
+    <1.0 means downside risk dominates.
+    """
+    returns = returns.dropna()
+    if len(returns) < 20:
+        return 0.0
+
+    p95 = np.percentile(returns, 95)
+    p5 = np.percentile(returns, 5)
+
+    if abs(p5) < 1e-10:
+        return 5.0 if p95 > 0 else 0.0  # cap at 5.0
+
+    ratio = p95 / abs(p5)
+    return max(0.0, min(ratio, 5.0))  # clamp
+
+
+def compute_max_consecutive_loss_periods(returns: pd.Series) -> int:
+    """最大连续亏损期数 (returns < 0)."""
+    returns = returns.dropna()
+    if returns.empty:
+        return 0
+    return _max_consecutive(returns < 0)
+
+
+def compute_bear_icir(ic_df: pd.DataFrame,
+                       benchmark_returns: pd.Series,
+                       lookback: int = 60) -> Optional[float]:
+    """
+    熊市ICIR: 仅在熊市期间的IC信息比率.
+
+    Returns None if insufficient bear market data (<10 days).
+    """
+    if ic_df.empty or benchmark_returns.empty:
+        return None
+
+    regime = classify_market_regime(benchmark_returns, lookback)
+    if regime.empty:
+        return None
+
+    regime_metrics = compute_regime_conditional_metrics(ic_df, regime)
+    bear = regime_metrics.get('bear', {})
+    n_bear = bear.get('n_days', 0)
+
+    if n_bear < 10:
+        return None
+
+    return bear.get('icir', 0.0)
+
+
+def compute_ic_decay_ratio(ic_df: pd.DataFrame) -> float:
+    """
+    IC衰减比: mean(IC_后半段) / mean(IC_前半段).
+
+    ~1.0 = 信号稳定, <0.5 = 可能过拟合.
+    Returns 0 if 前半段IC ≤ 0.
+    """
+    if ic_df.empty or len(ic_df) < 20:
+        return 0.0
+
+    ic_sorted = ic_df.sort_values('date')
+    mid = len(ic_sorted) // 2
+
+    ic_h1 = ic_sorted.iloc[:mid]['ic'].mean()
+    ic_h2 = ic_sorted.iloc[mid:]['ic'].mean()
+
+    if ic_h1 <= 1e-6:
+        # 前半段IC≤0, 无法计算有意义的衰减比
+        # 但如果后半段IC>0说明信号在改善，给1.0
+        if ic_h2 > 1e-6:
+            return 1.0
+        return 0.0
+
+    ratio = ic_h2 / ic_h1
+    return max(0.0, min(ratio, 2.0))  # clamp to [0, 2]
+
+
+def compute_cumulative_quantile_monotonicity(scores: pd.Series,
+                                              returns: pd.Series,
+                                              dates: pd.Series,
+                                              n_quantiles: int = 5,
+                                              min_stocks: int = 20) -> float:
+    """
+    改进版IC单调性: 基于累积分位组合收益.
+
+    方法:
+    1. 每日将股票按分数分为n_quantiles档
+    2. 计算每档的日均收益
+    3. 累积收益后检查最终排序是否单调
+    4. 同时检查中间时段的单调保持度
+
+    Returns: 0-5 score, 5.0 = 完美单调.
+    """
+    # 每个分位组收集日均收益
+    quantile_daily_returns = {q: [] for q in range(n_quantiles)}
+
+    for date in sorted(dates.unique()):
+        mask = (dates == date) & scores.notna() & returns.notna()
+        day_scores = scores[mask]
+        day_returns = returns[mask]
+
+        if len(day_scores) < min_stocks:
+            continue
+
+        try:
+            labels = pd.qcut(day_scores, n_quantiles, labels=False, duplicates='drop')
+        except ValueError:
+            continue
+
+        if labels.nunique() < n_quantiles:
+            continue
+
+        for q in range(n_quantiles):
+            q_mask = labels == q
+            if q_mask.any():
+                quantile_daily_returns[q].append(day_returns[q_mask].mean())
+
+    # 需要足够多的天数
+    min_len = min(len(v) for v in quantile_daily_returns.values())
+    if min_len < 20:
+        return 0.0
+
+    # 截断到相同长度, 计算累积收益
+    cum_returns = {}
+    for q in range(n_quantiles):
+        rets = np.array(quantile_daily_returns[q][:min_len])
+        cum_returns[q] = np.cumprod(1 + rets)
+
+    # 1) 最终累积收益的单调性 (权重60%)
+    final_values = [cum_returns[q][-1] for q in range(n_quantiles)]
+    n_pairs = n_quantiles - 1
+    correct_final = sum(1 for i in range(n_pairs) if final_values[i+1] > final_values[i])
+    final_mono = correct_final / n_pairs
+
+    # 2) 中间检查点的单调保持度 (权重40%)
+    checkpoints = [min_len // 4, min_len // 2, 3 * min_len // 4]
+    checkpoint_scores = []
+    for cp in checkpoints:
+        if cp < 1:
+            continue
+        cp_values = [cum_returns[q][cp] for q in range(n_quantiles)]
+        correct_cp = sum(1 for i in range(n_pairs) if cp_values[i+1] > cp_values[i])
+        checkpoint_scores.append(correct_cp / n_pairs)
+
+    avg_checkpoint = np.mean(checkpoint_scores) if checkpoint_scores else 0
+
+    # 综合分数
+    combined = final_mono * 0.6 + avg_checkpoint * 0.4
+    return combined * 5.0
+
+
+def compute_backtest_length_factor(n_days: int, min_days: int = 500) -> float:
+    """
+    回测长度折扣因子: min(1.0, sqrt(n_days / min_days)).
+
+    500天以上无惩罚, 125天(半年)打5折, 250天(1年)打7折.
+    """
+    if n_days <= 0:
+        return 0.0
+    if n_days >= min_days:
+        return 1.0
+    return np.sqrt(n_days / min_days)
+
+
+# ── V3 评分函数 ──
+
+def score_metric_v3(current: float, target_info: dict) -> Tuple[int, str]:
+    """V3评分 (与V2相同的0-5档逻辑)."""
+    return score_metric_v2(current, target_info)
+
+
+def compute_v3_score(metric_values: Dict[str, float],
+                      n_trading_days: int = 500,
+                      n_trials: int = 10) -> Dict:
+    """
+    V3加权评分.
+
+    V3 vs V2区别:
+    1. 层级加权: L1=40%, L2=20%, L3=25%, L4=15%
+    2. 加权百分比 = Σ(layer_score/layer_max × layer_weight) × 100
+    3. 回测长度惩罚: final_pct *= sqrt(n_days/500)
+
+    Returns:
+        dict{total_score, max_score, raw_pct, length_factor, final_pct,
+             grade, layer_details: {layer: {score,max,pct,weight}},
+             metric_scores: {metric: (score, grade_str, value)}}
+    """
+    layer_scores = {1: 0, 2: 0, 3: 0, 4: 0}
+    layer_maxes = {1: 0, 2: 0, 3: 0, 4: 0}
+    metric_scores = {}
+
+    for metric_name, target_info in NORTH_STAR_TARGETS_V3.items():
+        layer = target_info['layer']
+        layer_maxes[layer] += 5
+
+        value = metric_values.get(metric_name)
+        if value is None:
+            metric_scores[metric_name] = (0, '☆☆☆☆☆', None)
+            continue
+
+        score, grade_str = score_metric_v3(value, target_info)
+        layer_scores[layer] += score
+        metric_scores[metric_name] = (score, grade_str, value)
+
+    # 加权百分比
+    weighted_pct = 0.0
+    layer_details = {}
+    for layer in [1, 2, 3, 4]:
+        lmax = layer_maxes[layer]
+        lscore = layer_scores[layer]
+        lpct = lscore / lmax * 100 if lmax > 0 else 0
+        weight = V3_LAYER_WEIGHTS[layer]
+        weighted_pct += lpct * weight
+        layer_details[layer] = {
+            'score': lscore, 'max': lmax,
+            'pct': lpct, 'weight': weight,
+        }
+
+    # 回测长度惩罚
+    length_factor = compute_backtest_length_factor(n_trading_days)
+    final_pct = weighted_pct * length_factor
+
+    total_score = sum(layer_scores.values())
+    max_score = sum(layer_maxes.values())
+
+    grade = compute_v3_grade(final_pct)
+
+    return {
+        'total_score': total_score,
+        'max_score': max_score,
+        'raw_pct': weighted_pct,
+        'length_factor': length_factor,
+        'final_pct': final_pct,
+        'grade': grade,
+        'layer_details': layer_details,
+        'metric_scores': metric_scores,
+    }
+
+
+def compute_v3_grade(pct: float) -> str:
+    """V3等级 (与V2相同阈值)."""
+    for threshold, grade in V2_GRADE_THRESHOLDS:
+        if pct >= threshold:
+            return grade
+    return 'D'
+
+
+# ═══════════════════════════════════════════════════════
 # 综合评估器
 # ═══════════════════════════════════════════════════════
 
