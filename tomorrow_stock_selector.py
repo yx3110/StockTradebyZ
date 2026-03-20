@@ -43,7 +43,7 @@ logger = logging.getLogger("tomorrow_selector")
 DEPRECATED_VERSIONS = {'v2', 'v3', 'v3.1', 'v3.2', 'v3.3', 'v3.4', 'v3.41',
                        'v3.5', 'v3.51', 'v3.52', 'v3.53', 'v3.6', 'v3.7',
                        'v3.8', 'v3.81', 'v3.94', 'v4'}
-ACTIVE_VERSIONS = {'v3.9', 'v3.95', 'v3.96', 'v4.0', 'v4.2', 'v4.3', 'v4.4', 'v4.4.2', 'v4.5', 'v4.6', 'v4.7.1', 'v4.7.2', 'v4.7.3', 'v4.7.4', 'v4.7.5', 'v4.7.6', 'v4.7.7', 'v4.7.8', 'v4.7.9', 'v4.8.0', 'v5.0'}
+ACTIVE_VERSIONS = {'v3.9', 'v3.95', 'v3.96', 'v4.0', 'v4.2', 'v4.3', 'v4.4', 'v4.4.2', 'v4.5', 'v4.6', 'v4.7.1', 'v4.7.2', 'v4.7.3', 'v4.7.4', 'v4.7.5', 'v4.7.6', 'v4.7.7', 'v4.7.8', 'v4.7.9', 'v4.8.0', 'v4.8.1', 'v5.0'}
 
 
 class TomorrowStockSelector:
@@ -90,6 +90,13 @@ class TomorrowStockSelector:
             from ml_models.v39.strategy_based_return_predictor import StrategyBasedReturnPredictor
             self.strategy_return_predictor = StrategyBasedReturnPredictor()
             logger.info("🔬 已初始化V5.0 Unified Feature Fusion评分系统 (v39+v40+neural)")
+        elif scoring_version == "v4.8.1":
+            from ml_models.v39.v481_production_scorer import V481ProductionScorer
+            self.scoring_engine_v44 = V481ProductionScorer(model_type='small_data')
+            self.v44_batch_cache = {}
+            from ml_models.v39.strategy_based_return_predictor import StrategyBasedReturnPredictor
+            self.strategy_return_predictor = StrategyBasedReturnPredictor()
+            logger.info("V4.8.1 (60 features = V4.7.5 - 5 pruned + 15 new factors + V4.7.6 post-processing)")
         elif scoring_version == "v4.8.0":
             from ml_models.v39.v480_production_scorer import V480ProductionScorer
             self.scoring_engine_v44 = V480ProductionScorer(model_type='small_data')
@@ -1767,7 +1774,7 @@ class TomorrowStockSelector:
             if hasattr(self, 'scoring_version') and self.scoring_version in [
                 "v3.9", "v3.94", "v3.95", "v3.96", "v4.0", "v4.2", "v4.3",
                 "v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7", "v4.7.1", "v4.7.2",
-                "v4.7.3", "v4.7.4", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.7.9", "v4.8.0", "v5.0"]:
+                "v4.7.3", "v4.7.4", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.7.9", "v4.8.0", "v4.8.1", "v5.0"]:
                 recommendation = base_recommendation
                 confidence = base_confidence
 
@@ -2053,7 +2060,7 @@ class TomorrowStockSelector:
             if trade_date is None:
                 trade_date = datetime.now().strftime('%Y-%m-%d')
 
-            if self.scoring_version in ("v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.4", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.7.9", "v4.8.0", "v5.0"):
+            if self.scoring_version in ("v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.4", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.7.9", "v4.8.0", "v4.8.1", "v5.0"):
                 # V4.4+: V4.3信号+增强模块
                 try:
                     if stock_code in self.v44_batch_cache:
@@ -3427,7 +3434,7 @@ class TomorrowStockSelector:
         stock_with_scores = []
 
         # 🚀 V4.4/V4.4.2批量评分预计算
-        if hasattr(self, 'scoring_version') and self.scoring_version in ("v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.4", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.7.9", "v4.8.0", "v5.0") and all_stocks:
+        if hasattr(self, 'scoring_version') and self.scoring_version in ("v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.4", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.7.9", "v4.8.0", "v4.8.1", "v5.0") and all_stocks:
             if self.v44_batch_cache:
                 logger.info(f"✅ V4.4使用预填充缓存：{len(self.v44_batch_cache)}只股票")
             else:
@@ -3620,7 +3627,7 @@ class TomorrowStockSelector:
                     _p15 = stock_info.get('pred_15d', 0) or 0
                     # V4.6/V4.7.x scorer 使用 0.6*10d + 0.4*15d composite
                     if hasattr(self, 'scoring_version') and self.scoring_version in (
-                        'v4.6', 'v4.7', 'v4.7.1', 'v4.7.2', 'v4.7.3', 'v4.7.4', 'v4.7.5', 'v4.7.6', 'v4.7.7', 'v4.7.8', 'v4.7.9', 'v4.8.0'):
+                        'v4.6', 'v4.7', 'v4.7.1', 'v4.7.2', 'v4.7.3', 'v4.7.4', 'v4.7.5', 'v4.7.6', 'v4.7.7', 'v4.7.8', 'v4.7.9', 'v4.8.0', 'v4.8.1'):
                         stock_info['composite'] = _p10 * 0.6 + _p15 * 0.4
                     else:
                         stock_info['composite'] = _p3 * 0.1 + _p5 * 0.2 + _p10 * 0.4 + _p15 * 0.3
@@ -3917,6 +3924,663 @@ class TomorrowStockSelector:
             return {'exposure': 1.0, 'label': '正常', 'nav': 1.0, 'peak_nav': 1.0,
                     'drawdown': 0.0, 'details': f'计算失败: {e}'}
 
+    def analyze_trading_environment(self, target_date: pd.Timestamp,
+                                     all_stocks_with_scores: List[Dict] = None) -> Dict[str, Any]:
+        """交易环境监测: 综合大盘趋势/动量/成交量/市场宽度/波动风险/模型信号6个维度"""
+        from data_adapter.database_manager import DatabaseManager
+        import sqlite3
+
+        db = DatabaseManager()
+        date_str = target_date.strftime('%Y-%m-%d') if hasattr(target_date, 'strftime') else str(target_date)
+
+        # 取近250个交易日的指数数据 (MA60 + CPPI需要更长历史)
+        start_date = (target_date - timedelta(days=400)).strftime('%Y-%m-%d')
+
+        # --- 1. 获取沪深300数据 ---
+        index_codes = ['000300.SH', '000001.SH', '399001.SZ', '399006.SZ']
+        index_data = {}
+        for code in index_codes:
+            df = db.get_security_data(code, start_date, date_str)
+            if len(df) > 0:
+                index_data[code] = df
+
+        hs300 = index_data.get('000300.SH', pd.DataFrame())
+        sh_index = index_data.get('000001.SH', pd.DataFrame())
+
+        results = {
+            'trend': {'score': 50, 'label': '中性', 'signals': []},
+            'momentum': {'score': 50, 'label': '中性', 'signals': []},
+            'volume': {'score': 50, 'label': '中性', 'signals': []},
+            'breadth': {'score': 50, 'label': '中性', 'signals': []},
+            'volatility': {'score': 50, 'label': '正常', 'signals': []},
+            'model_signal': {'score': 50, 'label': '中性', 'signals': []},
+        }
+
+        # ======== 趋势维度 (20%) ========
+        if len(hs300) >= 5:
+            closes = hs300['close'].values
+            latest = closes[-1]
+
+            # MA位置关系
+            ma5 = np.mean(closes[-5:]) if len(closes) >= 5 else latest
+            ma20 = np.mean(closes[-20:]) if len(closes) >= 20 else latest
+            ma60 = np.mean(closes[-60:]) if len(closes) >= 60 else latest
+
+            trend_score = 50
+            signals = []
+
+            # 价格vs均线 (+/- 5分 each)
+            if latest > ma5:
+                trend_score += 5
+            else:
+                trend_score -= 5
+            if latest > ma20:
+                trend_score += 8
+            else:
+                trend_score -= 8
+            if latest > ma60:
+                trend_score += 7
+            else:
+                trend_score -= 7
+
+            # 均线排列
+            if ma5 > ma20 > ma60:
+                trend_score += 15
+                signals.append('多头排列(MA5>MA20>MA60)')
+            elif ma5 < ma20 < ma60:
+                trend_score -= 15
+                signals.append('空头排列(MA5<MA20<MA60)')
+            else:
+                signals.append('均线交织')
+
+            # 近5日涨跌幅
+            ret_5d = (closes[-1] / closes[-5] - 1) if len(closes) >= 5 else 0
+            if ret_5d > 0.03:
+                trend_score += 10
+                signals.append(f'5日涨{ret_5d:.1%}')
+            elif ret_5d > 0.01:
+                trend_score += 5
+                signals.append(f'5日涨{ret_5d:.1%}')
+            elif ret_5d < -0.03:
+                trend_score -= 10
+                signals.append(f'5日跌{ret_5d:.1%}')
+            elif ret_5d < -0.01:
+                trend_score -= 5
+                signals.append(f'5日跌{ret_5d:.1%}')
+            else:
+                signals.append(f'5日横盘{ret_5d:+.1%}')
+
+            # 距前高回撤
+            peak = np.max(closes[-60:]) if len(closes) >= 60 else np.max(closes)
+            drawdown = (latest / peak - 1)
+            if drawdown < -0.10:
+                trend_score -= 10
+                signals.append(f'距前高{drawdown:.1%}')
+            elif drawdown < -0.05:
+                trend_score -= 5
+                signals.append(f'距前高{drawdown:.1%}')
+
+            results['trend'] = {
+                'score': max(0, min(100, trend_score)),
+                'signals': signals
+            }
+
+        # ======== 动量维度 (15%) ========
+        if len(hs300) >= 20:
+            closes = hs300['close'].values
+
+            momentum_score = 50
+            signals = []
+
+            # 短期vs长期动量 (加速/减速)
+            ret_5d = closes[-1] / closes[-5] - 1
+            ret_20d = closes[-1] / closes[-20] - 1
+            momentum_ratio = ret_5d / max(abs(ret_20d), 0.001)
+
+            if ret_5d > 0 and momentum_ratio > 1.5:
+                momentum_score += 15
+                signals.append('动量加速上行')
+            elif ret_5d > 0 and momentum_ratio > 0:
+                momentum_score += 5
+                signals.append('温和上行')
+            elif ret_5d < 0 and momentum_ratio > 1.5:
+                momentum_score -= 15
+                signals.append('动量加速下行')
+            elif ret_5d < 0:
+                momentum_score -= 5
+                signals.append('温和下行')
+
+            # MACD方向 (用DIF-DEA简化计算)
+            if len(closes) >= 26:
+                ema12 = pd.Series(closes).ewm(span=12).mean().iloc[-1]
+                ema26 = pd.Series(closes).ewm(span=26).mean().iloc[-1]
+                dif = ema12 - ema26
+                dif_prev = pd.Series(closes[:-1]).ewm(span=12).mean().iloc[-1] - pd.Series(closes[:-1]).ewm(span=26).mean().iloc[-1]
+
+                if dif > 0 and dif > dif_prev:
+                    momentum_score += 15
+                    signals.append('MACD多头扩张')
+                elif dif > 0:
+                    momentum_score += 5
+                    signals.append('MACD多头收窄')
+                elif dif < 0 and dif < dif_prev:
+                    momentum_score -= 15
+                    signals.append('MACD空头扩张')
+                elif dif < 0:
+                    momentum_score -= 5
+                    signals.append('MACD空头收窄')
+
+            # 连续涨/跌天数
+            pct = hs300['price_change_pct'].values
+            consec = 0
+            for p in reversed(pct):
+                if p > 0:
+                    consec += 1
+                elif p < 0:
+                    consec -= 1
+                    break
+                else:
+                    break
+            if consec == 0:
+                for p in reversed(pct):
+                    if p < 0:
+                        consec -= 1
+                    else:
+                        break
+
+            if consec >= 5:
+                momentum_score += 10
+                signals.append(f'连涨{consec}日')
+            elif consec >= 3:
+                momentum_score += 5
+            elif consec <= -5:
+                momentum_score -= 10
+                signals.append(f'连跌{abs(consec)}日')
+            elif consec <= -3:
+                momentum_score -= 5
+
+            results['momentum'] = {
+                'score': max(0, min(100, momentum_score)),
+                'signals': signals
+            }
+
+        # ======== 成交量维度 (15%) ========
+        # 聚合全A股成交量
+        try:
+            vol_query = """
+                SELECT dq.trade_date, SUM(dq.volume) as total_volume, COUNT(*) as stock_count
+                FROM daily_quotes dq
+                JOIN securities s ON dq.security_id = s.id
+                WHERE s.type = 'A股' AND dq.trade_date >= ? AND dq.trade_date <= ?
+                  AND dq.volume > 0
+                GROUP BY dq.trade_date
+                ORDER BY dq.trade_date
+            """
+            conn = sqlite3.connect(str(db.db_path))
+            vol_df = pd.read_sql_query(vol_query, conn, params=[start_date, date_str])
+            conn.close()
+
+            if len(vol_df) >= 5:
+                volumes = vol_df['total_volume'].values
+                vol_today = volumes[-1]
+                vol_ma5 = np.mean(volumes[-5:])
+                vol_ma20 = np.mean(volumes[-20:]) if len(volumes) >= 20 else vol_ma5
+
+                vol_ratio_5 = vol_today / vol_ma5 if vol_ma5 > 0 else 1.0
+                vol_ratio_20 = vol_today / vol_ma20 if vol_ma20 > 0 else 1.0
+
+                volume_score = 50
+                signals = []
+
+                # 量比 (vs 5日均量)
+                if vol_ratio_5 > 1.5:
+                    volume_score += 20
+                    signals.append(f'量比5日{vol_ratio_5:.2f}(显著放量)')
+                elif vol_ratio_5 > 1.2:
+                    volume_score += 10
+                    signals.append(f'量比5日{vol_ratio_5:.2f}(温和放量)')
+                elif vol_ratio_5 < 0.7:
+                    volume_score -= 15
+                    signals.append(f'量比5日{vol_ratio_5:.2f}(明显缩量)')
+                elif vol_ratio_5 < 0.85:
+                    volume_score -= 5
+                    signals.append(f'量比5日{vol_ratio_5:.2f}(略缩量)')
+                else:
+                    signals.append(f'量比5日{vol_ratio_5:.2f}(正常)')
+
+                # 量能趋势 (连续放量/缩量)
+                if len(volumes) >= 5:
+                    vol_trend = 0
+                    for i in range(-4, 0):
+                        if volumes[i] > volumes[i-1]:
+                            vol_trend += 1
+                        else:
+                            vol_trend -= 1
+                    if vol_trend >= 3:
+                        volume_score += 10
+                        signals.append('连续放量')
+                    elif vol_trend <= -3:
+                        volume_score -= 10
+                        signals.append('连续缩量')
+
+                # 量价配合 (沪深300涨+放量 vs 跌+放量)
+                if len(hs300) >= 1:
+                    today_pct = hs300['price_change_pct'].values[-1]
+                    if today_pct > 0 and vol_ratio_5 > 1.1:
+                        volume_score += 10
+                        signals.append('量价齐升')
+                    elif today_pct < -0.005 and vol_ratio_5 > 1.3:
+                        volume_score -= 10
+                        signals.append('放量下跌(恐慌)')
+
+                # 总成交额 (亿元, volume单位=手, 粗略估算)
+                vol_billion = vol_today / 1e8  # 粗略换算
+                signals.append(f'全A成交{vol_billion:.0f}亿手')
+
+                results['volume'] = {
+                    'score': max(0, min(100, volume_score)),
+                    'signals': signals
+                }
+        except Exception as e:
+            logger.warning(f"成交量维度计算失败: {e}")
+
+        # ======== 市场宽度维度 (15%) ========
+        try:
+            breadth_query = """
+                SELECT
+                    COUNT(*) as total,
+                    SUM(CASE WHEN price_change_pct > 0 THEN 1 ELSE 0 END) as up_count,
+                    SUM(CASE WHEN price_change_pct < 0 THEN 1 ELSE 0 END) as down_count,
+                    SUM(CASE WHEN price_change_pct = 0 THEN 1 ELSE 0 END) as flat_count,
+                    SUM(CASE WHEN is_limit_up = 1 THEN 1 ELSE 0 END) as limit_up_count,
+                    SUM(CASE WHEN is_limit_down = 1 THEN 1 ELSE 0 END) as limit_down_count,
+                    SUM(CASE WHEN price_change_pct > 0.05 THEN 1 ELSE 0 END) as strong_up,
+                    SUM(CASE WHEN price_change_pct < -0.05 THEN 1 ELSE 0 END) as strong_down
+                FROM daily_quotes dq
+                JOIN securities s ON dq.security_id = s.id
+                WHERE s.type = 'A股' AND dq.trade_date = ? AND dq.volume > 0
+            """
+            conn = sqlite3.connect(str(db.db_path))
+            breadth_row = pd.read_sql_query(breadth_query, conn, params=[date_str])
+            conn.close()
+
+            if len(breadth_row) > 0 and breadth_row['total'].iloc[0] > 0:
+                total = breadth_row['total'].iloc[0]
+                up = breadth_row['up_count'].iloc[0]
+                down = breadth_row['down_count'].iloc[0]
+                limit_up = breadth_row['limit_up_count'].iloc[0]
+                limit_down = breadth_row['limit_down_count'].iloc[0]
+                strong_up = breadth_row['strong_up'].iloc[0]
+                strong_down = breadth_row['strong_down'].iloc[0]
+
+                up_ratio = up / total if total > 0 else 0.5
+
+                breadth_score = 50
+                signals = []
+
+                # 涨跌比
+                if up_ratio > 0.75:
+                    breadth_score += 25
+                    signals.append(f'涨跌比{up}:{down}(普涨)')
+                elif up_ratio > 0.6:
+                    breadth_score += 15
+                    signals.append(f'涨跌比{up}:{down}(偏多)')
+                elif up_ratio > 0.45:
+                    breadth_score += 0
+                    signals.append(f'涨跌比{up}:{down}(均衡)')
+                elif up_ratio > 0.3:
+                    breadth_score -= 15
+                    signals.append(f'涨跌比{up}:{down}(偏空)')
+                else:
+                    breadth_score -= 25
+                    signals.append(f'涨跌比{up}:{down}(普跌)')
+
+                # 涨停/跌停
+                if limit_up > 50:
+                    breadth_score += 10
+                    signals.append(f'涨停{limit_up}只(活跃)')
+                elif limit_up > 20:
+                    breadth_score += 5
+                    signals.append(f'涨停{limit_up}只')
+
+                if limit_down > 30:
+                    breadth_score -= 15
+                    signals.append(f'跌停{limit_down}只(恐慌)')
+                elif limit_down > 10:
+                    breadth_score -= 5
+                    signals.append(f'跌停{limit_down}只')
+
+                # 强势股占比 (>5%)
+                strong_ratio = strong_up / total if total > 0 else 0
+                if strong_ratio > 0.15:
+                    breadth_score += 10
+                    signals.append(f'强势股{strong_up}只({strong_ratio:.1%})')
+                elif strong_ratio < 0.02:
+                    breadth_score -= 5
+
+                results['breadth'] = {
+                    'score': max(0, min(100, breadth_score)),
+                    'signals': signals
+                }
+        except Exception as e:
+            logger.warning(f"市场宽度维度计算失败: {e}")
+
+        # ======== 波动/风险维度 (10%) ========
+        if len(hs300) >= 20:
+            closes = hs300['close'].values
+            pcts = hs300['price_change_pct'].values
+
+            vol_score = 50
+            signals = []
+
+            # 20日波动率 (年化)
+            daily_vol = np.std(pcts[-20:])
+            annual_vol = daily_vol * np.sqrt(250)
+
+            if annual_vol < 0.12:
+                vol_score += 20
+                signals.append(f'低波动{annual_vol:.1%}')
+            elif annual_vol < 0.20:
+                vol_score += 10
+                signals.append(f'正常波动{annual_vol:.1%}')
+            elif annual_vol < 0.30:
+                vol_score -= 5
+                signals.append(f'偏高波动{annual_vol:.1%}')
+            else:
+                vol_score -= 20
+                signals.append(f'极高波动{annual_vol:.1%}')
+
+            # 最近是否有极端日 (单日涨跌>3%)
+            extreme_days = sum(1 for p in pcts[-10:] if abs(p) > 0.03)
+            if extreme_days >= 3:
+                vol_score -= 15
+                signals.append(f'近10日{extreme_days}个极端日')
+            elif extreme_days == 0:
+                vol_score += 10
+                signals.append('近期无极端波动')
+
+            # 连续下跌天数
+            consec_down = 0
+            for p in reversed(pcts):
+                if p < 0:
+                    consec_down += 1
+                else:
+                    break
+            if consec_down >= 5:
+                vol_score -= 15
+                signals.append(f'连跌{consec_down}日(风险)')
+            elif consec_down >= 3:
+                vol_score -= 5
+
+            results['volatility'] = {
+                'score': max(0, min(100, vol_score)),
+                'signals': signals
+            }
+
+        # ======== 模型信号维度 (25%) ========
+        if all_stocks_with_scores and len(all_stocks_with_scores) > 0:
+            scores_list = []
+            composites = []
+            recs = {'强烈买入': 0, '买入': 0, '谨慎买入': 0, '观望': 0}
+
+            for s in all_stocks_with_scores:
+                sc = s.get('score', s.get('composite', None))
+                if sc is not None and sc > 0:
+                    scores_list.append(sc)
+                comp = s.get('composite', None)
+                if comp is not None:
+                    composites.append(comp)
+                rec = s.get('recommendation', '观望')
+                if rec in recs:
+                    recs[rec] += 1
+
+            model_score = 50
+            signals = []
+
+            if scores_list:
+                median_score = np.median(scores_list)
+                mean_score = np.mean(scores_list)
+                std_score = np.std(scores_list)
+                total_n = len(scores_list)
+
+                # 高分股占比 (score > 70)
+                high_score_ratio = sum(1 for s in scores_list if s > 70) / total_n
+                # 强买信号密度 (score > 85)
+                strong_count = sum(1 for s in scores_list if s > 85)
+                # Top10均分
+                top10_scores = sorted(scores_list, reverse=True)[:10]
+                top10_avg = np.mean(top10_scores)
+
+                # 中位数评分
+                if median_score > 60:
+                    model_score += 15
+                    signals.append(f'中位数{median_score:.1f}(偏高)')
+                elif median_score > 50:
+                    model_score += 5
+                    signals.append(f'中位数{median_score:.1f}(正常)')
+                elif median_score < 35:
+                    model_score -= 15
+                    signals.append(f'中位数{median_score:.1f}(偏低)')
+                elif median_score < 45:
+                    model_score -= 5
+                    signals.append(f'中位数{median_score:.1f}(略低)')
+                else:
+                    signals.append(f'中位数{median_score:.1f}')
+
+                # 高分占比
+                if high_score_ratio > 0.15:
+                    model_score += 15
+                    signals.append(f'高分股{high_score_ratio:.1%}')
+                elif high_score_ratio > 0.08:
+                    model_score += 5
+                elif high_score_ratio < 0.02:
+                    model_score -= 10
+                    signals.append(f'高分股仅{high_score_ratio:.1%}')
+
+                # 强买信号密度
+                if strong_count > 20:
+                    model_score += 10
+                    signals.append(f'强买{strong_count}只')
+                elif strong_count > 5:
+                    model_score += 5
+                elif strong_count == 0:
+                    model_score -= 10
+                    signals.append('无强买信号')
+
+                # Top10均分
+                if top10_avg > 85:
+                    model_score += 10
+                    signals.append(f'Top10均分{top10_avg:.1f}')
+                elif top10_avg > 75:
+                    model_score += 5
+                elif top10_avg < 60:
+                    model_score -= 10
+                    signals.append(f'Top10均分仅{top10_avg:.1f}')
+
+                # 评分离散度 (标准差大=分化明确)
+                if std_score > 20:
+                    signals.append(f'分化明确(σ={std_score:.1f})')
+                elif std_score < 8:
+                    model_score -= 5
+                    signals.append(f'区分度低(σ={std_score:.1f})')
+
+            # 推荐分布
+            strong_buy_n = recs['强烈买入']
+            buy_n = recs['买入']
+            total_rec = sum(recs.values())
+            if total_rec > 0:
+                bullish_ratio = (strong_buy_n + buy_n) / total_rec
+                if bullish_ratio > 0.3:
+                    model_score += 5
+                elif bullish_ratio < 0.05:
+                    model_score -= 5
+                signals.append(f'强买{strong_buy_n}/买入{buy_n}只')
+
+            results['model_signal'] = {
+                'score': max(0, min(100, model_score)),
+                'signals': signals
+            }
+
+        # ======== 综合评分 ========
+        # 权重基于回测IC贡献度优化 (2026-03-20):
+        #   市场宽度 IC(5d)=0.133, ICIR=0.50 ← 最强信号, 提权
+        #   成交量   IC(5d)=0.051, ICIR=0.16 ← 稳定信号
+        #   波动风险 IC(5d)=0.062           ← 防御有效
+        #   趋势     IC(5d)=0.041           ← 弱信号, 降权
+        #   动量     IC(5d)=0.034           ← 弱信号, 降权
+        weights = {
+            'trend': 0.10,
+            'momentum': 0.10,
+            'volume': 0.15,
+            'breadth': 0.25,
+            'volatility': 0.15,
+            'model_signal': 0.25,
+        }
+        total_score = sum(results[k]['score'] * weights[k] for k in weights)
+        total_score = round(total_score, 1)
+        raw_score = total_score  # 保存原始评分
+
+        # ======== CPPI风控叠加 + 市况熔断 ========
+        # 参考: _compute_cppi_exposure() + portfolio_manager._detect_market_regime()
+        cppi_info = {}
+        if len(hs300) >= 20:
+            closes = hs300['close'].values
+
+            # CPPI trailing floor (参数来自回测优化: 小floor + 大multiplier)
+            nav = 1.0
+            peak_nav = 1.0
+            cppi_floor_pct = 0.08   # 8% floor
+            cppi_mult = 15          # multiplier
+            cppi_decay = 0.997      # ~231天半衰期
+
+            for i in range(1, len(closes)):
+                daily_ret = closes[i] / closes[i-1] - 1
+                nav *= (1 + daily_ret)
+                peak_nav = max(peak_nav * cppi_decay, nav)
+
+            floor_val = peak_nav * (1 - cppi_floor_pct)
+            cushion = max(0, nav - floor_val) / nav if nav > 0 else 0
+            cppi_exposure = min(1.0, max(0.05, cppi_mult * cushion))
+            cppi_dd = nav / peak_nav - 1
+
+            cppi_info = {
+                'exposure': cppi_exposure,
+                'drawdown': cppi_dd,
+                'nav': round(nav, 4),
+                'peak_nav': round(peak_nav, 4),
+            }
+
+            # 市况熔断 — 仅极端情况硬限 (portfolio_manager circuit breaker)
+            ret_20d = closes[-1] / closes[-20] - 1 if len(closes) >= 20 else 0
+            ma60_val = np.mean(closes[-60:]) if len(closes) >= 60 else closes[-1]
+
+            if ret_20d < -0.10:
+                total_score = min(total_score, 25)  # 严重熊市硬限
+            elif ret_20d < -0.05 and closes[-1] < ma60_val:
+                total_score = min(total_score, 40)  # 确认熊市硬限
+
+        total_score = round(total_score, 1)
+
+        # 建议仓位: 评分驱动基础仓位 × CPPI动态调节
+        # CPPI不改分数, 只调仓位 — 防止熊市反弹中误加仓
+        if total_score >= 80:
+            base_pos = 0.90; env_label = '强势'; env_emoji = '🟢🟢'
+        elif total_score >= 60:
+            base_pos = 0.65; env_label = '偏多'; env_emoji = '🟢'
+        elif total_score >= 40:
+            base_pos = 0.40; env_label = '中性'; env_emoji = '🟡'
+        elif total_score >= 20:
+            base_pos = 0.20; env_label = '偏空'; env_emoji = '🟠'
+        else:
+            base_pos = 0.05; env_label = '恶劣'; env_emoji = '🔴'
+
+        # 仓位建议 (回测验证: 评分分档直接映射最优, CPPI乘数无增量价值)
+        position_advice = f'{max(0, base_pos - 0.10):.0%}-{min(1, base_pos + 0.10):.0%}'
+
+        # 为每个维度添加label
+        for key in results:
+            s = results[key]['score']
+            if s >= 70:
+                results[key]['label'] = '偏多' if key != 'volatility' else '低风险'
+                results[key]['emoji'] = '🟢'
+            elif s >= 50:
+                results[key]['label'] = '中性' if key != 'volatility' else '正常'
+                results[key]['emoji'] = '🟡'
+            elif s >= 30:
+                results[key]['label'] = '偏空' if key != 'volatility' else '偏高'
+                results[key]['emoji'] = '🟠'
+            else:
+                results[key]['label'] = '弱势' if key != 'volatility' else '高风险'
+                results[key]['emoji'] = '🔴'
+
+        return {
+            'dimensions': results,
+            'total_score': total_score,
+            'raw_score': raw_score,
+            'position_advice': position_advice,
+            'env_label': env_label,
+            'env_emoji': env_emoji,
+            'cppi': cppi_info,
+        }
+
+    def _format_trading_environment(self, env: Dict[str, Any]) -> str:
+        """将交易环境监测结果格式化为报告文本"""
+        dim_names = {
+            'trend': '趋势',
+            'momentum': '动量',
+            'volume': '成交量',
+            'breadth': '市场宽度',
+            'volatility': '波动风险',
+            'model_signal': '模型信号',
+        }
+        dim_weights = {
+            'trend': '10%',
+            'momentum': '10%',
+            'volume': '15%',
+            'breadth': '25%',
+            'volatility': '15%',
+            'model_signal': '25%',
+        }
+
+        section = "\n## 🌡️ 交易环境监测\n\n"
+        section += "| 维度 | 权重 | 评分 | 状态 | 关键信号 |\n"
+        section += "|------|------|------|------|----------|\n"
+
+        for key in ['trend', 'momentum', 'volume', 'breadth', 'volatility', 'model_signal']:
+            d = env['dimensions'][key]
+            sig_text = ', '.join(d['signals'][:3]) if d['signals'] else '-'
+            section += f"| {dim_names[key]} | {dim_weights[key]} | {d['score']}/100 | {d['emoji']} {d['label']} | {sig_text} |\n"
+
+        section += f"| **综合** | **100%** | **{env['total_score']}/100** | **{env['env_emoji']} {env['env_label']}** | **建议仓位: {env['position_advice']}** |\n"
+
+        # CPPI风控状态
+        cppi = env.get('cppi', {})
+        raw_score = env.get('raw_score', env['total_score'])
+        cppi_triggered = raw_score > env['total_score']
+
+        if cppi_triggered and cppi:
+            section += f"\n> 🛡️ **CPPI风控触发**: 原始评分 {raw_score}→{env['total_score']} | "
+            section += f"CPPI exposure={cppi.get('exposure', 1):.0%}, 距峰值回撤{cppi.get('drawdown', 0):.1%}\n"
+
+        # 环境解读
+        section += f"> 📌 **环境评级: {env['env_emoji']} {env['env_label']}** — 综合评分 {env['total_score']}/100，建议总仓位 {env['position_advice']}\n"
+
+        # 生成操作建议
+        score = env['total_score']
+        if score >= 80:
+            advice = "市场强势运行，可积极参与，关注量能持续性和板块轮动节奏"
+        elif score >= 60:
+            advice = "环境偏暖，可正常操作，侧重模型高分+策略确认的品种"
+        elif score >= 40:
+            advice = "环境中性，控制仓位，精选个股，避免追高"
+        elif score >= 20:
+            advice = "环境偏冷，大幅降低仓位，仅参与强确定性机会"
+        else:
+            advice = "环境恶劣，建议空仓观望，等待企稳信号"
+        section += f"> 💡 **操作建议**: {advice}\n\n"
+
+        return section
+
     def generate_report(self, analysis: Dict[str, Any], target_date: pd.Timestamp) -> str:
         """生成分析报告"""
         # 跳过周末/节假日，使用下一个交易日
@@ -4077,8 +4741,18 @@ class TomorrowStockSelector:
             mode_label = "策略筛选"
             overview_extra = f"""- **独特股票**: {analysis.get('total_unique_stocks', 0)}只"""
 
+        # 交易环境监测
+        env_section = ""
+        try:
+            stocks_data_for_env = analysis.get('all_stocks_with_scores', [])
+            env_result = self.analyze_trading_environment(target_date, stocks_data_for_env)
+            env_section = self._format_trading_environment(env_result)
+            analysis['trading_environment'] = env_result  # 保存供后续使用
+        except Exception as e:
+            logger.warning(f"交易环境监测失败: {e}")
+
         report = f"""# 📈 量化选股分析报告 ({version_title})
-{scoring_explanation}{cppi_section}
+{scoring_explanation}{cppi_section}{env_section}
 ## 📊 分析概览
 - **分析日期**: {target_date.strftime('%Y-%m-%d')}
 - **推荐买入日期**: {tomorrow.strftime('%Y-%m-%d')}
@@ -4148,7 +4822,7 @@ class TomorrowStockSelector:
         elif hasattr(self, 'scoring_version') and self.scoring_version == "v3.5":
             report += "| 排名 | 股票代码 | 股票名称 | 选中策略 | 量化评分 | 投资建议 | 技术 | 基本 | 表现 | 市场 | 知行 | 知行信号 |\n"
             report += "|------|----------|----------|----------|----------|----------|------|------|------|------|------|----------|\n"
-        elif hasattr(self, 'scoring_version') and self.scoring_version in ["v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.4", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.7.9", "v4.8.0", "v5.0"]:
+        elif hasattr(self, 'scoring_version') and self.scoring_version in ["v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.4", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.7.9", "v4.8.0", "v4.8.1", "v5.0"]:
             # V4.4+ 多目标预测 - 按composite排序，展示composite+各周期预测
             report += "| 排名 | 股票代码 | 股票名称 | 选中策略 | Composite | 投资建议 | 预测10d | 收盘价 | 买入价 | 止损价 | 目标价 | 仓位 |\n"
             report += "|------|----------|----------|----------|-----------|----------|---------|--------|--------|--------|--------|------|\n"
@@ -4265,7 +4939,7 @@ class TomorrowStockSelector:
             factor_scores = stock.get('factor_scores', {})
             
             # 根据评分系统版本处理不同的因子评分
-            if hasattr(self, 'scoring_version') and self.scoring_version in ["v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.4", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.7.9", "v4.8.0", "v5.0"]:
+            if hasattr(self, 'scoring_version') and self.scoring_version in ["v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.4", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.7.9", "v4.8.0", "v4.8.1", "v5.0"]:
                 # V4.4+ 多目标预测字段 (推荐阈值已校准到post-isotonic尺度)
                 pred_3d = stock.get('pred_3d', 0.0)
                 predicted_return = stock.get('predicted_return_5d', stock.get('pred_5d', 0.0))
@@ -4415,7 +5089,7 @@ class TomorrowStockSelector:
                 market_regime_score = 0  # v2/v3没有市场环境分
             
             # 根据评分系统版本输出不同格式
-            if hasattr(self, 'scoring_version') and self.scoring_version in ["v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.4", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.7.9", "v4.8.0", "v5.0"]:
+            if hasattr(self, 'scoring_version') and self.scoring_version in ["v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.4", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.7.9", "v4.8.0", "v4.8.1", "v5.0"]:
                 # V4.4+ 多目标预测 - composite排序
                 composite_val = stock.get('composite', 0)
                 close_price = stock.get('close_price', 0)
@@ -4650,7 +5324,7 @@ def main(target_date: str = None, scoring_version: str = "v3", stocks_only: bool
     if scoring_version == "v4.8":
         scoring_version = "v4.8.0"
     # v3.6、v3.7、v3.8、v3.9、v3.94、v3.95版本应该只评价股票，因为ETF等因子无法与股票直接对比
-    if scoring_version in ["v3.6", "v3.7", "v3.8", "v3.81", "v3.9", "v3.94", "v3.95", "v3.96", "v4.0", "v4.2", "v4.3", "v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.7.9", "v4.8.0", "v5.0"] and not stocks_only:
+    if scoring_version in ["v3.6", "v3.7", "v3.8", "v3.81", "v3.9", "v3.94", "v3.95", "v3.96", "v4.0", "v4.2", "v4.3", "v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.7.9", "v4.8.0", "v4.8.1", "v5.0"] and not stocks_only:
         stocks_only = True
         logger.info(f"🔍 {scoring_version}机器学习版本自动开启仅股票模式（ETF等因子与股票不可比）")
     
@@ -4897,6 +5571,8 @@ def main(target_date: str = None, scoring_version: str = "v3", stocks_only: bool
         report_dir = Path("reports/daily_selection_v5.0")
     elif scoring_version == "v4.7.1":
         report_dir = Path("reports/daily_selection_v4.7.1")
+    elif scoring_version == "v4.8.1":
+        report_dir = Path("reports/daily_selection_v4.8.1")
     elif scoring_version == "v4.8.0":
         report_dir = Path("reports/daily_selection_v4.8.0")
     elif scoring_version == "v4.7.9":
@@ -5009,7 +5685,7 @@ if __name__ == "__main__":
                        choices=['v2', 'v3', 'v3.1', 'v3.2', 'v3.3', 'v3.4', 'v3.41',
                                 'v3.5', 'v3.51', 'v3.52', 'v3.53', 'v3.6', 'v3.7',
                                 'v3.8', 'v3.81', 'v3.9', 'v3.94', 'v3.95', 'v3.96',
-                                'v4', 'v4.0', 'v4.2', 'v4.3', 'v4.4', 'v4.4.2', 'v4.5', 'v4.6', 'v4.7.1', 'v4.7.2', 'v4.7.3', 'v4.7.5', 'v4.7.6', 'v4.7.7', 'v4.7.8', 'v4.7.9', 'v4.8', 'v4.8.0', 'v5.0'],
+                                'v4', 'v4.0', 'v4.2', 'v4.3', 'v4.4', 'v4.4.2', 'v4.5', 'v4.6', 'v4.7.1', 'v4.7.2', 'v4.7.3', 'v4.7.5', 'v4.7.6', 'v4.7.7', 'v4.7.8', 'v4.7.9', 'v4.8', 'v4.8.0', 'v4.8.1', 'v5.0'],
                        default='v3.9',
                        help='评分版本 (默认v3.9)。'
                             '活跃版本: v3.9(生产A级), v3.96(Robust Z-Score,ICIR>0.2), '
