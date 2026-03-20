@@ -68,6 +68,12 @@ from backtest.north_star_metrics import (
     compute_bear_icir, compute_ic_decay_ratio,
     compute_cumulative_quantile_monotonicity,
     compute_backtest_length_factor,
+    # V4 imports
+    NORTH_STAR_TARGETS_V4, V4_LAYER_WEIGHTS, V4_LAYER_NAMES,
+    score_metric_v4, compute_v4_score, compute_v4_grade,
+    compute_v4_benchmark_metrics,
+    compute_excess_max_drawdown, compute_bear_excess_return,
+    compute_up_capture_ratio,
 )
 
 HOLDING_DAYS = [1, 3, 5, 7, 10, 15, 20]
@@ -1249,6 +1255,24 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
         v3_psr = compute_probabilistic_sharpe(period_ret_series, 0.0, ppy)
         v3_dsr = compute_deflated_sharpe(period_ret_series, n_trials=10, periods_per_year=ppy)
 
+        # --- V4新增指标: Layer 5 超额收益 ---
+        v4_benchmark_metrics = {}
+        if not benchmark_daily_ret.empty:
+            buy_ret_v4 = non_overlap.set_index('buy_date')['avg_top_return'].sort_index()
+            buy_ret_v4.index = pd.to_datetime(buy_ret_v4.index)
+            if days == 1:
+                v4_benchmark_metrics = compute_v4_benchmark_metrics(
+                    buy_ret_v4, benchmark_daily_ret, periods_per_year=252
+                )
+            elif days > 1:
+                bm_aligned_v4 = _aggregate_benchmark_to_periods(
+                    benchmark_daily_ret, buy_dates, days
+                )
+                if len(bm_aligned_v4) >= 3:
+                    v4_benchmark_metrics = compute_v4_benchmark_metrics(
+                        buy_ret_v4, bm_aligned_v4, periods_per_year=ppy
+                    )
+
         # 合并到summary
         summary[days].update({
             # 风险指标
@@ -1298,6 +1322,11 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
             'ic_monotonicity_v3': v3_ic_mono,
             'probabilistic_sharpe': v3_psr,
             'deflated_sharpe': v3_dsr,
+            # V4新增: Layer 5 超额收益
+            'excess_win_rate': v4_benchmark_metrics.get('excess_win_rate', 0),
+            'excess_max_drawdown': v4_benchmark_metrics.get('excess_max_drawdown', 0),
+            'bear_excess_return': v4_benchmark_metrics.get('bear_excess_return'),
+            'up_capture_ratio': v4_benchmark_metrics.get('up_capture_ratio', 0),
         })
 
         north_star[days] = summary[days]
@@ -1334,6 +1363,13 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
             print(f"    Beta:          {benchmark_info.get('beta', 0):.3f}")
             print(f"    信息比率(IR):  {benchmark_info.get('information_ratio', 0):.3f}")
             print(f"    超额年化:      {benchmark_info.get('excess_annual_return', 0):.1%}")
+        if v4_benchmark_metrics:
+            print(f"    超额胜率:      {v4_benchmark_metrics.get('excess_win_rate', 0):.1f}%")
+            print(f"    超额最大回撤:  {v4_benchmark_metrics.get('excess_max_drawdown', 0):.1%}")
+            bear_ex = v4_benchmark_metrics.get('bear_excess_return')
+            if bear_ex is not None:
+                print(f"    熊市超额收益:  {bear_ex:.1%}")
+            print(f"    上行捕获比:    {v4_benchmark_metrics.get('up_capture_ratio', 0):.2f}")
 
     # ═══════════════════════════════════════════════════
     # V2: 信号半衰期 (需要所有持仓期的ICIR)
@@ -1362,6 +1398,8 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
         _print_scorecard_v2(s, label, focus_days, n_trading_days=len(reports))
         # V3评分卡 (加权层级 + 统计鲁棒性)
         _print_scorecard_v3(s, label, focus_days, n_trading_days=len(reports))
+        # V4评分卡 (V3 + Layer 5 超额收益)
+        _print_scorecard_v4(s, label, focus_days, n_trading_days=len(reports))
 
     # 月度分解 (5日持仓)
     sub5 = df[df['days'] == 5].copy()
@@ -1754,6 +1792,169 @@ def _print_scorecard_v3(s, label, days, n_trading_days=0, n_trials=10):
     total_v3 = v3_result['total_score']
     max_v3 = v3_result['max_score']
     print(f"\n  原始总分: {total_v3}/{max_v3} (未加权{total_v3/max_v3*100:.0f}%)")
+    print(f"  {'═'*74}")
+
+
+def _print_scorecard_v4(s, label, days, n_trading_days=0, n_trials=10):
+    """打印V4北极星评分卡 (31项, V3 + Layer 5 超额收益)"""
+    print(f"\n  {'═'*74}")
+    print(f"  北极星评分卡 V4: {label} ({days}日持仓)")
+    print(f"  {'═'*74}")
+
+    # V4 metric value map (继承V3全部 + 新增L5)
+    ic_mono_val = s.get('ic_monotonicity_v3')
+    if ic_mono_val is None or ic_mono_val == 0:
+        ic_mono_val = s.get('ic_monotonicity', 0)
+
+    metric_value_map = {
+        # L1 信号质量 (继承V3)
+        'daily_ic':              s.get('ic_mean', 0),
+        'icir':                  s.get('icir', 0),
+        'ic_positive_pct':       s.get('ic_positive_pct', 0),
+        'ic_monotonicity':       ic_mono_val,
+        'ic_time_stability':     s.get('ic_time_stability', 999),
+        'signal_half_life':      s.get('signal_half_life', 0),
+        'bear_icir':             s.get('bear_icir'),
+        'ic_decay_ratio':        s.get('ic_decay_ratio', 0),
+        # L2 组合效率 (继承V3)
+        'annual_turnover':       s.get('annual_turnover', 0),
+        'annual_cost_drag':      s.get('annual_cost_drag', 0),
+        'net_gross_ratio':       s.get('net_gross_ratio', 0),
+        'limit_up_fail_rate':    s.get('limit_up_fail_rate', 0),
+        'liquidity_coverage':    s.get('liquidity_coverage', 0),
+        # L3 风险控制 (继承V3)
+        'max_drawdown':          s.get('max_drawdown', 0),
+        'sharpe_ratio':          s.get('sharpe_ratio', 0),
+        'sortino_ratio':         s.get('sortino_ratio', 0),
+        'calmar_ratio':          s.get('calmar_ratio', 0),
+        'worst_rolling_60d_icir': s.get('worst_rolling_60d_icir', None),
+        'tail_ratio':            s.get('tail_ratio', 0),
+        'max_consecutive_loss_periods': s.get('max_consecutive_loss_periods', 0),
+        # L4 统计鲁棒性 (继承V3)
+        'annual_return':         s.get('annual_return', 0),
+        'monthly_win_rate':      s.get('monthly_win_rate', 0),
+        'half_period_consistency': s.get('half_period_consistency', 0),
+        'probabilistic_sharpe':  s.get('probabilistic_sharpe', 0),
+        'deflated_sharpe':       s.get('deflated_sharpe', 0),
+        # L5 超额收益 (V4新增)
+        'excess_annual_return':  s.get('excess_annual_return', 0),
+        'information_ratio':     s.get('information_ratio', 0),
+        'excess_win_rate':       s.get('excess_win_rate', 0),
+        'excess_max_drawdown':   s.get('excess_max_drawdown', 0),
+        'bear_excess_return':    s.get('bear_excess_return'),
+        'up_capture_ratio':      s.get('up_capture_ratio', 0),
+    }
+
+    # 格式分类
+    pct_fmt_keys = {'max_drawdown', 'annual_return', 'annual_cost_drag',
+                    'net_gross_ratio', 'limit_up_fail_rate', 'liquidity_coverage',
+                    'half_period_consistency', 'probabilistic_sharpe', 'deflated_sharpe',
+                    'ic_decay_ratio', 'tail_ratio',
+                    'excess_annual_return', 'excess_max_drawdown', 'bear_excess_return'}
+    plain_fmt_keys = {'ic_positive_pct', 'monthly_win_rate', 'annual_turnover',
+                      'signal_half_life', 'max_consecutive_loss_periods',
+                      'excess_win_rate'}
+    ratio_fmt_keys = {'up_capture_ratio'}
+
+    # 计算V4评分
+    v4_result = compute_v4_score(metric_value_map, n_trading_days, n_trials)
+
+    for layer_id in sorted(V4_LAYER_NAMES.keys()):
+        layer_name = V4_LAYER_NAMES[layer_id]
+        weight = V4_LAYER_WEIGHTS[layer_id]
+        ld = v4_result['layer_details'][layer_id]
+        layer_metrics = [(k, v) for k, v in NORTH_STAR_TARGETS_V4.items()
+                         if v['layer'] == layer_id]
+        if not layer_metrics:
+            continue
+
+        print(f"\n  ┌─ L{layer_id} {layer_name} (权重{weight:.0%})"
+              f"  [{ld['score']}/{ld['max']} = {ld['pct']:.0f}%]")
+        print(f"  │ {'指标':<20s} {'当前值':>10s} {'及格':>8s} {'目标':>8s} {'分数':>4s} {'评级':>10s}")
+        print(f"  │ {'─'*62}")
+
+        for metric_key, target_info in layer_metrics:
+            ms = v4_result['metric_scores'].get(metric_key, (0, '☆☆☆☆☆', None))
+            score, grade_str, value = ms
+
+            display = target_info['display']
+            target_val = target_info['target']
+            pass_val = target_info['pass']
+
+            if value is None:
+                c_str = "N/A"
+            elif metric_key in pct_fmt_keys:
+                c_str = f"{value:.1%}" if abs(value) < 10 else f"{value:.0%}"
+            elif metric_key in plain_fmt_keys:
+                c_str = f"{value:.1f}"
+            elif metric_key in ratio_fmt_keys:
+                c_str = f"{value:.2f}"
+            else:
+                c_str = f"{value:.3f}"
+
+            if metric_key in pct_fmt_keys:
+                t_str = f"{target_val:.1%}" if abs(target_val) < 10 else f"{target_val:.0%}"
+                p_str = f"{pass_val:.1%}" if abs(pass_val) < 10 else f"{pass_val:.0%}"
+            elif metric_key in plain_fmt_keys:
+                t_str = f"{target_val:.1f}"
+                p_str = f"{pass_val:.1f}"
+            elif metric_key in ratio_fmt_keys:
+                t_str = f"{target_val:.2f}"
+                p_str = f"{pass_val:.2f}"
+            else:
+                t_str = f"{target_val:.3f}"
+                p_str = f"{pass_val:.3f}"
+
+            # 短窗口标注
+            short_warn = ''
+            min_days = target_info.get('min_days', 0)
+            if min_days > 0 and n_trading_days > 0 and n_trading_days < min_days:
+                short_warn = ' ⚠短'
+
+            # V4新指标标记
+            new_mark = ''
+            if layer_id == 5:
+                new_mark = ' V4'
+
+            print(f"  │ {display:<20s} {c_str:>10s} {p_str:>8s} {t_str:>8s}"
+                  f" {score}/5  {grade_str}{short_warn}{new_mark}")
+
+    # 总分 + 加权
+    print(f"\n  {'─'*74}")
+
+    length_factor = v4_result['length_factor']
+    raw_pct = v4_result['raw_pct']
+    final_pct = v4_result['final_pct']
+    grade = v4_result['grade']
+
+    if n_trading_days > 0 and n_trading_days < 500:
+        print(f"  回测长度: {n_trading_days}天 → 折扣因子 {length_factor:.2f}"
+              f" (≥500天无惩罚)")
+
+    has_short_warn = any(
+        t.get('min_days', 0) > 0 and n_trading_days > 0 and n_trading_days < t.get('min_days', 0)
+        for t in NORTH_STAR_TARGETS_V4.values()
+    )
+    if has_short_warn:
+        print(f"  ⚠短 = 数据不足(当前{n_trading_days}天), 该指标可信度较低")
+
+    print(f"\n  加权评分: {raw_pct:.1f}%"
+          + (f" × {length_factor:.2f} = {final_pct:.1f}%" if length_factor < 1.0 else "")
+          + f" → 等级 {grade}")
+
+    # 分层小计 (含权重)
+    for layer_id in sorted(V4_LAYER_NAMES.keys()):
+        ld = v4_result['layer_details'][layer_id]
+        weight = V4_LAYER_WEIGHTS[layer_id]
+        contribution = ld['pct'] * weight
+        mark = ' ★NEW' if layer_id == 5 else ''
+        print(f"    L{layer_id} {V4_LAYER_NAMES[layer_id]:8s}: "
+              f"{ld['score']:2d}/{ld['max']:2d} ({ld['pct']:5.1f}%) "
+              f"× {weight:.0%} = {contribution:5.1f}%{mark}")
+
+    total_v4 = v4_result['total_score']
+    max_v4 = v4_result['max_score']
+    print(f"\n  原始总分: {total_v4}/{max_v4} (未加权{total_v4/max_v4*100:.0f}%)")
     print(f"  {'═'*74}")
 
 

@@ -2092,3 +2092,384 @@ def format_signal_report(signal_results: Dict, holding_days: int = None) -> str:
             )
 
     return '\n'.join(lines)
+
+
+# ═══════════════════════════════════════════════════════
+# V4 北极星指标 (31项, 新增 Layer 5: 超额收益)
+# ═══════════════════════════════════════════════════════
+
+V4_LAYER_WEIGHTS = {1: 0.35, 2: 0.15, 3: 0.20, 4: 0.15, 5: 0.15}
+V4_LAYER_NAMES = {
+    1: '信号质量', 2: '组合效率', 3: '风险控制',
+    4: '统计鲁棒性', 5: '超额收益',
+}
+
+NORTH_STAR_TARGETS_V4 = {
+    # ── Layer 1: 信号质量 (8 metrics × 5pts = 40pts) ── 继承V3
+    'daily_ic': {
+        'pass': 0.03, 'ok': 0.04, 'good': 0.05, 'great': 0.06, 'target': 0.08,
+        'direction': 'higher', 'layer': 1, 'display': 'Daily IC',
+    },
+    'icir': {
+        'pass': 0.25, 'ok': 0.35, 'good': 0.45, 'great': 0.55, 'target': 0.70,
+        'direction': 'higher', 'layer': 1, 'display': 'ICIR',
+    },
+    'ic_positive_pct': {
+        'pass': 55, 'ok': 57, 'good': 60, 'great': 63, 'target': 68,
+        'direction': 'higher', 'layer': 1, 'display': 'IC>0%',
+    },
+    'ic_monotonicity': {
+        'pass': 2.5, 'ok': 3.0, 'good': 3.5, 'great': 4.0, 'target': 4.5,
+        'direction': 'higher', 'layer': 1, 'display': 'IC单调性',
+    },
+    'ic_time_stability': {
+        'pass': 2.0, 'ok': 1.5, 'good': 1.0, 'great': 0.8, 'target': 0.6,
+        'direction': 'lower', 'layer': 1, 'display': 'IC稳定性(CV)',
+        'min_days': 120,
+    },
+    'signal_half_life': {
+        'pass': 3, 'ok': 6, 'good': 8, 'great': 12, 'target': 20,
+        'direction': 'higher', 'layer': 1, 'display': '信号半衰期(天)',
+    },
+    'bear_icir': {
+        'pass': 0.05, 'ok': 0.10, 'good': 0.15, 'great': 0.25, 'target': 0.35,
+        'direction': 'higher', 'layer': 1, 'display': '熊市ICIR',
+        'min_days': 30,
+    },
+    'ic_decay_ratio': {
+        'pass': 0.50, 'ok': 0.65, 'good': 0.80, 'great': 0.90, 'target': 0.95,
+        'direction': 'higher', 'layer': 1, 'display': 'IC衰减比(H2/H1)',
+        'min_days': 120,
+    },
+
+    # ── Layer 2: 组合效率 (5 metrics × 5pts = 25pts) ── 继承V3
+    'annual_turnover': {
+        'pass': 45, 'ok': 35, 'good': 30, 'great': 25, 'target': 20,
+        'direction': 'lower', 'layer': 2, 'display': '年化换手',
+    },
+    'annual_cost_drag': {
+        'pass': 0.13, 'ok': 0.10, 'good': 0.08, 'great': 0.07, 'target': 0.05,
+        'direction': 'lower', 'layer': 2, 'display': '年化成本',
+    },
+    'net_gross_ratio': {
+        'pass': 0.60, 'ok': 0.70, 'good': 0.75, 'great': 0.80, 'target': 0.85,
+        'direction': 'higher', 'layer': 2, 'display': '净/毛收益比',
+    },
+    'limit_up_fail_rate': {
+        'pass': 0.15, 'ok': 0.10, 'good': 0.08, 'great': 0.05, 'target': 0.02,
+        'direction': 'lower', 'layer': 2, 'display': '涨停失败率',
+    },
+    'liquidity_coverage': {
+        'pass': 0.70, 'ok': 0.80, 'good': 0.85, 'great': 0.90, 'target': 0.95,
+        'direction': 'higher', 'layer': 2, 'display': '流动性覆盖',
+    },
+
+    # ── Layer 3: 风险控制 (7 metrics × 5pts = 35pts) ── 继承V3
+    'max_drawdown': {
+        'pass': -0.25, 'ok': -0.18, 'good': -0.12, 'great': -0.10, 'target': -0.08,
+        'direction': 'higher', 'layer': 3, 'display': '最大回撤',
+    },
+    'sharpe_ratio': {
+        'pass': 1.0, 'ok': 1.5, 'good': 2.0, 'great': 2.5, 'target': 3.0,
+        'direction': 'higher', 'layer': 3, 'display': 'Sharpe',
+    },
+    'sortino_ratio': {
+        'pass': 1.5, 'ok': 2.0, 'good': 2.5, 'great': 3.0, 'target': 4.0,
+        'direction': 'higher', 'layer': 3, 'display': 'Sortino',
+    },
+    'calmar_ratio': {
+        'pass': 1.0, 'ok': 2.0, 'good': 2.5, 'great': 3.0, 'target': 4.0,
+        'direction': 'higher', 'layer': 3, 'display': 'Calmar',
+    },
+    'worst_rolling_60d_icir': {
+        'pass': -0.10, 'ok': 0.0, 'good': 0.10, 'great': 0.20, 'target': 0.30,
+        'direction': 'higher', 'layer': 3, 'display': '最差60日ICIR',
+        'min_days': 120,
+    },
+    'tail_ratio': {
+        'pass': 0.8, 'ok': 1.0, 'good': 1.2, 'great': 1.5, 'target': 2.0,
+        'direction': 'higher', 'layer': 3, 'display': '尾部比率(P95/|P5|)',
+    },
+    'max_consecutive_loss_periods': {
+        'pass': 15, 'ok': 10, 'good': 8, 'great': 5, 'target': 3,
+        'direction': 'lower', 'layer': 3, 'display': '最大连续亏损期数',
+    },
+
+    # ── Layer 4: 统计鲁棒性 (5 metrics × 5pts = 25pts) ── 继承V3
+    'annual_return': {
+        'pass': 0.15, 'ok': 0.20, 'good': 0.30, 'great': 0.40, 'target': 0.50,
+        'direction': 'higher', 'layer': 4, 'display': '年化收益',
+        'min_days': 200,
+    },
+    'monthly_win_rate': {
+        'pass': 55, 'ok': 60, 'good': 67, 'great': 75, 'target': 83,
+        'direction': 'higher', 'layer': 4, 'display': '月度胜率%',
+    },
+    'half_period_consistency': {
+        'pass': 0.35, 'ok': 0.50, 'good': 0.60, 'great': 0.70, 'target': 0.80,
+        'direction': 'higher', 'layer': 4, 'display': '前后半段一致性',
+        'min_days': 120,
+    },
+    'probabilistic_sharpe': {
+        'pass': 0.80, 'ok': 0.85, 'good': 0.90, 'great': 0.95, 'target': 0.99,
+        'direction': 'higher', 'layer': 4, 'display': 'PSR概率Sharpe',
+    },
+    'deflated_sharpe': {
+        'pass': 0.70, 'ok': 0.80, 'good': 0.85, 'great': 0.90, 'target': 0.95,
+        'direction': 'higher', 'layer': 4, 'display': 'DSR(多重测试校正)',
+    },
+
+    # ── Layer 5: 超额收益 (6 metrics × 5pts = 30pts) ── V4新增
+    'excess_annual_return': {
+        # A股主动策略超额收益阈值 (相对中证500)
+        # 及格5%=刚跑赢基准, 目标30%+=顶级量化水平
+        'pass': 0.05, 'ok': 0.10, 'good': 0.15, 'great': 0.20, 'target': 0.30,
+        'direction': 'higher', 'layer': 5, 'display': '超额年化收益',
+        'min_days': 200,
+    },
+    'information_ratio': {
+        # IR=超额收益/跟踪误差, 衡量每单位主动风险的超额回报
+        # IR>0.5良好, >1.0优秀, >1.5顶级
+        'pass': 0.30, 'ok': 0.50, 'good': 0.70, 'great': 1.00, 'target': 1.50,
+        'direction': 'higher', 'layer': 5, 'display': '信息比率(IR)',
+        'min_days': 120,
+    },
+    'excess_win_rate': {
+        # 多少个调仓期跑赢基准, >50%说明多数时间都在赢
+        'pass': 50, 'ok': 53, 'good': 55, 'great': 60, 'target': 65,
+        'direction': 'higher', 'layer': 5, 'display': '超额胜率%',
+    },
+    'excess_max_drawdown': {
+        # 超额收益曲线的最大回撤, 衡量相对基准的最差表现
+        # -10%=偶尔落后, -30%=大幅跑输过
+        'pass': -0.30, 'ok': -0.20, 'good': -0.15, 'great': -0.10, 'target': -0.05,
+        'direction': 'higher', 'layer': 5, 'display': '超额最大回撤',
+        'min_days': 120,
+    },
+    'bear_excess_return': {
+        # 熊市(基准60日累计<-5%)期间的年化超额收益
+        # 正值=熊市保护力, 负值=跟着大盘一起跌甚至更多
+        'pass': 0.0, 'ok': 0.05, 'good': 0.10, 'great': 0.20, 'target': 0.30,
+        'direction': 'higher', 'layer': 5, 'display': '熊市超额收益',
+        'min_days': 60,
+    },
+    'up_capture_ratio': {
+        # 大盘涨时策略涨幅/大盘涨幅, >1=牛市跑赢, <1=牛市跑输
+        # 1.0=和大盘一样, 1.3=多吃30%涨幅
+        'pass': 0.80, 'ok': 1.00, 'good': 1.10, 'great': 1.20, 'target': 1.40,
+        'direction': 'higher', 'layer': 5, 'display': '上行捕获比',
+        'min_days': 60,
+    },
+}
+
+
+# ── V4 新计算函数 ──
+
+def compute_excess_max_drawdown(portfolio_returns: pd.Series,
+                                 benchmark_returns: pd.Series,
+                                 periods_per_year: float = 252) -> float:
+    """
+    超额收益曲线的最大回撤.
+
+    构造超额累积净值曲线, 计算其最大回撤.
+    衡量相对基准的最差阶段性表现.
+    """
+    common = portfolio_returns.index.intersection(benchmark_returns.index)
+    if len(common) < 10:
+        return 0.0
+
+    excess = portfolio_returns.loc[common] - benchmark_returns.loc[common]
+    cum_excess = (1 + excess).cumprod()
+    running_max = cum_excess.cummax()
+    drawdown = (cum_excess - running_max) / running_max
+    return float(drawdown.min())
+
+
+def compute_bear_excess_return(portfolio_returns: pd.Series,
+                                benchmark_returns: pd.Series,
+                                lookback: int = 60,
+                                periods_per_year: float = 252) -> Optional[float]:
+    """
+    熊市期间的年化超额收益.
+
+    熊市定义: 基准60日滚动累计收益 < -5%.
+    Returns None if insufficient bear market data.
+    """
+    common = portfolio_returns.index.intersection(benchmark_returns.index)
+    if len(common) < lookback:
+        return None
+
+    p_ret = portfolio_returns.loc[common].sort_index()
+    b_ret = benchmark_returns.loc[common].sort_index()
+
+    regime = classify_market_regime(b_ret, lookback)
+    if regime.empty:
+        return None
+
+    bear_dates = regime[regime == 'bear'].index
+    bear_dates = bear_dates.intersection(p_ret.index)
+
+    if len(bear_dates) < 10:
+        return None
+
+    p_bear = p_ret.loc[bear_dates]
+    b_bear = b_ret.loc[bear_dates]
+    excess_bear = p_bear - b_bear
+
+    # 年化
+    excess_annual = excess_bear.mean() * periods_per_year
+    return float(excess_annual)
+
+
+def compute_up_capture_ratio(portfolio_returns: pd.Series,
+                              benchmark_returns: pd.Series) -> float:
+    """
+    上行捕获比 = (大盘涨时策略平均收益) / (大盘涨时大盘平均收益).
+
+    >1.0 表示牛市阶段跑赢大盘, 吃到了更多涨幅.
+    """
+    common = portfolio_returns.index.intersection(benchmark_returns.index)
+    if len(common) < 20:
+        return 0.0
+
+    p_ret = portfolio_returns.loc[common]
+    b_ret = benchmark_returns.loc[common]
+
+    up_mask = b_ret > 0
+    if up_mask.sum() < 10:
+        return 0.0
+
+    p_up_mean = p_ret[up_mask].mean()
+    b_up_mean = b_ret[up_mask].mean()
+
+    if abs(b_up_mean) < 1e-10:
+        return 0.0
+
+    ratio = p_up_mean / b_up_mean
+    return max(0.0, min(ratio, 5.0))  # clamp
+
+
+def compute_v4_benchmark_metrics(portfolio_returns: pd.Series,
+                                  benchmark_returns: pd.Series,
+                                  periods_per_year: float = 252) -> Dict:
+    """
+    计算V4 Layer 5全部6项超额收益指标.
+
+    Args:
+        portfolio_returns: 策略收益率 (DatetimeIndex)
+        benchmark_returns: 基准收益率 (DatetimeIndex)
+        periods_per_year: 年化因子
+
+    Returns:
+        dict with all 6 Layer 5 metric values
+    """
+    # 基础超额对比 (复用已有函数)
+    bm_comp = compute_benchmark_comparison(
+        portfolio_returns, benchmark_returns, periods_per_year
+    )
+
+    # 超额最大回撤
+    excess_mdd = compute_excess_max_drawdown(
+        portfolio_returns, benchmark_returns, periods_per_year
+    )
+
+    # 熊市超额收益
+    bear_excess = compute_bear_excess_return(
+        portfolio_returns, benchmark_returns,
+        lookback=60, periods_per_year=periods_per_year
+    )
+
+    # 上行捕获比
+    up_capture = compute_up_capture_ratio(portfolio_returns, benchmark_returns)
+
+    return {
+        'excess_annual_return': bm_comp.get('excess_annual_return', 0),
+        'information_ratio': bm_comp.get('information_ratio', 0),
+        'excess_win_rate': bm_comp.get('excess_win_rate', 0),
+        'excess_max_drawdown': excess_mdd,
+        'bear_excess_return': bear_excess,
+        'up_capture_ratio': up_capture,
+    }
+
+
+# ── V4 评分函数 ──
+
+def score_metric_v4(current: float, target_info: dict) -> Tuple[int, str]:
+    """V4评分 (与V2/V3相同的0-5档逻辑)."""
+    return score_metric_v2(current, target_info)
+
+
+def compute_v4_score(metric_values: Dict[str, float],
+                      n_trading_days: int = 500,
+                      n_trials: int = 10) -> Dict:
+    """
+    V4加权评分.
+
+    V4 vs V3区别:
+    1. 新增Layer 5: 超额收益 (6项指标, 30分)
+    2. 层级权重调整: L1=35%, L2=15%, L3=20%, L4=15%, L5=15%
+    3. 总分: 31项 × 5分 = 155分
+    4. 回测长度惩罚: 同V3 sqrt(n_days/500)
+
+    Returns:
+        dict{total_score, max_score, raw_pct, length_factor, final_pct,
+             grade, layer_details, metric_scores}
+    """
+    layer_scores = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0}
+    layer_maxes = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0}
+    metric_scores = {}
+
+    for metric_name, target_info in NORTH_STAR_TARGETS_V4.items():
+        layer = target_info['layer']
+        layer_maxes[layer] += 5
+
+        value = metric_values.get(metric_name)
+        if value is None:
+            metric_scores[metric_name] = (0, '☆☆☆☆☆', None)
+            continue
+
+        score, grade_str = score_metric_v4(value, target_info)
+        layer_scores[layer] += score
+        metric_scores[metric_name] = (score, grade_str, value)
+
+    # 加权百分比
+    weighted_pct = 0.0
+    layer_details = {}
+    for layer in [1, 2, 3, 4, 5]:
+        lmax = layer_maxes[layer]
+        lscore = layer_scores[layer]
+        lpct = lscore / lmax * 100 if lmax > 0 else 0
+        weight = V4_LAYER_WEIGHTS[layer]
+        weighted_pct += lpct * weight
+        layer_details[layer] = {
+            'score': lscore, 'max': lmax,
+            'pct': lpct, 'weight': weight,
+        }
+
+    # 回测长度惩罚 (同V3)
+    length_factor = compute_backtest_length_factor(n_trading_days)
+    final_pct = weighted_pct * length_factor
+
+    total_score = sum(layer_scores.values())
+    max_score = sum(layer_maxes.values())
+
+    grade = compute_v4_grade(final_pct)
+
+    return {
+        'total_score': total_score,
+        'max_score': max_score,
+        'raw_pct': weighted_pct,
+        'length_factor': length_factor,
+        'final_pct': final_pct,
+        'grade': grade,
+        'layer_details': layer_details,
+        'metric_scores': metric_scores,
+    }
+
+
+def compute_v4_grade(pct: float) -> str:
+    """V4等级 (与V2/V3相同阈值)."""
+    for threshold, grade in V2_GRADE_THRESHOLDS:
+        if pct >= threshold:
+            return grade
+    return 'D'
