@@ -55,7 +55,10 @@ from backtest.batch_generate_v395_reports import (
 
 def load_scorer(version: str):
     """加载ML评分器"""
-    if version == 'v4.7.5':
+    if version == 'v4.7.9':
+        from ml_models.v39.v479_production_scorer import V479ProductionScorer
+        return V479ProductionScorer()
+    elif version == 'v4.7.5':
         from ml_models.v39.v475_production_scorer import V475ProductionScorer
         return V475ProductionScorer()
     elif version == 'v4.7.3':
@@ -584,7 +587,7 @@ def run_backtest(
             else:
                 rank_val = data.get(rank_field, pred_10d)
 
-            stocks_with_prices.append({
+            stock_entry = {
                 'code': code,
                 'name': securities_info.get(code, {}).get('name', ''),
                 'rank_val': rank_val,
@@ -596,11 +599,20 @@ def run_backtest(
                 'pred_10d': pred_10d,
                 'pred_15d': pred_15d,
                 **prices,
-            })
+            }
+            # V4.7.9: pass through market_confidence for dynamic top-N
+            if 'market_confidence' in data:
+                stock_entry['market_confidence'] = data['market_confidence']
+            stocks_with_prices.append(stock_entry)
 
-        # 按排名取 top-N
+        # 按排名取 top-N (V4.7.9: dynamic top-N based on market confidence)
         stocks_with_prices.sort(key=lambda x: x['rank_val'], reverse=True)
-        top_stocks = stocks_with_prices[:top_n]
+        effective_top_n = top_n
+        if version == 'v4.7.9' and stocks_with_prices:
+            mc = stocks_with_prices[0].get('market_confidence', 1.0)
+            from ml_models.v39.v479_production_scorer import V479ProductionScorer
+            effective_top_n = V479ProductionScorer.compute_effective_top_n(top_n, mc)
+        top_stocks = stocks_with_prices[:effective_top_n]
 
         # 模拟每只股票的交易
         for stock in top_stocks:

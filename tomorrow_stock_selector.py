@@ -43,7 +43,7 @@ logger = logging.getLogger("tomorrow_selector")
 DEPRECATED_VERSIONS = {'v2', 'v3', 'v3.1', 'v3.2', 'v3.3', 'v3.4', 'v3.41',
                        'v3.5', 'v3.51', 'v3.52', 'v3.53', 'v3.6', 'v3.7',
                        'v3.8', 'v3.81', 'v3.94', 'v4'}
-ACTIVE_VERSIONS = {'v3.9', 'v3.95', 'v3.96', 'v4.0', 'v4.2', 'v4.3', 'v4.4', 'v4.4.2', 'v4.5', 'v4.6', 'v4.7.1', 'v4.7.2', 'v4.7.3', 'v4.7.4', 'v4.7.5', 'v4.7.6', 'v4.7.7', 'v4.7.8', 'v4.8', 'v5.0'}
+ACTIVE_VERSIONS = {'v3.9', 'v3.95', 'v3.96', 'v4.0', 'v4.2', 'v4.3', 'v4.4', 'v4.4.2', 'v4.5', 'v4.6', 'v4.7.1', 'v4.7.2', 'v4.7.3', 'v4.7.4', 'v4.7.5', 'v4.7.6', 'v4.7.7', 'v4.7.8', 'v4.7.9', 'v4.8.0', 'v5.0'}
 
 
 class TomorrowStockSelector:
@@ -90,21 +90,27 @@ class TomorrowStockSelector:
             from ml_models.v39.strategy_based_return_predictor import StrategyBasedReturnPredictor
             self.strategy_return_predictor = StrategyBasedReturnPredictor()
             logger.info("🔬 已初始化V5.0 Unified Feature Fusion评分系统 (v39+v40+neural)")
-        elif scoring_version == "v4.8":
-            # V4.8: V4.6底座 + 13财务质量特征 + LambdaRank + ListNet + 置信度加权
-            from ml_models.v39.v48_production_scorer import V48ProductionScorer
-            self.scoring_engine_v44 = V48ProductionScorer(model_type='small_data')
+        elif scoring_version == "v4.8.0":
+            from ml_models.v39.v480_production_scorer import V480ProductionScorer
+            self.scoring_engine_v44 = V480ProductionScorer(model_type='small_data')
             self.v44_batch_cache = {}
             from ml_models.v39.strategy_based_return_predictor import StrategyBasedReturnPredictor
             self.strategy_return_predictor = StrategyBasedReturnPredictor()
-            logger.info("🚀 已初始化V4.8评分系统 (V4.6+财务质量+LambdaRank+ListNet+置信度加权)")
+            logger.info("V4.8.0 (270d衰减 + V4.7.6 scorer后处理, 目标ic_decay_ratio)")
+        elif scoring_version == "v4.7.9":
+            from ml_models.v39.v479_production_scorer import V479ProductionScorer
+            self.scoring_engine_v44 = V479ProductionScorer(model_type='small_data')
+            self.v44_batch_cache = {}
+            from ml_models.v39.strategy_based_return_predictor import StrategyBasedReturnPredictor
+            self.strategy_return_predictor = StrategyBasedReturnPredictor()
+            logger.info("V4.7.9 (Huber+DART+240d衰减+Top5%头部加权)")
         elif scoring_version == "v4.7.8":
             from ml_models.v39.v478_production_scorer import V478ProductionScorer
             self.scoring_engine_v44 = V478ProductionScorer(model_type='small_data')
             self.v44_batch_cache = {}
             from ml_models.v39.strategy_based_return_predictor import StrategyBasedReturnPredictor
             self.strategy_return_predictor = StrategyBasedReturnPredictor()
-            logger.info("V4.7.8 (双模型融合: V4.7.6×90% + V4.7.7×10%)")
+            logger.info("V4.7.8 (Huber+DART+365d衰减 = V475 Top3 + V477 IC)")
         elif scoring_version == "v4.7.7":
             from ml_models.v39.v477_production_scorer import V477ProductionScorer
             self.scoring_engine_v44 = V477ProductionScorer(model_type='small_data')
@@ -1761,7 +1767,7 @@ class TomorrowStockSelector:
             if hasattr(self, 'scoring_version') and self.scoring_version in [
                 "v3.9", "v3.94", "v3.95", "v3.96", "v4.0", "v4.2", "v4.3",
                 "v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7", "v4.7.1", "v4.7.2",
-                "v4.7.3", "v4.7.4", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.8", "v5.0"]:
+                "v4.7.3", "v4.7.4", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.7.9", "v4.8.0", "v5.0"]:
                 recommendation = base_recommendation
                 confidence = base_confidence
 
@@ -2047,7 +2053,7 @@ class TomorrowStockSelector:
             if trade_date is None:
                 trade_date = datetime.now().strftime('%Y-%m-%d')
 
-            if self.scoring_version in ("v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.4", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.8", "v5.0"):
+            if self.scoring_version in ("v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.4", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.7.9", "v4.8.0", "v5.0"):
                 # V4.4+: V4.3信号+增强模块
                 try:
                     if stock_code in self.v44_batch_cache:
@@ -3421,7 +3427,7 @@ class TomorrowStockSelector:
         stock_with_scores = []
 
         # 🚀 V4.4/V4.4.2批量评分预计算
-        if hasattr(self, 'scoring_version') and self.scoring_version in ("v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.4", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.8", "v5.0") and all_stocks:
+        if hasattr(self, 'scoring_version') and self.scoring_version in ("v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.4", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.7.9", "v4.8.0", "v5.0") and all_stocks:
             if self.v44_batch_cache:
                 logger.info(f"✅ V4.4使用预填充缓存：{len(self.v44_batch_cache)}只股票")
             else:
@@ -3614,7 +3620,7 @@ class TomorrowStockSelector:
                     _p15 = stock_info.get('pred_15d', 0) or 0
                     # V4.6/V4.7.x scorer 使用 0.6*10d + 0.4*15d composite
                     if hasattr(self, 'scoring_version') and self.scoring_version in (
-                        'v4.6', 'v4.7', 'v4.7.1', 'v4.7.2', 'v4.7.3', 'v4.7.4', 'v4.7.5', 'v4.7.6', 'v4.7.7', 'v4.7.8'):
+                        'v4.6', 'v4.7', 'v4.7.1', 'v4.7.2', 'v4.7.3', 'v4.7.4', 'v4.7.5', 'v4.7.6', 'v4.7.7', 'v4.7.8', 'v4.7.9', 'v4.8.0'):
                         stock_info['composite'] = _p10 * 0.6 + _p15 * 0.4
                     else:
                         stock_info['composite'] = _p3 * 0.1 + _p5 * 0.2 + _p10 * 0.4 + _p15 * 0.3
@@ -4142,7 +4148,7 @@ class TomorrowStockSelector:
         elif hasattr(self, 'scoring_version') and self.scoring_version == "v3.5":
             report += "| 排名 | 股票代码 | 股票名称 | 选中策略 | 量化评分 | 投资建议 | 技术 | 基本 | 表现 | 市场 | 知行 | 知行信号 |\n"
             report += "|------|----------|----------|----------|----------|----------|------|------|------|------|------|----------|\n"
-        elif hasattr(self, 'scoring_version') and self.scoring_version in ["v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.4", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.8", "v5.0"]:
+        elif hasattr(self, 'scoring_version') and self.scoring_version in ["v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.4", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.7.9", "v4.8.0", "v5.0"]:
             # V4.4+ 多目标预测 - 按composite排序，展示composite+各周期预测
             report += "| 排名 | 股票代码 | 股票名称 | 选中策略 | Composite | 投资建议 | 预测10d | 收盘价 | 买入价 | 止损价 | 目标价 | 仓位 |\n"
             report += "|------|----------|----------|----------|-----------|----------|---------|--------|--------|--------|--------|------|\n"
@@ -4259,7 +4265,7 @@ class TomorrowStockSelector:
             factor_scores = stock.get('factor_scores', {})
             
             # 根据评分系统版本处理不同的因子评分
-            if hasattr(self, 'scoring_version') and self.scoring_version in ["v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.4", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.8", "v5.0"]:
+            if hasattr(self, 'scoring_version') and self.scoring_version in ["v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.4", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.7.9", "v4.8.0", "v5.0"]:
                 # V4.4+ 多目标预测字段 (推荐阈值已校准到post-isotonic尺度)
                 pred_3d = stock.get('pred_3d', 0.0)
                 predicted_return = stock.get('predicted_return_5d', stock.get('pred_5d', 0.0))
@@ -4409,7 +4415,7 @@ class TomorrowStockSelector:
                 market_regime_score = 0  # v2/v3没有市场环境分
             
             # 根据评分系统版本输出不同格式
-            if hasattr(self, 'scoring_version') and self.scoring_version in ["v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.4", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.8", "v5.0"]:
+            if hasattr(self, 'scoring_version') and self.scoring_version in ["v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.4", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.7.9", "v4.8.0", "v5.0"]:
                 # V4.4+ 多目标预测 - composite排序
                 composite_val = stock.get('composite', 0)
                 close_price = stock.get('close_price', 0)
@@ -4640,8 +4646,11 @@ def main(target_date: str = None, scoring_version: str = "v3", stocks_only: bool
         skip_strategies: 跳过策略筛选，全市场ML评分，默认False
         full_market: 全市场ML评分 + 策略标注模式，默认False
     """
+    # v4.8 alias → v4.8.0
+    if scoring_version == "v4.8":
+        scoring_version = "v4.8.0"
     # v3.6、v3.7、v3.8、v3.9、v3.94、v3.95版本应该只评价股票，因为ETF等因子无法与股票直接对比
-    if scoring_version in ["v3.6", "v3.7", "v3.8", "v3.81", "v3.9", "v3.94", "v3.95", "v3.96", "v4.0", "v4.2", "v4.3", "v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.8", "v5.0"] and not stocks_only:
+    if scoring_version in ["v3.6", "v3.7", "v3.8", "v3.81", "v3.9", "v3.94", "v3.95", "v3.96", "v4.0", "v4.2", "v4.3", "v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.7.9", "v4.8.0", "v5.0"] and not stocks_only:
         stocks_only = True
         logger.info(f"🔍 {scoring_version}机器学习版本自动开启仅股票模式（ETF等因子与股票不可比）")
     
@@ -4888,8 +4897,10 @@ def main(target_date: str = None, scoring_version: str = "v3", stocks_only: bool
         report_dir = Path("reports/daily_selection_v5.0")
     elif scoring_version == "v4.7.1":
         report_dir = Path("reports/daily_selection_v4.7.1")
-    elif scoring_version == "v4.8":
-        report_dir = Path("reports/daily_selection_v4.8")
+    elif scoring_version == "v4.8.0":
+        report_dir = Path("reports/daily_selection_v4.8.0")
+    elif scoring_version == "v4.7.9":
+        report_dir = Path("reports/daily_selection_v4.7.9")
     elif scoring_version == "v4.7.8":
         report_dir = Path("reports/daily_selection_v4.7.8")
     elif scoring_version == "v4.7.7":
@@ -4998,7 +5009,7 @@ if __name__ == "__main__":
                        choices=['v2', 'v3', 'v3.1', 'v3.2', 'v3.3', 'v3.4', 'v3.41',
                                 'v3.5', 'v3.51', 'v3.52', 'v3.53', 'v3.6', 'v3.7',
                                 'v3.8', 'v3.81', 'v3.9', 'v3.94', 'v3.95', 'v3.96',
-                                'v4', 'v4.0', 'v4.2', 'v4.3', 'v4.4', 'v4.4.2', 'v4.5', 'v4.6', 'v4.7.1', 'v4.7.2', 'v4.7.3', 'v4.7.5', 'v4.7.6', 'v4.7.7', 'v4.8', 'v5.0'],
+                                'v4', 'v4.0', 'v4.2', 'v4.3', 'v4.4', 'v4.4.2', 'v4.5', 'v4.6', 'v4.7.1', 'v4.7.2', 'v4.7.3', 'v4.7.5', 'v4.7.6', 'v4.7.7', 'v4.7.8', 'v4.7.9', 'v4.8', 'v4.8.0', 'v5.0'],
                        default='v3.9',
                        help='评分版本 (默认v3.9)。'
                             '活跃版本: v3.9(生产A级), v3.96(Robust Z-Score,ICIR>0.2), '

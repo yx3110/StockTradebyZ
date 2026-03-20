@@ -7771,6 +7771,314 @@ class V477Trainer(V475Trainer):
         return model_data, history
 
 
+class V478Trainer(V477Trainer):
+    """V4.7.8 训练器 — Huber Loss(V4.7.7) + 365d衰减(V4.7.5) = 两者之长
+
+    回测发现:
+    - V4.7.5: Top3最佳(+1.22%, 56.5%胜率) ← 365d衰减保留头部信号
+    - V4.7.7: IC最高(0.110) ← Huber Loss减少极端收益干扰
+    - V4.7.7 top3弱(-0.20%) ← 180d衰减丢失了长期头部pattern
+
+    V4.7.8策略: Huber Loss + 365d衰减 → 兼顾IC和头部集中度
+    """
+
+    TIME_DECAY_HALF_LIFE = 365.0  # 恢复V4.7.5的365d (V4.7.7用180d过激)
+
+    def compute_sample_weights(self, df: pd.DataFrame, y: np.ndarray) -> np.ndarray:
+        """V4.7.8: Huber Loss(继承V4.7.7模型) + 365d衰减(恢复V4.7.5)"""
+        weights = V44Trainer.compute_sample_weights(self, df, y)
+
+        if 'trade_date' in df.columns:
+            dates = pd.to_datetime(df['trade_date'].values)
+            max_date = dates.max()
+            days_ago = ((max_date - dates) / pd.Timedelta(days=1)).astype(float)
+
+            half_life = self.TIME_DECAY_HALF_LIFE
+            decay = np.exp(-np.log(2) * days_ago / half_life)
+            decay = np.clip(decay, 0.25, 1.0)  # V4.7.5的0.25 (V4.7.7用0.15)
+
+            weights *= decay
+            n_old = (decay < 0.5).sum()
+            logger.info(f"    时间衰减: half_life={half_life:.0f}d, {n_old:,} 样本权重<0.5 (V4.7.8: 恢复365d)")
+
+        return weights
+
+    def walk_forward_train(self, start_date=None, end_date=None,
+                            purge_days=15, min_train_days=900,
+                            val_days=120, test_days=120, step_days=90):
+        """V4.7.8 Walk-Forward — Huber+DART(V4.7.7) + 365d衰减(V4.7.5)"""
+        import shutil
+
+        logger.info("=" * 60)
+        logger.info("V4.7.8 Walk-Forward 训练 (Huber Loss + 365d衰减 = V475 Top3 + V477 IC)")
+        logger.info("=" * 60)
+        logger.info(f"  来自V4.7.7: Huber Loss + DART + LambdaRank")
+        logger.info(f"  来自V4.7.5: 365d时间衰减 + 0.25最低权重")
+        logger.info(f"  假设: Huber提升IC, 365d保留头部长期pattern")
+
+        # 调用V4.7.5的walk_forward_train (使用V4.7.7的模型+本类的365d权重)
+        model_data, history = V475Trainer.walk_forward_train(
+            self, start_date=start_date, end_date=end_date,
+            purge_days=purge_days, min_train_days=min_train_days,
+            val_days=val_days, test_days=test_days, step_days=step_days)
+
+        # 将模型从v475目录移到v478目录
+        v475_dir = PROJECT_ROOT / 'ml_models' / 'trained_models' / 'v475'
+        v478_dir = PROJECT_ROOT / 'ml_models' / 'trained_models' / 'v478'
+        v478_dir.mkdir(parents=True, exist_ok=True)
+
+        v475_files = sorted(v475_dir.glob('v475_*.pkl'), key=lambda f: f.stat().st_mtime)
+        if v475_files:
+            latest = v475_files[-1]
+            timestamp = latest.stem.replace('v475_multi_target_', '')
+            new_path = v478_dir / f'v478_multi_target_{timestamp}.pkl'
+
+            import joblib
+            model_data['version'] = 'v4.7.8'
+            model_data['time_decay_half_life'] = self.TIME_DECAY_HALF_LIFE
+            model_data['huber_loss'] = True
+            model_data['dart_boosting'] = True
+            model_data['v478_innovations'] = {
+                'from_v477': 'Huber Loss + DART + LambdaRank (IC提升)',
+                'from_v475': '365d时间衰减 + 0.25最低权重 (Top3头部集中度)',
+                'hypothesis': 'Huber提升整体IC, 365d保留长期头部pattern → Top3+IC双优',
+            }
+            joblib.dump(model_data, new_path)
+            logger.info(f"\nV4.7.8 model saved: {new_path}")
+            logger.info(f"  Size: {new_path.stat().st_size / 1024 / 1024:.1f} MB")
+
+            for aux in ['global_quantiles.npy', 'recommendation_thresholds.json']:
+                src = v475_dir / aux
+                if src.exists():
+                    shutil.copy2(str(src), str(v478_dir / aux))
+
+            latest.unlink()
+            for hf in v475_dir.glob(f'training_history_{timestamp}*'):
+                hf.unlink()
+
+            history['version'] = 'v4.7.8'
+            history['base'] = 'V4.7.7 (Huber+DART) + V4.7.5 (365d decay)'
+            history['v478_innovations'] = model_data['v478_innovations']
+
+            import json as _json
+            history_path = v478_dir / f'training_history_{timestamp}.json'
+            with open(history_path, 'w', encoding='utf-8') as f:
+                _json.dump(history, f, indent=2, ensure_ascii=False)
+            latest_path = v478_dir / 'training_history_latest.json'
+            with open(latest_path, 'w', encoding='utf-8') as f:
+                _json.dump(history, f, indent=2, ensure_ascii=False)
+
+            logger.info(f"\nV4.7.8 training complete!")
+        else:
+            logger.warning("No v475 model file found to rename")
+
+        return model_data, history
+
+
+class V479Trainer(V477Trainer):
+    """V4.7.9 训练器 — V4.7.8基础 + 头部加权 + 240d衰减(折中)
+
+    进一步强化Top3选股能力:
+    1. Huber Loss (继承V4.7.7): IC稳定性
+    2. 240d衰减 (V4.7.5的365d和V4.7.7的180d折中)
+    3. 头部加权: Top 5%正收益样本2x权重 → 让模型更关注高收益区分度
+    4. DART + LambdaRank (继承V4.7.7): ensemble多样性 + 排名优化
+    """
+
+    TIME_DECAY_HALF_LIFE = 240.0  # 折中: V4.7.5=365, V4.7.7=180
+
+    def compute_sample_weights(self, df: pd.DataFrame, y: np.ndarray) -> np.ndarray:
+        """V4.7.9: 240d衰减 + 头部加权(Top5% 正收益样本×2)"""
+        weights = V44Trainer.compute_sample_weights(self, df, y)
+
+        # 时间衰减: 240d
+        if 'trade_date' in df.columns:
+            dates = pd.to_datetime(df['trade_date'].values)
+            max_date = dates.max()
+            days_ago = ((max_date - dates) / pd.Timedelta(days=1)).astype(float)
+
+            half_life = self.TIME_DECAY_HALF_LIFE
+            decay = np.exp(-np.log(2) * days_ago / half_life)
+            decay = np.clip(decay, 0.20, 1.0)
+
+            weights *= decay
+            n_old = (decay < 0.5).sum()
+            logger.info(f"    时间衰减: half_life={half_life:.0f}d, {n_old:,} 样本权重<0.5")
+
+        # 头部加权: Top 5% 正收益样本获得2x权重
+        # 目的: 让模型更精确区分高收益样本(Top3选股能力)
+        if len(y) > 100:
+            p95 = np.percentile(y, 95)
+            top_mask = y >= p95
+            weights[top_mask] *= 2.0
+            n_top = top_mask.sum()
+            logger.info(f"    头部加权: Top 5% (y>={p95:.4f}) {n_top:,} 样本 ×2.0")
+
+        return weights
+
+    def walk_forward_train(self, start_date=None, end_date=None,
+                            purge_days=15, min_train_days=900,
+                            val_days=120, test_days=120, step_days=90):
+        """V4.7.9 Walk-Forward — Huber+DART + 240d衰减 + 头部加权"""
+        import shutil
+
+        logger.info("=" * 60)
+        logger.info("V4.7.9 Walk-Forward 训练 (Huber+DART + 240d衰减 + 头部加权)")
+        logger.info("=" * 60)
+        logger.info(f"  来自V4.7.7: Huber Loss + DART + LambdaRank")
+        logger.info(f"  时间衰减: 240d (V4.7.5=365 和 V4.7.7=180 的折中)")
+        logger.info(f"  头部加权: Top 5%正收益样本×2 (强化Top3区分度)")
+
+        model_data, history = V475Trainer.walk_forward_train(
+            self, start_date=start_date, end_date=end_date,
+            purge_days=purge_days, min_train_days=min_train_days,
+            val_days=val_days, test_days=test_days, step_days=step_days)
+
+        # 将模型从v475目录移到v479目录
+        v475_dir = PROJECT_ROOT / 'ml_models' / 'trained_models' / 'v475'
+        v479_dir = PROJECT_ROOT / 'ml_models' / 'trained_models' / 'v479'
+        v479_dir.mkdir(parents=True, exist_ok=True)
+
+        v475_files = sorted(v475_dir.glob('v475_*.pkl'), key=lambda f: f.stat().st_mtime)
+        if v475_files:
+            latest = v475_files[-1]
+            timestamp = latest.stem.replace('v475_multi_target_', '')
+            new_path = v479_dir / f'v479_multi_target_{timestamp}.pkl'
+
+            import joblib
+            model_data['version'] = 'v4.7.9'
+            model_data['time_decay_half_life'] = self.TIME_DECAY_HALF_LIFE
+            model_data['huber_loss'] = True
+            model_data['dart_boosting'] = True
+            model_data['top_weighted'] = True
+            model_data['v479_innovations'] = {
+                'from_v477': 'Huber Loss + DART + LambdaRank',
+                'time_decay': '240d (折中: V475=365, V477=180)',
+                'top_weighting': 'Top 5% positive return samples ×2.0',
+                'hypothesis': '240d折中衰减 + 头部加权 → Top3精度+IC双优',
+            }
+            joblib.dump(model_data, new_path)
+            logger.info(f"\nV4.7.9 model saved: {new_path}")
+            logger.info(f"  Size: {new_path.stat().st_size / 1024 / 1024:.1f} MB")
+
+            for aux in ['global_quantiles.npy', 'recommendation_thresholds.json']:
+                src = v475_dir / aux
+                if src.exists():
+                    shutil.copy2(str(src), str(v479_dir / aux))
+
+            latest.unlink()
+            for hf in v475_dir.glob(f'training_history_{timestamp}*'):
+                hf.unlink()
+
+            history['version'] = 'v4.7.9'
+            history['base'] = 'V4.7.7 (Huber+DART) + 240d decay + Top5% ×2 weighting'
+            history['v479_innovations'] = model_data['v479_innovations']
+
+            import json as _json
+            history_path = v479_dir / f'training_history_{timestamp}.json'
+            with open(history_path, 'w', encoding='utf-8') as f:
+                _json.dump(history, f, indent=2, ensure_ascii=False)
+            latest_path = v479_dir / 'training_history_latest.json'
+            with open(latest_path, 'w', encoding='utf-8') as f:
+                _json.dump(history, f, indent=2, ensure_ascii=False)
+
+            logger.info(f"\nV4.7.9 training complete!")
+        else:
+            logger.warning("No v475 model file found to rename")
+
+        return model_data, history
+
+
+class V480Trainer(V475Trainer):
+    """V4.8.0 训练器 — V4.7.5底座 + 270d时间衰减(唯一改动)
+
+    V3北极星精准狙击:
+    - ic_decay_ratio(H2/H1)=0.52(1/5) → 目标0.70+(3/5)
+    - 时间衰减365d→270d: 增强近期数据权重, 减缓信号衰减
+    - 保留MSE Loss(不用Huber, 保alpha)
+    - 保留6模型ensemble(不加DART, 省时间)
+    - Scorer层继承V4.7.6(consistency+vol后处理)
+    """
+
+    TIME_DECAY_HALF_LIFE = 270.0
+
+    def compute_sample_weights(self, df: pd.DataFrame, y: np.ndarray) -> np.ndarray:
+        """V4.8.0: 270d时间衰减(vs V4.7.5=365d) + 继承其他权重"""
+        weights = V44Trainer.compute_sample_weights(self, df, y)
+
+        if 'trade_date' in df.columns:
+            dates = pd.to_datetime(df['trade_date'].values)
+            max_date = dates.max()
+            days_ago = ((max_date - dates) / pd.Timedelta(days=1)).astype(float)
+
+            half_life = self.TIME_DECAY_HALF_LIFE
+            decay = np.exp(-np.log(2) * days_ago / half_life)
+            decay = np.clip(decay, 0.20, 1.0)
+
+            weights *= decay
+            n_old = (decay < 0.5).sum()
+            logger.info(f"    时间衰减: half_life={half_life:.0f}d, {n_old:,} 样本权重<0.5")
+
+        return weights
+
+    def walk_forward_train(self, start_date=None, end_date=None,
+                            purge_days=15, min_train_days=900,
+                            val_days=120, test_days=120, step_days=90):
+        """V4.8.0 Walk-Forward — 270d时间衰减"""
+        logger.info("=" * 60)
+        logger.info("V4.8.0 Walk-Forward 训练 (270d时间衰减, 目标ic_decay_ratio提升)")
+        logger.info("=" * 60)
+        logger.info(f"  唯一改动: 时间衰减 365d→270d")
+        logger.info(f"  目标: ic_decay_ratio 0.52→0.70+ (V3北极星L1 +2分)")
+        logger.info(f"  保留: MSE Loss, 6模型ensemble, V4.7.6 scorer后处理")
+
+        model_data, history = super().walk_forward_train(
+            start_date=start_date, end_date=end_date,
+            purge_days=purge_days, min_train_days=min_train_days,
+            val_days=val_days, test_days=test_days, step_days=step_days)
+
+        # 将模型从v475目录移到v480目录
+        import shutil
+        v475_dir = PROJECT_ROOT / 'ml_models' / 'trained_models' / 'v475'
+        v480_dir = PROJECT_ROOT / 'ml_models' / 'trained_models' / 'v480'
+        v480_dir.mkdir(parents=True, exist_ok=True)
+
+        v475_files = sorted(v475_dir.glob('v475_*.pkl'), key=lambda f: f.stat().st_mtime)
+        if v475_files:
+            latest = v475_files[-1]
+            timestamp = latest.stem.replace('v475_multi_target_', '')
+            new_path = v480_dir / f'v480_multi_target_{timestamp}.pkl'
+
+            import joblib
+            model_data['version'] = 'v4.8.0'
+            model_data['time_decay_half_life'] = self.TIME_DECAY_HALF_LIFE
+            model_data['v480_target'] = 'ic_decay_ratio improvement via 270d time decay'
+            joblib.dump(model_data, new_path)
+            logger.info(f"\nV4.8.0 model saved: {new_path}")
+            logger.info(f"  Size: {new_path.stat().st_size / 1024 / 1024:.1f} MB")
+
+            for aux in ['global_quantiles.npy', 'recommendation_thresholds.json']:
+                src = v475_dir / aux
+                if src.exists():
+                    shutil.copy2(str(src), str(v480_dir / aux))
+
+            latest.unlink()
+            for hf in v475_dir.glob(f'training_history_{timestamp}*'):
+                hf.unlink()
+
+            history['version'] = 'v4.8.0'
+            history['base'] = 'V4.7.5 + 270d Time Decay (target: ic_decay_ratio)'
+            import json as _json
+            for dest in [v480_dir / f'training_history_{timestamp}.json',
+                         v480_dir / 'training_history_latest.json']:
+                with open(dest, 'w', encoding='utf-8') as f:
+                    _json.dump(history, f, indent=2, ensure_ascii=False)
+
+            logger.info(f"V4.8.0 training complete!")
+
+        return model_data, history
+
+
 class V48Trainer(V472Trainer):
     """V4.8 训练器 — V4.7.2底座 + 12个新财务质量特征 + ListNet排名模型 + 置信度加权
 
@@ -8638,12 +8946,24 @@ def main():
     parser.add_argument('--v475', action='store_true', help='V4.7.5: V4.7.3+特征精简(70->50)+连续评分+自适应权重')
     parser.add_argument('--v476', action='store_true', help='V4.7.6: V4.7.5+Top-K聚焦权重+置信度折扣+波动率调整')
     parser.add_argument('--v477', action='store_true', help='V4.7.7: V4.7.5+Huber Loss+180d衰减+DART')
-    parser.add_argument('--v48', action='store_true', help='V4.8: V4.7.2底座+12新财务质量特征+ListNet+alpha融合+置信度加权')
+    parser.add_argument('--v478', action='store_true', help='V4.7.8: V4.7.7 Huber+DART + V4.7.5 365d衰减 (IC+Top3双优)')
+    parser.add_argument('--v479', action='store_true', help='V4.7.9: V4.7.7 Huber+DART + 240d衰减 + Top5%头部加权')
+    parser.add_argument('--v480', action='store_true', help='V4.8.0: V4.7.5+270d衰减(精准攻ic_decay_ratio)')
     parser.add_argument('--skip-wf', action='store_true', help='跳过Walk-Forward评估, 只训练生产模型 (节省~75%时间)')
     args = parser.parse_args()
 
-    if args.v48:
-        trainer = V48Trainer()
+    if args.v480:
+        trainer = V480Trainer()
+        trainer.walk_forward_train(
+            start_date=args.start_date, end_date=args.end_date,
+            purge_days=max(args.purge_days, 15))
+    elif args.v479:
+        trainer = V479Trainer()
+        trainer.walk_forward_train(
+            start_date=args.start_date, end_date=args.end_date,
+            purge_days=max(args.purge_days, 15))
+    elif args.v478:
+        trainer = V478Trainer()
         trainer.walk_forward_train(
             start_date=args.start_date, end_date=args.end_date,
             purge_days=max(args.purge_days, 15))
