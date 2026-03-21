@@ -1,7 +1,7 @@
 {
     "report_dir": "reports/daily_selection_v4.7.5",
     "label": "autoresearch",
-    "top_n": 5,
+    "top_n": 10,
     "focus_days": 15,
     "benchmark": "000905.SH",
     "rank_field": "auto",
