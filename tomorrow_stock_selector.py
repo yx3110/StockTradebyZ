@@ -3948,148 +3948,67 @@ class TomorrowStockSelector:
         sh_index = index_data.get('000001.SH', pd.DataFrame())
 
         results = {
-            'trend': {'score': 50, 'label': '中性', 'signals': []},
-            'momentum': {'score': 50, 'label': '中性', 'signals': []},
             'volume': {'score': 50, 'label': '中性', 'signals': []},
             'breadth': {'score': 50, 'label': '中性', 'signals': []},
-            'volatility': {'score': 50, 'label': '正常', 'signals': []},
             'turnover_heat': {'score': 50, 'label': '中性', 'signals': []},
             'style_momentum': {'score': 50, 'label': '中性', 'signals': []},
+            'mean_reversion': {'score': 50, 'label': '中性', 'signals': []},
+            'growth_value': {'score': 50, 'label': '中性', 'signals': []},
             'model_signal': {'score': 50, 'label': '中性', 'signals': []},
         }
 
-        # ======== 趋势维度 (20%) ========
-        if len(hs300) >= 5:
-            closes = hs300['close'].values
-            latest = closes[-1]
-
-            # MA位置关系
-            ma5 = np.mean(closes[-5:]) if len(closes) >= 5 else latest
-            ma20 = np.mean(closes[-20:]) if len(closes) >= 20 else latest
-            ma60 = np.mean(closes[-60:]) if len(closes) >= 60 else latest
-
-            trend_score = 50
-            signals = []
-
-            # 价格vs均线 (+/- 5分 each)
-            if latest > ma5:
-                trend_score += 5
-            else:
-                trend_score -= 5
-            if latest > ma20:
-                trend_score += 8
-            else:
-                trend_score -= 8
-            if latest > ma60:
-                trend_score += 7
-            else:
-                trend_score -= 7
-
-            # 均线排列
-            if ma5 > ma20 > ma60:
-                trend_score += 15
-                signals.append('多头排列(MA5>MA20>MA60)')
-            elif ma5 < ma20 < ma60:
-                trend_score -= 15
-                signals.append('空头排列(MA5<MA20<MA60)')
-            else:
-                signals.append('均线交织')
-
-            # 近5日涨跌幅
-            ret_5d = (closes[-1] / closes[-5] - 1) if len(closes) >= 5 else 0
-            if ret_5d > 0.03:
-                trend_score += 10
-                signals.append(f'5日涨{ret_5d:.1%}')
-            elif ret_5d > 0.01:
-                trend_score += 5
-                signals.append(f'5日涨{ret_5d:.1%}')
-            elif ret_5d < -0.03:
-                trend_score -= 10
-                signals.append(f'5日跌{ret_5d:.1%}')
-            elif ret_5d < -0.01:
-                trend_score -= 5
-                signals.append(f'5日跌{ret_5d:.1%}')
-            else:
-                signals.append(f'5日横盘{ret_5d:+.1%}')
-
-            # 距前高回撤
-            peak = np.max(closes[-60:]) if len(closes) >= 60 else np.max(closes)
-            drawdown = (latest / peak - 1)
-            if drawdown < -0.10:
-                trend_score -= 10
-                signals.append(f'距前高{drawdown:.1%}')
-            elif drawdown < -0.05:
-                trend_score -= 5
-                signals.append(f'距前高{drawdown:.1%}')
-
-            results['trend'] = {
-                'score': max(0, min(100, trend_score)),
-                'signals': signals
-            }
-
-        # ======== 动量维度 (10%) ========
-        # 全连续变量: 5d/20d动量 + MACD柱状 + RSI隐含
-        if len(hs300) >= 20:
-            closes = hs300['close'].values.astype(float)
-            pct = hs300['price_change_pct'].values.astype(float)
-
-            momentum_score = 50
-            signals = []
-
-            # 5日收益率 (连续映射, ±3%→±15分)
-            ret_5d = closes[-1] / closes[-5] - 1
-            momentum_score += np.clip(ret_5d * 500, -15, 15)
-
-            # 20日收益率 (连续映射, ±8%→±10分)
-            ret_20d = closes[-1] / closes[-20] - 1
-            momentum_score += np.clip(ret_20d * 125, -10, 10)
-
-            # 动量加速度: 5d vs 20d (连续)
-            # 正=加速上行, 负=减速/反转
-            if abs(ret_20d) > 0.001:
-                accel = (ret_5d / abs(ret_20d)) - 1  # >0加速 <0减速
-                momentum_score += np.clip(accel * 5, -8, 8)
-
-            # MACD histogram (连续, 标准化)
-            if len(closes) >= 26:
-                ema12 = pd.Series(closes).ewm(span=12).mean().iloc[-1]
-                ema26 = pd.Series(closes).ewm(span=26).mean().iloc[-1]
-                dif = ema12 - ema26
-                # 标准化: DIF/close ×10000 (约±30bps), 映射到±10分
-                dif_norm = dif / closes[-1] * 10000
-                momentum_score += np.clip(dif_norm * 0.3, -10, 10)
-
-                # MACD变化率 (加速/减速)
-                dif_prev = pd.Series(closes[:-1]).ewm(span=12).mean().iloc[-1] - pd.Series(closes[:-1]).ewm(span=26).mean().iloc[-1]
-                dif_delta = (dif - dif_prev) / closes[-1] * 10000
-                momentum_score += np.clip(dif_delta * 2, -7, 7)
-
-            # 信号描述
-            if ret_5d > 0.02:
-                signals.append(f'强势上行{ret_5d:+.1%}')
-            elif ret_5d > 0:
-                signals.append(f'温和上行{ret_5d:+.1%}')
-            elif ret_5d > -0.02:
-                signals.append(f'温和下行{ret_5d:+.1%}')
-            else:
-                signals.append(f'强势下行{ret_5d:+.1%}')
-
-            if len(closes) >= 26:
-                if dif > 0 and dif > dif_prev:
-                    signals.append('MACD多头扩张')
-                elif dif > 0:
-                    signals.append('MACD多头收窄')
-                elif dif < 0 and dif < dif_prev:
-                    signals.append('MACD空头扩张')
+        # ======== 均值回归维度 (9%) ========
+        # 20日收益率反转: 跌多→利好 (A股强均值回归, 回测diff=+2.93%)
+        mr_indices = [('000300.SH', 0.4), ('000985.SH', 0.3), ('932000.CSI', 0.3)]
+        mr_raw = []
+        mr_signals = []
+        for mr_code, mr_w in mr_indices:
+            mr_df = index_data.get(mr_code)
+            if mr_df is None or len(mr_df) < 20:
+                continue
+            mc = mr_df['close'].values.astype(float)
+            ret20 = mc[-1] / mc[-20] - 1
+            # 反向: 20日跌幅越大→分数越高
+            mr_raw.append((50 - np.clip(ret20 * 350, -35, 35), mr_w))
+        if mr_raw:
+            mr_score = sum(s * w for s, w in mr_raw) / sum(w for _, w in mr_raw)
+            # Signal description from HS300
+            if len(hs300) >= 20:
+                ret20_300 = hs300['close'].values[-1] / hs300['close'].values[-20] - 1
+                if ret20_300 < -0.05:
+                    mr_signals.append(f'沪深300近20日{ret20_300:+.1%}(超卖反弹机会)')
+                elif ret20_300 > 0.05:
+                    mr_signals.append(f'沪深300近20日{ret20_300:+.1%}(超买回调风险)')
                 else:
-                    signals.append('MACD空头收窄')
-
-            results['momentum'] = {
-                'score': max(0, min(100, momentum_score)),
-                'signals': signals
+                    mr_signals.append(f'沪深300近20日{ret20_300:+.1%}')
+            results['mean_reversion'] = {
+                'score': max(0, min(100, mr_score)),
+                'signals': mr_signals
             }
 
-        # ======== 成交量维度 (15%) ========
+        # ======== 成长价值维度 (8%) ========
+        # 创业板vs沪深300: 创业板领先=风险偏好上升=利好 (回测diff=+0.95%)
+        gem_df = index_data.get('399006.SZ', pd.DataFrame())
+        if len(hs300) >= 5 and len(gem_df) >= 5:
+            c300_gv = hs300['close'].values.astype(float)
+            cgem_gv = gem_df['close'].values.astype(float)
+            ret300_5d = c300_gv[-1] / c300_gv[-5] - 1
+            retgem_5d = cgem_gv[-1] / cgem_gv[-5] - 1
+            gv_spread = retgem_5d - ret300_5d  # 正=创业板领先
+            gv_score = 50 + np.clip(gv_spread * 800, -35, 35)
+            gv_signals = []
+            if gv_spread > 0.02:
+                gv_signals.append(f'创业板领先沪深300 {gv_spread:+.1%}(风险偏好上升)')
+            elif gv_spread < -0.02:
+                gv_signals.append(f'沪深300领先创业板 {-gv_spread:+.1%}(避险)')
+            else:
+                gv_signals.append(f'成长价值均衡{gv_spread:+.1%}')
+            results['growth_value'] = {
+                'score': max(0, min(100, gv_score)),
+                'signals': gv_signals
+            }
+
+        # ======== 成交量维度 (18%) ========
         # 聚合全A股成交量
         try:
             vol_query = """
@@ -4574,19 +4493,18 @@ class TomorrowStockSelector:
 
         # ======== 综合评分 ========
         # 权重基于回测IC贡献度优化 (2026-03-20):
-        # 8维度权重 (autoresearch回测校准, 2019-2026, composite=79.8):
-        #   成交量 pred=+1.53% → 18%    市场宽度 pred=+1.16% → 22%
+        # 7维度权重 (autoresearch 13轮迭代, 2019-2026回测, composite=90.3):
+        #   成交量 pred=+1.53% → 18%    市场宽度 pred=+1.16% → 20%
         #   风格动量 pred=+0.90% → 10%   换手率热度 pred=+0.48% → 10%
-        #   波动风险 pred=-0.46% → 5%     趋势 pred=-0.18% → 5%
-        #   动量 pred=+0.03% → 5%        模型信号 → 25%
+        #   均值回归 pred=+2.93% → 9%    成长价值 pred=+0.95% → 8%
+        #   模型信号 → 25%
         weights = {
-            'trend': 0.05,
-            'momentum': 0.05,
             'volume': 0.18,
-            'breadth': 0.22,
-            'volatility': 0.05,
+            'breadth': 0.20,
             'turnover_heat': 0.10,
             'style_momentum': 0.10,
+            'mean_reversion': 0.09,
+            'growth_value': 0.08,
             'model_signal': 0.25,
         }
         total_score = sum(results[k]['score'] * weights[k] for k in weights)
@@ -4679,23 +4597,21 @@ class TomorrowStockSelector:
     def _format_trading_environment(self, env: Dict[str, Any]) -> str:
         """将交易环境监测结果格式化为报告文本"""
         dim_names = {
-            'trend': '趋势',
-            'momentum': '动量',
             'volume': '成交量',
             'breadth': '市场宽度',
-            'volatility': '波动风险',
             'turnover_heat': '换手率热度',
             'style_momentum': '风格动量',
+            'mean_reversion': '均值回归',
+            'growth_value': '成长价值',
             'model_signal': '模型信号',
         }
         dim_weights = {
-            'trend': '5%',
-            'momentum': '5%',
             'volume': '18%',
-            'breadth': '22%',
-            'volatility': '5%',
+            'breadth': '20%',
             'turnover_heat': '10%',
             'style_momentum': '10%',
+            'mean_reversion': '9%',
+            'growth_value': '8%',
             'model_signal': '25%',
         }
 
@@ -4703,7 +4619,7 @@ class TomorrowStockSelector:
         section += "| 维度 | 权重 | 评分 | 状态 | 关键信号 |\n"
         section += "|------|------|------|------|----------|\n"
 
-        for key in ['trend', 'momentum', 'volume', 'breadth', 'volatility', 'turnover_heat', 'style_momentum', 'model_signal']:
+        for key in ['volume', 'breadth', 'turnover_heat', 'style_momentum', 'mean_reversion', 'growth_value', 'model_signal']:
             d = env['dimensions'].get(key, {'score': 50, 'signals': [], 'emoji': '🟡', 'label': '中性'})
             sig_text = ', '.join(d['signals'][:3]) if d['signals'] else '-'
             section += f"| {dim_names[key]} | {dim_weights[key]} | {round(d['score'])}/100 | {d['emoji']} {d['label']} | {sig_text} |\n"
