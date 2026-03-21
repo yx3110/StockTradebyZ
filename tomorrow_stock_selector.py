@@ -43,8 +43,7 @@ logger = logging.getLogger("tomorrow_selector")
 DEPRECATED_VERSIONS = {'v2', 'v3', 'v3.1', 'v3.2', 'v3.3', 'v3.4', 'v3.41',
                        'v3.5', 'v3.51', 'v3.52', 'v3.53', 'v3.6', 'v3.7',
                        'v3.8', 'v3.81', 'v3.94', 'v4'}
-ACTIVE_VERSIONS = {'v3.9', 'v3.95', 'v3.96', 'v4.0', 'v4.2', 'v4.3', 'v4.4', 'v4.4.2', 'v4.5', 'v4.6', 'v4.7.1', 'v4.7.2', 'v4.7.3', 'v4.7.4', 'v4.7.5', 'v4.7.6', 'v4.7.7', 'v4.7.8', 'v4.7.9', 'v4.8.0', 'v4.8.1', 'v5.0'}
-
+ACTIVE_VERSIONS = {'v3.9', 'v3.95', 'v3.96', 'v4.0', 'v4.2', 'v4.3', 'v4.4', 'v4.4.2', 'v4.5', 'v4.6', 'v4.7.1', 'v4.7.2', 'v4.7.3', 'v4.7.4', 'v4.7.5', 'v4.7.6', 'v4.7.7', 'v4.7.8', 'v4.7.9', 'v4.8.0', 'v4.8.1', 'v4.8.2', 'v5.0'}
 
 class TomorrowStockSelector:
     """明日股票选择器"""
@@ -90,6 +89,13 @@ class TomorrowStockSelector:
             from ml_models.v39.strategy_based_return_predictor import StrategyBasedReturnPredictor
             self.strategy_return_predictor = StrategyBasedReturnPredictor()
             logger.info("🔬 已初始化V5.0 Unified Feature Fusion评分系统 (v39+v40+neural)")
+        elif scoring_version == "v4.8.2":
+            from ml_models.v39.v482_production_scorer import V482ProductionScorer
+            self.scoring_engine_v44 = V482ProductionScorer(model_type='small_data')
+            self.v44_batch_cache = {}
+            from ml_models.v39.strategy_based_return_predictor import StrategyBasedReturnPredictor
+            self.strategy_return_predictor = StrategyBasedReturnPredictor()
+            logger.info("V4.8.2 loaded")
         elif scoring_version == "v4.8.1":
             from ml_models.v39.v481_production_scorer import V481ProductionScorer
             self.scoring_engine_v44 = V481ProductionScorer(model_type='small_data')
@@ -1774,7 +1780,7 @@ class TomorrowStockSelector:
             if hasattr(self, 'scoring_version') and self.scoring_version in [
                 "v3.9", "v3.94", "v3.95", "v3.96", "v4.0", "v4.2", "v4.3",
                 "v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7", "v4.7.1", "v4.7.2",
-                "v4.7.3", "v4.7.4", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.7.9", "v4.8.0", "v4.8.1", "v5.0"]:
+                "v4.7.3", "v4.7.4", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.7.9", "v4.8.0", "v4.8.1", "v4.8.2", "v5.0"]:
                 recommendation = base_recommendation
                 confidence = base_confidence
 
@@ -2060,7 +2066,7 @@ class TomorrowStockSelector:
             if trade_date is None:
                 trade_date = datetime.now().strftime('%Y-%m-%d')
 
-            if self.scoring_version in ("v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.4", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.7.9", "v4.8.0", "v4.8.1", "v5.0"):
+            if self.scoring_version in ("v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.4", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.7.9", "v4.8.0", "v4.8.1", "v4.8.2", "v5.0"):
                 # V4.4+: V4.3信号+增强模块
                 try:
                     if stock_code in self.v44_batch_cache:
@@ -3434,7 +3440,7 @@ class TomorrowStockSelector:
         stock_with_scores = []
 
         # 🚀 V4.4/V4.4.2批量评分预计算
-        if hasattr(self, 'scoring_version') and self.scoring_version in ("v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.4", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.7.9", "v4.8.0", "v4.8.1", "v5.0") and all_stocks:
+        if hasattr(self, 'scoring_version') and self.scoring_version in ("v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.4", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.7.9", "v4.8.0", "v4.8.1", "v4.8.2", "v5.0") and all_stocks:
             if self.v44_batch_cache:
                 logger.info(f"✅ V4.4使用预填充缓存：{len(self.v44_batch_cache)}只股票")
             else:
@@ -3627,7 +3633,7 @@ class TomorrowStockSelector:
                     _p15 = stock_info.get('pred_15d', 0) or 0
                     # V4.6/V4.7.x scorer 使用 0.6*10d + 0.4*15d composite
                     if hasattr(self, 'scoring_version') and self.scoring_version in (
-                        'v4.6', 'v4.7', 'v4.7.1', 'v4.7.2', 'v4.7.3', 'v4.7.4', 'v4.7.5', 'v4.7.6', 'v4.7.7', 'v4.7.8', 'v4.7.9', 'v4.8.0', 'v4.8.1'):
+                        'v4.6', 'v4.7', 'v4.7.1', 'v4.7.2', 'v4.7.3', 'v4.7.4', 'v4.7.5', 'v4.7.6', 'v4.7.7', 'v4.7.8', 'v4.7.9', 'v4.8.0', 'v4.8.1', 'v4.8.2'):
                         stock_info['composite'] = _p10 * 0.6 + _p15 * 0.4
                     else:
                         stock_info['composite'] = _p3 * 0.1 + _p5 * 0.2 + _p10 * 0.4 + _p15 * 0.3
@@ -3949,42 +3955,51 @@ class TomorrowStockSelector:
 
         results = {
             'volume': {'score': 50, 'label': '中性', 'signals': []},
-            'breadth': {'score': 50, 'label': '中性', 'signals': []},
-            'breadth_momentum': {'score': 50, 'label': '中性', 'signals': []},
-            'style_momentum': {'score': 50, 'label': '中性', 'signals': []},
-            'mean_reversion': {'score': 50, 'label': '中性', 'signals': []},
             'growth_value': {'score': 50, 'label': '中性', 'signals': []},
+            'model_dispersion': {'score': 50, 'label': '中性', 'signals': []},
+            'model_range': {'score': 50, 'label': '中性', 'signals': []},
             'model_signal': {'score': 50, 'label': '中性', 'signals': []},
         }
 
-        # ======== 均值回归维度 (9%) ========
-        # 20日收益率反转: 跌多→利好 (A股强均值回归, 回测diff=+2.93%)
-        mr_indices = [('000300.SH', 0.4), ('000985.SH', 0.3), ('932000.CSI', 0.3)]
-        mr_raw = []
-        mr_signals = []
-        for mr_code, mr_w in mr_indices:
-            mr_df = index_data.get(mr_code)
-            if mr_df is None or len(mr_df) < 20:
-                continue
-            mc = mr_df['close'].values.astype(float)
-            ret20 = mc[-1] / mc[-20] - 1
-            # 反向: 20日跌幅越大→分数越高
-            mr_raw.append((50 - np.clip(ret20 * 350, -35, 35), mr_w))
-        if mr_raw:
-            mr_score = sum(s * w for s, w in mr_raw) / sum(w for _, w in mr_raw)
-            # Signal description from HS300
-            if len(hs300) >= 20:
-                ret20_300 = hs300['close'].values[-1] / hs300['close'].values[-20] - 1
-                if ret20_300 < -0.05:
-                    mr_signals.append(f'沪深300近20日{ret20_300:+.1%}(超卖反弹机会)')
-                elif ret20_300 > 0.05:
-                    mr_signals.append(f'沪深300近20日{ret20_300:+.1%}(超买回调风险)')
-                else:
-                    mr_signals.append(f'沪深300近20日{ret20_300:+.1%}')
-            results['mean_reversion'] = {
-                'score': max(0, min(100, mr_score)),
-                'signals': mr_signals
-            }
+        # ======== 模型分化度维度 (18%) ========
+        # 全市场ML评分离散度: std高→模型区分度好→Top10选股更可靠 (diff=+2.55%)
+        if all_stocks_with_scores and len(all_stocks_with_scores) > 100:
+            all_rs = [s.get('composite', s.get('rank_score', 0)) or 0
+                      for s in all_stocks_with_scores]
+            all_rs = [r for r in all_rs if r != 0]
+            if len(all_rs) > 100:
+                std_rs = np.std(all_rs)
+                disp_score = 50 + np.clip((std_rs - 0.004) * 8000, -30, 30)
+                disp_signals = [f'评分离散度σ={std_rs:.4f}']
+                if std_rs > 0.006:
+                    disp_signals.append('模型分化充分')
+                elif std_rs < 0.003:
+                    disp_signals.append('模型分化不足')
+                results['model_dispersion'] = {
+                    'score': max(0, min(100, disp_score)),
+                    'signals': disp_signals
+                }
+
+        # ======== 模型预测极差维度 (17%) ========
+        # P95-P5 spread: 极差大→模型confident→Top10 alpha高 (diff=+2.48%)
+        if all_stocks_with_scores and len(all_stocks_with_scores) > 100:
+            all_rs2 = [s.get('composite', s.get('rank_score', 0)) or 0
+                       for s in all_stocks_with_scores]
+            all_rs2 = [r for r in all_rs2 if r != 0]
+            if len(all_rs2) > 100:
+                p95 = np.percentile(all_rs2, 95)
+                p5 = np.percentile(all_rs2, 5)
+                spread = p95 - p5
+                range_score = 50 + np.clip((spread - 0.015) * 3000, -30, 30)
+                range_signals = [f'预测极差P95-P5={spread:.4f}']
+                if spread > 0.020:
+                    range_signals.append('信号强度高')
+                elif spread < 0.010:
+                    range_signals.append('信号强度低')
+                results['model_range'] = {
+                    'score': max(0, min(100, range_score)),
+                    'signals': range_signals
+                }
 
         # ======== 成长价值维度 (8%) ========
         # 创业板vs沪深300: 创业板领先=风险偏好上升=利好 (回测diff=+0.95%)
@@ -4486,19 +4501,15 @@ class TomorrowStockSelector:
             }
 
         # ======== 综合评分 ========
-        # 权重基于回测IC贡献度优化 (2026-03-20):
-        # 7维度权重 (autoresearch 14轮迭代, 2019-2026回测, composite=94.3):
-        #   成交量 pred=+1.53% → 18%    市场宽度 pred=+1.02% → 18%
-        #   宽度动量 pred=+1.37% → 12%   风格动量 pred=+0.90% → 10%
-        #   均值回归 pred=+0.86% → 9%    成长价值 pred=+0.95% → 8%
+        # 5维度权重 (autoresearch V2, 对标ML Top10选股10天收益, composite=95.9):
+        #   成交量 diff=+2.12% → 22%     成长价值 diff=+2.39% → 18%
+        #   模型分化度 diff=+2.55% → 18%  模型预测极差 diff=+2.48% → 17%
         #   模型信号 → 25%
         weights = {
-            'volume': 0.18,
-            'breadth': 0.18,
-            'breadth_momentum': 0.12,
-            'style_momentum': 0.10,
-            'mean_reversion': 0.09,
-            'growth_value': 0.08,
+            'volume': 0.22,
+            'growth_value': 0.18,
+            'model_dispersion': 0.18,
+            'model_range': 0.17,
             'model_signal': 0.25,
         }
         total_score = sum(results[k]['score'] * weights[k] for k in weights)
@@ -4592,20 +4603,16 @@ class TomorrowStockSelector:
         """将交易环境监测结果格式化为报告文本"""
         dim_names = {
             'volume': '成交量',
-            'breadth': '市场宽度',
-            'breadth_momentum': '宽度动量',
-            'style_momentum': '风格动量',
-            'mean_reversion': '均值回归',
             'growth_value': '成长价值',
+            'model_dispersion': '模型分化度',
+            'model_range': '模型预测极差',
             'model_signal': '模型信号',
         }
         dim_weights = {
-            'volume': '18%',
-            'breadth': '20%',
-            'breadth_momentum': '12%',
-            'style_momentum': '10%',
-            'mean_reversion': '9%',
-            'growth_value': '8%',
+            'volume': '22%',
+            'growth_value': '18%',
+            'model_dispersion': '18%',
+            'model_range': '17%',
             'model_signal': '25%',
         }
 
@@ -4613,7 +4620,7 @@ class TomorrowStockSelector:
         section += "| 维度 | 权重 | 评分 | 状态 | 关键信号 |\n"
         section += "|------|------|------|------|----------|\n"
 
-        for key in ['volume', 'breadth', 'breadth_momentum', 'style_momentum', 'mean_reversion', 'growth_value', 'model_signal']:
+        for key in ['volume', 'growth_value', 'model_dispersion', 'model_range', 'model_signal']:
             d = env['dimensions'].get(key, {'score': 50, 'signals': [], 'emoji': '🟡', 'label': '中性'})
             sig_text = ', '.join(d['signals'][:3]) if d['signals'] else '-'
             section += f"| {dim_names[key]} | {dim_weights[key]} | {round(d['score'])}/100 | {d['emoji']} {d['label']} | {sig_text} |\n"
@@ -4889,7 +4896,7 @@ class TomorrowStockSelector:
         elif hasattr(self, 'scoring_version') and self.scoring_version == "v3.5":
             report += "| 排名 | 股票代码 | 股票名称 | 选中策略 | 量化评分 | 投资建议 | 技术 | 基本 | 表现 | 市场 | 知行 | 知行信号 |\n"
             report += "|------|----------|----------|----------|----------|----------|------|------|------|------|------|----------|\n"
-        elif hasattr(self, 'scoring_version') and self.scoring_version in ["v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.4", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.7.9", "v4.8.0", "v4.8.1", "v5.0"]:
+        elif hasattr(self, 'scoring_version') and self.scoring_version in ["v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.4", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.7.9", "v4.8.0", "v4.8.1", "v4.8.2", "v5.0"]:
             # V4.4+ 多目标预测 - 按composite排序，展示composite+各周期预测
             report += "| 排名 | 股票代码 | 股票名称 | 选中策略 | Composite | 投资建议 | 预测10d | 收盘价 | 买入价 | 止损价 | 目标价 | 仓位 |\n"
             report += "|------|----------|----------|----------|-----------|----------|---------|--------|--------|--------|--------|------|\n"
@@ -5006,7 +5013,7 @@ class TomorrowStockSelector:
             factor_scores = stock.get('factor_scores', {})
             
             # 根据评分系统版本处理不同的因子评分
-            if hasattr(self, 'scoring_version') and self.scoring_version in ["v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.4", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.7.9", "v4.8.0", "v4.8.1", "v5.0"]:
+            if hasattr(self, 'scoring_version') and self.scoring_version in ["v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.4", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.7.9", "v4.8.0", "v4.8.1", "v4.8.2", "v5.0"]:
                 # V4.4+ 多目标预测字段 (推荐阈值已校准到post-isotonic尺度)
                 pred_3d = stock.get('pred_3d', 0.0)
                 predicted_return = stock.get('predicted_return_5d', stock.get('pred_5d', 0.0))
@@ -5156,7 +5163,7 @@ class TomorrowStockSelector:
                 market_regime_score = 0  # v2/v3没有市场环境分
             
             # 根据评分系统版本输出不同格式
-            if hasattr(self, 'scoring_version') and self.scoring_version in ["v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.4", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.7.9", "v4.8.0", "v4.8.1", "v5.0"]:
+            if hasattr(self, 'scoring_version') and self.scoring_version in ["v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.4", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.7.9", "v4.8.0", "v4.8.1", "v4.8.2", "v5.0"]:
                 # V4.4+ 多目标预测 - composite排序
                 composite_val = stock.get('composite', 0)
                 close_price = stock.get('close_price', 0)
@@ -5391,7 +5398,7 @@ def main(target_date: str = None, scoring_version: str = "v3", stocks_only: bool
     if scoring_version == "v4.8":
         scoring_version = "v4.8.0"
     # v3.6、v3.7、v3.8、v3.9、v3.94、v3.95版本应该只评价股票，因为ETF等因子无法与股票直接对比
-    if scoring_version in ["v3.6", "v3.7", "v3.8", "v3.81", "v3.9", "v3.94", "v3.95", "v3.96", "v4.0", "v4.2", "v4.3", "v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.7.9", "v4.8.0", "v4.8.1", "v5.0"] and not stocks_only:
+    if scoring_version in ["v3.6", "v3.7", "v3.8", "v3.81", "v3.9", "v3.94", "v3.95", "v3.96", "v4.0", "v4.2", "v4.3", "v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.7.9", "v4.8.0", "v4.8.1", "v4.8.2", "v5.0"] and not stocks_only:
         stocks_only = True
         logger.info(f"🔍 {scoring_version}机器学习版本自动开启仅股票模式（ETF等因子与股票不可比）")
     
@@ -5638,6 +5645,8 @@ def main(target_date: str = None, scoring_version: str = "v3", stocks_only: bool
         report_dir = Path("reports/daily_selection_v5.0")
     elif scoring_version == "v4.7.1":
         report_dir = Path("reports/daily_selection_v4.7.1")
+    elif scoring_version == "v4.8.2":
+        report_dir = Path("reports/daily_selection_v4.8.2")
     elif scoring_version == "v4.8.1":
         report_dir = Path("reports/daily_selection_v4.8.1")
     elif scoring_version == "v4.8.0":
@@ -5752,7 +5761,7 @@ if __name__ == "__main__":
                        choices=['v2', 'v3', 'v3.1', 'v3.2', 'v3.3', 'v3.4', 'v3.41',
                                 'v3.5', 'v3.51', 'v3.52', 'v3.53', 'v3.6', 'v3.7',
                                 'v3.8', 'v3.81', 'v3.9', 'v3.94', 'v3.95', 'v3.96',
-                                'v4', 'v4.0', 'v4.2', 'v4.3', 'v4.4', 'v4.4.2', 'v4.5', 'v4.6', 'v4.7.1', 'v4.7.2', 'v4.7.3', 'v4.7.5', 'v4.7.6', 'v4.7.7', 'v4.7.8', 'v4.7.9', 'v4.8', 'v4.8.0', 'v4.8.1', 'v5.0'],
+                                'v4', 'v4.0', 'v4.2', 'v4.3', 'v4.4', 'v4.4.2', 'v4.5', 'v4.6', 'v4.7.1', 'v4.7.2', 'v4.7.3', 'v4.7.5', 'v4.7.6', 'v4.7.7', 'v4.7.8', 'v4.7.9', 'v4.8', 'v4.8.0', 'v4.8.1', 'v4.8.2', 'v5.0'],
                        default='v3.9',
                        help='评分版本 (默认v3.9)。'
                             '活跃版本: v3.9(生产A级), v3.96(Robust Z-Score,ICIR>0.2), '
