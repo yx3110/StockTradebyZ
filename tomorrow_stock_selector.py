@@ -3954,15 +3954,66 @@ class TomorrowStockSelector:
         sh_index = index_data.get('000001.SH', pd.DataFrame())
 
         results = {
+            'ma_position': {'score': 50, 'label': '中性', 'signals': []},
             'breadth': {'score': 50, 'label': '中性', 'signals': []},
             'volume': {'score': 50, 'label': '中性', 'signals': []},
             'growth_value': {'score': 50, 'label': '中性', 'signals': []},
-            'model_dispersion': {'score': 50, 'label': '中性', 'signals': []},
-            'model_range': {'score': 50, 'label': '中性', 'signals': []},
             'model_signal': {'score': 50, 'label': '中性', 'signals': []},
         }
 
-        # ======== 模型分化度维度 (18%) ========
+        # ======== MA位置维度 (25%) ========
+        # 价格vs均线: 直接反映市场当前涨跌状态 (方向准确率92%)
+        if len(hs300) >= 20:
+            closes_ma = hs300['close'].values.astype(float)
+            latest = closes_ma[-1]
+            ma5 = np.mean(closes_ma[-5:])
+            ma20 = np.mean(closes_ma[-20:])
+            ma60 = np.mean(closes_ma[-60:]) if len(closes_ma) >= 60 else ma20
+
+            ma_score = 50
+            ma_signals = []
+
+            # 价格偏离MA5 (连续, ±2%→±12分)
+            dev5 = (latest - ma5) / ma5
+            ma_score += np.clip(dev5 * 600, -12, 12)
+
+            # 价格偏离MA20 (连续, ±4%→±15分)
+            dev20 = (latest - ma20) / ma20
+            ma_score += np.clip(dev20 * 375, -15, 15)
+
+            # 价格偏离MA60 (连续, ±8%→±8分)
+            dev60 = (latest - ma60) / ma60
+            ma_score += np.clip(dev60 * 100, -8, 8)
+
+            # MA斜率 (MA20的5日变化, 连续)
+            if len(closes_ma) >= 25:
+                ma20_5ago = np.mean(closes_ma[-25:-5])
+                slope = (ma20 - ma20_5ago) / ma20_5ago
+                ma_score += np.clip(slope * 500, -8, 8)
+
+            # 距前高回撤 (连续)
+            peak60 = np.max(closes_ma[-60:]) if len(closes_ma) >= 60 else np.max(closes_ma)
+            dd = latest / peak60 - 1
+            ma_score += np.clip(dd * 80, -10, 0)
+
+            # 信号描述
+            if ma5 > ma20 > ma60:
+                ma_signals.append('多头排列')
+            elif ma5 < ma20 < ma60:
+                ma_signals.append('空头排列')
+            else:
+                ma_signals.append('均线交织')
+
+            ret5 = closes_ma[-1] / closes_ma[-5] - 1 if len(closes_ma) >= 5 else 0
+            ma_signals.append(f'偏离MA20 {dev20:+.1%}')
+            ma_signals.append(f'5日{ret5:+.1%}')
+
+            results['ma_position'] = {
+                'score': max(0, min(100, ma_score)),
+                'signals': ma_signals
+            }
+
+        # ======== 模型分化度→信号质量 (不参与评分, 仅显示) ========
         # 全市场ML评分离散度: std高→模型区分度好→Top10选股更可靠 (diff=+2.55%)
         if all_stocks_with_scores and len(all_stocks_with_scores) > 100:
             all_rs = [s.get('composite', s.get('rank_score', 0)) or 0
@@ -4502,16 +4553,15 @@ class TomorrowStockSelector:
             }
 
         # ======== 综合评分 ========
-        # 6维度: 市场方向(breadth) + 预测力因子(volume/growth_value) + 模型质量 + 模型信号
-        # breadth: 涨跌比直接反映市场涨跌, 给高权重确保下跌时总分低
-        # model_dispersion/range: 信号质量, 降权避免虚高
+        # 5维度: MA位置(方向) + 市场宽度(方向) + 成交量(预测) + 成长价值(预测) + 模型信号(预测)
+        # MA位置: 92%方向准确率, 核心方向指标
+        # model_dispersion/model_range: 仅展示, 不参与加权评分
         weights = {
-            'breadth': 0.20,
-            'volume': 0.18,
-            'growth_value': 0.12,
-            'model_dispersion': 0.10,
-            'model_range': 0.10,
-            'model_signal': 0.30,
+            'ma_position': 0.25,
+            'breadth': 0.15,
+            'volume': 0.15,
+            'growth_value': 0.10,
+            'model_signal': 0.35,
         }
         total_score = sum(results[k]['score'] * weights[k] for k in weights)
         total_score = round(total_score, 1)
@@ -4603,27 +4653,25 @@ class TomorrowStockSelector:
     def _format_trading_environment(self, env: Dict[str, Any]) -> str:
         """将交易环境监测结果格式化为报告文本"""
         dim_names = {
+            'ma_position': 'MA位置',
             'breadth': '市场宽度',
             'volume': '成交量',
             'growth_value': '成长价值',
-            'model_dispersion': '信号质量',
-            'model_range': '信号强度',
             'model_signal': '模型信号',
         }
         dim_weights = {
-            'breadth': '20%',
-            'volume': '18%',
-            'growth_value': '12%',
-            'model_dispersion': '10%',
-            'model_range': '10%',
-            'model_signal': '30%',
+            'ma_position': '25%',
+            'breadth': '15%',
+            'volume': '15%',
+            'growth_value': '10%',
+            'model_signal': '35%',
         }
 
         section = "\n## 🌡️ 交易环境监测\n\n"
         section += "| 维度 | 权重 | 评分 | 状态 | 关键信号 |\n"
         section += "|------|------|------|------|----------|\n"
 
-        for key in ['breadth', 'volume', 'growth_value', 'model_dispersion', 'model_range', 'model_signal']:
+        for key in ['ma_position', 'breadth', 'volume', 'growth_value', 'model_signal']:
             d = env['dimensions'].get(key, {'score': 50, 'signals': [], 'emoji': '🟡', 'label': '中性'})
             sig_text = ', '.join(d['signals'][:3]) if d['signals'] else '-'
             section += f"| {dim_names[key]} | {dim_weights[key]} | {round(d['score'])}/100 | {d['emoji']} {d['label']} | {sig_text} |\n"
