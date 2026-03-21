@@ -56,66 +56,48 @@ def load_indices():
     return indices, breadth_df, vol_df
 
 
-def simulate_trend(hs300, i):
-    c = hs300['close'].values[:i+1].astype(float)
-    latest = c[-1]
-    ma5 = np.mean(c[-5:])
-    ma20 = np.mean(c[-20:]) if len(c) >= 20 else latest
-    ma60 = np.mean(c[-60:]) if len(c) >= 60 else latest
-    s = 50
-    s += 5 if latest > ma5 else -5
-    s += 8 if latest > ma20 else -8
-    s += 7 if latest > ma60 else -7
-    if ma5 > ma20 > ma60: s += 15
-    elif ma5 < ma20 < ma60: s -= 15
-    ret_5d = c[-1] / c[-5] - 1 if len(c) >= 5 else 0
-    if ret_5d > 0.03: s += 10
-    elif ret_5d > 0.01: s += 5
-    elif ret_5d < -0.03: s -= 10
-    elif ret_5d < -0.01: s -= 5
-    peak = np.max(c[-60:]) if len(c) >= 60 else np.max(c)
-    dd = latest / peak - 1
-    if dd < -0.10: s -= 10
-    elif dd < -0.05: s -= 5
-    return max(0, min(100, s))
+def simulate_trend(indices, i):
+    trend_raw = []
+    for t_code, t_w in [('000300.SH', 0.5), ('000985.SH', 0.5)]:
+        if t_code not in indices: continue
+        tc = indices[t_code]['close'].values[:i+1].astype(float)
+        if len(tc) < 20: continue
+        latest = tc[-1]
+        ma20 = np.mean(tc[-20:])
+        ma60 = np.mean(tc[-60:]) if len(tc) >= 60 else ma20
+        t_s = 50
+        t_s += np.clip((latest / ma20 - 1) * 500, -15, 15)
+        t_s += np.clip((latest / ma60 - 1) * 200, -10, 10)
+        if len(tc) >= 25:
+            ma20_5ago = np.mean(tc[-25:-5])
+            t_s += np.clip((ma20 / ma20_5ago - 1) * 500, -10, 10)
+        peak = np.max(tc[-60:]) if len(tc) >= 60 else np.max(tc)
+        t_s += np.clip((latest / peak - 1) * 100, -15, 0)
+        trend_raw.append((t_s, t_w))
+    if not trend_raw: return 50
+    return max(0, min(100, sum(s*w for s,w in trend_raw) / sum(w for _,w in trend_raw)))
 
 
 def simulate_momentum(hs300, i):
     c = hs300['close'].values[:i+1].astype(float)
-    p = hs300['price_change_pct'].values[:i+1].astype(float)
     if len(c) < 20: return 50
     s = 50
     ret_5d = c[-1] / c[-5] - 1
     ret_20d = c[-1] / c[-20] - 1
-    mr = ret_5d / max(abs(ret_20d), 0.001)
-    if ret_5d > 0 and mr > 1.5: s += 15
-    elif ret_5d > 0 and mr > 0: s += 5
-    elif ret_5d < 0 and mr > 1.5: s -= 15
-    elif ret_5d < 0: s -= 5
+    s += np.clip(ret_5d * 500, -15, 15)
+    s += np.clip(ret_20d * 125, -10, 10)
+    if abs(ret_20d) > 0.001:
+        accel = (ret_5d / abs(ret_20d)) - 1
+        s += np.clip(accel * 5, -8, 8)
     if len(c) >= 26:
         ema12 = pd.Series(c).ewm(span=12).mean().iloc[-1]
         ema26 = pd.Series(c).ewm(span=26).mean().iloc[-1]
         dif = ema12 - ema26
-        ema12p = pd.Series(c[:-1]).ewm(span=12).mean().iloc[-1]
-        ema26p = pd.Series(c[:-1]).ewm(span=26).mean().iloc[-1]
-        dif_prev = ema12p - ema26p
-        if dif > 0 and dif > dif_prev: s += 15
-        elif dif > 0: s += 5
-        elif dif < 0 and dif < dif_prev: s -= 15
-        elif dif < 0: s -= 5
-    # Fixed consecutive logic
-    cu = 0
-    for x in reversed(p[:i+1]):
-        if x > 0: cu += 1
-        else: break
-    cd = 0
-    for x in reversed(p[:i+1]):
-        if x < 0: cd += 1
-        else: break
-    if cu >= 5: s += 10
-    elif cu >= 3: s += 5
-    elif cd >= 5: s -= 10
-    elif cd >= 3: s -= 5
+        dif_norm = dif / c[-1] * 10000
+        s += np.clip(dif_norm * 0.3, -10, 10)
+        dif_prev = pd.Series(c[:-1]).ewm(span=12).mean().iloc[-1] - pd.Series(c[:-1]).ewm(span=26).mean().iloc[-1]
+        dif_delta = (dif - dif_prev) / c[-1] * 10000
+        s += np.clip(dif_delta * 2, -7, 7)
     return max(0, min(100, s))
 
 
@@ -268,7 +250,7 @@ def main():
     print(f"Simulating {len(dates)-START} days...")
     for i in range(START, len(dates)):
         date = dates[i]
-        trend_s.append(simulate_trend(hs300, i))
+        trend_s.append(simulate_trend(indices, i))
         momentum_s.append(simulate_momentum(hs300, i))
 
         # Volume: find matching index in vol_df

@@ -4025,78 +4025,62 @@ class TomorrowStockSelector:
                 'signals': signals
             }
 
-        # ======== 动量维度 (15%) ========
+        # ======== 动量维度 (10%) ========
+        # 全连续变量: 5d/20d动量 + MACD柱状 + RSI隐含
         if len(hs300) >= 20:
-            closes = hs300['close'].values
+            closes = hs300['close'].values.astype(float)
+            pct = hs300['price_change_pct'].values.astype(float)
 
             momentum_score = 50
             signals = []
 
-            # 短期vs长期动量 (加速/减速)
+            # 5日收益率 (连续映射, ±3%→±15分)
             ret_5d = closes[-1] / closes[-5] - 1
+            momentum_score += np.clip(ret_5d * 500, -15, 15)
+
+            # 20日收益率 (连续映射, ±8%→±10分)
             ret_20d = closes[-1] / closes[-20] - 1
-            momentum_ratio = ret_5d / max(abs(ret_20d), 0.001)
+            momentum_score += np.clip(ret_20d * 125, -10, 10)
 
-            if ret_5d > 0 and momentum_ratio > 1.5:
-                momentum_score += 15
-                signals.append('动量加速上行')
-            elif ret_5d > 0 and momentum_ratio > 0:
-                momentum_score += 5
-                signals.append('温和上行')
-            elif ret_5d < 0 and momentum_ratio > 1.5:
-                momentum_score -= 15
-                signals.append('动量加速下行')
-            elif ret_5d < 0:
-                momentum_score -= 5
-                signals.append('温和下行')
+            # 动量加速度: 5d vs 20d (连续)
+            # 正=加速上行, 负=减速/反转
+            if abs(ret_20d) > 0.001:
+                accel = (ret_5d / abs(ret_20d)) - 1  # >0加速 <0减速
+                momentum_score += np.clip(accel * 5, -8, 8)
 
-            # MACD方向 (用DIF-DEA简化计算)
+            # MACD histogram (连续, 标准化)
             if len(closes) >= 26:
                 ema12 = pd.Series(closes).ewm(span=12).mean().iloc[-1]
                 ema26 = pd.Series(closes).ewm(span=26).mean().iloc[-1]
                 dif = ema12 - ema26
-                dif_prev = pd.Series(closes[:-1]).ewm(span=12).mean().iloc[-1] - pd.Series(closes[:-1]).ewm(span=26).mean().iloc[-1]
+                # 标准化: DIF/close ×10000 (约±30bps), 映射到±10分
+                dif_norm = dif / closes[-1] * 10000
+                momentum_score += np.clip(dif_norm * 0.3, -10, 10)
 
+                # MACD变化率 (加速/减速)
+                dif_prev = pd.Series(closes[:-1]).ewm(span=12).mean().iloc[-1] - pd.Series(closes[:-1]).ewm(span=26).mean().iloc[-1]
+                dif_delta = (dif - dif_prev) / closes[-1] * 10000
+                momentum_score += np.clip(dif_delta * 2, -7, 7)
+
+            # 信号描述
+            if ret_5d > 0.02:
+                signals.append(f'强势上行{ret_5d:+.1%}')
+            elif ret_5d > 0:
+                signals.append(f'温和上行{ret_5d:+.1%}')
+            elif ret_5d > -0.02:
+                signals.append(f'温和下行{ret_5d:+.1%}')
+            else:
+                signals.append(f'强势下行{ret_5d:+.1%}')
+
+            if len(closes) >= 26:
                 if dif > 0 and dif > dif_prev:
-                    momentum_score += 15
                     signals.append('MACD多头扩张')
                 elif dif > 0:
-                    momentum_score += 5
                     signals.append('MACD多头收窄')
                 elif dif < 0 and dif < dif_prev:
-                    momentum_score -= 15
                     signals.append('MACD空头扩张')
-                elif dif < 0:
-                    momentum_score -= 5
+                else:
                     signals.append('MACD空头收窄')
-
-            # 连续涨/跌天数 (修复: 只统计同方向连续天数)
-            pct = hs300['price_change_pct'].values
-            consec_up = 0
-            for p in reversed(pct):
-                if p > 0:
-                    consec_up += 1
-                else:
-                    break
-            consec_down = 0
-            for p in reversed(pct):
-                if p < 0:
-                    consec_down += 1
-                else:
-                    break
-
-            if consec_up >= 5:
-                momentum_score += 10
-                signals.append(f'连涨{consec_up}日')
-            elif consec_up >= 3:
-                momentum_score += 5
-                signals.append(f'连涨{consec_up}日')
-            elif consec_down >= 5:
-                momentum_score -= 10
-                signals.append(f'连跌{consec_down}日')
-            elif consec_down >= 3:
-                momentum_score -= 5
-                signals.append(f'连跌{consec_down}日')
 
             results['momentum'] = {
                 'score': max(0, min(100, momentum_score)),
