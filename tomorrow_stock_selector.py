@@ -4503,17 +4503,18 @@ class TomorrowStockSelector:
 
         # ======== 综合评分 ========
         # 权重基于回测IC贡献度优化 (2026-03-20):
-        #   市场宽度 IC(5d)=0.133, ICIR=0.50 ← 最强信号, 提权
-        #   成交量   IC(5d)=0.051, ICIR=0.16 ← 稳定信号
-        #   波动风险 IC(5d)=0.062           ← 防御有效
-        #   趋势     IC(5d)=0.041           ← 弱信号, 降权
-        #   动量     IC(5d)=0.034           ← 弱信号, 降权
+        # 权重基于6年(2019-2026)回测预测力校准:
+        #   成交量 pred_diff=+1.42% → 20% (最强连续信号)
+        #   市场宽度 pred_diff=+1.16% → 25% (最强离散信号)
+        #   波动风险 pred_diff=-0.46% (反向,均值回归) → 10%
+        #   趋势 pred_diff=-0.18% (弱) → 10%
+        #   动量 pred_diff=+0.03% (弱正) → 10%
         weights = {
             'trend': 0.10,
             'momentum': 0.10,
-            'volume': 0.15,
+            'volume': 0.20,
             'breadth': 0.25,
-            'volatility': 0.15,
+            'volatility': 0.10,
             'model_signal': 0.25,
         }
         total_score = sum(results[k]['score'] * weights[k] for k in weights)
@@ -4616,9 +4617,9 @@ class TomorrowStockSelector:
         dim_weights = {
             'trend': '10%',
             'momentum': '10%',
-            'volume': '15%',
+            'volume': '20%',
             'breadth': '25%',
-            'volatility': '15%',
+            'volatility': '10%',
             'model_signal': '25%',
         }
 

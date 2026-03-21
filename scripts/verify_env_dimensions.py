@@ -279,8 +279,8 @@ def main():
     print(f"{'='*120}")
 
     composite = 0
-    weights = {'trend': 0.10, 'momentum': 0.10, 'volume': 0.15,
-               'breadth': 0.25, 'volatility': 0.15, 'model_signal': 0.25}
+    weights = {'trend': 0.10, 'momentum': 0.10, 'volume': 0.20,
+               'breadth': 0.25, 'volatility': 0.10, 'model_signal': 0.25}
 
     for name, scores in [('trend', trend_s), ('momentum', momentum_s),
                           ('volume', volume_s), ('breadth', breadth_s),
