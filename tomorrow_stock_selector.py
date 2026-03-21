@@ -3937,7 +3937,7 @@ class TomorrowStockSelector:
         start_date = (target_date - timedelta(days=400)).strftime('%Y-%m-%d')
 
         # --- 1. 获取沪深300数据 ---
-        index_codes = ['000300.SH', '000001.SH', '399001.SZ', '399006.SZ']
+        index_codes = ['000300.SH', '000001.SH', '399001.SZ', '399006.SZ', '932000.CSI', '000985.SH']
         index_data = {}
         for code in index_codes:
             df = db.get_security_data(code, start_date, date_str)
@@ -4070,34 +4070,33 @@ class TomorrowStockSelector:
                     momentum_score -= 5
                     signals.append('MACD空头收窄')
 
-            # 连续涨/跌天数
+            # 连续涨/跌天数 (修复: 只统计同方向连续天数)
             pct = hs300['price_change_pct'].values
-            consec = 0
+            consec_up = 0
             for p in reversed(pct):
                 if p > 0:
-                    consec += 1
-                elif p < 0:
-                    consec -= 1
-                    break
+                    consec_up += 1
                 else:
                     break
-            if consec == 0:
-                for p in reversed(pct):
-                    if p < 0:
-                        consec -= 1
-                    else:
-                        break
+            consec_down = 0
+            for p in reversed(pct):
+                if p < 0:
+                    consec_down += 1
+                else:
+                    break
 
-            if consec >= 5:
+            if consec_up >= 5:
                 momentum_score += 10
-                signals.append(f'连涨{consec}日')
-            elif consec >= 3:
+                signals.append(f'连涨{consec_up}日')
+            elif consec_up >= 3:
                 momentum_score += 5
-            elif consec <= -5:
+                signals.append(f'连涨{consec_up}日')
+            elif consec_down >= 5:
                 momentum_score -= 10
-                signals.append(f'连跌{abs(consec)}日')
-            elif consec <= -3:
+                signals.append(f'连跌{consec_down}日')
+            elif consec_down >= 3:
                 momentum_score -= 5
+                signals.append(f'连跌{consec_down}日')
 
             results['momentum'] = {
                 'score': max(0, min(100, momentum_score)),
@@ -4132,23 +4131,26 @@ class TomorrowStockSelector:
                 volume_score = 50
                 signals = []
 
-                # 量比 (vs 5日均量)
-                if vol_ratio_5 > 1.5:
-                    volume_score += 20
+                # 量比连续映射 (vs 5日均量, 线性插值提升区分度)
+                # vr5分布: P10=0.78, P25=0.88, P50=0.98, P75=1.10, P90=1.28
+                vr5_adj = np.clip((vol_ratio_5 - 1.0) * 40, -20, 25)  # ±1 std → ±4分
+                volume_score += vr5_adj
+                if vol_ratio_5 > 1.3:
                     signals.append(f'量比5日{vol_ratio_5:.2f}(显著放量)')
-                elif vol_ratio_5 > 1.2:
-                    volume_score += 10
+                elif vol_ratio_5 > 1.1:
                     signals.append(f'量比5日{vol_ratio_5:.2f}(温和放量)')
-                elif vol_ratio_5 < 0.7:
-                    volume_score -= 15
+                elif vol_ratio_5 < 0.75:
                     signals.append(f'量比5日{vol_ratio_5:.2f}(明显缩量)')
-                elif vol_ratio_5 < 0.85:
-                    volume_score -= 5
+                elif vol_ratio_5 < 0.9:
                     signals.append(f'量比5日{vol_ratio_5:.2f}(略缩量)')
                 else:
                     signals.append(f'量比5日{vol_ratio_5:.2f}(正常)')
 
-                # 量能趋势 (连续放量/缩量)
+                # 量比vs20日 (中期趋势)
+                vr20_adj = np.clip((vol_ratio_20 - 1.0) * 20, -10, 15)
+                volume_score += vr20_adj
+
+                # 量能趋势 (连续放量/缩量, 用线性分数)
                 if len(volumes) >= 5:
                     vol_trend = 0
                     for i in range(-4, 0):
@@ -4156,22 +4158,24 @@ class TomorrowStockSelector:
                             vol_trend += 1
                         else:
                             vol_trend -= 1
+                    volume_score += vol_trend * 2.5  # -10 ~ +10
                     if vol_trend >= 3:
-                        volume_score += 10
                         signals.append('连续放量')
                     elif vol_trend <= -3:
-                        volume_score -= 10
                         signals.append('连续缩量')
 
                 # 量价配合 (沪深300涨+放量 vs 跌+放量)
                 if len(hs300) >= 1:
                     today_pct = hs300['price_change_pct'].values[-1]
-                    if today_pct > 0 and vol_ratio_5 > 1.1:
-                        volume_score += 10
+                    if today_pct > 0.005 and vol_ratio_5 > 1.1:
+                        volume_score += 8
                         signals.append('量价齐升')
-                    elif today_pct < -0.005 and vol_ratio_5 > 1.3:
-                        volume_score -= 10
-                        signals.append('放量下跌(恐慌)')
+                    elif today_pct < -0.005 and vol_ratio_5 > 1.2:
+                        volume_score -= 8
+                        signals.append('放量下跌')
+                    elif today_pct > 0.005 and vol_ratio_5 < 0.85:
+                        volume_score -= 5
+                        signals.append('涨但缩量')
 
                 # 总成交额 (亿元, volume单位=手, 粗略估算)
                 vol_billion = vol_today / 1e8  # 粗略换算
@@ -4186,16 +4190,24 @@ class TomorrowStockSelector:
 
         # ======== 市场宽度维度 (15%) ========
         try:
+            # 涨停从price_change_pct直接计算 (is_limit_up字段数据有问题)
+            # 主板≥9.5%, 创/科≥19.5%, 北交≥29.5% (pct已是小数: 0.095=9.5%)
             breadth_query = """
                 SELECT
                     COUNT(*) as total,
-                    SUM(CASE WHEN price_change_pct > 0 THEN 1 ELSE 0 END) as up_count,
-                    SUM(CASE WHEN price_change_pct < 0 THEN 1 ELSE 0 END) as down_count,
-                    SUM(CASE WHEN price_change_pct = 0 THEN 1 ELSE 0 END) as flat_count,
-                    SUM(CASE WHEN is_limit_up = 1 THEN 1 ELSE 0 END) as limit_up_count,
-                    SUM(CASE WHEN is_limit_down = 1 THEN 1 ELSE 0 END) as limit_down_count,
-                    SUM(CASE WHEN price_change_pct > 0.05 THEN 1 ELSE 0 END) as strong_up,
-                    SUM(CASE WHEN price_change_pct < -0.05 THEN 1 ELSE 0 END) as strong_down
+                    SUM(CASE WHEN dq.price_change_pct > 0 THEN 1 ELSE 0 END) as up_count,
+                    SUM(CASE WHEN dq.price_change_pct < 0 THEN 1 ELSE 0 END) as down_count,
+                    SUM(CASE WHEN dq.price_change_pct = 0 THEN 1 ELSE 0 END) as flat_count,
+                    SUM(CASE WHEN (s.code LIKE '6%' OR s.code LIKE '0%') AND dq.price_change_pct >= 0.095 THEN 1
+                             WHEN (s.code LIKE '3%' OR s.code LIKE '688%') AND dq.price_change_pct >= 0.195 THEN 1
+                             WHEN (s.code LIKE '8%' OR s.code LIKE '920%') AND dq.price_change_pct >= 0.295 THEN 1
+                             ELSE 0 END) as limit_up_count,
+                    SUM(CASE WHEN (s.code LIKE '6%' OR s.code LIKE '0%') AND dq.price_change_pct <= -0.095 THEN 1
+                             WHEN (s.code LIKE '3%' OR s.code LIKE '688%') AND dq.price_change_pct <= -0.195 THEN 1
+                             WHEN (s.code LIKE '8%' OR s.code LIKE '920%') AND dq.price_change_pct <= -0.295 THEN 1
+                             ELSE 0 END) as limit_down_count,
+                    SUM(CASE WHEN dq.price_change_pct > 0.05 THEN 1 ELSE 0 END) as strong_up,
+                    SUM(CASE WHEN dq.price_change_pct < -0.05 THEN 1 ELSE 0 END) as strong_down
                 FROM daily_quotes dq
                 JOIN securities s ON dq.security_id = s.id
                 WHERE s.type = 'A股' AND dq.trade_date = ? AND dq.volume > 0
@@ -4265,52 +4277,108 @@ class TomorrowStockSelector:
         except Exception as e:
             logger.warning(f"市场宽度维度计算失败: {e}")
 
-        # ======== 波动/风险维度 (10%) ========
-        if len(hs300) >= 20:
-            closes = hs300['close'].values
-            pcts = hs300['price_change_pct'].values
+        # ======== 波动/风险维度 (15%) ========
+        # 多指数综合: 沪深300(大盘) + 中证2000(小盘) + 中证全指(全市场)
+        # 选股偏小盘, 中证2000权重最高
+        # 阈值基于2020-2026历史分位校准:
+        #   沪深300 P25=13% P50=15.5% P75=20%  中证2000 P25=16% P50=21% P75=27%
+        vol_indices = {}
+        for idx_code in ['000300.SH', '932000.CSI', '000985.SH']:
+            idx_df = index_data.get(idx_code, pd.DataFrame())
+            if len(idx_df) >= 20:
+                vol_indices[idx_code] = idx_df
 
+        if vol_indices:
             vol_score = 50
             signals = []
 
-            # 20日波动率 (年化)
-            daily_vol = np.std(pcts[-20:])
-            annual_vol = daily_vol * np.sqrt(250)
+            # 加权年化波动率: 沪深300×0.3 + 中证2000×0.4 + 中证全指×0.3
+            idx_weights = {'000300.SH': 0.3, '932000.CSI': 0.4, '000985.SH': 0.3}
+            weighted_vol = 0
+            total_w = 0
+            idx_vols = {}
+            for idx_code, idx_df in vol_indices.items():
+                pcts_idx = idx_df['price_change_pct'].values
+                v = np.std(pcts_idx[-20:]) * np.sqrt(250)
+                idx_vols[idx_code] = v
+                w = idx_weights.get(idx_code, 0.33)
+                weighted_vol += w * v
+                total_w += w
+            if total_w > 0:
+                weighted_vol /= total_w
 
-            if annual_vol < 0.12:
-                vol_score += 20
-                signals.append(f'低波动{annual_vol:.1%}')
-            elif annual_vol < 0.20:
-                vol_score += 10
-                signals.append(f'正常波动{annual_vol:.1%}')
-            elif annual_vol < 0.30:
+            # 波动率评分 (2019-2026加权分位校准, P10=10% P25=13% P50=15% P75=20% P90=26%)
+            if weighted_vol < 0.10:
+                vol_score += 22
+                signals.append(f'极低波动{weighted_vol:.1%}')
+            elif weighted_vol < 0.13:
+                vol_score += 12
+                signals.append(f'低波动{weighted_vol:.1%}')
+            elif weighted_vol < 0.155:
+                vol_score += 2
+                signals.append(f'正常偏低{weighted_vol:.1%}')
+            elif weighted_vol < 0.20:
                 vol_score -= 5
-                signals.append(f'偏高波动{annual_vol:.1%}')
+                signals.append(f'正常偏高{weighted_vol:.1%}')
+            elif weighted_vol < 0.265:
+                vol_score -= 15
+                signals.append(f'高波动{weighted_vol:.1%}')
             else:
-                vol_score -= 20
-                signals.append(f'极高波动{annual_vol:.1%}')
+                vol_score -= 25
+                signals.append(f'极高波动{weighted_vol:.1%}')
 
-            # 最近是否有极端日 (单日涨跌>3%)
-            extreme_days = sum(1 for p in pcts[-10:] if abs(p) > 0.03)
-            if extreme_days >= 3:
-                vol_score -= 15
-                signals.append(f'近10日{extreme_days}个极端日')
-            elif extreme_days == 0:
-                vol_score += 10
-                signals.append('近期无极端波动')
+            # 各指数波动差异 (大小盘分化加罚)
+            if '000300.SH' in idx_vols and '932000.CSI' in idx_vols:
+                vol_spread = idx_vols['932000.CSI'] - idx_vols['000300.SH']
+                if vol_spread > 0.15:
+                    vol_score -= 5
+                    signals.append(f'大小盘波动分化{vol_spread:.1%}')
 
-            # 连续下跌天数
-            consec_down = 0
-            for p in reversed(pcts):
-                if p < 0:
-                    consec_down += 1
-                else:
-                    break
-            if consec_down >= 5:
-                vol_score -= 15
-                signals.append(f'连跌{consec_down}日(风险)')
-            elif consec_down >= 3:
-                vol_score -= 5
+            # 极端日 (|pct|>2%, 中证全指为主, 比纯小盘更均衡)
+            ext_idx = vol_indices.get('000985.SH', vol_indices.get('932000.CSI', vol_indices.get('000300.SH')))
+            if ext_idx is not None:
+                ext_pcts = ext_idx['price_change_pct'].values
+                extreme_days = sum(1 for p in ext_pcts[-10:] if abs(p) > 0.02)
+                if extreme_days >= 5:
+                    vol_score -= 12
+                    signals.append(f'近10日{extreme_days}个极端日(>2%)')
+                elif extreme_days >= 3:
+                    vol_score -= 5
+                    signals.append(f'近10日{extreme_days}个极端日')
+                elif extreme_days == 0:
+                    vol_score += 8
+                    signals.append('近期无极端波动')
+
+            # 波动趋势: 20日vol vs 60日vol (P50=0.93, P75=1.09, P90=1.26)
+            ext_idx_for_trend = vol_indices.get('000985.SH', vol_indices.get('000300.SH'))
+            if ext_idx_for_trend is not None and len(ext_idx_for_trend) >= 60:
+                pcts_trend = ext_idx_for_trend['price_change_pct'].values
+                vol_20 = np.std(pcts_trend[-20:]) * np.sqrt(250)
+                vol_60 = np.std(pcts_trend[-60:]) * np.sqrt(250)
+                if vol_60 > 0:
+                    vol_ratio = vol_20 / vol_60
+                    if vol_ratio > 1.3:
+                        vol_score -= 8
+                        signals.append(f'波动率急升(×{vol_ratio:.2f})')
+                    elif vol_ratio < 0.75:
+                        vol_score += 5
+                        signals.append(f'波动率收敛(×{vol_ratio:.2f})')
+
+            # 连续下跌 (用沪深300判断)
+            if len(hs300) >= 5:
+                main_pcts = hs300['price_change_pct'].values
+                consec_down = 0
+                for p in reversed(main_pcts):
+                    if p < 0:
+                        consec_down += 1
+                    else:
+                        break
+                if consec_down >= 5:
+                    vol_score -= 12
+                    signals.append(f'连跌{consec_down}日')
+                elif consec_down >= 3:
+                    vol_score -= 5
+                    signals.append(f'连跌{consec_down}日')
 
             results['volatility'] = {
                 'score': max(0, min(100, vol_score)),
@@ -4318,18 +4386,20 @@ class TomorrowStockSelector:
             }
 
         # ======== 模型信号维度 (25%) ========
+        # 使用composite(rank_score)而非绝对score, 适配V4.6+全局分位数评分
         if all_stocks_with_scores and len(all_stocks_with_scores) > 0:
-            scores_list = []
             composites = []
+            scores_list = []
             recs = {'强烈买入': 0, '买入': 0, '谨慎买入': 0, '观望': 0}
 
             for s in all_stocks_with_scores:
-                sc = s.get('score', s.get('composite', None))
-                if sc is not None and sc > 0:
-                    scores_list.append(sc)
-                comp = s.get('composite', None)
-                if comp is not None:
+                # 优先用composite/rank_score (V4.6+), 回退到score
+                comp = s.get('composite', s.get('rank_score', None))
+                if comp is not None and comp != 0:
                     composites.append(comp)
+                sc = s.get('score', 0)
+                if sc > 0:
+                    scores_list.append(sc)
                 rec = s.get('recommendation', '观望')
                 if rec in recs:
                     recs[rec] += 1
@@ -4337,84 +4407,110 @@ class TomorrowStockSelector:
             model_score = 50
             signals = []
 
-            if scores_list:
-                median_score = np.median(scores_list)
-                mean_score = np.mean(scores_list)
-                std_score = np.std(scores_list)
-                total_n = len(scores_list)
+            # 优先用composite (model-agnostic), 回退到score (旧版本)
+            use_composite = len(composites) > 100
+            signal_values = composites if use_composite else scores_list
 
-                # 高分股占比 (score > 70)
-                high_score_ratio = sum(1 for s in scores_list if s > 70) / total_n
-                # 强买信号密度 (score > 85)
-                strong_count = sum(1 for s in scores_list if s > 85)
-                # Top10均分
-                top10_scores = sorted(scores_list, reverse=True)[:10]
-                top10_avg = np.mean(top10_scores)
+            if signal_values:
+                total_n = len(signal_values)
+                arr_sig = np.array(signal_values)
 
-                # 中位数评分
-                if median_score > 60:
-                    model_score += 15
-                    signals.append(f'中位数{median_score:.1f}(偏高)')
-                elif median_score > 50:
-                    model_score += 5
-                    signals.append(f'中位数{median_score:.1f}(正常)')
-                elif median_score < 35:
-                    model_score -= 15
-                    signals.append(f'中位数{median_score:.1f}(偏低)')
-                elif median_score < 45:
-                    model_score -= 5
-                    signals.append(f'中位数{median_score:.1f}(略低)')
+                if use_composite:
+                    # === Composite模式 (V4.6+): 基于rank_score分布 ===
+                    median_comp = np.median(arr_sig)
+                    p90_comp = np.percentile(arr_sig, 90)
+                    p95_comp = np.percentile(arr_sig, 95)
+                    p99_comp = np.percentile(arr_sig, 99)
+                    top10_avg = np.mean(sorted(arr_sig)[-10:])
+
+                    # Top10 composite强度 (校准: P99≈0.012, 强信号日>0.015)
+                    if top10_avg > 0.016:
+                        model_score += 20
+                        signals.append(f'Top10信号极强({top10_avg:.4f})')
+                    elif top10_avg > 0.012:
+                        model_score += 12
+                        signals.append(f'Top10信号强({top10_avg:.4f})')
+                    elif top10_avg > 0.009:
+                        model_score += 5
+                        signals.append(f'Top10正常({top10_avg:.4f})')
+                    elif top10_avg > 0.006:
+                        model_score -= 3
+                        signals.append(f'Top10偏弱({top10_avg:.4f})')
+                    else:
+                        model_score -= 10
+                        signals.append(f'Top10信号弱({top10_avg:.4f})')
+
+                    # P90尾部厚度 (好日子: P90高, 说明很多高分股)
+                    if p90_comp > 0.008:
+                        model_score += 8
+                    elif p90_comp > 0.005:
+                        model_score += 3
+                    elif p90_comp < 0.002:
+                        model_score -= 8
+                        signals.append(f'高分稀疏(P90={p90_comp:.4f})')
+
+                    # 正收益预测占比 (composite > 0)
+                    pos_ratio = np.mean(arr_sig > 0)
+                    if pos_ratio > 0.65:
+                        model_score += 8
+                        signals.append(f'{pos_ratio:.0%}正预测')
+                    elif pos_ratio > 0.50:
+                        model_score += 3
+                    elif pos_ratio < 0.30:
+                        model_score -= 10
+                        signals.append(f'仅{pos_ratio:.0%}正预测')
+                    elif pos_ratio < 0.40:
+                        model_score -= 5
+
                 else:
-                    signals.append(f'中位数{median_score:.1f}')
+                    # === Score模式 (旧版本): 基于0-100分数, 用相对百分位 ===
+                    median_score = np.median(arr_sig)
+                    p90_score = np.percentile(arr_sig, 90)
+                    top10_avg = np.mean(sorted(arr_sig)[-10:])
+                    high_ratio = np.mean(arr_sig > p90_score * 0.85)
 
-                # 高分占比
-                if high_score_ratio > 0.15:
-                    model_score += 15
-                    signals.append(f'高分股{high_score_ratio:.1%}')
-                elif high_score_ratio > 0.08:
-                    model_score += 5
-                elif high_score_ratio < 0.02:
-                    model_score -= 10
-                    signals.append(f'高分股仅{high_score_ratio:.1%}')
+                    # 相对中位数 (用自身P50比较, 不用绝对阈值)
+                    if median_score > 55:
+                        model_score += 10
+                        signals.append(f'中位数{median_score:.1f}(偏高)')
+                    elif median_score > 40:
+                        model_score += 3
+                    elif median_score < 20:
+                        model_score -= 10
+                        signals.append(f'中位数{median_score:.1f}(偏低)')
 
-                # 强买信号密度
-                if strong_count > 20:
-                    model_score += 10
-                    signals.append(f'强买{strong_count}只')
-                elif strong_count > 5:
-                    model_score += 5
-                elif strong_count == 0:
-                    model_score -= 10
-                    signals.append('无强买信号')
+                    # Top10均分
+                    if top10_avg > 90:
+                        model_score += 10
+                        signals.append(f'Top10均分{top10_avg:.0f}')
+                    elif top10_avg > 80:
+                        model_score += 5
+                    elif top10_avg < 65:
+                        model_score -= 8
 
-                # Top10均分
-                if top10_avg > 85:
-                    model_score += 10
-                    signals.append(f'Top10均分{top10_avg:.1f}')
-                elif top10_avg > 75:
-                    model_score += 5
-                elif top10_avg < 60:
-                    model_score -= 10
-                    signals.append(f'Top10均分仅{top10_avg:.1f}')
+                    # 高分股占比
+                    if high_ratio > 0.12:
+                        model_score += 8
+                    elif high_ratio < 0.03:
+                        model_score -= 8
 
-                # 评分离散度 (标准差大=分化明确)
-                if std_score > 20:
-                    signals.append(f'分化明确(σ={std_score:.1f})')
-                elif std_score < 8:
-                    model_score -= 5
-                    signals.append(f'区分度低(σ={std_score:.1f})')
-
-            # 推荐分布
+            # 推荐分布 (对所有模型版本通用)
             strong_buy_n = recs['强烈买入']
             buy_n = recs['买入']
             total_rec = sum(recs.values())
             if total_rec > 0:
                 bullish_ratio = (strong_buy_n + buy_n) / total_rec
-                if bullish_ratio > 0.3:
+                if strong_buy_n > 30:
+                    model_score += 10
+                    signals.append(f'强买{strong_buy_n}只')
+                elif strong_buy_n > 5:
                     model_score += 5
-                elif bullish_ratio < 0.05:
-                    model_score -= 5
-                signals.append(f'强买{strong_buy_n}/买入{buy_n}只')
+                    signals.append(f'强买{strong_buy_n}只')
+                elif strong_buy_n == 0 and buy_n < 10:
+                    model_score -= 8
+                    signals.append(f'仅买入{buy_n}只')
+                else:
+                    signals.append(f'强买{strong_buy_n}/买入{buy_n}只')
 
             results['model_signal'] = {
                 'score': max(0, min(100, model_score)),
