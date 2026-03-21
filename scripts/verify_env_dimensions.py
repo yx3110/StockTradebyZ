@@ -52,17 +52,17 @@ def load_indices():
         GROUP BY dq.trade_date ORDER BY dq.trade_date
     ''', conn)
 
-    # Turnover data for new factor
-    turnover_df = pd.read_sql('''
-        SELECT db.trade_date, AVG(db.turnover_rate) as avg_tr
-        FROM daily_basic db JOIN securities s ON db.security_id=s.id
-        WHERE s.type='A股' AND db.trade_date >= '2019-06-01'
-          AND db.turnover_rate > 0 AND db.turnover_rate < 50
-        GROUP BY db.trade_date ORDER BY db.trade_date
+    # Up ratio time series for breadth_momentum
+    up_ratio_df = pd.read_sql('''
+        SELECT dq.trade_date,
+            CAST(SUM(CASE WHEN dq.price_change_pct > 0 THEN 1 ELSE 0 END) AS REAL) / COUNT(*) as up_ratio
+        FROM daily_quotes dq JOIN securities s ON dq.security_id=s.id
+        WHERE s.type='A股' AND dq.trade_date >= '2019-06-01' AND dq.volume > 0
+        GROUP BY dq.trade_date ORDER BY dq.trade_date
     ''', conn)
 
     conn.close()
-    return indices, breadth_df, vol_df, turnover_df
+    return indices, breadth_df, vol_df, up_ratio_df
 
 
 def simulate_mean_reversion(indices, i):
@@ -179,13 +179,15 @@ def simulate_volatility(indices, i):
     return max(0, min(100, s))
 
 
-def simulate_turnover_heat(turnover_df, i):
-    """全市场换手率热度 (高换手=资金活跃=利好, 回测验证diff=+0.58%)"""
-    if i < 20: return 50
-    vals = turnover_df['avg_tr'].values[:i+1].astype(float)
-    if len(vals) < 20: return 50
-    z = (vals[-1] - np.mean(vals[-20:])) / max(np.std(vals[-20:]), 0.001)
-    return max(0, min(100, 50 + np.clip(z * 15, -30, 30)))  # 正向: 高换手→高分
+def simulate_breadth_momentum(breadth_df, i):
+    """涨家数MA5变化: 市场宽度趋势改善=利好 (回测diff=+1.47%)"""
+    if i < 10: return 50
+    ur = breadth_df['up_ratio'].values[:i+1].astype(float)
+    if len(ur) < 10: return 50
+    ma5_now = np.mean(ur[max(0,len(ur)-5):])
+    ma5_prev = np.mean(ur[max(0,len(ur)-10):max(0,len(ur)-5)])
+    delta = ma5_now - ma5_prev
+    return max(0, min(100, 50 + np.clip(delta * 350, -35, 35)))
 
 
 def simulate_style_momentum(indices, i):
@@ -243,21 +245,20 @@ def evaluate_dimension(name, scores, future_returns):
 
 def main():
     print("Loading data...")
-    indices, breadth_df, vol_df, turnover_df = load_indices()
+    indices, breadth_df, vol_df, up_ratio_df = load_indices()
 
     hs300 = indices['000300.SH']
     dates = hs300['trade_date'].values
     closes = hs300['close'].values.astype(float)
 
     breadth_lookup = {row['trade_date']: row for _, row in breadth_df.iterrows()}
-    turnover_lookup = {row['trade_date']: idx for idx, (_, row) in enumerate(turnover_df.iterrows())}
+    ur_lookup = {row['trade_date']: idx for idx, (_, row) in enumerate(up_ratio_df.iterrows())}
 
     START = 60
 
     volume_s, breadth_s = [], []
-    turnover_heat_s, style_mom_s = [], []
+    breadth_mom_s, style_mom_s = [], []
     mean_rev_s, growth_val_s = [], []
-    volatility_s = []
     future_rets = []
 
     print(f"Simulating {len(dates)-START} days...")
@@ -266,10 +267,9 @@ def main():
 
         vi = vol_df[vol_df['trade_date'] == date].index
         volume_s.append(simulate_volume(vol_df, hs300, vi[0]) if len(vi) > 0 else 50)
-        # Breadth with previous day up_ratio
+
         if date in breadth_lookup:
             br_row = breadth_lookup[date]
-            # Find previous trading day's up_ratio
             prev_date = dates[i-1] if i > 0 else None
             prev_ur = None
             if prev_date and prev_date in breadth_lookup:
@@ -279,13 +279,10 @@ def main():
             breadth_s.append(simulate_breadth(br_row, prev_ur))
         else:
             breadth_s.append(50)
-        volatility_s.append(simulate_volatility(indices, i))
 
-        ti = turnover_lookup.get(date)
-        turnover_heat_s.append(simulate_turnover_heat(turnover_df, ti) if ti is not None else 50)
+        ui = ur_lookup.get(date)
+        breadth_mom_s.append(simulate_breadth_momentum(up_ratio_df, ui) if ui is not None else 50)
         style_mom_s.append(simulate_style_momentum(indices, i))
-
-        # New replacement factors
         mean_rev_s.append(simulate_mean_reversion(indices, i))
         growth_val_s.append(simulate_growth_value(indices, i))
 
@@ -298,17 +295,16 @@ def main():
     print(f"  交易环境评分质量报告 ({len(volume_s)} 天)")
     print(f"{'='*120}")
 
-    # 新7维度: 删除trend/momentum(无预测力), 用均值回归+成长价值替代
     weights = {
-        'volume': 0.18, 'breadth': 0.20,
-        'turnover_heat': 0.10, 'style_momentum': 0.10,
+        'volume': 0.18, 'breadth': 0.18,
+        'breadth_momentum': 0.12, 'style_momentum': 0.10,
         'mean_reversion': 0.09, 'growth_value': 0.08,
         'model_signal': 0.25,
     }
 
     composite = 0
     for name, scores in [('volume', volume_s), ('breadth', breadth_s),
-                          ('turnover_heat', turnover_heat_s),
+                          ('breadth_momentum', breadth_mom_s),
                           ('style_momentum', style_mom_s),
                           ('mean_reversion', mean_rev_s),
                           ('growth_value', growth_val_s)]:
