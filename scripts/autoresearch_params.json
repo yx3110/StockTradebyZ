@@ -4,7 +4,7 @@
     "top_n": 10,
     "focus_days": 15,
     "benchmark": "000905.SH",
-    "rank_field": "auto",
+    "rank_field": "composite",
     "retention_bonus": 0.0,
     "score_floor": 30.0,
     "min_holdings": 3,
@@ -17,8 +17,8 @@
     "composite_weights": {
         "pred_3d": 0.00,
         "pred_5d": 0.00,
-        "pred_10d": 0.60,
-        "pred_15d": 0.40
+        "pred_10d": 0.50,
+        "pred_15d": 0.50
     },
     "metric": "v4_weighted_pct"
 }
