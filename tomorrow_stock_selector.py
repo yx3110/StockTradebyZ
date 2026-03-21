@@ -4230,45 +4230,41 @@ class TomorrowStockSelector:
                 breadth_score = 50
                 signals = []
 
-                # 涨跌比
-                if up_ratio > 0.75:
-                    breadth_score += 25
-                    signals.append(f'涨跌比{up}:{down}(普涨)')
-                elif up_ratio > 0.6:
-                    breadth_score += 15
-                    signals.append(f'涨跌比{up}:{down}(偏多)')
+                # 涨跌比 — 连续线性映射 (居中于50%: 0.3→-25, 0.5→0, 0.7→+25)
+                ur_adj = np.clip((up_ratio - 0.50) * 125, -30, 30)
+                breadth_score += ur_adj
+                if up_ratio > 0.70:
+                    signals.append(f'涨跌比{up}:{down}(普涨{up_ratio:.0%})')
+                elif up_ratio > 0.55:
+                    signals.append(f'涨跌比{up}:{down}(偏多{up_ratio:.0%})')
                 elif up_ratio > 0.45:
-                    breadth_score += 0
-                    signals.append(f'涨跌比{up}:{down}(均衡)')
-                elif up_ratio > 0.3:
-                    breadth_score -= 15
-                    signals.append(f'涨跌比{up}:{down}(偏空)')
+                    signals.append(f'涨跌比{up}:{down}(均衡{up_ratio:.0%})')
+                elif up_ratio > 0.30:
+                    signals.append(f'涨跌比{up}:{down}(偏空{up_ratio:.0%})')
                 else:
-                    breadth_score -= 25
-                    signals.append(f'涨跌比{up}:{down}(普跌)')
+                    signals.append(f'涨跌比{up}:{down}(普跌{up_ratio:.0%})')
 
-                # 涨停/跌停
-                if limit_up > 50:
-                    breadth_score += 10
+                # 涨停/跌停 (用连续映射, 校准: P50≈35只, P90≈68只)
+                lu_adj = np.clip((limit_up - 35) * 0.2, -5, 12)
+                breadth_score += lu_adj
+                if limit_up > 60:
                     signals.append(f'涨停{limit_up}只(活跃)')
                 elif limit_up > 20:
-                    breadth_score += 5
                     signals.append(f'涨停{limit_up}只')
 
+                ld_adj = np.clip((limit_down - 10) * 0.4, 0, 15)
+                breadth_score -= ld_adj
                 if limit_down > 30:
-                    breadth_score -= 15
                     signals.append(f'跌停{limit_down}只(恐慌)')
                 elif limit_down > 10:
-                    breadth_score -= 5
                     signals.append(f'跌停{limit_down}只')
 
-                # 强势股占比 (>5%)
+                # 强势股占比 (>5%, 连续映射)
                 strong_ratio = strong_up / total if total > 0 else 0
-                if strong_ratio > 0.15:
-                    breadth_score += 10
+                sr_adj = np.clip((strong_ratio - 0.04) * 200, -5, 10)
+                breadth_score += sr_adj
+                if strong_ratio > 0.10:
                     signals.append(f'强势股{strong_up}只({strong_ratio:.1%})')
-                elif strong_ratio < 0.02:
-                    breadth_score -= 5
 
                 results['breadth'] = {
                     'score': max(0, min(100, breadth_score)),
