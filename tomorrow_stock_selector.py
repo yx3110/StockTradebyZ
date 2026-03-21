@@ -3954,6 +3954,7 @@ class TomorrowStockSelector:
         sh_index = index_data.get('000001.SH', pd.DataFrame())
 
         results = {
+            'breadth': {'score': 50, 'label': '中性', 'signals': []},
             'volume': {'score': 50, 'label': '中性', 'signals': []},
             'growth_value': {'score': 50, 'label': '中性', 'signals': []},
             'model_dispersion': {'score': 50, 'label': '中性', 'signals': []},
@@ -4501,16 +4502,16 @@ class TomorrowStockSelector:
             }
 
         # ======== 综合评分 ========
-        # 5维度权重 (autoresearch V2, 对标ML Top10选股10天收益, composite=95.9):
-        #   成交量 diff=+2.12% → 22%     成长价值 diff=+2.39% → 18%
-        #   模型分化度 diff=+2.55% → 18%  模型预测极差 diff=+2.48% → 17%
-        #   模型信号 → 25%
+        # 6维度: 市场方向(breadth) + 预测力因子(volume/growth_value) + 模型质量 + 模型信号
+        # breadth: 涨跌比直接反映市场涨跌, 给高权重确保下跌时总分低
+        # model_dispersion/range: 信号质量, 降权避免虚高
         weights = {
-            'volume': 0.22,
-            'growth_value': 0.18,
-            'model_dispersion': 0.18,
-            'model_range': 0.17,
-            'model_signal': 0.25,
+            'breadth': 0.20,
+            'volume': 0.18,
+            'growth_value': 0.12,
+            'model_dispersion': 0.10,
+            'model_range': 0.10,
+            'model_signal': 0.30,
         }
         total_score = sum(results[k]['score'] * weights[k] for k in weights)
         total_score = round(total_score, 1)
@@ -4602,25 +4603,27 @@ class TomorrowStockSelector:
     def _format_trading_environment(self, env: Dict[str, Any]) -> str:
         """将交易环境监测结果格式化为报告文本"""
         dim_names = {
+            'breadth': '市场宽度',
             'volume': '成交量',
             'growth_value': '成长价值',
-            'model_dispersion': '模型分化度',
-            'model_range': '模型预测极差',
+            'model_dispersion': '信号质量',
+            'model_range': '信号强度',
             'model_signal': '模型信号',
         }
         dim_weights = {
-            'volume': '22%',
-            'growth_value': '18%',
-            'model_dispersion': '18%',
-            'model_range': '17%',
-            'model_signal': '25%',
+            'breadth': '20%',
+            'volume': '18%',
+            'growth_value': '12%',
+            'model_dispersion': '10%',
+            'model_range': '10%',
+            'model_signal': '30%',
         }
 
         section = "\n## 🌡️ 交易环境监测\n\n"
         section += "| 维度 | 权重 | 评分 | 状态 | 关键信号 |\n"
         section += "|------|------|------|------|----------|\n"
 
-        for key in ['volume', 'growth_value', 'model_dispersion', 'model_range', 'model_signal']:
+        for key in ['breadth', 'volume', 'growth_value', 'model_dispersion', 'model_range', 'model_signal']:
             d = env['dimensions'].get(key, {'score': 50, 'signals': [], 'emoji': '🟡', 'label': '中性'})
             sig_text = ', '.join(d['signals'][:3]) if d['signals'] else '-'
             section += f"| {dim_names[key]} | {dim_weights[key]} | {round(d['score'])}/100 | {d['emoji']} {d['label']} | {sig_text} |\n"
