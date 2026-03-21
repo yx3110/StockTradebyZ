@@ -298,8 +298,8 @@ def calc_growth_value(indices, dates):
 
 
 def calc_short_reversal(indices, dates):
-    """5日中证全指收益反转: 近5天跌→ML选股alpha高 (均值回归)"""
-    code = '000985.SH'
+    """中证2000 20日反转: 小盘近20天跌→ML选股alpha高 (回测diff=+1.35%)"""
+    code = '932000.CSI'
     if code not in indices: return {}
     df = indices[code]
     d_idx = df.set_index('trade_date')['close'].to_dict()
@@ -309,9 +309,9 @@ def calc_short_reversal(indices, dates):
     for date in dates:
         if date not in d2i: continue
         i = d2i[date]
-        if i < 5: continue
-        ret5 = d_idx[date] / d_idx[d_list[i-5]] - 1
-        out[date] = max(0, min(100, 50 - np.clip(ret5 * 600, -35, 35)))
+        if i < 20: continue
+        ret20 = d_idx[date] / d_idx[d_list[i-20]] - 1
+        out[date] = max(0, min(100, 50 - np.clip(ret20 * 400, -35, 35)))
     return out
 
 
@@ -329,8 +329,8 @@ def main():
 
     # Top10 optimized weights (drop breadth/breadth_momentum/style_momentum)
     weights = {
-        'volume': 0.22, 'growth_value': 0.18,
-        'short_reversal': 0.20, 'mean_reversion': 0.15,
+        'volume': 0.28, 'growth_value': 0.22,
+        'short_reversal': 0.12, 'mean_reversion': 0.13,
     }
     model_signal_weight = 0.25
 
