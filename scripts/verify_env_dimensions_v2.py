@@ -297,20 +297,21 @@ def calc_growth_value(indices, dates):
     return out
 
 
-def calc_short_reversal(breadth_df, dates):
-    """5日平均全A涨幅反转: 近5天跌多→ML选股alpha更高 (diff=+1.87%)"""
-    if 'avg_ret' not in breadth_df.columns:
-        return {}
-    br = breadth_df.set_index('trade_date')
-    br_dates = sorted(br.index)
+def calc_short_reversal(indices, dates):
+    """5日中证全指收益反转: 近5天跌→ML选股alpha高 (均值回归)"""
+    code = '000985.SH'
+    if code not in indices: return {}
+    df = indices[code]
+    d_idx = df.set_index('trade_date')['close'].to_dict()
+    d_list = sorted(d_idx.keys())
+    d2i = {d: i for i, d in enumerate(d_list)}
     out = {}
     for date in dates:
-        if date not in br.index: continue
-        i = br_dates.index(date)
+        if date not in d2i: continue
+        i = d2i[date]
         if i < 5: continue
-        avg5 = np.mean([br.loc[br_dates[j], 'avg_ret'] for j in range(i-4, i+1)])
-        # avg_ret P50≈-0.001 (slightly negative on average), center on that
-        out[date] = max(0, min(100, 50 - np.clip((avg5 + 0.001) * 2000, -35, 35)))
+        ret5 = d_idx[date] / d_idx[d_list[i-5]] - 1
+        out[date] = max(0, min(100, 50 - np.clip(ret5 * 600, -35, 35)))
     return out
 
 
@@ -340,7 +341,7 @@ def main():
     dims = {
         'volume': calc_volume(vol_df, indices['000300.SH'], eval_dates),
         'growth_value': calc_growth_value(indices, eval_dates),
-        'short_reversal': calc_short_reversal(breadth_df, eval_dates),
+        'short_reversal': calc_short_reversal(indices, eval_dates),
         'mean_reversion': calc_mean_reversion(indices, eval_dates),
     }
 
