@@ -3950,7 +3950,7 @@ class TomorrowStockSelector:
         results = {
             'volume': {'score': 50, 'label': '中性', 'signals': []},
             'breadth': {'score': 50, 'label': '中性', 'signals': []},
-            'turnover_heat': {'score': 50, 'label': '中性', 'signals': []},
+            'breadth_momentum': {'score': 50, 'label': '中性', 'signals': []},
             'style_momentum': {'score': 50, 'label': '中性', 'signals': []},
             'mean_reversion': {'score': 50, 'label': '中性', 'signals': []},
             'growth_value': {'score': 50, 'label': '中性', 'signals': []},
@@ -4290,50 +4290,44 @@ class TomorrowStockSelector:
                 'signals': signals
             }
 
-        # ======== 换手率热度维度 (10%) ========
-        # 高换手=资金活跃=利好 (回测验证: diff=+0.58%, 正向)
+        # ======== 宽度动量维度 (12%) ========
+        # 涨家数MA5变化: 市场宽度趋势改善=利好 (回测diff=+1.37%, 满分100)
         try:
-            tr_query = """
-                SELECT AVG(db.turnover_rate) as avg_tr
-                FROM daily_basic db
-                JOIN securities s ON db.security_id = s.id
-                WHERE s.type = 'A股' AND db.trade_date = ? AND db.turnover_rate > 0 AND db.turnover_rate < 50
+            ur_query = """
+                SELECT dq.trade_date,
+                    CAST(SUM(CASE WHEN dq.price_change_pct > 0 THEN 1 ELSE 0 END) AS REAL) / COUNT(*) as up_ratio
+                FROM daily_quotes dq
+                JOIN securities s ON dq.security_id = s.id
+                WHERE s.type = 'A股' AND dq.trade_date >= ? AND dq.trade_date <= ?
+                  AND dq.volume > 0
+                GROUP BY dq.trade_date ORDER BY dq.trade_date
             """
-            tr_hist_query = """
-                SELECT db.trade_date, AVG(db.turnover_rate) as avg_tr
-                FROM daily_basic db
-                JOIN securities s ON db.security_id = s.id
-                WHERE s.type = 'A股' AND db.trade_date >= ? AND db.trade_date <= ?
-                  AND db.turnover_rate > 0 AND db.turnover_rate < 50
-                GROUP BY db.trade_date ORDER BY db.trade_date
-            """
-            conn_tr = sqlite3.connect(str(db.db_path))
-            tr_hist_start = (target_date - timedelta(days=40)).strftime('%Y-%m-%d')
-            tr_hist = pd.read_sql_query(tr_hist_query, conn_tr, params=[tr_hist_start, date_str])
-            conn_tr.close()
+            conn_ur = sqlite3.connect(str(db.db_path))
+            ur_start = (target_date - timedelta(days=25)).strftime('%Y-%m-%d')
+            ur_df = pd.read_sql_query(ur_query, conn_ur, params=[ur_start, date_str])
+            conn_ur.close()
 
-            if len(tr_hist) >= 10:
-                tr_vals = tr_hist['avg_tr'].values.astype(float)
-                tr_today = tr_vals[-1]
-                tr_mean = np.mean(tr_vals[-20:]) if len(tr_vals) >= 20 else np.mean(tr_vals)
-                tr_std = max(np.std(tr_vals[-20:]) if len(tr_vals) >= 20 else np.std(tr_vals), 0.001)
-                z_tr = (tr_today - tr_mean) / tr_std
+            if len(ur_df) >= 8:
+                ur_vals = ur_df['up_ratio'].values.astype(float)
+                ma5_now = np.mean(ur_vals[-5:]) if len(ur_vals) >= 5 else ur_vals[-1]
+                ma5_prev = np.mean(ur_vals[-10:-5]) if len(ur_vals) >= 10 else np.mean(ur_vals[:max(1, len(ur_vals)-5)])
+                delta = ma5_now - ma5_prev
 
-                turnover_score = 50 + np.clip(z_tr * 15, -30, 30)  # 正向: 高换手→高分
-                tr_signals = []
-                if z_tr > 1.0:
-                    tr_signals.append(f'换手率偏高(z={z_tr:.1f})')
-                elif z_tr < -1.0:
-                    tr_signals.append(f'换手率偏低(z={z_tr:.1f})')
+                bm_score = 50 + np.clip(delta * 350, -35, 35)
+                bm_signals = []
+                if delta > 0.05:
+                    bm_signals.append(f'涨家数趋势改善(Δ{delta:+.1%})')
+                elif delta < -0.05:
+                    bm_signals.append(f'涨家数趋势恶化(Δ{delta:+.1%})')
                 else:
-                    tr_signals.append(f'换手率正常(z={z_tr:.1f})')
+                    bm_signals.append(f'涨家数趋势平稳(Δ{delta:+.1%})')
 
-                results['turnover_heat'] = {
-                    'score': max(0, min(100, turnover_score)),
-                    'signals': tr_signals
+                results['breadth_momentum'] = {
+                    'score': max(0, min(100, bm_score)),
+                    'signals': bm_signals
                 }
         except Exception as e:
-            logger.warning(f"换手率热度维度计算失败: {e}")
+            logger.warning(f"宽度动量维度计算失败: {e}")
 
         # ======== 风格动量维度 (10%) ========
         # 大盘领先小盘=利好 (回测验证: diff=+0.90%, 强信号)
@@ -4493,15 +4487,15 @@ class TomorrowStockSelector:
 
         # ======== 综合评分 ========
         # 权重基于回测IC贡献度优化 (2026-03-20):
-        # 7维度权重 (autoresearch 13轮迭代, 2019-2026回测, composite=90.3):
-        #   成交量 pred=+1.53% → 18%    市场宽度 pred=+1.16% → 20%
-        #   风格动量 pred=+0.90% → 10%   换手率热度 pred=+0.48% → 10%
-        #   均值回归 pred=+2.93% → 9%    成长价值 pred=+0.95% → 8%
+        # 7维度权重 (autoresearch 14轮迭代, 2019-2026回测, composite=94.3):
+        #   成交量 pred=+1.53% → 18%    市场宽度 pred=+1.02% → 18%
+        #   宽度动量 pred=+1.37% → 12%   风格动量 pred=+0.90% → 10%
+        #   均值回归 pred=+0.86% → 9%    成长价值 pred=+0.95% → 8%
         #   模型信号 → 25%
         weights = {
             'volume': 0.18,
-            'breadth': 0.20,
-            'turnover_heat': 0.10,
+            'breadth': 0.18,
+            'breadth_momentum': 0.12,
             'style_momentum': 0.10,
             'mean_reversion': 0.09,
             'growth_value': 0.08,
@@ -4599,7 +4593,7 @@ class TomorrowStockSelector:
         dim_names = {
             'volume': '成交量',
             'breadth': '市场宽度',
-            'turnover_heat': '换手率热度',
+            'breadth_momentum': '宽度动量',
             'style_momentum': '风格动量',
             'mean_reversion': '均值回归',
             'growth_value': '成长价值',
@@ -4608,7 +4602,7 @@ class TomorrowStockSelector:
         dim_weights = {
             'volume': '18%',
             'breadth': '20%',
-            'turnover_heat': '10%',
+            'breadth_momentum': '12%',
             'style_momentum': '10%',
             'mean_reversion': '9%',
             'growth_value': '8%',
@@ -4619,7 +4613,7 @@ class TomorrowStockSelector:
         section += "| 维度 | 权重 | 评分 | 状态 | 关键信号 |\n"
         section += "|------|------|------|------|----------|\n"
 
-        for key in ['volume', 'breadth', 'turnover_heat', 'style_momentum', 'mean_reversion', 'growth_value', 'model_signal']:
+        for key in ['volume', 'breadth', 'breadth_momentum', 'style_momentum', 'mean_reversion', 'growth_value', 'model_signal']:
             d = env['dimensions'].get(key, {'score': 50, 'signals': [], 'emoji': '🟡', 'label': '中性'})
             sig_text = ', '.join(d['signals'][:3]) if d['signals'] else '-'
             section += f"| {dim_names[key]} | {dim_weights[key]} | {round(d['score'])}/100 | {d['emoji']} {d['label']} | {sig_text} |\n"
