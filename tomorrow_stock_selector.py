@@ -4703,10 +4703,10 @@ class TomorrowStockSelector:
         section += "| 维度 | 权重 | 评分 | 状态 | 关键信号 |\n"
         section += "|------|------|------|------|----------|\n"
 
-        for key in ['trend', 'momentum', 'volume', 'breadth', 'volatility', 'model_signal']:
-            d = env['dimensions'][key]
+        for key in ['trend', 'momentum', 'volume', 'breadth', 'volatility', 'turnover_heat', 'style_momentum', 'model_signal']:
+            d = env['dimensions'].get(key, {'score': 50, 'signals': [], 'emoji': '🟡', 'label': '中性'})
             sig_text = ', '.join(d['signals'][:3]) if d['signals'] else '-'
-            section += f"| {dim_names[key]} | {dim_weights[key]} | {d['score']}/100 | {d['emoji']} {d['label']} | {sig_text} |\n"
+            section += f"| {dim_names[key]} | {dim_weights[key]} | {round(d['score'])}/100 | {d['emoji']} {d['label']} | {sig_text} |\n"
 
         section += f"| **综合** | **100%** | **{env['total_score']}/100** | **{env['env_emoji']} {env['env_label']}** | **建议仓位: {env['position_advice']}** |\n"
 
