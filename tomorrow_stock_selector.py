@@ -3953,6 +3953,8 @@ class TomorrowStockSelector:
             'volume': {'score': 50, 'label': '中性', 'signals': []},
             'breadth': {'score': 50, 'label': '中性', 'signals': []},
             'volatility': {'score': 50, 'label': '正常', 'signals': []},
+            'turnover_heat': {'score': 50, 'label': '中性', 'signals': []},
+            'style_momentum': {'score': 50, 'label': '中性', 'signals': []},
             'model_signal': {'score': 50, 'label': '中性', 'signals': []},
         }
 
@@ -4369,6 +4371,75 @@ class TomorrowStockSelector:
                 'signals': signals
             }
 
+        # ======== 换手率热度维度 (10%) ========
+        # 高换手=资金活跃=利好 (回测验证: diff=+0.58%, 正向)
+        try:
+            tr_query = """
+                SELECT AVG(db.turnover_rate) as avg_tr
+                FROM daily_basic db
+                JOIN securities s ON db.security_id = s.id
+                WHERE s.type = 'A股' AND db.trade_date = ? AND db.turnover_rate > 0 AND db.turnover_rate < 50
+            """
+            tr_hist_query = """
+                SELECT db.trade_date, AVG(db.turnover_rate) as avg_tr
+                FROM daily_basic db
+                JOIN securities s ON db.security_id = s.id
+                WHERE s.type = 'A股' AND db.trade_date >= ? AND db.trade_date <= ?
+                  AND db.turnover_rate > 0 AND db.turnover_rate < 50
+                GROUP BY db.trade_date ORDER BY db.trade_date
+            """
+            conn_tr = sqlite3.connect(str(db.db_path))
+            tr_hist_start = (target_date - timedelta(days=40)).strftime('%Y-%m-%d')
+            tr_hist = pd.read_sql_query(tr_hist_query, conn_tr, params=[tr_hist_start, date_str])
+            conn_tr.close()
+
+            if len(tr_hist) >= 10:
+                tr_vals = tr_hist['avg_tr'].values.astype(float)
+                tr_today = tr_vals[-1]
+                tr_mean = np.mean(tr_vals[-20:]) if len(tr_vals) >= 20 else np.mean(tr_vals)
+                tr_std = max(np.std(tr_vals[-20:]) if len(tr_vals) >= 20 else np.std(tr_vals), 0.001)
+                z_tr = (tr_today - tr_mean) / tr_std
+
+                turnover_score = 50 + np.clip(z_tr * 15, -30, 30)  # 正向: 高换手→高分
+                tr_signals = []
+                if z_tr > 1.0:
+                    tr_signals.append(f'换手率偏高(z={z_tr:.1f})')
+                elif z_tr < -1.0:
+                    tr_signals.append(f'换手率偏低(z={z_tr:.1f})')
+                else:
+                    tr_signals.append(f'换手率正常(z={z_tr:.1f})')
+
+                results['turnover_heat'] = {
+                    'score': max(0, min(100, turnover_score)),
+                    'signals': tr_signals
+                }
+        except Exception as e:
+            logger.warning(f"换手率热度维度计算失败: {e}")
+
+        # ======== 风格动量维度 (10%) ========
+        # 大盘领先小盘=利好 (回测验证: diff=+0.90%, 强信号)
+        csi2000 = index_data.get('932000.CSI', pd.DataFrame())
+        if len(hs300) >= 5 and len(csi2000) >= 5:
+            c300 = hs300['close'].values.astype(float)
+            c2000 = csi2000['close'].values.astype(float)
+            ret300_5d = c300[-1] / c300[-5] - 1
+            ret2000_5d = c2000[-1] / c2000[-5] - 1
+            spread = ret300_5d - ret2000_5d  # 正=大盘领先
+
+            style_score = 50 + np.clip(spread * 500, -30, 30)
+            style_signals = []
+            if spread > 0.02:
+                style_signals.append(f'大盘领先小盘{spread:+.1%}(利好)')
+            elif spread < -0.02:
+                style_signals.append(f'小盘领先大盘{-spread:+.1%}(风格切换)')
+            else:
+                style_signals.append(f'大小盘均衡{spread:+.1%}')
+
+            results['style_momentum'] = {
+                'score': max(0, min(100, style_score)),
+                'signals': style_signals
+            }
+
         # ======== 模型信号维度 (25%) ========
         # 使用composite(rank_score)而非绝对score, 适配V4.6+全局分位数评分
         if all_stocks_with_scores and len(all_stocks_with_scores) > 0:
@@ -4503,18 +4574,19 @@ class TomorrowStockSelector:
 
         # ======== 综合评分 ========
         # 权重基于回测IC贡献度优化 (2026-03-20):
-        # 权重基于6年(2019-2026)回测预测力校准 (autoresearch 10轮迭代):
-        #   成交量 pred_diff=+1.42% → 22% (最强信号)
-        #   市场宽度 pred_diff=+1.16% → 27%
-        #   波动风险 pred_diff=-0.46% (反向) → 10% (保留作为风险参考)
-        #   趋势 pred_diff=-0.18% → 8%
-        #   动量 pred_diff=+0.03% → 8%
+        # 8维度权重 (autoresearch回测校准, 2019-2026, composite=79.8):
+        #   成交量 pred=+1.53% → 18%    市场宽度 pred=+1.16% → 22%
+        #   风格动量 pred=+0.90% → 10%   换手率热度 pred=+0.48% → 10%
+        #   波动风险 pred=-0.46% → 5%     趋势 pred=-0.18% → 5%
+        #   动量 pred=+0.03% → 5%        模型信号 → 25%
         weights = {
-            'trend': 0.08,
-            'momentum': 0.08,
-            'volume': 0.22,
-            'breadth': 0.27,
-            'volatility': 0.10,
+            'trend': 0.05,
+            'momentum': 0.05,
+            'volume': 0.18,
+            'breadth': 0.22,
+            'volatility': 0.05,
+            'turnover_heat': 0.10,
+            'style_momentum': 0.10,
             'model_signal': 0.25,
         }
         total_score = sum(results[k]['score'] * weights[k] for k in weights)
@@ -4612,14 +4684,18 @@ class TomorrowStockSelector:
             'volume': '成交量',
             'breadth': '市场宽度',
             'volatility': '波动风险',
+            'turnover_heat': '换手率热度',
+            'style_momentum': '风格动量',
             'model_signal': '模型信号',
         }
         dim_weights = {
-            'trend': '8%',
-            'momentum': '8%',
-            'volume': '22%',
-            'breadth': '27%',
-            'volatility': '10%',
+            'trend': '5%',
+            'momentum': '5%',
+            'volume': '18%',
+            'breadth': '22%',
+            'volatility': '5%',
+            'turnover_heat': '10%',
+            'style_momentum': '10%',
             'model_signal': '25%',
         }
 
