@@ -3,7 +3,7 @@
     "label": "autoresearch",
     "top_n": 10,
     "focus_days": 15,
-    "benchmark": "000905.SH",
+    "benchmark": "000852.SH",
     "rank_field": "auto",
     "retention_bonus": 0.0,
     "score_floor": 30.0,
