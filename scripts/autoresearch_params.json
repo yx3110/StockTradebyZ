@@ -12,7 +12,7 @@
     "cppi_floor": 0.05,
     "cppi_multiplier": 20.0,
     "sector_diversify": 0,
-    "vol_target": 0.15,
+    "vol_target": 0.0,
     "risk_control": false,
     "composite_weights": {
         "pred_3d": 0.00,
