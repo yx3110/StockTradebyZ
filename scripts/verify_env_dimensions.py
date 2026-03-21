@@ -146,13 +146,20 @@ def simulate_breadth(breadth_row):
     if total == 0: return 50
     up_ratio = breadth_row['up_count'] / total
     s = 50
-    s += np.clip((up_ratio - 0.50) * 125, -30, 30)
+    if up_ratio > 0.75: s += 25
+    elif up_ratio > 0.6: s += 15
+    elif up_ratio > 0.45: s += 0
+    elif up_ratio > 0.3: s -= 15
+    else: s -= 25
     lu = breadth_row['limit_up']
     ld = breadth_row['limit_down']
-    s += np.clip((lu - 35) * 0.2, -5, 12)
-    s -= np.clip((ld - 10) * 0.4, 0, 15)
-    sr = breadth_row['strong_up'] / total if total > 0 else 0
-    s += np.clip((sr - 0.04) * 200, -5, 10)
+    if lu > 50: s += 10
+    elif lu > 20: s += 5
+    if ld > 30: s -= 15
+    elif ld > 10: s -= 5
+    sr = breadth_row['strong_up'] / total
+    if sr > 0.15: s += 10
+    elif sr < 0.02: s -= 5
     return max(0, min(100, s))
 
 
