@@ -3956,73 +3956,52 @@ class TomorrowStockSelector:
             'model_signal': {'score': 50, 'label': '中性', 'signals': []},
         }
 
-        # ======== 趋势维度 (20%) ========
-        if len(hs300) >= 5:
-            closes = hs300['close'].values
-            latest = closes[-1]
+        # ======== 趋势维度 (10%) ========
+        # 多指数加权, 全连续变量消除二元化
+        trend_idx_list = [('000300.SH', 0.5), ('000985.SH', 0.5)]
+        trend_raw = []
+        trend_signals = []
+        for t_code, t_w in trend_idx_list:
+            t_df = index_data.get(t_code)
+            if t_df is None or len(t_df) < 20:
+                continue
+            tc = t_df['close'].values.astype(float)
+            latest = tc[-1]
+            ma20 = np.mean(tc[-20:])
+            ma60 = np.mean(tc[-60:]) if len(tc) >= 60 else ma20
 
-            # MA位置关系
-            ma5 = np.mean(closes[-5:]) if len(closes) >= 5 else latest
-            ma20 = np.mean(closes[-20:]) if len(closes) >= 20 else latest
-            ma60 = np.mean(closes[-60:]) if len(closes) >= 60 else latest
+            t_s = 50
+            # 价格偏离MA20 (连续, ±3%→±15分)
+            t_s += np.clip((latest / ma20 - 1) * 500, -15, 15)
+            # 价格偏离MA60 (连续, ±5%→±10分)
+            t_s += np.clip((latest / ma60 - 1) * 200, -10, 10)
+            # MA20斜率 (5日变化率, 连续)
+            if len(tc) >= 25:
+                ma20_5ago = np.mean(tc[-25:-5])
+                t_s += np.clip((ma20 / ma20_5ago - 1) * 500, -10, 10)
+            # 距前高 (连续)
+            peak = np.max(tc[-60:]) if len(tc) >= 60 else np.max(tc)
+            t_s += np.clip((latest / peak - 1) * 100, -15, 0)
+            trend_raw.append((t_s, t_w))
 
-            trend_score = 50
-            signals = []
-
-            # 价格vs均线 (+/- 5分 each)
-            if latest > ma5:
-                trend_score += 5
-            else:
-                trend_score -= 5
-            if latest > ma20:
-                trend_score += 8
-            else:
-                trend_score -= 8
-            if latest > ma60:
-                trend_score += 7
-            else:
-                trend_score -= 7
-
-            # 均线排列
-            if ma5 > ma20 > ma60:
-                trend_score += 15
-                signals.append('多头排列(MA5>MA20>MA60)')
-            elif ma5 < ma20 < ma60:
-                trend_score -= 15
-                signals.append('空头排列(MA5<MA20<MA60)')
-            else:
-                signals.append('均线交织')
-
-            # 近5日涨跌幅
-            ret_5d = (closes[-1] / closes[-5] - 1) if len(closes) >= 5 else 0
-            if ret_5d > 0.03:
-                trend_score += 10
-                signals.append(f'5日涨{ret_5d:.1%}')
-            elif ret_5d > 0.01:
-                trend_score += 5
-                signals.append(f'5日涨{ret_5d:.1%}')
-            elif ret_5d < -0.03:
-                trend_score -= 10
-                signals.append(f'5日跌{ret_5d:.1%}')
-            elif ret_5d < -0.01:
-                trend_score -= 5
-                signals.append(f'5日跌{ret_5d:.1%}')
-            else:
-                signals.append(f'5日横盘{ret_5d:+.1%}')
-
-            # 距前高回撤
-            peak = np.max(closes[-60:]) if len(closes) >= 60 else np.max(closes)
-            drawdown = (latest / peak - 1)
-            if drawdown < -0.10:
-                trend_score -= 10
-                signals.append(f'距前高{drawdown:.1%}')
-            elif drawdown < -0.05:
-                trend_score -= 5
-                signals.append(f'距前高{drawdown:.1%}')
-
+        if trend_raw:
+            trend_score = sum(s * w for s, w in trend_raw) / sum(w for _, w in trend_raw)
+            if '000300.SH' in index_data and len(index_data['000300.SH']) >= 5:
+                c300 = index_data['000300.SH']['close'].values.astype(float)
+                ma5_t = np.mean(c300[-5:])
+                ma20_t = np.mean(c300[-20:]) if len(c300) >= 20 else c300[-1]
+                ma60_t = np.mean(c300[-60:]) if len(c300) >= 60 else ma20_t
+                if ma5_t > ma20_t > ma60_t:
+                    trend_signals.append('多头排列')
+                elif ma5_t < ma20_t < ma60_t:
+                    trend_signals.append('空头排列')
+                else:
+                    trend_signals.append('均线交织')
+                ret_5d = c300[-1] / c300[-5] - 1 if len(c300) >= 5 else 0
+                trend_signals.append(f'5日{ret_5d:+.1%}')
             results['trend'] = {
                 'score': max(0, min(100, trend_score)),
-                'signals': signals
+                'signals': trend_signals
             }
 
         # ======== 动量维度 (15%) ========
