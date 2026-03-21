@@ -4053,23 +4053,23 @@ class TomorrowStockSelector:
                     'signals': range_signals
                 }
 
-        # ======== 成长价值维度 (8%) ========
-        # 创业板vs沪深300: 创业板领先=风险偏好上升=利好 (回测diff=+0.95%)
+        # ======== 成长价值维度 (15%) ========
+        # 创业板vs沪深300 10日相对动量: 6年验证 diff=+3.62% (Top10), dir=61.5%
         gem_df = index_data.get('399006.SZ', pd.DataFrame())
-        if len(hs300) >= 5 and len(gem_df) >= 5:
+        if len(hs300) >= 10 and len(gem_df) >= 10:
             c300_gv = hs300['close'].values.astype(float)
             cgem_gv = gem_df['close'].values.astype(float)
-            ret300_5d = c300_gv[-1] / c300_gv[-5] - 1
-            retgem_5d = cgem_gv[-1] / cgem_gv[-5] - 1
-            gv_spread = retgem_5d - ret300_5d  # 正=创业板领先
-            gv_score = 50 + np.clip(gv_spread * 800, -35, 35)
+            ret300_10d = c300_gv[-1] / c300_gv[-10] - 1
+            retgem_10d = cgem_gv[-1] / cgem_gv[-10] - 1
+            gv_spread = retgem_10d - ret300_10d  # 正=创业板领先
+            gv_score = 50 + np.clip(gv_spread * 400, -35, 35)
             gv_signals = []
-            if gv_spread > 0.02:
-                gv_signals.append(f'创业板领先沪深300 {gv_spread:+.1%}(风险偏好上升)')
-            elif gv_spread < -0.02:
-                gv_signals.append(f'沪深300领先创业板 {-gv_spread:+.1%}(避险)')
+            if gv_spread > 0.03:
+                gv_signals.append(f'创业板10日领先沪深300 {gv_spread:+.1%}(风险偏好上升)')
+            elif gv_spread < -0.03:
+                gv_signals.append(f'沪深300 10日领先创业板 {-gv_spread:+.1%}(避险)')
             else:
-                gv_signals.append(f'成长价值均衡{gv_spread:+.1%}')
+                gv_signals.append(f'成长价值10日均衡{gv_spread:+.1%}')
             results['growth_value'] = {
                 'score': max(0, min(100, gv_score)),
                 'signals': gv_signals
@@ -4556,11 +4556,17 @@ class TomorrowStockSelector:
         # 5维度: MA位置(方向) + 市场宽度(方向) + 成交量(预测) + 成长价值(预测) + 模型信号(预测)
         # MA位置: 92%方向准确率, 核心方向指标
         # model_dispersion/model_range: 仅展示, 不参与加权评分
+        # 权重 (6年全样本前瞻10天验证):
+        #   MA位置: 方向描述(dir=92%), 无前瞻预测力 → 25%
+        #   市场宽度: 方向描述(dir=60%) → 10%
+        #   成交量: Top10预测 diff=+2.39% → 15%
+        #   成长价值(10d): Top10预测 diff=+3.62% (最强!) → 15%
+        #   模型信号: Top10预测 diff=+1.61% → 35%
         weights = {
             'ma_position': 0.25,
-            'breadth': 0.15,
+            'breadth': 0.10,
             'volume': 0.15,
-            'growth_value': 0.10,
+            'growth_value': 0.15,
             'model_signal': 0.35,
         }
         total_score = sum(results[k]['score'] * weights[k] for k in weights)
@@ -4661,9 +4667,9 @@ class TomorrowStockSelector:
         }
         dim_weights = {
             'ma_position': '25%',
-            'breadth': '15%',
+            'breadth': '10%',
             'volume': '15%',
-            'growth_value': '10%',
+            'growth_value': '15%',
             'model_signal': '35%',
         }
 
