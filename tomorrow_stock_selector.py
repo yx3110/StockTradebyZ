@@ -4117,7 +4117,7 @@ class TomorrowStockSelector:
 
                 # 量比连续映射 (vs 5日均量, 线性插值提升区分度)
                 # vr5分布: P10=0.78, P25=0.88, P50=0.98, P75=1.10, P90=1.28
-                vr5_adj = np.clip((vol_ratio_5 - 1.0) * 40, -20, 25)  # ±1 std → ±4分
+                vr5_adj = np.clip((vol_ratio_5 - 1.0) * 60, -25, 30)
                 volume_score += vr5_adj
                 if vol_ratio_5 > 1.3:
                     signals.append(f'量比5日{vol_ratio_5:.2f}(显著放量)')
@@ -4131,7 +4131,7 @@ class TomorrowStockSelector:
                     signals.append(f'量比5日{vol_ratio_5:.2f}(正常)')
 
                 # 量比vs20日 (中期趋势)
-                vr20_adj = np.clip((vol_ratio_20 - 1.0) * 20, -10, 15)
+                vr20_adj = np.clip((vol_ratio_20 - 1.0) * 30, -15, 20)
                 volume_score += vr20_adj
 
                 # 量能趋势 (连续放量/缩量, 用线性分数)

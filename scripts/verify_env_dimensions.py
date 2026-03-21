@@ -111,8 +111,8 @@ def simulate_volume(vol_df, hs300, i):
     vr5 = v_today / v_ma5 if v_ma5 > 0 else 1.0
     vr20 = v_today / v_ma20 if v_ma20 > 0 else 1.0
     s = 50
-    s += np.clip((vr5 - 1.0) * 40, -20, 25)
-    s += np.clip((vr20 - 1.0) * 20, -10, 15)
+    s += np.clip((vr5 - 1.0) * 60, -25, 30)
+    s += np.clip((vr20 - 1.0) * 30, -15, 20)
     if len(vols) >= 5:
         vt = sum(1 if vols[-j] > vols[-j-1] else -1 for j in range(1, 5))
         s += vt * 2.5
