@@ -315,6 +315,42 @@ def calc_short_reversal(indices, dates):
     return out
 
 
+def calc_model_dispersion(report_dir, dates):
+    """全市场score离散度: 模型分化度高→信号质量好 (diff=+2.55%)"""
+    out = {}
+    for f in sorted(os.listdir(report_dir)):
+        if not f.startswith('analysis_data_'): continue
+        date_str = f.replace('analysis_data_', '').replace('.json', '')
+        date = f'{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}'
+        if date not in dates: continue
+        with open(os.path.join(report_dir, f)) as fh:
+            data = json.load(fh)
+        stocks = data.get('all_stocks_with_scores', [])
+        all_rs = [s.get('rank_score', 0) or 0 for s in stocks if s.get('rank_score')]
+        if len(all_rs) < 100: continue
+        std_rs = np.std(all_rs)
+        out[date] = max(0, min(100, 50 + np.clip((std_rs - 0.004) * 8000, -30, 30)))
+    return out
+
+
+def calc_model_range(report_dir, dates):
+    """模型预测极差(P95-P5): 极差大→模型confident (diff=+2.48%)"""
+    out = {}
+    for f in sorted(os.listdir(report_dir)):
+        if not f.startswith('analysis_data_'): continue
+        date_str = f.replace('analysis_data_', '').replace('.json', '')
+        date = f'{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}'
+        if date not in dates: continue
+        with open(os.path.join(report_dir, f)) as fh:
+            data = json.load(fh)
+        stocks = data.get('all_stocks_with_scores', [])
+        all_rs = [s.get('rank_score', 0) or 0 for s in stocks if s.get('rank_score')]
+        if len(all_rs) < 100: continue
+        spread = np.percentile(all_rs, 95) - np.percentile(all_rs, 5)
+        out[date] = max(0, min(100, 50 + np.clip((spread - 0.015) * 3000, -30, 30)))
+    return out
+
+
 def main():
     print("Loading Top10 returns...")
     top10_returns = load_top10_returns()
@@ -329,8 +365,8 @@ def main():
 
     # Top10 optimized weights (drop breadth/breadth_momentum/style_momentum)
     weights = {
-        'volume': 0.28, 'growth_value': 0.22,
-        'short_reversal': 0.12, 'mean_reversion': 0.13,
+        'volume': 0.22, 'growth_value': 0.18,
+        'model_dispersion': 0.18, 'model_range': 0.17,
     }
     model_signal_weight = 0.25
 
@@ -338,11 +374,12 @@ def main():
     print(f"  交易环境维度评分 V2 — 预测目标: ML Top10选股10天收益 ({len(eval_dates)}天)")
     print(f"{'='*130}")
 
+    eval_set = set(eval_dates)
     dims = {
         'volume': calc_volume(vol_df, indices['000300.SH'], eval_dates),
         'growth_value': calc_growth_value(indices, eval_dates),
-        'short_reversal': calc_short_reversal(indices, eval_dates),
-        'mean_reversion': calc_mean_reversion(indices, eval_dates),
+        'model_dispersion': calc_model_dispersion(REPORT_DIR, eval_set),
+        'model_range': calc_model_range(REPORT_DIR, eval_set),
     }
 
     composite = 0
