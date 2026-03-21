@@ -65,49 +65,32 @@ def load_indices():
     return indices, breadth_df, vol_df, turnover_df
 
 
-def simulate_trend(indices, i):
-    trend_raw = []
-    for t_code, t_w in [('000300.SH', 0.5), ('000985.SH', 0.5)]:
-        if t_code not in indices: continue
-        tc = indices[t_code]['close'].values[:i+1].astype(float)
-        if len(tc) < 20: continue
-        latest = tc[-1]
-        ma20 = np.mean(tc[-20:])
-        ma60 = np.mean(tc[-60:]) if len(tc) >= 60 else ma20
-        t_s = 50
-        t_s += np.clip((latest / ma20 - 1) * 500, -15, 15)
-        t_s += np.clip((latest / ma60 - 1) * 200, -10, 10)
-        if len(tc) >= 25:
-            ma20_5ago = np.mean(tc[-25:-5])
-            t_s += np.clip((ma20 / ma20_5ago - 1) * 500, -10, 10)
-        peak = np.max(tc[-60:]) if len(tc) >= 60 else np.max(tc)
-        t_s += np.clip((latest / peak - 1) * 100, -15, 0)
-        trend_raw.append((t_s, t_w))
-    if not trend_raw: return 50
-    return max(0, min(100, sum(s*w for s,w in trend_raw) / sum(w for _,w in trend_raw)))
+def simulate_mean_reversion(indices, i):
+    """20日收益率反转: 跌多→利好(均值回归), diff=+1.94%"""
+    raw = []
+    for code, w in [('000300.SH', 0.4), ('000985.SH', 0.3), ('932000.CSI', 0.3)]:
+        if code not in indices: continue
+        c = indices[code]['close'].values[:i+1].astype(float)
+        if len(c) < 20: continue
+        ret20 = c[-1] / c[-20] - 1
+        # 反向: 20日跌幅越大→分数越高 (均值回归机会)
+        s = 50 - np.clip(ret20 * 350, -35, 35)
+        raw.append((s, w))
+    if not raw: return 50
+    return max(0, min(100, sum(s*w for s,w in raw) / sum(w for _,w in raw)))
 
 
-def simulate_momentum(hs300, i):
-    c = hs300['close'].values[:i+1].astype(float)
-    if len(c) < 20: return 50
-    s = 50
-    ret_5d = c[-1] / c[-5] - 1
-    ret_20d = c[-1] / c[-20] - 1
-    s += np.clip(ret_5d * 500, -15, 15)
-    s += np.clip(ret_20d * 125, -10, 10)
-    if abs(ret_20d) > 0.001:
-        accel = (ret_5d / abs(ret_20d)) - 1
-        s += np.clip(accel * 5, -8, 8)
-    if len(c) >= 26:
-        ema12 = pd.Series(c).ewm(span=12).mean().iloc[-1]
-        ema26 = pd.Series(c).ewm(span=26).mean().iloc[-1]
-        dif = ema12 - ema26
-        dif_norm = dif / c[-1] * 10000
-        s += np.clip(dif_norm * 0.3, -10, 10)
-        dif_prev = pd.Series(c[:-1]).ewm(span=12).mean().iloc[-1] - pd.Series(c[:-1]).ewm(span=26).mean().iloc[-1]
-        dif_delta = (dif - dif_prev) / c[-1] * 10000
-        s += np.clip(dif_delta * 2, -7, 7)
-    return max(0, min(100, s))
+def simulate_growth_value(indices, i):
+    """创业板vs沪深300: 创业板领先=风险偏好上升=利好, diff=+1.24%"""
+    if '000300.SH' not in indices or '399006.SZ' not in indices:
+        return 50
+    c300 = indices['000300.SH']['close'].values[:i+1].astype(float)
+    cgem = indices['399006.SZ']['close'].values[:i+1].astype(float)
+    if len(c300) < 5 or len(cgem) < 5: return 50
+    ret300 = c300[-1] / c300[-5] - 1
+    retgem = cgem[-1] / cgem[-5] - 1
+    spread = retgem - ret300  # 正=创业板领先
+    return max(0, min(100, 50 + np.clip(spread * 800, -35, 35)))
 
 
 def simulate_volume(vol_df, hs300, i):
@@ -132,25 +115,23 @@ def simulate_volume(vol_df, hs300, i):
     return max(0, min(100, s))
 
 
-def simulate_breadth(breadth_row):
+def simulate_breadth(breadth_row, prev_up_ratio=None):
     total = breadth_row['total']
     if total == 0: return 50
     up_ratio = breadth_row['up_count'] / total
     s = 50
-    if up_ratio > 0.75: s += 25
-    elif up_ratio > 0.6: s += 15
-    elif up_ratio > 0.45: s += 0
-    elif up_ratio > 0.3: s -= 15
-    else: s -= 25
+    # 连续化: ±20%偏离50%中位映射到±25分
+    s += np.clip((up_ratio - 0.50) * 100, -25, 25)
     lu = breadth_row['limit_up']
     ld = breadth_row['limit_down']
-    if lu > 50: s += 10
-    elif lu > 20: s += 5
-    if ld > 30: s -= 15
-    elif ld > 10: s -= 5
-    sr = breadth_row['strong_up'] / total
-    if sr > 0.15: s += 10
-    elif sr < 0.02: s -= 5
+    s += np.clip((lu - 40) * 0.15, -3, 10)
+    s -= np.clip((ld - 10) * 0.3, 0, 10)
+    sr = breadth_row['strong_up'] / total if total > 0 else 0
+    s += np.clip((sr - 0.04) * 150, -3, 8)
+    # 涨家数动量 (vs 前一天, 如果可用)
+    if prev_up_ratio is not None and prev_up_ratio > 0:
+        delta = up_ratio - prev_up_ratio
+        s += np.clip(delta * 80, -7, 7)
     return max(0, min(100, s))
 
 
@@ -273,26 +254,40 @@ def main():
 
     START = 60
 
-    trend_s, momentum_s, volume_s, breadth_s, volatility_s = [], [], [], [], []
+    volume_s, breadth_s = [], []
     turnover_heat_s, style_mom_s = [], []
+    mean_rev_s, growth_val_s = [], []
+    volatility_s = []
     future_rets = []
 
     print(f"Simulating {len(dates)-START} days...")
     for i in range(START, len(dates)):
         date = dates[i]
-        trend_s.append(simulate_trend(indices, i))
-        momentum_s.append(simulate_momentum(hs300, i))
 
         vi = vol_df[vol_df['trade_date'] == date].index
         volume_s.append(simulate_volume(vol_df, hs300, vi[0]) if len(vi) > 0 else 50)
-
-        breadth_s.append(simulate_breadth(breadth_lookup[date]) if date in breadth_lookup else 50)
+        # Breadth with previous day up_ratio
+        if date in breadth_lookup:
+            br_row = breadth_lookup[date]
+            # Find previous trading day's up_ratio
+            prev_date = dates[i-1] if i > 0 else None
+            prev_ur = None
+            if prev_date and prev_date in breadth_lookup:
+                prev_total = breadth_lookup[prev_date]['total']
+                if prev_total > 0:
+                    prev_ur = breadth_lookup[prev_date]['up_count'] / prev_total
+            breadth_s.append(simulate_breadth(br_row, prev_ur))
+        else:
+            breadth_s.append(50)
         volatility_s.append(simulate_volatility(indices, i))
 
-        # New factors
         ti = turnover_lookup.get(date)
         turnover_heat_s.append(simulate_turnover_heat(turnover_df, ti) if ti is not None else 50)
         style_mom_s.append(simulate_style_momentum(indices, i))
+
+        # New replacement factors
+        mean_rev_s.append(simulate_mean_reversion(indices, i))
+        growth_val_s.append(simulate_growth_value(indices, i))
 
         if i + 10 < len(closes):
             future_rets.append(closes[i+10] / closes[i] - 1)
@@ -300,28 +295,28 @@ def main():
             future_rets.append(None)
 
     print(f"\n{'='*120}")
-    print(f"  交易环境8维度评分质量报告 ({len(trend_s)} 天)")
+    print(f"  交易环境评分质量报告 ({len(volume_s)} 天)")
     print(f"{'='*120}")
 
-    # 8维度权重 (新增2个有预测力因子, 替代部分趋势/动量/波动权重)
+    # 新7维度: 删除trend/momentum(无预测力), 用均值回归+成长价值替代
     weights = {
-        'trend': 0.05, 'momentum': 0.05, 'volume': 0.18,
-        'breadth': 0.22, 'volatility': 0.05,
+        'volume': 0.18, 'breadth': 0.20,
         'turnover_heat': 0.10, 'style_momentum': 0.10,
+        'mean_reversion': 0.09, 'growth_value': 0.08,
         'model_signal': 0.25,
     }
 
     composite = 0
-    for name, scores in [('trend', trend_s), ('momentum', momentum_s),
-                          ('volume', volume_s), ('breadth', breadth_s),
-                          ('volatility', volatility_s),
+    for name, scores in [('volume', volume_s), ('breadth', breadth_s),
                           ('turnover_heat', turnover_heat_s),
-                          ('style_momentum', style_mom_s)]:
+                          ('style_momentum', style_mom_s),
+                          ('mean_reversion', mean_rev_s),
+                          ('growth_value', growth_val_s)]:
         score = evaluate_dimension(name, scores, future_rets)
         composite += score * weights[name] / (1 - weights['model_signal'])
 
     print(f"\n  COMPOSITE METRIC (excl. model_signal): {composite:.1f}/100")
-    print(f"  (目标: >60, dist>15 + uniq>15 + pred>30 per dimension)")
+    print(f"  (目标: 90+)")
 
 
 if __name__ == '__main__':
