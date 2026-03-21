@@ -89,6 +89,7 @@ def load_all_data():
         GROUP BY dq.trade_date ORDER BY dq.trade_date
     ''', conn)
 
+    # Use 2023+ for breadth to avoid old data quality issues
     breadth_df = pd.read_sql('''
         SELECT dq.trade_date,
             COUNT(*) as total,
@@ -105,7 +106,7 @@ def load_all_data():
             SUM(CASE WHEN dq.price_change_pct > 0.05 THEN 1 ELSE 0 END) as strong_up,
             AVG(dq.price_change_pct) as avg_ret
         FROM daily_quotes dq JOIN securities s ON dq.security_id=s.id
-        WHERE s.type='A股' AND dq.trade_date >= '2019-06-01' AND dq.volume > 0
+        WHERE s.type='A股' AND dq.trade_date >= '2023-06-01' AND dq.volume > 0
         GROUP BY dq.trade_date ORDER BY dq.trade_date
     ''', conn)
 
@@ -113,7 +114,7 @@ def load_all_data():
         SELECT dq.trade_date,
             CAST(SUM(CASE WHEN dq.price_change_pct > 0 THEN 1 ELSE 0 END) AS REAL) / COUNT(*) as up_ratio
         FROM daily_quotes dq JOIN securities s ON dq.security_id=s.id
-        WHERE s.type='A股' AND dq.trade_date >= '2019-06-01' AND dq.volume > 0
+        WHERE s.type='A股' AND dq.trade_date >= '2023-06-01' AND dq.volume > 0
         GROUP BY dq.trade_date ORDER BY dq.trade_date
     ''', conn)
 
@@ -308,7 +309,8 @@ def calc_short_reversal(breadth_df, dates):
         i = br_dates.index(date)
         if i < 5: continue
         avg5 = np.mean([br.loc[br_dates[j], 'avg_ret'] for j in range(i-4, i+1)])
-        out[date] = max(0, min(100, 50 - np.clip(avg5 * 3000, -30, 30)))
+        # avg_ret P50≈-0.001 (slightly negative on average), center on that
+        out[date] = max(0, min(100, 50 - np.clip((avg5 + 0.001) * 2000, -35, 35)))
     return out
 
 
@@ -327,8 +329,7 @@ def main():
     # Top10 optimized weights (drop breadth/breadth_momentum/style_momentum)
     weights = {
         'volume': 0.22, 'growth_value': 0.18,
-        'short_reversal': 0.15, 'mean_reversion': 0.15,
-        'breadth': 0.05,
+        'short_reversal': 0.20, 'mean_reversion': 0.15,
     }
     model_signal_weight = 0.25
 
@@ -341,7 +342,6 @@ def main():
         'growth_value': calc_growth_value(indices, eval_dates),
         'short_reversal': calc_short_reversal(breadth_df, eval_dates),
         'mean_reversion': calc_mean_reversion(indices, eval_dates),
-        'breadth': calc_breadth(breadth_df, eval_dates),
     }
 
     composite = 0
