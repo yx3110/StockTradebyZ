@@ -5,7 +5,7 @@
     "focus_days": 10,
     "benchmark": "000905.SH",
     "rank_field": "auto",
-    "retention_bonus": 0.05,
+    "retention_bonus": 0.0,
     "score_floor": 30.0,
     "min_holdings": 3,
     "hold_buffer": 0,
