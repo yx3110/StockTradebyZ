@@ -1,0 +1,19 @@
+{
+  "strong_buy": 0.009,
+  "buy": 0.007,
+  "cautious": 0.005,
+  "hold": 0.003,
+  "max_strong_buy_per_day": 10,
+  "holding_weights": {
+    "3d": 0.15,
+    "5d": 0.20,
+    "10d": 0.40,
+    "15d": 0.25
+  },
+  "_note": "V4.8.2 recommendation thresholds optimization",
+  "_search_space": {
+    "strong_buy": "0.007 ~ 0.013, step 0.0005",
+    "buy": "strong_buy - 0.001 ~ strong_buy - 0.003",
+    "max_strong_buy_per_day": "3, 5, 8, 10, 15, 999"
+  }
+}
