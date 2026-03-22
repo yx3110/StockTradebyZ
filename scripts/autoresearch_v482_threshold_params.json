@@ -3,7 +3,7 @@
   "buy": 0.006,
   "cautious": 0.005,
   "hold": 0.003,
-  "max_strong_buy_per_day": 3,
+  "max_strong_buy_per_day": 8,
   "holding_weights": {
     "3d": 0.15,
     "5d": 0.20,
