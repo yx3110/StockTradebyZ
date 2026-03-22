@@ -5,10 +5,10 @@
   "hold": 0.003,
   "max_strong_buy_per_day": 3,
   "holding_weights": {
-    "3d": 0.15,
-    "5d": 0.20,
-    "10d": 0.40,
-    "15d": 0.25
+    "3d": 0.10,
+    "5d": 0.15,
+    "10d": 0.35,
+    "15d": 0.40
   },
   "_note": "V4.8.2 recommendation thresholds optimization",
   "_search_space": {
