@@ -6,7 +6,7 @@
     "benchmark": "000905.SH",
     "rank_field": "auto",
     "retention_bonus": 0.0,
-    "score_floor": 40.0,
+    "score_floor": 30.0,
     "min_holdings": 3,
     "hold_buffer": 0,
     "cppi_floor": 0.05,
