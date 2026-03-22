@@ -7,6 +7,26 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - 不要随意删除或覆盖数据库中的内容！
 - 所有报告必须保存在 `reports/` 相应子目录中
 
+## 🎯 工作风格 (必须遵守)
+
+### 执行优先，禁止空转
+- **收到任务后立即开始执行**。最多花2分钟理解上下文，然后动手改代码
+- 如果用户给了编号计划，逐步执行，每步完成后简要确认并继续下一步
+- **禁止**花整个session只读代码和规划而不产出任何修改
+- 如果范围太大无法一次完成，先执行最高优先级的部分，而不是继续规划
+
+### 已知陷阱 (避免反复踩坑)
+- 股票代码必须带交易所后缀，如 `000001.SZ`、`600519.SH`
+- SQLite并发操作必须设置 `busy_timeout=30000`（至少30秒）
+- `.pkl` / `.joblib` 模型文件**绝对不要** git add，必须在 .gitignore 中
+- Tushare API 使用 `pro.index_member_all()` 做分页查询，不要用 per-industry 调用
+- 性能优化前**先 profile**（`python -m cProfile`），不要猜瓶颈在哪里
+
+### Git 操作
+- 除非用户明确要求拆分commit，否则用 `git add -A` 提交所有变更
+- 每次任务完成后主动 commit（除非用户说不要）
+- commit message 用中文简要描述改动内容
+
 ## 🏗️ System Architecture Overview
 
 **StockTradebyZ** is a sophisticated Chinese A-share trading system combining:

@@ -505,6 +505,31 @@ class V395MultiTargetTrainer:
 
         logger.info(f"  额外特征合并完成: +5 (pe_ttm, pb, ps_ttm, turnover_rate, log_market_cap)")
 
+        # ===== BRAIN 验证因子 (可选, --brain-features 启用) =====
+        if getattr(self, 'use_brain_features', False):
+            try:
+                from wqbrain_integration.validated_alphas import BRAIN_FEATURE_COLS
+                from wqbrain_integration.brain_feature_importer import BrainFeatureImporter
+
+                logger.info("  加载 BRAIN 验证因子...")
+                importer = BrainFeatureImporter(db_path=self.db_path)
+                brain_df = importer.get_features_for_training(date_min, date_max)
+
+                if brain_df is not None and not brain_df.empty:
+                    before_cols = len(df_features.columns)
+                    df_features = df_features.merge(brain_df, on=['code', 'trade_date'], how='left')
+                    brain_cols = [c for c in brain_df.columns if c not in ('code', 'trade_date')]
+                    df_features[brain_cols] = df_features[brain_cols].fillna(0.0)
+                    logger.info(f"    BRAIN 因子合并完成: +{len(brain_cols)} 特征, "
+                                f"覆盖 {(brain_df.shape[0] / len(df_features) * 100):.1f}% 样本")
+                else:
+                    logger.warning("    BRAIN 缓存为空, 跳过. 请先运行: "
+                                   "python3 wqbrain_integration/brain_feature_importer.py load-wq101 --compute")
+            except ImportError:
+                logger.warning("    wqbrain_integration 模块未安装, 跳过 BRAIN 因子")
+            except Exception as e:
+                logger.warning(f"    BRAIN 因子加载失败: {e}")
+
         # ===== 新增: 行业超额收益标签 =====
         # 原理: raw label 包含 市场方向+行业方向+个股Alpha, 模型浪费容量在预测大盘
         # industry-excess = stock_return - industry_median_return, 让模型专注学选股Alpha
@@ -5700,16 +5725,20 @@ class V473Trainer(V472Trainer):
         for target_key in ['3d', '5d', '10d', '15d']:
             ics = [m[target_key]['ic'] for m in wf_metrics if target_key in m]
             icirs = [m[target_key]['icir'] for m in wf_metrics if target_key in m]
-            summary = {
-                'mean_ic': float(np.mean(ics)),
-                'std_ic': float(np.std(ics)),
-                'mean_icir': float(np.mean(icirs)),
-                'std_icir': float(np.std(icirs)),
-                'n_windows': len(ics),
-            }
+            if ics:
+                summary = {
+                    'mean_ic': float(np.mean(ics)),
+                    'std_ic': float(np.std(ics)),
+                    'mean_icir': float(np.mean(icirs)),
+                    'std_icir': float(np.std(icirs)),
+                    'n_windows': len(ics),
+                }
+                logger.info(f"  {target_key}: IC={summary['mean_ic']:.4f}+-{summary['std_ic']:.4f}, "
+                             f"ICIR={summary['mean_icir']:.4f}+-{summary['std_icir']:.4f}")
+            else:
+                summary = {'mean_ic': 0, 'std_ic': 0, 'mean_icir': 0, 'std_icir': 0, 'n_windows': 0}
+                logger.info(f"  {target_key}: (skipped, no WF windows)")
             wf_summary[target_key] = summary
-            logger.info(f"  {target_key}: IC={summary['mean_ic']:.4f}+-{summary['std_ic']:.4f}, "
-                         f"ICIR={summary['mean_icir']:.4f}+-{summary['std_icir']:.4f}")
 
         # 5. 训练最终生产模型 (85% train + 15% val)
         logger.info("\n" + "=" * 60)
@@ -6261,16 +6290,20 @@ class V474Trainer(V473Trainer):
         for target_key in ['3d', '5d', '10d', '15d']:
             ics = [m[target_key]['ic'] for m in wf_metrics if target_key in m]
             icirs = [m[target_key]['icir'] for m in wf_metrics if target_key in m]
-            summary = {
-                'mean_ic': float(np.mean(ics)),
-                'std_ic': float(np.std(ics)),
-                'mean_icir': float(np.mean(icirs)),
-                'std_icir': float(np.std(icirs)),
-                'n_windows': len(ics),
-            }
+            if ics:
+                summary = {
+                    'mean_ic': float(np.mean(ics)),
+                    'std_ic': float(np.std(ics)),
+                    'mean_icir': float(np.mean(icirs)),
+                    'std_icir': float(np.std(icirs)),
+                    'n_windows': len(ics),
+                }
+                logger.info(f"  {target_key}: IC={summary['mean_ic']:.4f}+-{summary['std_ic']:.4f}, "
+                             f"ICIR={summary['mean_icir']:.4f}+-{summary['std_icir']:.4f}")
+            else:
+                summary = {'mean_ic': 0, 'std_ic': 0, 'mean_icir': 0, 'std_icir': 0, 'n_windows': 0}
+                logger.info(f"  {target_key}: (skipped, no WF windows)")
             wf_summary[target_key] = summary
-            logger.info(f"  {target_key}: IC={summary['mean_ic']:.4f}+-{summary['std_ic']:.4f}, "
-                         f"ICIR={summary['mean_icir']:.4f}+-{summary['std_icir']:.4f}")
 
         # 5. 训练最终生产模型
         logger.info("\n" + "=" * 60)
@@ -6555,6 +6588,17 @@ class V475Trainer(V473Trainer):
 
         return X, y_3d, y_5d, y_10d, y_15d, df_out
 
+    def train_production_only(self, start_date=None, end_date=None,
+                               purge_days=15, min_train_days=900):
+        """V4.7.5 快速训练 — 跳过Walk-Forward, 直接训练生产模型 (~75%时间节省)"""
+        # Reuse walk_forward_train with huge min_train_days to skip WF,
+        # but we need to handle the empty wf_metrics case.
+        # Simplest: call walk_forward_train with step_days > n_dates
+        self.walk_forward_train(
+            start_date=start_date, end_date=end_date,
+            purge_days=purge_days, min_train_days=99999,
+            val_days=120, test_days=120, step_days=99999)
+
     def walk_forward_train(self, start_date: str = None, end_date: str = None,
                             purge_days: int = 15, min_train_days: int = 900,
                             val_days: int = 120, test_days: int = 120,
@@ -6699,16 +6743,20 @@ class V475Trainer(V473Trainer):
         for target_key in ['3d', '5d', '10d', '15d']:
             ics = [m[target_key]['ic'] for m in wf_metrics if target_key in m]
             icirs = [m[target_key]['icir'] for m in wf_metrics if target_key in m]
-            summary = {
-                'mean_ic': float(np.mean(ics)),
-                'std_ic': float(np.std(ics)),
-                'mean_icir': float(np.mean(icirs)),
-                'std_icir': float(np.std(icirs)),
-                'n_windows': len(ics),
-            }
+            if ics:
+                summary = {
+                    'mean_ic': float(np.mean(ics)),
+                    'std_ic': float(np.std(ics)),
+                    'mean_icir': float(np.mean(icirs)),
+                    'std_icir': float(np.std(icirs)),
+                    'n_windows': len(ics),
+                }
+                logger.info(f"  {target_key}: IC={summary['mean_ic']:.4f}+-{summary['std_ic']:.4f}, "
+                             f"ICIR={summary['mean_icir']:.4f}+-{summary['std_icir']:.4f}")
+            else:
+                summary = {'mean_ic': 0, 'std_ic': 0, 'mean_icir': 0, 'std_icir': 0, 'n_windows': 0}
+                logger.info(f"  {target_key}: (skipped, no WF windows)")
             wf_summary[target_key] = summary
-            logger.info(f"  {target_key}: IC={summary['mean_ic']:.4f}+-{summary['std_ic']:.4f}, "
-                         f"ICIR={summary['mean_icir']:.4f}+-{summary['std_icir']:.4f}")
 
         # 4b. V4.7.5 Layer 3: Adaptive target weights from OOS ICIR
         logger.info("\n  Layer 3: Computing adaptive target weights from OOS ICIR...")
@@ -7159,16 +7207,20 @@ class V476Trainer(V475Trainer):
         for target_key in ['3d', '5d', '10d', '15d']:
             ics = [m[target_key]['ic'] for m in wf_metrics if target_key in m]
             icirs = [m[target_key]['icir'] for m in wf_metrics if target_key in m]
-            summary = {
-                'mean_ic': float(np.mean(ics)),
-                'std_ic': float(np.std(ics)),
-                'mean_icir': float(np.mean(icirs)),
-                'std_icir': float(np.std(icirs)),
-                'n_windows': len(ics),
-            }
+            if ics:
+                summary = {
+                    'mean_ic': float(np.mean(ics)),
+                    'std_ic': float(np.std(ics)),
+                    'mean_icir': float(np.mean(icirs)),
+                    'std_icir': float(np.std(icirs)),
+                    'n_windows': len(ics),
+                }
+                logger.info(f"  {target_key}: IC={summary['mean_ic']:.4f}+-{summary['std_ic']:.4f}, "
+                             f"ICIR={summary['mean_icir']:.4f}+-{summary['std_icir']:.4f}")
+            else:
+                summary = {'mean_ic': 0, 'std_ic': 0, 'mean_icir': 0, 'std_icir': 0, 'n_windows': 0}
+                logger.info(f"  {target_key}: (skipped, no WF windows)")
             wf_summary[target_key] = summary
-            logger.info(f"  {target_key}: IC={summary['mean_ic']:.4f}+-{summary['std_ic']:.4f}, "
-                         f"ICIR={summary['mean_icir']:.4f}+-{summary['std_icir']:.4f}")
 
         # 4b. Adaptive target weights
         logger.info("\n  Layer 3: Computing adaptive target weights from OOS ICIR...")
@@ -8079,6 +8131,1112 @@ class V480Trainer(V475Trainer):
         return model_data, history
 
 
+class V481Trainer(V475Trainer):
+    """V4.8.1 训练器 — V4.7.5底座 + 15个新因子 (50 → 60特征)
+
+    唯一改动: 特征扩展 (prune 5 weak + add 15 new = 50 → 60)
+
+    新增5个裁剪 (在V4.7.5的20个基础上):
+    - min_pct_change_5d, industry_concentration, sw_l1_code,
+      volume_price_corr_10d, volume_trend
+
+    新增15个因子 (从OHLCV+技术指标计算):
+    1.  atr_percentile:       ATR_14在个股历史中的百分位
+    2.  vol_concentration:    20日成交量HHI集中度
+    3.  intraday_ret_20d:     20日日内收益率之和
+    4.  industry_mom_rank:    行业内10日动量排名
+    5.  vwap_dev_20d:         20日VWAP偏离度均值
+    6.  max_ret_20d:          20日最大单日涨幅
+    7.  gk_vol_20d:           Garman-Klass波动率
+    8.  abnormal_turnover:    换手率异常度(vs 20日均值)
+    9.  overnight_ret_20d:    20日隔夜收益率之和
+    10. turnover_vol_20d:     换手率波动率
+    11. cci_14:               CCI技术指标
+    12. squeeze_mom_calc:     (Close-MA20)/ATR 动量
+    13. vol_price_div:        量价背离因子
+    14. price_acceleration:   价格加速度(5d收益变化率)
+    15. price_pos_volatility: 价格位置波动率
+
+    继承V4.7.5:
+    - 6模型ensemble, MSE Loss, 365d时间衰减
+    - V4.7.3管线(无Meta-Learner, 无Combined Isotonic)
+    - Bear Specialist, Per-target Isotonic, ICIR权重
+    - 连续评分 + Composite排名
+    """
+
+    # V4.8.1新增裁剪 (在V4.7.5的20个基础上)
+    PRUNE_FEATURES = V475Trainer.PRUNE_FEATURES + [
+        'min_pct_change_5d', 'industry_concentration', 'sw_l1_code',
+        'volume_price_corr_10d', 'volume_trend',
+    ]
+
+    # 15个新因子名称
+    NEW_FACTORS = [
+        'atr_percentile', 'vol_concentration', 'intraday_ret_20d',
+        'industry_mom_rank', 'vwap_dev_20d', 'max_ret_20d',
+        'gk_vol_20d', 'abnormal_turnover', 'overnight_ret_20d',
+        'turnover_vol_20d', 'cci_14', 'squeeze_mom_calc',
+        'vol_price_div', 'price_acceleration', 'price_pos_volatility',
+    ]
+
+    def load_data(self, start_date: str = None, end_date: str = None) -> pd.DataFrame:
+        """V4.8.1: V4.7.5基础数据 + 15个新因子(从OHLCV+技术指标计算)"""
+        df = super().load_data(start_date, end_date)
+
+        date_min = df['trade_date'].min()
+        date_max = df['trade_date'].max()
+        conn = sqlite3.connect(self.db_path)
+
+        # === 加载OHLCV数据 (需要额外前40天用于滚动窗口) ===
+        logger.info("  V4.8.1 加载OHLCV + 技术指标 (计算15个新因子)...")
+        from datetime import datetime as dt_cls, timedelta as td_cls
+        try:
+            ext_start = (dt_cls.strptime(date_min, '%Y-%m-%d') - td_cls(days=60)).strftime('%Y-%m-%d')
+        except Exception:
+            ext_start = (dt_cls.strptime(date_min, '%Y%m%d') - td_cls(days=60)).strftime('%Y%m%d')
+
+        ohlcv_query = """
+        SELECT s.code, q.trade_date, q.open, q.high, q.low, q.close,
+               q.volume, q.price_change_pct
+        FROM daily_quotes q
+        JOIN securities s ON q.security_id = s.id
+        WHERE s.type = 'A股' AND q.trade_date >= ? AND q.trade_date <= ?
+        ORDER BY s.code, q.trade_date
+        """
+        df_ohlcv = pd.read_sql(ohlcv_query, conn, params=[ext_start, date_max])
+        logger.info(f"    OHLCV 记录: {len(df_ohlcv):,}")
+
+        # 加载 atr_14, cci_14 from technical_indicators
+        tech_query = """
+        SELECT s.code, ti.trade_date, ti.atr_14, ti.cci_14
+        FROM technical_indicators ti
+        JOIN securities s ON ti.security_id = s.id
+        WHERE s.type = 'A股' AND ti.trade_date >= ? AND ti.trade_date <= ?
+        """
+        df_tech = pd.read_sql(tech_query, conn, params=[ext_start, date_max])
+        logger.info(f"    技术指标(atr_14/cci_14) 记录: {len(df_tech):,}")
+
+        # 加载 turnover_rate from daily_basic (如果主df中没有)
+        if 'turnover_rate' not in df_ohlcv.columns:
+            turn_query = """
+            SELECT s.code, db.trade_date, db.turnover_rate
+            FROM daily_basic db
+            JOIN securities s ON db.security_id = s.id
+            WHERE db.trade_date >= ? AND db.trade_date <= ?
+            """
+            df_turn = pd.read_sql(turn_query, conn, params=[ext_start, date_max])
+            df_ohlcv = df_ohlcv.merge(df_turn, on=['code', 'trade_date'], how='left')
+            df_ohlcv['turnover_rate'] = df_ohlcv['turnover_rate'].fillna(0.0)
+        conn.close()
+
+        if len(df_ohlcv) == 0:
+            logger.warning("    OHLCV为空, 15个新因子填0")
+            for col in self.NEW_FACTORS:
+                df[col] = 0.0
+            return df
+
+        # 合并 atr_14/cci_14 到 OHLCV
+        if len(df_tech) > 0:
+            df_ohlcv = df_ohlcv.merge(df_tech, on=['code', 'trade_date'], how='left')
+        else:
+            df_ohlcv['atr_14'] = np.nan
+            df_ohlcv['cci_14'] = np.nan
+
+        # === 计算15个新因子 (per-stock 滚动) ===
+        logger.info("    计算15个新因子...")
+        factor_parts = []
+        n_stocks = df_ohlcv['code'].nunique()
+        processed = 0
+
+        for code, grp in df_ohlcv.groupby('code'):
+            grp = grp.sort_values('trade_date').copy()
+            n = len(grp)
+            if n < 5:
+                continue
+
+            close = grp['close'].values
+            open_ = grp['open'].values
+            high = grp['high'].values
+            low = grp['low'].values
+            volume = grp['volume'].values.astype(float)
+            pct = grp['price_change_pct'].values
+            atr14 = grp['atr_14'].values if 'atr_14' in grp.columns else np.full(n, np.nan)
+            cci14 = grp['cci_14'].values if 'cci_14' in grp.columns else np.full(n, np.nan)
+            turnover = grp['turnover_rate'].values if 'turnover_rate' in grp.columns else np.full(n, np.nan)
+
+            out = grp[['code', 'trade_date']].copy()
+
+            # 1. atr_percentile: ATR_14 rank within stock's history
+            atr_s = pd.Series(atr14)
+            out['atr_percentile'] = atr_s.rank(pct=True).values
+
+            # 2. vol_concentration: Volume HHI over 20d
+            vol_s = pd.Series(volume)
+            def _vol_hhi(x):
+                total = x.sum()
+                if total <= 0:
+                    return 0.0
+                shares = x / total
+                return (shares ** 2).sum()
+            out['vol_concentration'] = vol_s.rolling(20, min_periods=5).apply(_vol_hhi, raw=True).values
+
+            # 3. intraday_ret_20d: Sum of intraday returns over 20d
+            intraday_ret = close / np.where(open_ > 0, open_, 1e-8) - 1
+            out['intraday_ret_20d'] = pd.Series(intraday_ret).rolling(20, min_periods=5).sum().values
+
+            # 4. industry_mom_rank: computed later (needs cross-stock data)
+            # placeholder - will be filled below
+            out['industry_mom_rank'] = np.nan
+
+            # 5. vwap_dev_20d: VWAP deviation
+            typical_price = (high + low + close) / 3
+            tp_safe = np.where(typical_price > 0, typical_price, 1e-8)
+            vwap_dev = (close - typical_price) / tp_safe
+            out['vwap_dev_20d'] = pd.Series(vwap_dev).rolling(20, min_periods=5).mean().values
+
+            # 6. max_ret_20d: Max daily return in 20d
+            out['max_ret_20d'] = pd.Series(pct).rolling(20, min_periods=5).max().values
+
+            # 7. gk_vol_20d: Garman-Klass volatility
+            hl_ratio = np.where(low > 0, high / low, 1.0)
+            co_ratio = np.where(open_ > 0, close / open_, 1.0)
+            gk_raw = np.sqrt(np.abs(0.5 * np.log(hl_ratio)**2 - (2*np.log(2)-1) * np.log(co_ratio)**2))
+            out['gk_vol_20d'] = pd.Series(gk_raw).rolling(20, min_periods=5).mean().values
+
+            # 8. abnormal_turnover: Turnover z-score vs 20d mean
+            turn_s = pd.Series(turnover)
+            turn_ma20 = turn_s.rolling(20, min_periods=5).mean().values
+            turn_ma20_safe = np.where(turn_ma20 > 1e-8, turn_ma20, 1e-8)
+            out['abnormal_turnover'] = (turnover / turn_ma20_safe - 1)
+
+            # 9. overnight_ret_20d: Cumulative overnight returns
+            prev_close = np.concatenate([[np.nan], close[:-1]])
+            overnight_ret = np.where(prev_close > 0, open_ / prev_close - 1, 0.0)
+            overnight_ret[0] = 0.0
+            out['overnight_ret_20d'] = pd.Series(overnight_ret).rolling(20, min_periods=5).sum().values
+
+            # 10. turnover_vol_20d: Turnover rate volatility
+            out['turnover_vol_20d'] = turn_s.rolling(20, min_periods=5).std().values
+
+            # 11. cci_14: direct from tech indicators
+            out['cci_14'] = cci14
+
+            # 12. squeeze_mom_calc: (Close - MA20) / ATR
+            ma20 = pd.Series(close).rolling(20, min_periods=5).mean().values
+            atr_safe = np.where(atr14 > 1e-8, atr14, 1e-8)
+            out['squeeze_mom_calc'] = (close - ma20) / atr_safe
+
+            # 13. vol_price_div: Volume-price divergence
+            close_s = pd.Series(close)
+            vol_chg_5d = vol_s.pct_change(5).values
+            pct_5d = close_s.pct_change(5).values
+            out['vol_price_div'] = -pct_5d * vol_chg_5d
+
+            # 14. price_acceleration: 5d return - previous 5d return
+            ret_5d = close_s.pct_change(5).values
+            ret_5d_prev = np.concatenate([[np.nan]*5, ret_5d[:-5]])
+            out['price_acceleration'] = ret_5d - ret_5d_prev
+
+            # 15. price_pos_volatility: Volatility of (close-low)/(high-low)
+            hl_range = high - low
+            hl_range_safe = np.where(hl_range > 1e-8, hl_range, 1e-8)
+            price_pos = (close - low) / hl_range_safe
+            out['price_pos_volatility'] = pd.Series(price_pos).rolling(20, min_periods=5).std().values
+
+            factor_parts.append(out)
+            processed += 1
+            if processed % 1000 == 0:
+                logger.info(f"      已处理 {processed}/{n_stocks} 只股票")
+
+        if not factor_parts:
+            logger.warning("    无有效股票数据, 15个新因子填0")
+            for col in self.NEW_FACTORS:
+                df[col] = 0.0
+            return df
+
+        df_factors = pd.concat(factor_parts, ignore_index=True)
+        logger.info(f"    因子计算完成: {len(df_factors):,} 行, {processed} 只股票")
+
+        # === 计算 industry_mom_rank (需要跨股票截面排名) ===
+        # 从 df_ohlcv 计算每只股票的 10d 过去收益率
+        ret10_parts = []
+        for code, grp in df_ohlcv.groupby('code'):
+            grp = grp.sort_values('trade_date').copy()
+            close_s = pd.Series(grp['close'].values)
+            grp_out = grp[['code', 'trade_date']].copy()
+            grp_out['return_10d_past'] = close_s.pct_change(10).values
+            ret10_parts.append(grp_out)
+        df_ret10 = pd.concat(ret10_parts, ignore_index=True)
+
+        # 获取 sw_l1_code from 主df
+        if 'sw_l1_code' in df.columns:
+            code_industry = df[['code', 'trade_date', 'sw_l1_code']].drop_duplicates()
+            df_ret10 = df_ret10.merge(code_industry, on=['code', 'trade_date'], how='left')
+            # 行业内排名
+            df_ret10['industry_mom_rank'] = df_ret10.groupby(
+                ['trade_date', 'sw_l1_code'])['return_10d_past'].rank(pct=True)
+            # 合并回 df_factors (替换placeholder)
+            df_factors = df_factors.drop(columns=['industry_mom_rank'], errors='ignore')
+            df_factors = df_factors.merge(
+                df_ret10[['code', 'trade_date', 'industry_mom_rank']],
+                on=['code', 'trade_date'], how='left')
+        else:
+            df_factors['industry_mom_rank'] = 0.5  # 无行业信息时用中位数
+
+        # === 合并15个新因子到主df ===
+        merge_cols = ['code', 'trade_date'] + self.NEW_FACTORS
+        # 确保所有因子列存在
+        for col in self.NEW_FACTORS:
+            if col not in df_factors.columns:
+                df_factors[col] = 0.0
+
+        df = df.merge(df_factors[merge_cols], on=['code', 'trade_date'], how='left')
+
+        # 填充NaN
+        for col in self.NEW_FACTORS:
+            if col in df.columns:
+                missing = df[col].isnull().sum()
+                if missing > 0:
+                    pct = missing / len(df) * 100
+                    # 先用截面中位数填充
+                    df[col] = df.groupby('trade_date')[col].transform(lambda x: x.fillna(x.median()))
+                    remaining = df[col].isnull().sum()
+                    if remaining > 0:
+                        df[col] = df[col].fillna(0.0)
+                    if pct > 10:
+                        logger.info(f"      {col}: {missing:,} 缺失({pct:.1f}%) → {df[col].isnull().sum()} 剩余")
+            else:
+                df[col] = 0.0
+
+        logger.info(f"  V4.8.1 新增因子合并完成: +{len(self.NEW_FACTORS)} 因子, 总列数: {len(df.columns)}")
+
+        return df
+
+    def prepare_features(self, df: pd.DataFrame) -> tuple:
+        """V4.8.1: V4.7.5特征 + 15新因子 - 5额外裁剪 (50 → 60)"""
+        # V4.7.5 prepare_features 会做: V4.7.3特征准备 + 20个裁剪
+        # 我们的PRUNE_FEATURES已经是25个(V4.7.5的20 + 5个新增)
+        # super().prepare_features()会使用self.PRUNE_FEATURES来裁剪
+        X, y_3d, y_5d, y_10d, y_15d, df_out = super().prepare_features(df)
+
+        logger.info(f"  V4.8.1: 最终特征数 = {X.shape[1]} (目标~60)")
+        return X, y_3d, y_5d, y_10d, y_15d, df_out
+
+    def walk_forward_train(self, start_date: str = None, end_date: str = None,
+                            purge_days: int = 15, min_train_days: int = 900,
+                            val_days: int = 120, test_days: int = 120,
+                            step_days: int = 90):
+        """V4.8.1 Walk-Forward — V4.7.5 + 15新因子"""
+        import shutil
+
+        logger.info("=" * 60)
+        logger.info("V4.8.1 Walk-Forward 训练 (V4.7.5 + 15新因子, 50→60特征)")
+        logger.info("=" * 60)
+        logger.info(f"  底座: V4.7.5 (6模型ensemble, MSE Loss, 365d时间衰减)")
+        logger.info(f"  特征变化: 裁剪+5 ({len(self.PRUNE_FEATURES)}总) + 新增15因子")
+        logger.info(f"  新增因子类别:")
+        logger.info(f"    波动率: atr_percentile, gk_vol_20d, price_pos_volatility")
+        logger.info(f"    成交量: vol_concentration, abnormal_turnover, turnover_vol_20d, vol_price_div")
+        logger.info(f"    价格: intraday_ret_20d, vwap_dev_20d, max_ret_20d, overnight_ret_20d")
+        logger.info(f"    动量: industry_mom_rank, squeeze_mom_calc, price_acceleration")
+        logger.info(f"    技术: cci_14")
+
+        # 调用V4.7.5的walk_forward_train (使用我们override的load_data和prepare_features)
+        model_data, history = super().walk_forward_train(
+            start_date=start_date, end_date=end_date,
+            purge_days=purge_days, min_train_days=min_train_days,
+            val_days=val_days, test_days=test_days, step_days=step_days)
+
+        # 将模型从v475目录移到v481目录
+        v475_dir = PROJECT_ROOT / 'ml_models' / 'trained_models' / 'v475'
+        v481_dir = PROJECT_ROOT / 'ml_models' / 'trained_models' / 'v481'
+        v481_dir.mkdir(parents=True, exist_ok=True)
+
+        v475_files = sorted(v475_dir.glob('v475_*.pkl'), key=lambda f: f.stat().st_mtime)
+        if v475_files:
+            latest = v475_files[-1]
+            timestamp = latest.stem.replace('v475_multi_target_', '')
+            new_path = v481_dir / f'v481_multi_target_{timestamp}.pkl'
+
+            import joblib
+            model_data['version'] = 'v4.8.1'
+            model_data['v481_innovations'] = {
+                'feature_expansion': '50 → 60 features (prune 5, add 15)',
+                'new_factors': self.NEW_FACTORS,
+                'pruned_extra': ['min_pct_change_5d', 'industry_concentration', 'sw_l1_code',
+                                 'volume_price_corr_10d', 'volume_trend'],
+                'factor_categories': {
+                    'volatility': ['atr_percentile', 'gk_vol_20d', 'price_pos_volatility'],
+                    'volume': ['vol_concentration', 'abnormal_turnover', 'turnover_vol_20d', 'vol_price_div'],
+                    'price': ['intraday_ret_20d', 'vwap_dev_20d', 'max_ret_20d', 'overnight_ret_20d'],
+                    'momentum': ['industry_mom_rank', 'squeeze_mom_calc', 'price_acceleration'],
+                    'technical': ['cci_14'],
+                },
+            }
+            model_data['feature_pruning'] = {
+                'pruned_count': len(self.PRUNE_FEATURES),
+                'pruned_features': list(self.PRUNE_FEATURES),
+                'v481_extra_pruned': ['min_pct_change_5d', 'industry_concentration', 'sw_l1_code',
+                                      'volume_price_corr_10d', 'volume_trend'],
+            }
+            joblib.dump(model_data, new_path)
+            logger.info(f"\nV4.8.1 model saved: {new_path}")
+            logger.info(f"  Size: {new_path.stat().st_size / 1024 / 1024:.1f} MB")
+
+            # 复制辅助文件
+            for aux in ['global_quantiles.npy', 'recommendation_thresholds.json']:
+                src = v475_dir / aux
+                if src.exists():
+                    shutil.copy2(str(src), str(v481_dir / aux))
+
+            # 删除v475目录下这个模型(它属于v481)
+            latest.unlink()
+            for hf in v475_dir.glob(f'training_history_{timestamp}*'):
+                hf.unlink()
+            logger.info(f"  Cleaned up v475 directory")
+
+            # 保存v481 history
+            history['version'] = 'v4.8.1'
+            history['base'] = 'V4.7.5 + 15 New Factors (50 → 60 features)'
+            history['v481_innovations'] = model_data['v481_innovations']
+
+            import json as _json
+            history_path = v481_dir / f'training_history_{timestamp}.json'
+            with open(history_path, 'w', encoding='utf-8') as f:
+                _json.dump(history, f, indent=2, ensure_ascii=False)
+            latest_path = v481_dir / 'training_history_latest.json'
+            with open(latest_path, 'w', encoding='utf-8') as f:
+                _json.dump(history, f, indent=2, ensure_ascii=False)
+
+            logger.info(f"\nV4.8.1 training complete!")
+            logger.info(f"  Features: {model_data.get('feature_names', ['?']).__len__()} "
+                         f"(V4.7.5 - {len(self.PRUNE_FEATURES)} pruned + {len(self.NEW_FACTORS)} new)")
+        else:
+            logger.warning("No v475 model file found to rename")
+
+        return model_data, history
+
+
+class V482Trainer(V481Trainer):
+    """V4.8.2 训练器 — V4.8.1底座 + 13个双窗口IC验证因子 (60 → 73特征)
+
+    核心哲学: 因子 > 训练技巧 > scorer后处理 > 模型混合
+    验证方法: 1年(2024-2025) + 3年(2023-2025) 双窗口IC交叉验证
+
+    通过双窗口验证的13个因子:
+
+    Phase 1 - 价量因子 (8个, 从OHLCV+daily_basic):
+      1.  limit_proximity_5d      涨停接近度(A股)    1Y IC=-0.094/-0.86 | 3Y IC=-0.084/-0.86 ★★★
+      2.  max5_lottery            MAX5彩票效应        1Y IC=0.084/0.45  | 3Y IC=0.080/0.50  ★★★
+      3.  sumd_20d                涨跌平衡(Qlib)     1Y IC=-0.060/-0.45 | 3Y IC=-0.055/-0.48 ★★
+      4.  industry_adj_str       行业调整反转        1Y IC=0.051/0.58  | 3Y IC=0.042/0.42  ★★
+      5.  turnover_reversal      换手率反转          1Y IC=-0.048/-0.26 | 3Y IC=-0.065/-0.34 ★★
+      6.  residual_momentum      残差动量            1Y IC=-0.043/-0.37 | 3Y IC=-0.037/-0.33 ★★
+      7.  retail_crowding        散户拥挤度          1Y IC=0.030/0.36  | 3Y IC=0.026/0.29  ★
+      8.  obv_price_div          OBV-Price背离       1Y IC=-0.025/-0.47 | 3Y IC=-0.022/-0.47 ★★
+
+    Phase 2 - 财务因子 (1个, 从financial_indicator):
+      9.  delta_roe_yoy          ROE变化率           1Y IC=0.044/0.43  | 3Y IC=0.052/0.54  ★★★
+
+    Phase 3 - 学术因子 (4个):
+      10. trend_strength_60d     趋势强度t-stat      1Y IC=-0.089/-0.62 | 3Y IC=-0.071/-0.45 ★★
+      11. high_52w_ratio         52周新高比(锚定)     1Y IC=-0.086/-0.67 | 3Y IC=-0.038/-0.26 ★
+      12. imxd_20d               IMAX-IMIN(Qlib)     1Y IC=-0.062/-0.65 | 3Y IC=-0.055/-0.47 ★★
+      13. realized_skew_20d      已实现偏度           1Y IC=-0.029/-0.39 | 3Y IC=-0.025/-0.40 ★★
+
+    双窗口淘汰8个因子:
+    - 双窗口FAIL(5): cfp, gpoa_approx, accruals_quality, rev_growth_consistency, trend_rsquared_20d
+    - 3年窗口FAIL(3): chaikin_mf_20d(ICIR=-0.19), ksft_5d(ICIR=-0.15), delta_leverage_yoy(ICIR=0.19)
+    因子间相关性: 全部|corr| < 0.5 (无需去重)
+
+    继承V4.8.1:
+    - 15个V4.8.1因子 (60特征基础)
+    - 6模型ensemble, MSE Loss, 365d时间衰减
+    - V4.7.3管线(无Meta-Learner, 无Combined Isotonic)
+    """
+
+    # V4.8.2新增因子名称 — Phase 1 (价量, 1年+3年双窗口IC验证)
+    # REMOVED: chaikin_mf_20d(3年ICIR=-0.19 FAIL), ksft_5d(3年ICIR=-0.15 FAIL)
+    V482_PHASE1_FACTORS = [
+        'industry_adj_str', 'turnover_reversal', 'max5_lottery',
+        'retail_crowding', 'residual_momentum',
+        'sumd_20d', 'obv_price_div', 'limit_proximity_5d',
+    ]
+
+    # V4.8.2新增因子名称 — Phase 2 (财务, 双窗口IC验证后保留1/6)
+    # REMOVED: cfp(1年IC≈0), gpoa_approx(IC小), accruals_quality(0%覆盖),
+    #          delta_leverage_yoy(3年ICIR=0.19 FAIL), rev_growth_consistency(IC小)
+    V482_PHASE2_FACTORS = [
+        'delta_roe_yoy',
+    ]
+
+    # V4.8.2新增因子名称 — Phase 3 (长周期+学术, 双窗口验证后保留4/5)
+    # REMOVED: trend_rsquared_20d(IC≈0)
+    V482_PHASE3_FACTORS = [
+        'high_52w_ratio', 'imxd_20d',
+        'realized_skew_20d', 'trend_strength_60d',
+    ]
+
+    V482_ALL_NEW_FACTORS = V482_PHASE1_FACTORS + V482_PHASE2_FACTORS + V482_PHASE3_FACTORS
+
+    def load_data(self, start_date: str = None, end_date: str = None) -> pd.DataFrame:
+        """V4.8.2: V4.8.1基础 + 21个新因子"""
+        # 先调用V4.8.1 load_data (获取60个特征)
+        df = super().load_data(start_date, end_date)
+
+        date_min = df['trade_date'].min()
+        date_max = df['trade_date'].max()
+        conn = sqlite3.connect(self.db_path)
+
+        from datetime import datetime as dt_cls, timedelta as td_cls
+        try:
+            ext_start_60 = (dt_cls.strptime(date_min, '%Y-%m-%d') - td_cls(days=90)).strftime('%Y-%m-%d')
+            ext_start_252 = (dt_cls.strptime(date_min, '%Y-%m-%d') - td_cls(days=370)).strftime('%Y-%m-%d')
+        except Exception:
+            ext_start_60 = (dt_cls.strptime(date_min, '%Y%m%d') - td_cls(days=90)).strftime('%Y%m%d')
+            ext_start_252 = (dt_cls.strptime(date_min, '%Y%m%d') - td_cls(days=370)).strftime('%Y%m%d')
+
+        logger.info("  V4.8.2 加载扩展数据 (计算21个新因子)...")
+
+        # === Phase 1 & 3: 加载OHLCV (需要252d窗口用于52w high) ===
+        ohlcv_query = """
+        SELECT s.code, q.trade_date, q.open, q.high, q.low, q.close,
+               q.volume, q.price_change_pct
+        FROM daily_quotes q
+        JOIN securities s ON q.security_id = s.id
+        WHERE s.type = 'A股' AND q.trade_date >= ? AND q.trade_date <= ?
+        ORDER BY s.code, q.trade_date
+        """
+        df_ohlcv = pd.read_sql(ohlcv_query, conn, params=[ext_start_252, date_max])
+        logger.info(f"    OHLCV (252d扩展): {len(df_ohlcv):,} 行")
+
+        # 加载turnover + market_cap from daily_basic
+        basic_query = """
+        SELECT s.code, db.trade_date, db.turnover_rate, db.total_mv
+        FROM daily_basic db
+        JOIN securities s ON db.security_id = s.id
+        WHERE db.trade_date >= ? AND db.trade_date <= ?
+        """
+        df_basic = pd.read_sql(basic_query, conn, params=[ext_start_60, date_max])
+        logger.info(f"    daily_basic (turnover+mcap): {len(df_basic):,} 行")
+
+        # 加载行业信息 (for industry_adj_str + residual_momentum)
+        industry_query = """
+        SELECT code, industry FROM securities WHERE type = 'A股' AND industry IS NOT NULL
+        """
+        df_industry = pd.read_sql(industry_query, conn)
+        code_to_industry = dict(zip(df_industry['code'], df_industry['industry']))
+        logger.info(f"    行业映射: {len(code_to_industry):,} 只股票")
+
+        # === Phase 2: 加载financial_indicator (只需roe) ===
+        fi_query = """
+        SELECT s.code, fi.end_date, fi.roe
+        FROM financial_indicator fi
+        JOIN securities s ON fi.security_id = s.id
+        WHERE fi.end_date >= '20180101'
+        ORDER BY s.code, fi.end_date
+        """
+        df_fi = pd.read_sql(fi_query, conn)
+        logger.info(f"    financial_indicator: {len(df_fi):,} 行")
+        conn.close()
+
+        if len(df_ohlcv) == 0:
+            logger.warning("    OHLCV为空, V4.8.2新因子填0")
+            for col in self.V482_ALL_NEW_FACTORS:
+                df[col] = 0.0
+            return df
+
+        # === Phase 1: 计算10个价量因子 (per-stock rolling) ===
+        logger.info("    Phase 1: 计算10个价量因子...")
+
+        # 合并turnover + mcap到ohlcv
+        df_ohlcv = df_ohlcv.merge(
+            df_basic[['code', 'trade_date', 'turnover_rate', 'total_mv']],
+            on=['code', 'trade_date'], how='left')
+        df_ohlcv['turnover_rate'] = df_ohlcv['turnover_rate'].fillna(0.0)
+        df_ohlcv['total_mv'] = df_ohlcv['total_mv'].fillna(0.0)
+
+        # 先计算每日每行业中位数收益 (用于industry_adj_str + residual_momentum)
+        df_ohlcv['industry'] = df_ohlcv['code'].map(code_to_industry)
+        industry_med_ret5d = {}  # (trade_date, industry) -> median 5d return
+
+        # 行业中位数5d收益: 先计算每个code的5d滚动收益
+        close_by_code = {}
+        for code, grp in df_ohlcv.groupby('code'):
+            grp = grp.sort_values('trade_date')
+            close_s = pd.Series(grp['close'].values, index=grp['trade_date'].values)
+            ret5d = close_s.pct_change(5)
+            close_by_code[code] = {'close': close_s, 'ret5d': ret5d, 'industry': code_to_industry.get(code, '')}
+
+        # 组装每日行业中位数
+        all_ret5d = []
+        for code, d in close_by_code.items():
+            ret_df = pd.DataFrame({'trade_date': d['ret5d'].index, 'ret5d': d['ret5d'].values,
+                                   'industry': d['industry']})
+            all_ret5d.append(ret_df)
+        if all_ret5d:
+            df_all_ret5d = pd.concat(all_ret5d, ignore_index=True)
+            industry_med = df_all_ret5d.groupby(['trade_date', 'industry'])['ret5d'].median()
+            industry_med_ret5d = industry_med.to_dict()
+
+        # 行业内截面: 计算每日market return (用于residual_momentum)
+        market_daily_ret = {}
+        for td, grp in df_ohlcv.groupby('trade_date'):
+            pcts = grp['price_change_pct'].dropna()
+            if len(pcts) > 0:
+                market_daily_ret[td] = float(pcts.median())
+
+        factor_parts = []
+        n_stocks = df_ohlcv['code'].nunique()
+        processed = 0
+
+        for code, grp in df_ohlcv.groupby('code'):
+            grp = grp.sort_values('trade_date').copy()
+            n = len(grp)
+            if n < 10:
+                continue
+
+            close = grp['close'].values.astype(float)
+            open_ = grp['open'].values.astype(float)
+            high = grp['high'].values.astype(float)
+            low = grp['low'].values.astype(float)
+            volume = grp['volume'].values.astype(float)
+            pct = pd.to_numeric(grp['price_change_pct'], errors='coerce').fillna(0).values.astype(float)
+            turnover = grp['turnover_rate'].values.astype(float)
+            mcap = grp['total_mv'].values.astype(float)
+            dates = grp['trade_date'].values
+            industry = code_to_industry.get(code, '')
+
+            out = pd.DataFrame({'code': code, 'trade_date': dates})
+
+            # --- Phase 1 factors ---
+
+            # 1. industry_adj_str: -(return_5d - industry_median_return_5d)
+            close_s = pd.Series(close)
+            ret5d = close_s.pct_change(5).values
+            ind_med = np.array([industry_med_ret5d.get((d, industry), 0.0) for d in dates])
+            out['industry_adj_str'] = -(ret5d - ind_med)
+
+            # 2. turnover_reversal: -rank(avg_turnover_20d) — per-stock rolling, 归一化在截面做
+            turn_s = pd.Series(turnover)
+            out['turnover_reversal'] = -turn_s.rolling(20, min_periods=5).mean().values
+
+            # 3. max5_lottery: -mean(top5 daily returns in 20d)
+            pct_s = pd.Series(pct)
+            def _max5_mean(x):
+                if len(x) < 5:
+                    return 0.0
+                return -np.mean(np.sort(x)[-5:])
+            out['max5_lottery'] = pct_s.rolling(20, min_periods=10).apply(_max5_mean, raw=True).values
+
+            # 4. retail_crowding: -rank(turnover) × rank(-mcap)
+            # Per-stock time series proxy; cross-sectional normalization later
+            turn_rank_ts = turn_s.rolling(60, min_periods=20).rank(pct=True).values
+            mcap_s = pd.Series(mcap)
+            mcap_rank_inv = 1.0 - mcap_s.rolling(60, min_periods=20).rank(pct=True).values
+            out['retail_crowding'] = -(turn_rank_ts * mcap_rank_inv)
+
+            hl_range = high - low
+            hl_safe = np.where(hl_range > 1e-8, hl_range, 1e-8)
+
+            # 6. residual_momentum: 回归去市场收益后的残差动量
+            # Σ(residual[t-20:t-5]) where residual = stock_ret - beta*market_ret
+            mkt_rets = np.array([market_daily_ret.get(d, 0.0) for d in dates])
+            resid_mom = np.full(n, np.nan)
+            for i in range(25, n):
+                stock_r = pct[i-25:i]
+                mkt_r = mkt_rets[i-25:i]
+                # Simple beta estimation
+                mkt_var = np.var(mkt_r)
+                if mkt_var > 1e-12:
+                    beta = np.cov(stock_r, mkt_r)[0,1] / mkt_var
+                else:
+                    beta = 0.0
+                residual = stock_r - beta * mkt_r
+                # Skip most recent 5 days (reversal contamination)
+                resid_mom[i] = np.sum(residual[:20])  # [t-25:t-5]
+            out['residual_momentum'] = resid_mom
+
+            # 8. sumd_20d: 涨跌平衡 (Σgains - Σlosses) / (Σgains + Σlosses)
+            gains = np.where(pct > 0, pct, 0.0)
+            losses = np.where(pct < 0, -pct, 0.0)
+            sum_gains = pd.Series(gains).rolling(20, min_periods=5).sum().values
+            sum_losses = pd.Series(losses).rolling(20, min_periods=5).sum().values
+            denom = sum_gains + sum_losses
+            denom_safe = np.where(denom > 1e-8, denom, 1e-8)
+            out['sumd_20d'] = (sum_gains - sum_losses) / denom_safe
+
+            # 9. obv_price_div: OBV趋势 vs 价格趋势的背离
+            obv_sign = np.where(pct > 0, 1, np.where(pct < 0, -1, 0))
+            obv = np.cumsum(obv_sign * volume)
+            obv_s = pd.Series(obv)
+            obv_ret_20d = (obv_s / obv_s.shift(20).replace(0, np.nan) - 1).values
+            price_ret_20d = close_s.pct_change(20).values
+            out['obv_price_div'] = obv_ret_20d - price_ret_20d
+
+            # 10. limit_proximity_5d: 涨停接近度 mean(|ret|/limit, 5d)
+            # 主板10%, 创业板/科创板20%, 北交所30%
+            if code.startswith('3') or code.startswith('688'):
+                limit_pct = 0.20
+            elif code.startswith(('4', '8')):
+                limit_pct = 0.30
+            else:
+                limit_pct = 0.10
+            limit_prox = np.abs(pct) / limit_pct
+            out['limit_proximity_5d'] = pd.Series(limit_prox).rolling(5, min_periods=3).mean().values
+
+            # --- Phase 3: 长周期+学术因子 ---
+
+            # 17. high_52w_ratio: close / max(high, 252d)
+            high_s = pd.Series(high)
+            max_252 = high_s.rolling(252, min_periods=60).max().values
+            max_252_safe = np.where(max_252 > 1e-8, max_252, 1e-8)
+            out['high_52w_ratio'] = close / max_252_safe
+
+            # 19. imxd_20d: (argmax(high) - argmin(low)) / 20
+            imxd = np.full(n, np.nan)
+            for i in range(19, n):
+                h_window = high[i-19:i+1]
+                l_window = low[i-19:i+1]
+                imax = np.argmax(h_window) / 19.0  # normalize to [0,1]
+                imin = np.argmin(l_window) / 19.0
+                imxd[i] = imax - imin
+            out['imxd_20d'] = imxd
+
+            # 20. realized_skew_20d: (1/N) Σ((r-μ)/σ)³
+            skew = np.full(n, np.nan)
+            for i in range(19, n):
+                r = pct[i-19:i+1]
+                mu = np.mean(r)
+                sigma = np.std(r)
+                if sigma > 1e-8:
+                    skew[i] = np.mean(((r - mu) / sigma) ** 3)
+                else:
+                    skew[i] = 0.0
+            out['realized_skew_20d'] = skew
+
+            # 21. trend_strength_60d: return_60d / (vol_60d × √60)
+            ret_60d = close_s.pct_change(60).values
+            vol_60d = pct_s.rolling(60, min_periods=20).std().values
+            vol_60d_safe = np.where(vol_60d > 1e-8, vol_60d, 1e-8)
+            out['trend_strength_60d'] = ret_60d / (vol_60d_safe * np.sqrt(60))
+
+            factor_parts.append(out)
+            processed += 1
+            if processed % 1000 == 0:
+                logger.info(f"      已处理 {processed}/{n_stocks} 只股票")
+
+        if not factor_parts:
+            logger.warning("    无有效股票数据, V4.8.2新因子填0")
+            for col in self.V482_ALL_NEW_FACTORS:
+                df[col] = 0.0
+            return df
+
+        df_factors = pd.concat(factor_parts, ignore_index=True)
+        logger.info(f"    Phase 1+3 因子计算完成: {len(df_factors):,} 行, {processed} 只股票")
+
+        # === Phase 2: 计算财务质量因子 ===
+        logger.info("    Phase 2: 计算6个财务质量因子...")
+        if len(df_fi) > 0:
+            # 标准化日期格式
+            df_fi['end_date'] = df_fi['end_date'].str.replace('-', '')
+
+            fi_factors = []
+            for code, grp_fi in df_fi.groupby('code'):
+                grp_fi = grp_fi.sort_values('end_date').copy()
+                if len(grp_fi) < 5:  # Need at least 5 quarters for YoY
+                    continue
+
+                roe_vals = grp_fi['roe'].values
+                end_dates = grp_fi['end_date'].values
+
+                for i in range(len(grp_fi)):
+                    row = {'code': code, 'fi_end_date': end_dates[i]}
+
+                    # delta_roe_yoy: roe[t] - roe[t-4]
+                    if i >= 4 and pd.notna(roe_vals[i]) and pd.notna(roe_vals[i-4]):
+                        row['delta_roe_yoy'] = float(roe_vals[i] - roe_vals[i-4])
+                    else:
+                        row['delta_roe_yoy'] = np.nan
+
+                    fi_factors.append(row)
+
+            if fi_factors:
+                df_fi_computed = pd.DataFrame(fi_factors)
+                logger.info(f"    财务因子计算完成: {len(df_fi_computed):,} 行")
+
+                # Forward-fill quarterly → daily via searchsorted
+                df_dates = df[['code', 'trade_date']].copy()
+                df_dates['td_str'] = df_dates['trade_date'].str.replace('-', '')
+
+                fi_merged_parts = []
+                for code, fi_grp in df_fi_computed.groupby('code'):
+                    fi_grp = fi_grp.dropna(subset=['fi_end_date']).sort_values('fi_end_date')
+                    code_dates = df_dates[df_dates['code'] == code].sort_values('td_str').copy()
+                    if len(code_dates) == 0 or len(fi_grp) == 0:
+                        continue
+                    fi_end_dates = fi_grp['fi_end_date'].values
+                    td_strs = code_dates['td_str'].values
+                    indices = np.searchsorted(fi_end_dates, td_strs, side='right') - 1
+                    valid_mask = indices >= 0
+                    for col in self.V482_PHASE2_FACTORS:
+                        if col in fi_grp.columns:
+                            fi_vals = fi_grp[col].values
+                            mapped = np.where(valid_mask, fi_vals[np.clip(indices, 0, len(fi_vals)-1)], np.nan)
+                            code_dates[col] = mapped
+                        else:
+                            code_dates[col] = np.nan
+                    fi_merged_parts.append(code_dates[['code', 'trade_date'] + self.V482_PHASE2_FACTORS])
+
+                if fi_merged_parts:
+                    df_fi_daily = pd.concat(fi_merged_parts, ignore_index=True)
+
+                    fi_cols = ['code', 'trade_date'] + self.V482_PHASE2_FACTORS
+                    for col in self.V482_PHASE2_FACTORS:
+                        if col not in df_fi_daily.columns:
+                            df_fi_daily[col] = np.nan
+                    df_factors = df_factors.merge(
+                        df_fi_daily[fi_cols].drop_duplicates(subset=['code', 'trade_date']),
+                        on=['code', 'trade_date'], how='left')
+                    logger.info(f"    财务因子合并完成")
+            else:
+                logger.warning("    无有效财务数据, Phase 2因子填NaN")
+                for col in self.V482_PHASE2_FACTORS:
+                    df_factors[col] = np.nan
+        else:
+            logger.warning("    financial_indicator为空, Phase 2因子填NaN")
+            for col in self.V482_PHASE2_FACTORS:
+                df_factors[col] = np.nan
+
+        # === 截面归一化: turnover_reversal 和 retail_crowding ===
+        # 这两个因子需要截面rank才有意义
+        for col in ['turnover_reversal', 'retail_crowding']:
+            if col in df_factors.columns:
+                df_factors[col] = df_factors.groupby('trade_date')[col].rank(pct=True)
+                # 翻转: rank越高(原始值越大)→因子值越低(反向因子)
+                df_factors[col] = 1.0 - df_factors[col]
+
+        # === 合并所有V4.8.2新因子到主df ===
+        merge_cols = ['code', 'trade_date'] + self.V482_ALL_NEW_FACTORS
+        for col in self.V482_ALL_NEW_FACTORS:
+            if col not in df_factors.columns:
+                df_factors[col] = np.nan
+
+        df = df.merge(df_factors[merge_cols], on=['code', 'trade_date'], how='left')
+
+        # 填充NaN
+        for col in self.V482_ALL_NEW_FACTORS:
+            if col in df.columns:
+                missing = df[col].isnull().sum()
+                if missing > 0:
+                    pct_miss = missing / len(df) * 100
+                    df[col] = df.groupby('trade_date')[col].transform(lambda x: x.fillna(x.median()))
+                    remaining = df[col].isnull().sum()
+                    if remaining > 0:
+                        df[col] = df[col].fillna(0.0)
+                    if pct_miss > 10:
+                        logger.info(f"      {col}: {missing:,} 缺失({pct_miss:.1f}%) → {df[col].isnull().sum()} 剩余")
+            else:
+                df[col] = 0.0
+
+        logger.info(f"  V4.8.2 新增因子合并完成: +{len(self.V482_ALL_NEW_FACTORS)} 因子, 总列数: {len(df.columns)}")
+        return df
+
+    def prepare_features(self, df: pd.DataFrame) -> tuple:
+        """V4.8.2: V4.8.1特征 + 21新因子 (60 → ~81)"""
+        X, y_3d, y_5d, y_10d, y_15d, df_out = super().prepare_features(df)
+        logger.info(f"  V4.8.2: 最终特征数 = {X.shape[1]} (目标~81)")
+        return X, y_3d, y_5d, y_10d, y_15d, df_out
+
+    def walk_forward_train(self, start_date: str = None, end_date: str = None,
+                            purge_days: int = 15, min_train_days: int = 900,
+                            val_days: int = 120, test_days: int = 120,
+                            step_days: int = 90):
+        """V4.8.2 Walk-Forward — V4.8.1 + 21新因子"""
+        import shutil
+
+        logger.info("=" * 60)
+        logger.info("V4.8.2 Walk-Forward 训练 (V4.8.1 + 13个双窗口IC因子, 60→73特征)")
+        logger.info("=" * 60)
+        logger.info(f"  底座: V4.8.1 (60特征, 6模型ensemble, MSE Loss)")
+        logger.info(f"  Phase 1 价量(8): {self.V482_PHASE1_FACTORS}")
+        logger.info(f"  Phase 2 财务(1): {self.V482_PHASE2_FACTORS}")
+        logger.info(f"  Phase 3 学术(4): {self.V482_PHASE3_FACTORS}")
+        logger.info(f"  淘汰(8): chaikin_mf_20d, ksft_5d, delta_leverage_yoy + cfp, gpoa_approx, accruals_quality, rev_growth_consistency, trend_rsquared_20d")
+
+        # 调用V4.8.1的walk_forward_train (使用我们override的load_data和prepare_features)
+        model_data, history = super().walk_forward_train(
+            start_date=start_date, end_date=end_date,
+            purge_days=purge_days, min_train_days=min_train_days,
+            val_days=val_days, test_days=test_days, step_days=step_days)
+
+        # 将模型从v481目录移到v482目录
+        v481_dir = PROJECT_ROOT / 'ml_models' / 'trained_models' / 'v481'
+        v482_dir = PROJECT_ROOT / 'ml_models' / 'trained_models' / 'v482'
+        v482_dir.mkdir(parents=True, exist_ok=True)
+
+        # V4.8.1的walk_forward_train会先把文件从v475移到v481
+        # 我们需要从v481取最新文件移到v482
+        v481_files = sorted(v481_dir.glob('v481_*.pkl'), key=lambda f: f.stat().st_mtime)
+        if v481_files:
+            latest = v481_files[-1]
+            timestamp = latest.stem.replace('v481_multi_target_', '')
+            new_path = v482_dir / f'v482_multi_target_{timestamp}.pkl'
+
+            import joblib
+            model_data['version'] = 'v4.8.2'
+            model_data['v482_innovations'] = {
+                'feature_expansion': '60 → ~81 features (V4.8.1 + 21 new)',
+                'phase1_factors': self.V482_PHASE1_FACTORS,
+                'phase2_factors': self.V482_PHASE2_FACTORS,
+                'phase3_factors': self.V482_PHASE3_FACTORS,
+                'factor_categories': {
+                    'reversal': ['industry_adj_str', 'turnover_reversal'],
+                    'behavioral': ['max5_lottery', 'retail_crowding', 'limit_proximity_5d'],
+                    'capital_flow': ['chaikin_mf_20d', 'obv_price_div'],
+                    'momentum': ['residual_momentum', 'trend_strength_60d'],
+                    'microstructure': ['ksft_5d', 'sumd_20d'],
+                    'financial': ['delta_roe_yoy'],
+                    'trend': ['high_52w_ratio', 'imxd_20d'],
+                    'risk': ['realized_skew_20d'],
+                },
+            }
+            joblib.dump(model_data, new_path)
+            logger.info(f"\nV4.8.2 model saved: {new_path}")
+            logger.info(f"  Size: {new_path.stat().st_size / 1024 / 1024:.1f} MB")
+
+            # 复制辅助文件
+            for aux in ['global_quantiles.npy', 'recommendation_thresholds.json']:
+                src = v481_dir / aux
+                if src.exists():
+                    shutil.copy2(str(src), str(v482_dir / aux))
+
+            # 删除v481目录下这个模型(它属于v482)
+            latest.unlink()
+            for hf in v481_dir.glob(f'training_history_{timestamp}*'):
+                hf.unlink()
+            logger.info(f"  Cleaned up v481 directory")
+
+            # 保存history
+            history['version'] = 'v4.8.2'
+            history['base'] = 'V4.8.1 + 21 New Factors (60 → ~81 features)'
+            history['v482_innovations'] = model_data['v482_innovations']
+
+            import json as _json
+            history_path = v482_dir / f'training_history_{timestamp}.json'
+            with open(history_path, 'w', encoding='utf-8') as f:
+                _json.dump(history, f, indent=2, ensure_ascii=False)
+            latest_path = v482_dir / 'training_history_latest.json'
+            with open(latest_path, 'w', encoding='utf-8') as f:
+                _json.dump(history, f, indent=2, ensure_ascii=False)
+
+            logger.info(f"\nV4.8.2 training complete!")
+            logger.info(f"  Features: {model_data.get('feature_names', ['?']).__len__()}")
+            logger.info(f"  New factors: {len(self.V482_ALL_NEW_FACTORS)}")
+        else:
+            logger.warning("No v481 model file found to rename")
+
+        return model_data, history
+
+
+class V483Trainer(V482Trainer):
+    """V4.8.3 训练器 — V4.8.2底座 + 29个BRAIN验证因子 (~81 → ~110特征)
+
+    核心创新: WorldQuant BRAIN + 学术文献 + A股特色因子
+    验证方法: 快速单窗口LightGBM ICIR, 三窗口稳定性交叉验证
+
+    29个BRAIN因子来源:
+    - BRAIN USA TOP3000 回测验证 (Sharpe≥0.7): 9个
+    - 学术文献 (Fama-French, AQR, Roll 1984, Corwin-Schultz): 8个
+    - A股特色 (涨停/跳空/散户行为): 4个
+    - 微观结构 (Hurst, 自相关, 尾部风险): 5个
+    - 量价组合 (VWAP动量, 资金流, 波动聚集): 3个
+
+    快速评估结果 (ICIR):
+    - 基线(无BRAIN): 0.4610
+    - +3 BRAIN Top3: 0.5026 (+9.0%)
+    - +29 BRAIN全部: 0.6261 (+35.8%) ★ 最优
+    - 三窗口稳定: W1 +35.8%, W2 +4.0%, W3 +5.5%
+    """
+
+    # BRAIN 因子名称 (29个)
+    V483_BRAIN_FACTORS = [
+        # Phase 1: BRAIN 验证因子 (9个)
+        'brain_intraday_intensity', 'brain_high_low_ratio', 'brain_close_to_high',
+        'brain_vol_ratio', 'brain_vol_of_vol', 'brain_momentum_decay5',
+        'brain_momentum_decay10', 'brain_vol_price_divergence', 'brain_turnover_momentum',
+        # Phase 2: 学术 + A股 + 微观结构因子 (20个)
+        'brain_52w_low_bounce', 'brain_ma60_reversion', 'brain_vol_asymmetry',
+        'brain_roll_spread', 'brain_extreme_day_freq', 'brain_momentum_crash_hedge',
+        'brain_loss_aversion', 'brain_high_resistance', 'brain_hl_spread',
+        'brain_ret_autocorr', 'brain_tail_risk', 'brain_vwap_momentum',
+        'brain_up_streak_ratio', 'brain_hurst_proxy', 'brain_post_limitup_ret',
+        'brain_vol_price_coord', 'brain_price_jerk', 'brain_gap_strength',
+        'brain_money_flow', 'brain_vol_clustering',
+    ]
+
+    def load_data(self, start_date: str = None, end_date: str = None) -> pd.DataFrame:
+        """V4.8.3: V4.8.2基础 + 29个BRAIN验证因子"""
+        # 先调用V4.8.2 load_data (获取~81个特征)
+        df = super().load_data(start_date, end_date)
+
+        date_min = df['trade_date'].min()
+        date_max = df['trade_date'].max()
+
+        # 加载 BRAIN 因子缓存
+        logger.info("  V4.8.3 加载 BRAIN 验证因子...")
+        try:
+            conn = sqlite3.connect(self.db_path)
+            brain_query = """
+                SELECT code, trade_date, features_json
+                FROM brain_alpha_cache
+                WHERE trade_date >= ? AND trade_date <= ?
+            """
+            brain_raw = pd.read_sql(brain_query, conn, params=(date_min, date_max))
+            conn.close()
+
+            if not brain_raw.empty:
+                try:
+                    import orjson
+                    _loads = orjson.loads
+                except ImportError:
+                    _loads = json.loads
+
+                brain_parsed = pd.json_normalize(brain_raw['features_json'].apply(_loads))
+                # 只保留注册的因子
+                keep_cols = [c for c in self.V483_BRAIN_FACTORS if c in brain_parsed.columns]
+                brain_parsed = brain_parsed[keep_cols]
+                brain_parsed['code'] = brain_raw['code'].values
+                brain_parsed['trade_date'] = brain_raw['trade_date'].values
+
+                before = len(df.columns)
+                df = df.merge(brain_parsed, on=['code', 'trade_date'], how='left')
+
+                # 截面中位数填充 + 兜底 0
+                for col in keep_cols:
+                    if col in df.columns:
+                        missing = df[col].isnull().sum()
+                        if missing > 0:
+                            df[col] = df.groupby('trade_date')[col].transform(
+                                lambda x: x.fillna(x.median()))
+                            df[col] = df[col].fillna(0.0)
+
+                logger.info(f"    BRAIN 因子合并完成: +{len(keep_cols)} 因子, "
+                            f"覆盖率 {len(brain_parsed) / len(df) * 100:.1f}%, "
+                            f"总列数: {len(df.columns)}")
+            else:
+                logger.warning("    brain_alpha_cache 为空! 请先运行: "
+                               "python3 wqbrain_integration/cache_brain_features.py")
+                for col in self.V483_BRAIN_FACTORS:
+                    df[col] = 0.0
+        except Exception as e:
+            logger.warning(f"    BRAIN 因子加载失败: {e}")
+            for col in self.V483_BRAIN_FACTORS:
+                df[col] = 0.0
+
+        logger.info(f"  V4.8.3 加载完成: {len(df.columns)} 列, {len(df):,} 行")
+        return df
+
+    def prepare_features(self, df: pd.DataFrame) -> tuple:
+        """V4.8.3: V4.8.2特征 + 29 BRAIN因子 (~81 → ~110)"""
+        X, y_3d, y_5d, y_10d, y_15d, df_out = super().prepare_features(df)
+        logger.info(f"  V4.8.3: 最终特征数 = {X.shape[1]} (目标~110)")
+        return X, y_3d, y_5d, y_10d, y_15d, df_out
+
+    def walk_forward_train(self, start_date: str = None, end_date: str = None,
+                            purge_days: int = 15, min_train_days: int = 900,
+                            val_days: int = 120, test_days: int = 120,
+                            step_days: int = 90):
+        """V4.8.3 Walk-Forward — V4.8.2 + 29 BRAIN因子"""
+        import shutil
+
+        logger.info("=" * 60)
+        logger.info("V4.8.3 Walk-Forward 训练 (V4.8.2 + 29 BRAIN验证因子, ~81→~110特征)")
+        logger.info("=" * 60)
+        logger.info(f"  底座: V4.8.2 (~81特征, 6模型ensemble)")
+        logger.info(f"  BRAIN Phase 1 (9): BRAIN USA验证")
+        logger.info(f"  BRAIN Phase 2 (20): 学术+A股+微观结构")
+        logger.info(f"  快速评估 ICIR: 0.4610 → 0.6261 (+35.8%)")
+
+        # 调用V4.8.2的walk_forward_train → V4.8.1 → V4.7.5
+        model_data, history = super().walk_forward_train(
+            start_date=start_date, end_date=end_date,
+            purge_days=purge_days, min_train_days=min_train_days,
+            val_days=val_days, test_days=test_days, step_days=step_days)
+
+        # 将模型从v482目录移到v483目录
+        v482_dir = PROJECT_ROOT / 'ml_models' / 'trained_models' / 'v482'
+        v483_dir = PROJECT_ROOT / 'ml_models' / 'trained_models' / 'v483'
+        v483_dir.mkdir(parents=True, exist_ok=True)
+
+        v482_files = sorted(v482_dir.glob('v482_*.pkl'), key=lambda f: f.stat().st_mtime)
+        if v482_files:
+            latest = v482_files[-1]
+            timestamp = latest.stem.replace('v482_multi_target_', '')
+            new_path = v483_dir / f'v483_multi_target_{timestamp}.pkl'
+
+            import joblib
+            model_data['version'] = 'v4.8.3'
+            model_data['v483_innovations'] = {
+                'feature_expansion': '~81 → ~110 features (V4.8.2 + 29 BRAIN)',
+                'brain_factors': self.V483_BRAIN_FACTORS,
+                'brain_factor_sources': {
+                    'brain_verified': ['brain_high_low_ratio', 'brain_close_to_high',
+                                       'brain_momentum_decay10', 'brain_intraday_intensity',
+                                       'brain_vol_ratio', 'brain_vol_of_vol',
+                                       'brain_momentum_decay5', 'brain_vol_price_divergence',
+                                       'brain_turnover_momentum'],
+                    'academic': ['brain_52w_low_bounce', 'brain_ma60_reversion',
+                                 'brain_vol_asymmetry', 'brain_roll_spread',
+                                 'brain_tail_risk', 'brain_hurst_proxy'],
+                    'a_share': ['brain_post_limitup_ret', 'brain_gap_strength',
+                                'brain_loss_aversion', 'brain_extreme_day_freq'],
+                    'microstructure': ['brain_ret_autocorr', 'brain_hl_spread',
+                                       'brain_vol_clustering', 'brain_money_flow',
+                                       'brain_vwap_momentum'],
+                    'composite': ['brain_momentum_crash_hedge', 'brain_high_resistance',
+                                  'brain_up_streak_ratio', 'brain_vol_price_coord',
+                                  'brain_price_jerk'],
+                },
+                'fast_eval_icir': {'baseline': 0.4610, 'with_brain': 0.6261, 'delta': '+35.8%'},
+            }
+            joblib.dump(model_data, new_path)
+            logger.info(f"\nV4.8.3 model saved: {new_path}")
+            logger.info(f"  Size: {new_path.stat().st_size / 1024 / 1024:.1f} MB")
+
+            # 复制辅助文件
+            for aux in ['global_quantiles.npy', 'recommendation_thresholds.json']:
+                src = v482_dir / aux
+                if src.exists():
+                    shutil.copy2(str(src), str(v483_dir / aux))
+
+            # 删除v482目录下这个模型(它属于v483)
+            latest.unlink()
+            for hf in v482_dir.glob(f'training_history_{timestamp}*'):
+                hf.unlink()
+
+            # 保存history
+            history['version'] = 'v4.8.3'
+            history['base'] = 'V4.8.2 + 29 BRAIN Factors (~81 → ~110 features)'
+            history['v483_innovations'] = model_data['v483_innovations']
+
+            import json as _json
+            history_path = v483_dir / f'training_history_{timestamp}.json'
+            with open(history_path, 'w', encoding='utf-8') as f:
+                _json.dump(history, f, indent=2, ensure_ascii=False)
+            latest_path = v483_dir / 'training_history_latest.json'
+            with open(latest_path, 'w', encoding='utf-8') as f:
+                _json.dump(history, f, indent=2, ensure_ascii=False)
+
+            logger.info(f"\nV4.8.3 training complete!")
+            logger.info(f"  Total features: {model_data.get('feature_names', ['?']).__len__()}")
+            logger.info(f"  BRAIN factors: {len(self.V483_BRAIN_FACTORS)}")
+        else:
+            logger.warning("No v482 model file found to rename")
+
+        return model_data, history
+
+
 class V48Trainer(V472Trainer):
     """V4.8 训练器 — V4.7.2底座 + 12个新财务质量特征 + ListNet排名模型 + 置信度加权
 
@@ -8930,7 +10088,7 @@ class V48Trainer(V472Trainer):
 
 
 def main():
-    parser = argparse.ArgumentParser(description='V3.95/V4.3/V4.4/V4.6/V4.7/V4.7.1/V4.7.2/V4.7.3/V4.7.4/V4.8 多目标训练')
+    parser = argparse.ArgumentParser(description='V3.95/V4.3/V4.4/V4.6/V4.7/V4.7.1/V4.7.2/V4.7.3/V4.7.4/V4.8/V4.8.1 多目标训练')
     parser.add_argument('--start-date', type=str, default='2020-01-01', help='训练开始日期')
     parser.add_argument('--end-date', type=str, default=None, help='训练结束日期')
     parser.add_argument('--purge-days', type=int, default=10, help='Purge gap天数 (应>=最大标签前瞻天数, label_10d需要10天)')
@@ -8949,10 +10107,34 @@ def main():
     parser.add_argument('--v478', action='store_true', help='V4.7.8: V4.7.7 Huber+DART + V4.7.5 365d衰减 (IC+Top3双优)')
     parser.add_argument('--v479', action='store_true', help='V4.7.9: V4.7.7 Huber+DART + 240d衰减 + Top5%头部加权')
     parser.add_argument('--v480', action='store_true', help='V4.8.0: V4.7.5+270d衰减(精准攻ic_decay_ratio)')
+    parser.add_argument('--v481', action='store_true', help='V4.8.1: V4.7.5+15新因子(50→60特征)')
+    parser.add_argument('--v482', action='store_true', help='V4.8.2: V4.8.1+21新因子(60→~81特征, 价量+财务+学术)')
+    parser.add_argument('--v483', action='store_true', help='V4.8.3: V4.8.2+29 BRAIN验证因子(~81→~110特征, ICIR+35.8%%)')
+    parser.add_argument('--brain-features', action='store_true',
+                        help='加载 BRAIN 验证因子 (需先运行 brain_feature_importer 缓存)')
     parser.add_argument('--skip-wf', action='store_true', help='跳过Walk-Forward评估, 只训练生产模型 (节省~75%时间)')
     args = parser.parse_args()
 
-    if args.v480:
+    # BRAIN 因子标志 — 适用于所有 Trainer 版本
+    _use_brain = getattr(args, 'brain_features', False)
+
+    if args.v483:
+        trainer = V483Trainer()
+        trainer.walk_forward_train(
+            start_date=args.start_date, end_date=args.end_date,
+            purge_days=max(args.purge_days, 15))
+    elif args.v482:
+        trainer = V482Trainer()
+        trainer.use_brain_features = _use_brain
+        trainer.walk_forward_train(
+            start_date=args.start_date, end_date=args.end_date,
+            purge_days=max(args.purge_days, 15))
+    elif args.v481:
+        trainer = V481Trainer()
+        trainer.walk_forward_train(
+            start_date=args.start_date, end_date=args.end_date,
+            purge_days=max(args.purge_days, 15))
+    elif args.v480:
         trainer = V480Trainer()
         trainer.walk_forward_train(
             start_date=args.start_date, end_date=args.end_date,
@@ -8979,9 +10161,14 @@ def main():
             purge_days=max(args.purge_days, 15))
     elif args.v475:
         trainer = V475Trainer()
-        trainer.walk_forward_train(
-            start_date=args.start_date, end_date=args.end_date,
-            purge_days=max(args.purge_days, 15))
+        if args.skip_wf:
+            trainer.train_production_only(
+                start_date=args.start_date, end_date=args.end_date,
+                purge_days=max(args.purge_days, 15))
+        else:
+            trainer.walk_forward_train(
+                start_date=args.start_date, end_date=args.end_date,
+                purge_days=max(args.purge_days, 15))
     elif args.v474:
         trainer = V474Trainer()
         trainer.walk_forward_train(
@@ -9030,6 +10217,7 @@ def main():
     else:
         trainer = V395MultiTargetTrainer()
         trainer.sharpe_label_blend = args.sharpe_blend
+        trainer.use_brain_features = getattr(args, 'brain_features', False)
         trainer.train(start_date=args.start_date, end_date=args.end_date, purge_days=args.purge_days)
 
 

@@ -1,3 +1,6 @@
+# Credentials (NEVER commit)
+wqbrain_integration/credentials.json
+
 # Large database files
 data_adapter/stock_data.db
 data_adapter/stock_data.db-shm
@@ -63,3 +66,4 @@ TradingAgents/
 .claude_settings.json
 .security-key
 logs/security/
+autoresearch-results.tsv

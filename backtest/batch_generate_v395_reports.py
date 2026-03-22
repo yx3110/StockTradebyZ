@@ -253,6 +253,16 @@ def score_all_stocks_from_preloaded(
         all_codes = features_df['code'].tolist()
         return scorer.predict_scores_from_preloaded(all_codes, date, features_df)
 
+    # V4.8.2: 81 features (V4.8.1 + 21 new) + V4.7.6 scorer
+    if version == 'v4.8.2':
+        all_codes = features_df['code'].tolist()
+        return scorer.predict_scores_from_preloaded(all_codes, date, features_df)
+
+    # V4.8.1: 60 features (V4.7.5 - 5 pruned + 15 new) + V4.7.6 scorer
+    if version == 'v4.8.1':
+        all_codes = features_df['code'].tolist()
+        return scorer.predict_scores_from_preloaded(all_codes, date, features_df)
+
     # V4.8.0: 270d time decay + V4.7.6 scorer
     if version == 'v4.8.0':
         all_codes = features_df['code'].tolist()
@@ -443,11 +453,15 @@ def score_all_stocks_from_preloaded(
     codes = df['code'].tolist()
     results = {}
     for i, code in enumerate(codes):
+        p10 = float(predictions['10d'][i]) if i < len(predictions['10d']) else 0.0
+        p15 = float(predictions['15d'][i]) if '15d' in predictions and i < len(predictions['15d']) else 0.0
         results[code] = {
             'score': float(scores[i]),
             'pred_3d': float(predictions['3d'][i]) if i < len(predictions['3d']) else 0.0,
             'pred_5d': float(predictions['5d'][i]) if i < len(predictions['5d']) else 0.0,
-            'pred_10d': float(predictions['10d'][i]) if i < len(predictions['10d']) else 0.0,
+            'pred_10d': p10,
+            'pred_15d': p15,
+            'rank_score': 0.6 * p10 + 0.4 * p15,
         }
 
     return results
@@ -486,7 +500,7 @@ def build_analysis_json(
     all_stocks = []
     for code, data in scored_stocks.items():
         info = securities_info.get(code, {})
-        all_stocks.append({
+        entry = {
             'stock_code': code,
             'stock_name': info.get('name', f'Stock_{code}'),
             'industry': info.get('industry', ''),
@@ -498,7 +512,13 @@ def build_analysis_json(
             'selected_by_strategies': 1,
             'strategies': ['ML_Score'],
             'analysis_date': date,
-        })
+        }
+        # V4.6+: save pred_15d and rank_score for correct composite/threshold
+        if 'pred_15d' in data:
+            entry['pred_15d'] = round(data['pred_15d'], 6)
+        if 'rank_score' in data:
+            entry['rank_score'] = round(data['rank_score'], 6)
+        all_stocks.append(entry)
 
     # 按分数降序排列
     all_stocks.sort(key=lambda x: x['score'], reverse=True)
@@ -570,7 +590,7 @@ def main():
     parser.add_argument('--output-dir', default=None,
                         help='输出目录 (default: reports/daily_selection_v{version}_fast)')
     parser.add_argument('--version', default='v3.95',
-                        choices=['v3.9', 'v3.95', 'v3.96', 'v4.3', 'v4.4', 'v4.4.2', 'v4.6', 'v4.7', 'v4.7.1', 'v4.7.2', 'v4.7.3', 'v4.7.4', 'v4.7.5', 'v4.7.6', 'v4.7.7', 'v4.7.8', 'v4.7.9', 'v4.8.0', 'v5.0', 'alpha158'],
+                        choices=['v3.9', 'v3.95', 'v3.96', 'v4.3', 'v4.4', 'v4.4.2', 'v4.6', 'v4.7', 'v4.7.1', 'v4.7.2', 'v4.7.3', 'v4.7.4', 'v4.7.5', 'v4.7.6', 'v4.7.7', 'v4.7.8', 'v4.7.9', 'v4.8.0', 'v4.8.1', 'v4.8.2', 'v5.0', 'alpha158'],
                         help='评分版本 (default: v3.95)')
     parser.add_argument('--force', action='store_true',
                         help='强制覆盖已有报告')
@@ -655,6 +675,12 @@ def main():
     elif args.version == 'v3.96':
         from ml_models.v39.v396_production_scorer import V396ProductionScorer
         scorer = V396ProductionScorer(model_type='small_data')
+    elif args.version == 'v4.8.2':
+        from ml_models.v39.v482_production_scorer import V482ProductionScorer
+        scorer = V482ProductionScorer()
+    elif args.version == 'v4.8.1':
+        from ml_models.v39.v481_production_scorer import V481ProductionScorer
+        scorer = V481ProductionScorer()
     elif args.version == 'v4.8.0':
         from ml_models.v39.v480_production_scorer import V480ProductionScorer
         scorer = V480ProductionScorer()
