@@ -37,7 +37,7 @@
     "rr_fallback": 2.5,
 
     "pos_strong_buy": 15,
-    "pos_buy": 8,
+    "pos_buy": 12,
     "pos_cautious": 6,
     "pos_hold": 3,
     "pos_risk_adj_medium": -2,
