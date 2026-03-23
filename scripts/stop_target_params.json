@@ -38,8 +38,8 @@
 
     "pos_strong_buy": 15,
     "pos_buy": 8,
-    "pos_cautious": 6,
-    "pos_hold": 3,
+    "pos_cautious": 3,
+    "pos_hold": 1,
     "pos_risk_adj_medium": -2,
     "pos_risk_adj_high": -4
 }
