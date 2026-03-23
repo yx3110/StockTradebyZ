@@ -233,7 +233,8 @@ class V395MultiTargetTrainer:
         return X
 
     def _compute_global_quantiles(self, X: np.ndarray, all_results: dict,
-                                    target_weights: dict, n_quantiles: int = 1001) -> np.ndarray:
+                                    target_weights: dict, n_quantiles: int = 1001,
+                                    precomputed_predictions: dict = None) -> np.ndarray:
         """计算全局 combined_pred 分位数分布 (用于全局百分位评分)
 
         在全量数据上运行训练好的集成模型, 收集所有 combined_pred,
@@ -251,28 +252,33 @@ class V395MultiTargetTrainer:
         """
         logger.info(f"计算全局评分分位数 (n={X.shape[0]:,} 样本, {n_quantiles} 分位点)...")
 
-        predictions = {}
-        for target_key, result in all_results.items():
-            target_pred = np.zeros(X.shape[0])
-            total_weight = 0
+        # 优化: 复用已有的ensemble预测，避免重复predict (节省~50-120秒)
+        if precomputed_predictions is not None:
+            predictions = precomputed_predictions
+            logger.info(f"  使用预计算的ensemble预测 ({len(predictions)} targets)")
+        else:
+            predictions = {}
+            for target_key, result in all_results.items():
+                target_pred = np.zeros(X.shape[0])
+                total_weight = 0
 
-            for name, model in result['models'].items():
-                weight = result['weights'].get(name, 0.2)
-                try:
-                    if name == 'xgb':
-                        import xgboost as xgb
-                        pred = model.predict(xgb.DMatrix(X))
-                    else:
-                        pred = model.predict(X)
-                    target_pred += weight * pred
-                    total_weight += weight
-                except Exception as e:
-                    logger.warning(f"  全局分位数: {target_key}/{name} 预测失败: {e}")
-                    continue
+                for name, model in result['models'].items():
+                    weight = result['weights'].get(name, 0.2)
+                    try:
+                        if name == 'xgb':
+                            import xgboost as xgb
+                            pred = model.predict(xgb.DMatrix(X))
+                        else:
+                            pred = model.predict(X)
+                        target_pred += weight * pred
+                        total_weight += weight
+                    except Exception as e:
+                        logger.warning(f"  全局分位数: {target_key}/{name} 预测失败: {e}")
+                        continue
 
-            if total_weight > 0:
-                target_pred /= total_weight
-            predictions[target_key] = target_pred
+                if total_weight > 0:
+                    target_pred /= total_weight
+                predictions[target_key] = target_pred
 
         # 计算 combined_pred (加权融合)
         combined_pred = np.zeros(X.shape[0])
@@ -294,7 +300,8 @@ class V395MultiTargetTrainer:
 
         return global_quantiles.tolist()
 
-    def _compute_recommendation_thresholds(self, X: np.ndarray, all_results: dict) -> dict:
+    def _compute_recommendation_thresholds(self, X: np.ndarray, all_results: dict,
+                                             precomputed_predictions: dict = None) -> dict:
         """计算composite score的推荐阈值 (基于全市场历史百分位)
 
         Composite权重从 self.recommendation_composite_weights 取 (如有),
@@ -314,25 +321,30 @@ class V395MultiTargetTrainer:
         cw_str = " + ".join(f"pred_{k}×{v}" for k, v in composite_weights.items() if v > 0)
         logger.info(f"计算composite推荐阈值 (n={X.shape[0]:,} 样本, composite={cw_str})...")
 
-        predictions = {}
-        for target_key, result in all_results.items():
-            target_pred = np.zeros(X.shape[0])
-            total_weight = 0
-            for name, model in result['models'].items():
-                weight = result['weights'].get(name, 0.2)
-                try:
-                    if name == 'xgb':
-                        import xgboost as xgb
-                        pred = model.predict(xgb.DMatrix(X))
-                    else:
-                        pred = model.predict(X)
-                    target_pred += weight * pred
-                    total_weight += weight
-                except Exception:
-                    continue
-            if total_weight > 0:
-                target_pred /= total_weight
-            predictions[target_key] = target_pred
+        # 优化: 复用已有的ensemble预测，避免重复predict
+        if precomputed_predictions is not None:
+            predictions = precomputed_predictions
+            logger.info(f"  使用预计算的ensemble预测 ({len(predictions)} targets)")
+        else:
+            predictions = {}
+            for target_key, result in all_results.items():
+                target_pred = np.zeros(X.shape[0])
+                total_weight = 0
+                for name, model in result['models'].items():
+                    weight = result['weights'].get(name, 0.2)
+                    try:
+                        if name == 'xgb':
+                            import xgboost as xgb
+                            pred = model.predict(xgb.DMatrix(X))
+                        else:
+                            pred = model.predict(X)
+                        target_pred += weight * pred
+                        total_weight += weight
+                    except Exception:
+                        continue
+                if total_weight > 0:
+                    target_pred /= total_weight
+                predictions[target_key] = target_pred
 
         # Composite score
         composite = np.zeros(X.shape[0])
@@ -572,21 +584,19 @@ class V395MultiTargetTrainer:
             (X_winsorized, bounds): 裁剪后的矩阵和每列的 (lo, hi) bounds
         """
         X_w = X.copy()
-        bounds = []
+        # 向量化: 一次算完所有列的百分位，替代逐列循环
+        lo_arr = np.nanpercentile(X, lower_pct, axis=0)
+        hi_arr = np.nanpercentile(X, upper_pct, axis=0)
+        all_nan_cols = np.all(np.isnan(X), axis=0)
+        constant_mask = (lo_arr == hi_arr) | all_nan_cols
+        # 对全NaN列设bounds为(0.0, 0.0)
+        lo_arr[all_nan_cols] = 0.0
+        hi_arr[all_nan_cols] = 0.0
+        bounds = list(zip(lo_arr.astype(float).tolist(), hi_arr.astype(float).tolist()))
+        # 仅clip非常量列
         for i in range(X.shape[1]):
-            col = X[:, i]
-            valid = col[~np.isnan(col)]
-            if len(valid) == 0:
-                bounds.append((0.0, 0.0))
-                continue
-            lo = float(np.percentile(valid, lower_pct))
-            hi = float(np.percentile(valid, upper_pct))
-            if lo == hi:
-                # 避免常量列裁剪
-                bounds.append((lo, hi))
-                continue
-            X_w[:, i] = np.clip(col, lo, hi)
-            bounds.append((lo, hi))
+            if not constant_mask[i]:
+                X_w[:, i] = np.clip(X[:, i], lo_arr[i], hi_arr[i])
         return X_w, bounds
 
     def prepare_features(self, df: pd.DataFrame) -> tuple:
@@ -1156,11 +1166,31 @@ class V395MultiTargetTrainer:
             ('10d', y_10d_train, y_10d_val, y_10d_test, 'label_10d'),
         ]
 
-        for target_key, y_tr, y_va, y_te, target_name in targets:
-            models, pred_train, pred_val = self.train_single_target_models(
-                X_train, X_val, y_tr, y_va, target_name)
-            weights, rmses = self.calculate_ensemble_weights(pred_val, y_va)
-            all_results[target_key] = {'models': models, 'weights': weights, 'rmses': rmses}
+        # 并行训练: ThreadPoolExecutor (LGB/XGB/CatBoost是C++实现，释放GIL)
+        parallel_training = getattr(self, 'parallel_training', True)
+        if parallel_training and len(targets) > 1:
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            logger.info(f"  并行训练 {len(targets)} targets (ThreadPoolExecutor)")
+
+            def _train_target(args):
+                target_key, y_tr, y_va, y_te, target_name = args
+                models, pred_train, pred_val = self.train_single_target_models(
+                    X_train, X_val, y_tr, y_va, target_name)
+                weights, rmses = self.calculate_ensemble_weights(pred_val, y_va)
+                return target_key, {'models': models, 'weights': weights, 'rmses': rmses}
+
+            with ThreadPoolExecutor(max_workers=len(targets)) as pool:
+                futures = {pool.submit(_train_target, t): t[0] for t in targets}
+                for future in as_completed(futures):
+                    target_key, result = future.result()
+                    all_results[target_key] = result
+                    logger.info(f"  {target_key} 训练完成")
+        else:
+            for target_key, y_tr, y_va, y_te, target_name in targets:
+                models, pred_train, pred_val = self.train_single_target_models(
+                    X_train, X_val, y_tr, y_va, target_name)
+                weights, rmses = self.calculate_ensemble_weights(pred_val, y_va)
+                all_results[target_key] = {'models': models, 'weights': weights, 'rmses': rmses}
 
         # 5. 测试集评估 (独立推理 + 北极星Daily IC/ICIR)
         logger.info("\n" + "=" * 60)
@@ -1344,8 +1374,13 @@ class V395MultiTargetTrainer:
         self._log_feature_importance(all_results)
 
         # 7.5 计算全局评分分位数 (仅用测试集，避免训练数据泄漏)
-        global_quantiles = self._compute_global_quantiles(X_test, all_results, self.target_weights)
-        recommendation_thresholds = self._compute_recommendation_thresholds(X_test, all_results)
+        # 优化: 复用ensemble_predictions，避免重复predict (节省24次model.predict调用)
+        global_quantiles = self._compute_global_quantiles(
+            X_test, all_results, self.target_weights,
+            precomputed_predictions=ensemble_predictions)
+        recommendation_thresholds = self._compute_recommendation_thresholds(
+            X_test, all_results,
+            precomputed_predictions=ensemble_predictions)
 
         # 8. 保存模型
         end_time = datetime.now()
@@ -8495,7 +8530,7 @@ class V481Trainer(V475Trainer):
                 hf.unlink()
             logger.info(f"  Cleaned up v475 directory")
 
-            # 保存v481 history
+            # 保存v481 history (仅独立训练时写 latest, 子类链式调用时跳过)
             history['version'] = 'v4.8.1'
             history['base'] = 'V4.7.5 + 15 New Factors (50 → 60 features)'
             history['v481_innovations'] = model_data['v481_innovations']
@@ -8504,15 +8539,156 @@ class V481Trainer(V475Trainer):
             history_path = v481_dir / f'training_history_{timestamp}.json'
             with open(history_path, 'w', encoding='utf-8') as f:
                 _json.dump(history, f, indent=2, ensure_ascii=False)
-            latest_path = v481_dir / 'training_history_latest.json'
-            with open(latest_path, 'w', encoding='utf-8') as f:
-                _json.dump(history, f, indent=2, ensure_ascii=False)
+            # 仅当自身是最终版本时写 latest (防止子类覆盖)
+            if self.__class__.__name__ == 'V481Trainer':
+                latest_path = v481_dir / 'training_history_latest.json'
+                with open(latest_path, 'w', encoding='utf-8') as f:
+                    _json.dump(history, f, indent=2, ensure_ascii=False)
 
             logger.info(f"\nV4.8.1 training complete!")
             logger.info(f"  Features: {model_data.get('feature_names', ['?']).__len__()} "
                          f"(V4.7.5 - {len(self.PRUNE_FEATURES)} pruned + {len(self.NEW_FACTORS)} new)")
         else:
             logger.warning("No v475 model file found to rename")
+
+        return model_data, history
+
+
+class V484Trainer(V481Trainer):
+    """V4.8.4 训练器 — V4.8.1底座 + 1个Top-K验证因子 (60 → 61特征)
+
+    核心: 用 Top-K Sharpe (非全局IC) 筛选因子, 只保留 brain_roll_spread
+    来源: Roll (1984) 隐含价差, sqrt(max(0, -cov(Δclose, Δclose_lag1, 20d)))
+    验证: 单因子 TopK_Sharpe=1.397 (基线0.016), TopK_Return +0.014 (基线+0.0002)
+    """
+
+    V484_FACTOR = 'brain_roll_spread'
+
+    def load_data(self, start_date: str = None, end_date: str = None) -> pd.DataFrame:
+        """V4.8.4: V4.8.1基础 + brain_roll_spread"""
+        df = super().load_data(start_date, end_date)
+
+        date_min = df['trade_date'].min()
+        date_max = df['trade_date'].max()
+
+        logger.info("  V4.8.4 加载 brain_roll_spread...")
+        try:
+            conn = sqlite3.connect(self.db_path)
+            brain_raw = pd.read_sql("""
+                SELECT code, trade_date, features_json
+                FROM brain_alpha_cache
+                WHERE trade_date >= ? AND trade_date <= ?
+            """, conn, params=(date_min, date_max))
+            conn.close()
+
+            if not brain_raw.empty:
+                try:
+                    import orjson
+                    _loads = orjson.loads
+                except ImportError:
+                    _loads = json.loads
+
+                roll_values = []
+                for fj in brain_raw['features_json']:
+                    parsed = _loads(fj)
+                    roll_values.append(float(parsed.get('brain_roll_spread', 0)))
+
+                brain_df = pd.DataFrame({
+                    'code': brain_raw['code'].values,
+                    'trade_date': brain_raw['trade_date'].values,
+                    'brain_roll_spread': roll_values,
+                })
+
+                df = df.merge(brain_df, on=['code', 'trade_date'], how='left')
+                df['brain_roll_spread'] = df['brain_roll_spread'].fillna(0.0)
+                logger.info(f"    brain_roll_spread 合并完成, 覆盖率 "
+                            f"{(brain_df.shape[0] / len(df) * 100):.1f}%")
+            else:
+                df['brain_roll_spread'] = 0.0
+                logger.warning("    brain_alpha_cache 为空!")
+        except Exception as e:
+            df['brain_roll_spread'] = 0.0
+            logger.warning(f"    brain_roll_spread 加载失败: {e}")
+
+        logger.info(f"  V4.8.4 加载完成: {len(df.columns)} 列, {len(df):,} 行")
+        return df
+
+    def prepare_features(self, df: pd.DataFrame) -> tuple:
+        """V4.8.4: V4.8.1特征 + brain_roll_spread (60 → 61)"""
+        X, y_3d, y_5d, y_10d, y_15d, df_out = super().prepare_features(df)
+        logger.info(f"  V4.8.4: 最终特征数 = {X.shape[1]} (目标61)")
+        return X, y_3d, y_5d, y_10d, y_15d, df_out
+
+    def walk_forward_train(self, start_date: str = None, end_date: str = None,
+                            purge_days: int = 15, min_train_days: int = 900,
+                            val_days: int = 120, test_days: int = 120,
+                            step_days: int = 90):
+        """V4.8.4 Walk-Forward — V4.8.1 + brain_roll_spread"""
+        import shutil
+
+        logger.info("=" * 60)
+        logger.info("V4.8.4 Walk-Forward (V4.8.1 + brain_roll_spread, 60→61特征)")
+        logger.info("=" * 60)
+        logger.info(f"  底座: V4.8.1 (60特征, 6模型ensemble)")
+        logger.info(f"  新增: brain_roll_spread (Roll 1984 隐含价差)")
+        logger.info(f"  筛选: Top-K Sharpe=1.397 (基线0.016)")
+
+        model_data, history = super().walk_forward_train(
+            start_date=start_date, end_date=end_date,
+            purge_days=purge_days, min_train_days=min_train_days,
+            val_days=val_days, test_days=test_days, step_days=step_days)
+
+        # 移到 v484 目录
+        v481_dir = PROJECT_ROOT / 'ml_models' / 'trained_models' / 'v481'
+        v484_dir = PROJECT_ROOT / 'ml_models' / 'trained_models' / 'v484'
+        v484_dir.mkdir(parents=True, exist_ok=True)
+
+        v481_files = sorted(v481_dir.glob('v481_*.pkl'), key=lambda f: f.stat().st_mtime)
+        if v481_files:
+            latest = v481_files[-1]
+            timestamp = latest.stem.replace('v481_multi_target_', '')
+            new_path = v484_dir / f'v484_multi_target_{timestamp}.pkl'
+
+            import joblib
+            model_data['version'] = 'v4.8.4'
+            model_data['v484_innovations'] = {
+                'feature_expansion': '60 → 61 features (V4.8.1 + brain_roll_spread)',
+                'selection_method': 'Top-K Sharpe greedy (not global IC)',
+                'brain_factor': 'brain_roll_spread',
+                'formula': 'sqrt(max(0, -cov(Δclose, Δclose_lag1, 20d)))',
+                'reference': 'Roll (1984) implied bid-ask spread',
+                'topk_sharpe': 1.397,
+                'topk_return': 0.014142,
+            }
+            joblib.dump(model_data, new_path)
+            logger.info(f"\nV4.8.4 model saved: {new_path}")
+            logger.info(f"  Size: {new_path.stat().st_size / 1024 / 1024:.1f} MB")
+
+            for aux in ['global_quantiles.npy', 'recommendation_thresholds.json']:
+                src = v481_dir / aux
+                if src.exists():
+                    shutil.copy2(str(src), str(v484_dir / aux))
+
+            latest.unlink()
+            for hf in v481_dir.glob(f'training_history_{timestamp}*'):
+                hf.unlink()
+
+            history['version'] = 'v4.8.4'
+            history['base'] = 'V4.8.1 + brain_roll_spread (60 → 61 features)'
+            history['v484_innovations'] = model_data['v484_innovations']
+
+            import json as _json
+            history_path = v484_dir / f'training_history_{timestamp}.json'
+            with open(history_path, 'w', encoding='utf-8') as f:
+                _json.dump(history, f, indent=2, ensure_ascii=False)
+            latest_path = v484_dir / 'training_history_latest.json'
+            with open(latest_path, 'w', encoding='utf-8') as f:
+                _json.dump(history, f, indent=2, ensure_ascii=False)
+
+            logger.info(f"\nV4.8.4 training complete!")
+            logger.info(f"  Features: {model_data.get('feature_names', ['?']).__len__()}")
+        else:
+            logger.warning("No v481 model file found to rename")
 
         return model_data, history
 
@@ -9026,9 +9202,11 @@ class V482Trainer(V481Trainer):
             history_path = v482_dir / f'training_history_{timestamp}.json'
             with open(history_path, 'w', encoding='utf-8') as f:
                 _json.dump(history, f, indent=2, ensure_ascii=False)
-            latest_path = v482_dir / 'training_history_latest.json'
-            with open(latest_path, 'w', encoding='utf-8') as f:
-                _json.dump(history, f, indent=2, ensure_ascii=False)
+            # 仅当自身是最终版本时写 latest (防止子类覆盖)
+            if self.__class__.__name__ == 'V482Trainer':
+                latest_path = v482_dir / 'training_history_latest.json'
+                with open(latest_path, 'w', encoding='utf-8') as f:
+                    _json.dump(history, f, indent=2, ensure_ascii=False)
 
             logger.info(f"\nV4.8.2 training complete!")
             logger.info(f"  Features: {model_data.get('feature_names', ['?']).__len__()}")
@@ -10110,6 +10288,7 @@ def main():
     parser.add_argument('--v481', action='store_true', help='V4.8.1: V4.7.5+15新因子(50→60特征)')
     parser.add_argument('--v482', action='store_true', help='V4.8.2: V4.8.1+21新因子(60→~81特征, 价量+财务+学术)')
     parser.add_argument('--v483', action='store_true', help='V4.8.3: V4.8.2+29 BRAIN验证因子(~81→~110特征, ICIR+35.8%%)')
+    parser.add_argument('--v484', action='store_true', help='V4.8.4: V4.8.1+brain_roll_spread(60→61特征, TopK筛选)')
     parser.add_argument('--brain-features', action='store_true',
                         help='加载 BRAIN 验证因子 (需先运行 brain_feature_importer 缓存)')
     parser.add_argument('--skip-wf', action='store_true', help='跳过Walk-Forward评估, 只训练生产模型 (节省~75%时间)')
@@ -10118,7 +10297,12 @@ def main():
     # BRAIN 因子标志 — 适用于所有 Trainer 版本
     _use_brain = getattr(args, 'brain_features', False)
 
-    if args.v483:
+    if args.v484:
+        trainer = V484Trainer()
+        trainer.walk_forward_train(
+            start_date=args.start_date, end_date=args.end_date,
+            purge_days=max(args.purge_days, 15))
+    elif args.v483:
         trainer = V483Trainer()
         trainer.walk_forward_train(
             start_date=args.start_date, end_date=args.end_date,

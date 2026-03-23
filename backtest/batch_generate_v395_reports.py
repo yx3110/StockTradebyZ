@@ -248,95 +248,15 @@ def score_all_stocks_from_preloaded(
     if features_df is None or len(features_df) == 0:
         return {}
 
-    # Alpha158: 使用 scorer 自带的 predict_scores_from_preloaded 方法
-    if version == 'alpha158':
+    # V4.8.3: 唯一使用 predict_scores() 而非 predict_scores_from_preloaded 的版本
+    if version == 'v4.8.3':
         all_codes = features_df['code'].tolist()
-        return scorer.predict_scores_from_preloaded(all_codes, date, features_df)
+        return scorer.predict_scores(all_codes, date)
 
-    # V4.8.2: 81 features (V4.8.1 + 21 new) + V4.7.6 scorer
-    if version == 'v4.8.2':
-        all_codes = features_df['code'].tolist()
-        return scorer.predict_scores_from_preloaded(all_codes, date, features_df)
-
-    # V4.8.1: 60 features (V4.7.5 - 5 pruned + 15 new) + V4.7.6 scorer
-    if version == 'v4.8.1':
-        all_codes = features_df['code'].tolist()
-        return scorer.predict_scores_from_preloaded(all_codes, date, features_df)
-
-    # V4.8.0: 270d time decay + V4.7.6 scorer
-    if version == 'v4.8.0':
-        all_codes = features_df['code'].tolist()
-        return scorer.predict_scores_from_preloaded(all_codes, date, features_df)
-
-    # V4.7.9: Market-Adaptive Signal Gating (V4.7.5 + confidence dampening)
-    if version == 'v4.7.9':
-        all_codes = features_df['code'].tolist()
-        return scorer.predict_scores_from_preloaded(all_codes, date, features_df)
-
-    # V4.7.8: Dual-model ensemble (V4.7.6×90% + V4.7.7×10%)
-    if version == 'v4.7.8':
-        all_codes = features_df['code'].tolist()
-        return scorer.predict_scores_from_preloaded(all_codes, date, features_df)
-
-    # V4.7.7: Huber+DART+180d + V4.7.6 scorer
-    if version == 'v4.7.7':
-        all_codes = features_df['code'].tolist()
-        return scorer.predict_scores_from_preloaded(all_codes, date, features_df)
-
-    # V4.7.6: V4.7.5 + Top-K Focused + Confidence Discount + Vol-Adjusted
-    if version == 'v4.7.6':
-        all_codes = features_df['code'].tolist()
-        return scorer.predict_scores_from_preloaded(all_codes, date, features_df)
-
-    # V4.7.5: V4.7.3 + Asymmetric Top-Quantile Weighting
-    if version == 'v4.7.5':
-        all_codes = features_df['code'].tolist()
-        return scorer.predict_scores_from_preloaded(all_codes, date, features_df)
-
-    # V4.7.4: 连续评分+选择性V4.8特征+ListNet (V4.7.3简化管线)
-    if version == 'v4.7.4':
-        all_codes = features_df['code'].tolist()
-        return scorer.predict_scores_from_preloaded(all_codes, date, features_df)
-
-    # V4.7.3: 简化管线+精简特征+ICIR权重 (无Meta-Learner/Combined Isotonic)
-    if version == 'v4.7.3':
-        all_codes = features_df['code'].tolist()
-        return scorer.predict_scores_from_preloaded(all_codes, date, features_df)
-
-    # V4.7.2: V4.7.1底座+V4.6管线 (ICIR+Meta-Learner+Combined Isotonic)
-    if version == 'v4.7.2':
-        all_codes = features_df['code'].tolist()
-        return scorer.predict_scores_from_preloaded(all_codes, date, features_df)
-
-    # V4.7.1: V4.4底座+Bug修复+17新特征+LambdaRank
-    if version == 'v4.7.1':
-        all_codes = features_df['code'].tolist()
-        return scorer.predict_scores_from_preloaded(all_codes, date, features_df)
-
-    # V4.7: 同V4.6管线 (Meta-Learner/Combined Isotonic/增强流动性, 无小盘加成)
-    if version == 'v4.7':
-        all_codes = features_df['code'].tolist()
-        return scorer.predict_scores_from_preloaded(all_codes, date, features_df)
-
-    # V4.6: 必须使用 scorer 自带的 predict_scores_from_preloaded
-    # (Meta-Learner/Combined Isotonic/增强流动性/小盘加成在scorer中)
-    if version == 'v4.6':
-        all_codes = features_df['code'].tolist()
-        return scorer.predict_scores_from_preloaded(all_codes, date, features_df)
-
-    # V4.4.2: 必须使用 scorer 自带的 predict_scores_from_preloaded
-    # (模块G/H/I在scorer中, 不能绕过)
-    if version == 'v4.4.2':
-        all_codes = features_df['code'].tolist()
-        return scorer.predict_scores_from_preloaded(all_codes, date, features_df)
-
-    # V3.9: 使用 scorer 自带的 predict_scores_from_preloaded 方法
-    # (V390 内部结构不同: base_models + meta_model, 非 models[target])
+    # V3.9: 返回格式需要标准化 (V390 base_models + meta_model)
     if version == 'v3.9':
         all_codes = features_df['code'].tolist()
         results = scorer.predict_scores_from_preloaded(all_codes, date, features_df)
-        # V390 返回格式: {code: {score, pred_3d, pred_5d, pred_10d}} 或
-        # {code: {score, predicted_return, ...}}  - 需要标准化
         standardized = {}
         for code, data in results.items():
             standardized[code] = {
@@ -346,6 +266,12 @@ def score_all_stocks_from_preloaded(
                 'pred_10d': data.get('pred_10d', data.get('predicted_return', 0.0)),
             }
         return standardized
+
+    # 统一路径: alpha158, v4.4.2~v4.8.2 全部使用 predict_scores_from_preloaded
+    # (各版本差异在scorer内部处理，无需外部分支)
+    if version != 'v3.95':
+        all_codes = features_df['code'].tolist()
+        return scorer.predict_scores_from_preloaded(all_codes, date, features_df)
 
     # V3.95: 高效内联评分 (避免 predict_scores_from_preloaded 的额外开销)
     df = features_df.copy()
@@ -590,7 +516,7 @@ def main():
     parser.add_argument('--output-dir', default=None,
                         help='输出目录 (default: reports/daily_selection_v{version}_fast)')
     parser.add_argument('--version', default='v3.95',
-                        choices=['v3.9', 'v3.95', 'v3.96', 'v4.3', 'v4.4', 'v4.4.2', 'v4.6', 'v4.7', 'v4.7.1', 'v4.7.2', 'v4.7.3', 'v4.7.4', 'v4.7.5', 'v4.7.6', 'v4.7.7', 'v4.7.8', 'v4.7.9', 'v4.8.0', 'v4.8.1', 'v4.8.2', 'v5.0', 'alpha158'],
+                        choices=['v3.9', 'v3.95', 'v3.96', 'v4.3', 'v4.4', 'v4.4.2', 'v4.6', 'v4.7', 'v4.7.1', 'v4.7.2', 'v4.7.3', 'v4.7.4', 'v4.7.5', 'v4.7.6', 'v4.7.7', 'v4.7.8', 'v4.7.9', 'v4.8.0', 'v4.8.1', 'v4.8.2', 'v4.8.3', 'v5.0', 'alpha158'],
                         help='评分版本 (default: v3.95)')
     parser.add_argument('--force', action='store_true',
                         help='强制覆盖已有报告')
@@ -675,6 +601,9 @@ def main():
     elif args.version == 'v3.96':
         from ml_models.v39.v396_production_scorer import V396ProductionScorer
         scorer = V396ProductionScorer(model_type='small_data')
+    elif args.version == 'v4.8.3':
+        from ml_models.v39.v483_production_scorer import V483ProductionScorer
+        scorer = V483ProductionScorer()
     elif args.version == 'v4.8.2':
         from ml_models.v39.v482_production_scorer import V482ProductionScorer
         scorer = V482ProductionScorer()

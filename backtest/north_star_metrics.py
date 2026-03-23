@@ -1157,6 +1157,73 @@ def batch_load_universe_median_cap(buy_dates: List[str], db_path: str = None) ->
     return result
 
 
+def batch_load_all_metric_data(buy_dates: List[str], db_path: str = None):
+    """合并加载market_cap + limit_up + median_cap (2次SQL替代3次, 1个连接替代3个)
+
+    Returns:
+        (market_cap_data, limit_up_data, universe_median_cap) 三元组
+    """
+    if db_path is None:
+        db_path = DB_PATH
+
+    if not buy_dates:
+        return {}, {}, {}
+
+    conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA busy_timeout = 30000")
+    placeholders = ','.join(['?' for _ in buy_dates])
+
+    # Query 1: daily_basic (market_cap + turnover + median_cap共用)
+    df_basic = pd.read_sql_query(f"""
+        SELECT db.trade_date, s.code, s.type, db.total_mv, db.turnover_rate
+        FROM daily_basic db
+        JOIN securities s ON db.security_id = s.id
+        WHERE db.trade_date IN ({placeholders})
+          AND db.total_mv IS NOT NULL AND db.total_mv > 0
+    """, conn, params=list(buy_dates))
+
+    # Query 2: daily_quotes (limit_up检测)
+    df_quotes = pd.read_sql_query(f"""
+        SELECT dq.trade_date, s.code, dq.price_change_pct
+        FROM daily_quotes dq
+        JOIN securities s ON dq.security_id = s.id
+        WHERE dq.trade_date IN ({placeholders})
+          AND dq.price_change_pct IS NOT NULL
+          AND s.type = 'A股'
+    """, conn, params=list(buy_dates))
+
+    conn.close()
+
+    # 1. market_cap_data: {date: DataFrame[code, total_mv, turnover_rate]}
+    market_cap_data = {}
+    for date, group in df_basic.groupby('trade_date'):
+        market_cap_data[date] = group[['code', 'total_mv', 'turnover_rate']].reset_index(drop=True)
+
+    # 2. limit_up_data: {date: set(codes)}
+    limit_up_data = {}
+    if not df_quotes.empty:
+        conditions = [
+            df_quotes['code'].str.startswith('30') | df_quotes['code'].str.startswith('688'),
+            df_quotes['code'].str.startswith('8'),
+        ]
+        thresholds = [0.195, 0.295]
+        df_quotes['threshold'] = np.select(conditions, thresholds, default=0.095)
+        limit_up_df = df_quotes[df_quotes['price_change_pct'] >= df_quotes['threshold']]
+        for date, group in limit_up_df.groupby('trade_date'):
+            limit_up_data[date] = set(group['code'].tolist())
+        for date in df_quotes['trade_date'].unique():
+            if date not in limit_up_data:
+                limit_up_data[date] = set()
+
+    # 3. universe_median_cap: {date: median_total_mv}
+    universe_median_cap = {}
+    a_stock = df_basic[df_basic['type'] == 'A股']
+    for date, group in a_stock.groupby('trade_date'):
+        universe_median_cap[date] = group['total_mv'].median()
+
+    return market_cap_data, limit_up_data, universe_median_cap
+
+
 def compute_executability_metrics(holdings_by_date: Dict[str, List[str]],
                                    market_cap_data: Dict[str, pd.DataFrame],
                                    limit_up_data: Dict[str, set],

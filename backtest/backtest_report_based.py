@@ -58,7 +58,8 @@ from backtest.north_star_metrics import (
     compute_ic_monotonicity, compute_ic_time_stability, compute_signal_half_life,
     compute_half_period_consistency, compute_worst_rolling_icir, compute_net_gross_ratio,
     batch_load_market_cap_data, batch_load_limit_up_data,
-    batch_load_universe_median_cap, compute_executability_metrics,
+    batch_load_universe_median_cap, batch_load_all_metric_data,
+    compute_executability_metrics,
     classify_market_regime, compute_regime_conditional_metrics,
     # V3 imports
     NORTH_STAR_TARGETS_V3, V3_LAYER_WEIGHTS, V3_LAYER_NAMES,
@@ -79,6 +80,64 @@ from backtest.north_star_metrics import (
 HOLDING_DAYS = [1, 3, 5, 7, 10, 15, 20]
 
 
+# JSON解析: 优先用orjson (3-5x快于stdlib json)
+try:
+    import orjson as _orjson
+    def _load_json_file(path):
+        with open(path, 'rb') as f:
+            return _orjson.loads(f.read())
+except ImportError:
+    def _load_json_file(path):
+        with open(path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+
+
+def _parse_single_report(json_file, rank_field):
+    """解析单个JSON报告文件 (供并行加载使用)"""
+    date_str = json_file.stem.replace('analysis_data_', '')
+    date = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
+
+    try:
+        data = _load_json_file(json_file)
+    except Exception as e:
+        return date, None
+
+    stocks = data.get('all_stocks_with_scores', [])
+    if not stocks:
+        return date, None
+
+    stock_list = []
+    for s in stocks:
+        code = s.get('stock_code', '')
+        score = s.get('score', 0)
+        pred_ret = s.get('predicted_return_5d', None)
+        if code and score > 0:
+            entry = {
+                'code': code,
+                'score': score,
+                'predicted_return_5d': pred_ret,
+                'pred_3d': s.get('pred_3d'),
+                'pred_5d': s.get('pred_5d'),
+                'pred_10d': s.get('pred_10d'),
+                'pred_15d': s.get('pred_15d'),
+                'strategies': s.get('strategies', []),
+                'n_strategies': s.get('selected_by_strategies', 1),
+            }
+            if rank_field in ('auto', 'composite'):
+                entry['rank_score'] = entry.get('pred_10d') or score
+            elif rank_field == 'score':
+                entry['rank_score'] = score
+            elif rank_field.startswith('pred_'):
+                entry['rank_score'] = entry.get(rank_field) or score
+            else:
+                entry['rank_score'] = score
+            stock_list.append(entry)
+
+    if not stock_list:
+        return date, None
+    return date, stock_list
+
+
 def load_reports(report_dir, rank_field='auto'):
     """加载所有JSON报告，返回 {date: [{code, score, pred_3d, ..., rank_score}, ...]}
 
@@ -93,59 +152,29 @@ def load_reports(report_dir, rank_field='auto'):
     report_dir = Path(report_dir)
     reports = {}
 
-    for json_file in sorted(report_dir.glob('analysis_data_*.json')):
-        date_str = json_file.stem.replace('analysis_data_', '')
-        # 转为 YYYY-MM-DD 格式
-        date = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
+    json_files = sorted(report_dir.glob('analysis_data_*.json'))
+    if not json_files:
+        return reports
 
-        try:
-            with open(json_file, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-        except Exception as e:
-            print(f"  跳过 {json_file.name}: {e}")
+    # 并行加载JSON文件 (ThreadPoolExecutor, I/O密集型)
+    from concurrent.futures import ThreadPoolExecutor
+    from functools import partial
+
+    parse_fn = partial(_parse_single_report, rank_field=rank_field)
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(parse_fn, json_files))
+
+    for date, stock_list in results:
+        if stock_list is None:
             continue
-
-        stocks = data.get('all_stocks_with_scores', [])
-        if not stocks:
-            continue
-
-        stock_list = []
-        for s in stocks:
-            code = s.get('stock_code', '')
-            score = s.get('score', 0)
-            pred_ret = s.get('predicted_return_5d', None)
-            if code and score > 0:
-                entry = {
-                    'code': code,
-                    'score': score,
-                    'predicted_return_5d': pred_ret,
-                    'pred_3d': s.get('pred_3d'),
-                    'pred_5d': s.get('pred_5d'),
-                    'pred_10d': s.get('pred_10d'),
-                    'pred_15d': s.get('pred_15d'),
-                    'strategies': s.get('strategies', []),
-                    'n_strategies': s.get('selected_by_strategies', 1),
-                }
-                # rank_score: 用于排名的连续值 (避免全局分位数离散化导致同分)
-                if rank_field in ('auto', 'composite'):
-                    # auto/composite: 先设为pred_10d, composite后续会覆写
-                    entry['rank_score'] = entry.get('pred_10d') or score
-                elif rank_field == 'score':
-                    entry['rank_score'] = score
-                elif rank_field.startswith('pred_'):
-                    entry['rank_score'] = entry.get(rank_field) or score
-                else:
-                    entry['rank_score'] = score
-                stock_list.append(entry)
 
         # composite: 多周期加权排名融合
         if rank_field == 'composite' and stock_list:
             _apply_composite_ranking(stock_list)
 
-        if stock_list:
-            # 按rank_score排序 (连续预测值, 无同分)
-            stock_list.sort(key=lambda x: x['rank_score'], reverse=True)
-            reports[date] = stock_list
+        # 按rank_score排序 (连续预测值, 无同分)
+        stock_list.sort(key=lambda x: x['rank_score'], reverse=True)
+        reports[date] = stock_list
 
     return reports
 
@@ -199,6 +228,172 @@ def get_next_trading_date(trade_date):
     """, (trade_date,)).fetchone()
     conn.close()
     return row[0] if row else None
+
+
+# 模块级缓存: 多模型对比时复用future_returns (Phase 3A)
+_future_returns_cache = {}  # key: tuple(sorted report_dates) -> result dict
+_next_trading_dates_cache = {}
+
+
+def clear_future_returns_cache():
+    """清空future_returns缓存 (手动调用或切换数据库时)"""
+    _future_returns_cache.clear()
+    _next_trading_dates_cache.clear()
+
+
+def _batch_get_next_trading_dates(report_dates):
+    """批量获取所有报告日期的下一个交易日 (1次SQL替代N次)"""
+    import bisect
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("PRAGMA busy_timeout = 30000")
+    min_date = min(report_dates)
+    all_trading_dates = [r[0] for r in conn.execute("""
+        SELECT DISTINCT trade_date FROM daily_quotes
+        WHERE trade_date >= ?
+        ORDER BY trade_date
+    """, (min_date,)).fetchall()]
+    conn.close()
+
+    result = {}
+    for report_date in report_dates:
+        # 用二分查找找第一个 > report_date 的交易日
+        idx = bisect.bisect_right(all_trading_dates, report_date)
+        if idx < len(all_trading_dates):
+            result[report_date] = all_trading_dates[idx]
+    return result
+
+
+def batch_get_all_future_returns(report_dates, holding_days_list=None):
+    """批量预加载所有报告日期的未来收益率 (3次SQL替代~4700次)
+
+    Args:
+        report_dates: 报告日期列表 (YYYY-MM-DD格式)
+        holding_days_list: 持仓天数列表
+
+    Returns:
+        {buy_date: {code: {'return_1d': x, 'return_3d': y, ...}}}
+    """
+    if holding_days_list is None:
+        holding_days_list = HOLDING_DAYS
+
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("PRAGMA busy_timeout = 30000")
+
+    # 1. 获取全部交易日列表 (日期范围内)
+    min_date = min(report_dates)
+    max_holding = max(holding_days_list)
+    all_trading_dates = [r[0] for r in conn.execute("""
+        SELECT DISTINCT trade_date FROM daily_quotes
+        WHERE trade_date >= ?
+        ORDER BY trade_date
+    """, (min_date,)).fetchall()]
+
+    if not all_trading_dates:
+        conn.close()
+        return {}
+
+    # 建立日期→索引映射
+    date_to_idx = {d: i for i, d in enumerate(all_trading_dates)}
+
+    # 2. 计算所有buy_date和sell_date
+    buy_dates_set = set()
+    sell_dates_map = {}  # {buy_date: {holding_days: sell_date}}
+
+    import bisect
+    for report_date in report_dates:
+        # buy_date = report_date的下一个交易日 (bisect替代线性搜索)
+        if report_date in date_to_idx:
+            buy_idx = date_to_idx[report_date] + 1
+        else:
+            buy_idx = bisect.bisect_right(all_trading_dates, report_date)
+        if buy_idx is None or buy_idx >= len(all_trading_dates):
+            continue
+
+        buy_date = all_trading_dates[buy_idx]
+        buy_dates_set.add(buy_date)
+        sell_dates_map[buy_date] = {}
+        for days in holding_days_list:
+            sell_idx = buy_idx + days
+            if sell_idx < len(all_trading_dates):
+                sell_dates_map[buy_date][days] = all_trading_dates[sell_idx]
+
+    if not buy_dates_set:
+        conn.close()
+        return {}
+
+    # 3. 批量加载所有buy_date的开盘价+涨停状态 (1次SQL)
+    buy_dates_sorted = sorted(buy_dates_set)
+    placeholders = ','.join(['?' for _ in buy_dates_sorted])
+    buy_df = pd.read_sql_query(f"""
+        SELECT s.code, dq.trade_date, dq.open, dq.price_change_pct
+        FROM daily_quotes dq
+        JOIN securities s ON dq.security_id = s.id
+        WHERE dq.trade_date IN ({placeholders})
+          AND dq.open IS NOT NULL AND dq.open > 0
+    """, conn, params=buy_dates_sorted)
+
+    # 4. 收集所有sell_date，批量加载收盘价 (1次SQL)
+    all_sell_dates = set()
+    for buy_date, days_map in sell_dates_map.items():
+        for days, sell_date in days_map.items():
+            all_sell_dates.add(sell_date)
+
+    sell_dates_sorted = sorted(all_sell_dates)
+    if sell_dates_sorted:
+        placeholders_sell = ','.join(['?' for _ in sell_dates_sorted])
+        sell_df = pd.read_sql_query(f"""
+            SELECT s.code, dq.trade_date, dq.close
+            FROM daily_quotes dq
+            JOIN securities s ON dq.security_id = s.id
+            WHERE dq.trade_date IN ({placeholders_sell})
+              AND dq.close IS NOT NULL AND dq.close > 0
+        """, conn, params=sell_dates_sorted)
+    else:
+        sell_df = pd.DataFrame(columns=['code', 'trade_date', 'close'])
+
+    conn.close()
+
+    # 5. 构建查找字典 (用itertuples替代iterrows，快3-5x)
+    # buy_prices_by_date: {buy_date: {code: open_price}}
+    buy_prices_by_date = {}
+    limit_up_by_date = {}  # {buy_date: set(codes)}
+    for row in buy_df.itertuples(index=False):
+        code, trade_date, open_price, pct = row.code, row.trade_date, getattr(row, 'open'), row.price_change_pct
+        # 涨停检测
+        if pct is not None and not (isinstance(pct, float) and np.isnan(pct)):
+            if code.startswith('30') or code.startswith('688'):
+                threshold = 0.195
+            elif code.startswith('8'):
+                threshold = 0.295
+            else:
+                threshold = 0.095
+            if pct >= threshold:
+                limit_up_by_date.setdefault(trade_date, set()).add(code)
+                continue
+        buy_prices_by_date.setdefault(trade_date, {})[code] = open_price
+
+    # sell_prices: {(sell_date, code): close_price}
+    sell_prices = {}
+    for row in sell_df.itertuples(index=False):
+        sell_prices[(row.trade_date, row.code)] = row.close
+
+    # 6. 计算所有收益率
+    all_results = {}
+    for buy_date in buy_dates_sorted:
+        date_results = {}
+        codes_prices = buy_prices_by_date.get(buy_date, {})
+        for days, sell_date in sell_dates_map.get(buy_date, {}).items():
+            key = f'return_{days}d'
+            for code, open_price in codes_prices.items():
+                close = sell_prices.get((sell_date, code))
+                if close and open_price > 0:
+                    ret = (close - open_price) / open_price
+                    if code not in date_results:
+                        date_results[code] = {}
+                    date_results[code][key] = ret
+        all_results[buy_date] = date_results
+
+    return all_results
 
 
 def get_future_returns(codes, buy_date, holding_days_list=None):
@@ -701,6 +896,25 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
         turnover_data = batch_load_market_cap_data(dates_all_tr)
         print(f"  流动性过滤数据: {len(turnover_data)}天换手率数据")
 
+    # 批量预加载所有日期的未来收益率 (使用模块级缓存，多模型对比时复用)
+    import time as _time
+    _t0_batch = _time.time()
+    _all_report_dates_for_batch = sorted(reports.keys())
+    _cache_key = tuple(_all_report_dates_for_batch)
+
+    if _cache_key in _future_returns_cache:
+        _batch_future_returns = _future_returns_cache[_cache_key]
+        _next_trading_date_map = _next_trading_dates_cache.get(_cache_key, {})
+        print(f"  未来收益缓存命中: {len(_batch_future_returns)}天 (0.0秒)")
+    else:
+        _batch_future_returns = batch_get_all_future_returns(_all_report_dates_for_batch, HOLDING_DAYS)
+        _next_trading_date_map = _batch_get_next_trading_dates(_all_report_dates_for_batch)
+        # 缓存结果 (限制缓存大小，避免内存爆炸)
+        if len(_future_returns_cache) < 10:
+            _future_returns_cache[_cache_key] = _batch_future_returns
+            _next_trading_dates_cache[_cache_key] = _next_trading_date_map
+        print(f"  批量预加载未来收益: {len(_batch_future_returns)}天, 耗时{_time.time()-_t0_batch:.1f}秒")
+
     daily_results = []
     all_picks = []
     holdings_by_date = {}  # 用于换手率计算
@@ -842,8 +1056,8 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
 
         bottom_stocks = stocks[-top_n:] if len(stocks) >= top_n * 2 else stocks[-(len(stocks)//2):]
 
-        # 买入日 = 报告日的下一个交易日
-        buy_date = get_next_trading_date(date)
+        # 买入日 = 报告日的下一个交易日 (从批量预加载的映射中查找)
+        buy_date = _next_trading_date_map.get(date) or get_next_trading_date(date)
         if not buy_date:
             skipped += 1
             continue
@@ -854,10 +1068,8 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
         holdings_by_date[date] = top_codes
         prev_top_codes = set(top_codes)
 
-        # 查询所有候选股票的收益（用于逐日IC计算）
-        all_codes = list(set([s['code'] for s in stocks]))
-
-        future_returns = get_future_returns(all_codes, buy_date, HOLDING_DAYS)
+        # 从批量预加载的缓存中获取未来收益 (替代per-date DB查询)
+        future_returns = _batch_future_returns.get(buy_date, {})
 
         if not future_returns:
             skipped += 1
@@ -1032,16 +1244,16 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
         else:
             ic, p_val = 0, 1
 
-        # 逐日IC序列
+        # 逐日IC序列 (优化: 预分组避免重复filter)
+        return_col = f'return_{days}d'
+        valid_picks = picks_df[['date', 'score', return_col]].dropna(subset=[return_col])
         ic_records = []
-        sorted_dates = sorted(picks_df['date'].unique())
-        for date in sorted_dates:
-            day_picks = picks_df[(picks_df['date'] == date) & (picks_df[f'return_{days}d'].notna())]
-            if len(day_picks) >= 5:
-                day_ic, day_p = spearmanr(day_picks['score'], day_picks[f'return_{days}d'])
-                if not np.isnan(day_ic):
-                    ic_records.append({'date': date, 'ic': day_ic, 'p_val': day_p, 'n_stocks': len(day_picks)})
-
+        if len(valid_picks) > 0:
+            for date, group in valid_picks.groupby('date'):
+                if len(group) >= 5:
+                    day_ic, day_p = spearmanr(group['score'].values, group[return_col].values)
+                    if not np.isnan(day_ic):
+                        ic_records.append({'date': date, 'ic': day_ic, 'p_val': day_p, 'n_stocks': len(group)})
         ic_df = pd.DataFrame(ic_records) if ic_records else pd.DataFrame()
         daily_ic_series[days] = ic_df
 
@@ -1106,11 +1318,9 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
         benchmark_code, start_date=start_d, end_date=end_d
     )
 
-    # V2: 批量加载市值/涨停数据 (3个SQL调用覆盖所有日期)
+    # V2: 批量加载市值/涨停数据 (合并为2次SQL替代3次, 1个连接替代3个)
     all_buy_dates = sorted(set(df['buy_date'].tolist()))
-    market_cap_data = batch_load_market_cap_data(all_buy_dates)
-    limit_up_data = batch_load_limit_up_data(all_buy_dates)
-    universe_median_cap = batch_load_universe_median_cap(all_buy_dates)
+    market_cap_data, limit_up_data, universe_median_cap = batch_load_all_metric_data(all_buy_dates)
 
     for days in HOLDING_DAYS:
         sub = df[df['days'] == days].sort_values('date')
