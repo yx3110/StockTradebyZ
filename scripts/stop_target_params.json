@@ -33,8 +33,8 @@
     "blend_mid_ml_w": 0.45,
     "blend_low_ml_w": 0.25,
 
-    "rr_cap": 999.0,
-    "rr_fallback": 999.0,
+    "rr_cap": 3.0,
+    "rr_fallback": 2.5,
 
     "pos_strong_buy": 10,
     "pos_buy": 8,
