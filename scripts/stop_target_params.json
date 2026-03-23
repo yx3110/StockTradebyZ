@@ -16,7 +16,7 @@
     "ml_loosen_cap": 0.0,
     "ml_loosen_confidence_min": 99.0,
 
-    "bearish_count_threshold": 2,
+    "bearish_count_threshold": 3,
     "bearish_pred_threshold": -0.005,
     "bearish_tighten": 0.01,
 
