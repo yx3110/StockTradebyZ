@@ -4145,11 +4145,15 @@ class TomorrowStockSelector:
             logger.warning(f"成交量维度计算失败: {e}")
 
         # ======== 市场宽度维度 (15%) ========
+        # 查询最近5个交易日宽度数据 (用于当日评分 + 多日清仓预警检测)
+        breadth_multi_day = []  # [(date, up_ratio, limit_down), ...]
         try:
             # 涨停从price_change_pct直接计算 (is_limit_up字段数据有问题)
             # 主板≥9.5%, 创/科≥19.5%, 北交≥29.5% (pct已是小数: 0.095=9.5%)
+            breadth_start = (target_date - timedelta(days=12)).strftime('%Y-%m-%d')
             breadth_query = """
                 SELECT
+                    dq.trade_date,
                     COUNT(*) as total,
                     SUM(CASE WHEN dq.price_change_pct > 0 THEN 1 ELSE 0 END) as up_count,
                     SUM(CASE WHEN dq.price_change_pct < 0 THEN 1 ELSE 0 END) as down_count,
@@ -4166,20 +4170,33 @@ class TomorrowStockSelector:
                     SUM(CASE WHEN dq.price_change_pct < -0.05 THEN 1 ELSE 0 END) as strong_down
                 FROM daily_quotes dq
                 JOIN securities s ON dq.security_id = s.id
-                WHERE s.type = 'A股' AND dq.trade_date = ? AND dq.volume > 0
+                WHERE s.type = 'A股' AND dq.trade_date >= ? AND dq.trade_date <= ? AND dq.volume > 0
+                GROUP BY dq.trade_date
+                HAVING COUNT(*) > 1000
+                ORDER BY dq.trade_date
             """
             conn = sqlite3.connect(str(db.db_path))
-            breadth_row = pd.read_sql_query(breadth_query, conn, params=[date_str])
+            breadth_df = pd.read_sql_query(breadth_query, conn, params=[breadth_start, date_str])
             conn.close()
 
-            if len(breadth_row) > 0 and breadth_row['total'].iloc[0] > 0:
-                total = breadth_row['total'].iloc[0]
-                up = breadth_row['up_count'].iloc[0]
-                down = breadth_row['down_count'].iloc[0]
-                limit_up = breadth_row['limit_up_count'].iloc[0]
-                limit_down = breadth_row['limit_down_count'].iloc[0]
-                strong_up = breadth_row['strong_up'].iloc[0]
-                strong_down = breadth_row['strong_down'].iloc[0]
+            # 保存多日宽度数据 (用于清仓预警)
+            for _, row in breadth_df.iterrows():
+                r_total = row['total']
+                r_up = row['up_count']
+                r_ld = row['limit_down_count']
+                r_ratio = r_up / r_total if r_total > 0 else 0.5
+                breadth_multi_day.append((row['trade_date'], r_ratio, int(r_ld)))
+
+            # 用最后一天(当日)数据做现有评分
+            if len(breadth_df) > 0:
+                today_row = breadth_df.iloc[-1]
+                total = today_row['total']
+                up = today_row['up_count']
+                down = today_row['down_count']
+                limit_up = today_row['limit_up_count']
+                limit_down = today_row['limit_down_count']
+                strong_up = today_row['strong_up']
+                strong_down = today_row['strong_down']
 
                 up_ratio = up / total if total > 0 else 0.5
 
@@ -4232,6 +4249,72 @@ class TomorrowStockSelector:
                 }
         except Exception as e:
             logger.warning(f"市场宽度维度计算失败: {e}")
+
+        # ======== 清仓预警检测 (三级) ========
+        # 基于多日市场宽度崩溃 + 指数回撤的前瞻性风控
+        # Tier 0 清仓: 连续2日涨家比<15% + 20d峰值回撤>2% → 15个月0误报
+        # Tier 1 严重预警: 当日涨家比<15% + 20d峰值回撤>3%
+        # Tier 2 高危预警: 当日涨家比<20% + 20d峰值回撤>3% + 5d跌幅>2%
+        crash_warning = {'level': None, 'reasons': [], 'multi_day_breadth': []}
+        try:
+            if len(hs300) >= 20 and len(breadth_multi_day) >= 2:
+                closes_cw = hs300['close'].values.astype(float)
+
+                # 计算关键指标
+                peak_20d = np.max(closes_cw[-20:])
+                dd_from_peak = closes_cw[-1] / peak_20d - 1  # 20日峰值回撤
+                ret_5d = closes_cw[-1] / closes_cw[-5] - 1 if len(closes_cw) >= 5 else 0
+
+                # 最近几天涨家比
+                recent_ratios = breadth_multi_day[-5:]  # 最多5天
+                today_up_ratio = recent_ratios[-1][1]
+                yesterday_up_ratio = recent_ratios[-2][1] if len(recent_ratios) >= 2 else 1.0
+
+                # 保存多日宽度明细 (用于报告展示)
+                crash_warning['multi_day_breadth'] = recent_ratios[-5:]
+                crash_warning['dd_from_peak'] = dd_from_peak
+                crash_warning['ret_5d'] = ret_5d
+
+                # 近5日低涨家比天数 (用于Tier 2)
+                days_below_30 = sum(1 for _, r, _ in recent_ratios if r < 0.30)
+
+                # Tier 0: 极端风险 — 连续2日涨家比<15% + 20d峰值回撤>2%
+                # 6年回测: 11次触发, ~50%后续反弹(国家队/V型), ~50%继续下跌
+                # 定位: 极端风险警告(非清仓指令), 历史上50%概率继续跌、50%急反弹
+                if (today_up_ratio < 0.15 and yesterday_up_ratio < 0.15
+                        and dd_from_peak < -0.02):
+                    crash_warning['level'] = 0
+                    crash_warning['reasons'] = [
+                        f'连续2日涨家比极低: {yesterday_up_ratio:.1%} → {today_up_ratio:.1%} (阈值<15%)',
+                        f'20日峰值回撤: {dd_from_peak:.1%} (阈值<-2%)',
+                        f'5日跌幅: {ret_5d:.1%}',
+                        f'注意: 6年回测此信号约50%后续反弹，需结合消息面判断',
+                    ]
+                # Tier 1: 严重预警 — 连续2日宽度恶化(今<20%+昨<25%) + 20d回撤>2%
+                # 6年回测: 24次触发, 次日基本持平(+0.05%), 标志极端波动区间
+                elif (today_up_ratio < 0.20 and yesterday_up_ratio < 0.25
+                        and dd_from_peak < -0.02):
+                    crash_warning['level'] = 1
+                    crash_warning['reasons'] = [
+                        f'连续2日宽度恶化: 昨{yesterday_up_ratio:.1%}(<25%) → 今{today_up_ratio:.1%}(<20%)',
+                        f'20日峰值回撤: {dd_from_peak:.1%} (阈值<-2%)',
+                    ]
+                # Tier 2: 高危预警 — 5日内3天涨家比<30% + 20d回撤>3% + 当日<40%
+                # 6年回测: ~70次触发, 次日均-0.11%, 弱预警信号
+                elif (days_below_30 >= 3 and dd_from_peak < -0.03
+                        and today_up_ratio < 0.40):
+                    crash_warning['level'] = 2
+                    crash_warning['reasons'] = [
+                        f'5日内{days_below_30}天涨家比<30% (阈值>=3天)',
+                        f'当日涨家比: {today_up_ratio:.1%} (确认非反弹)',
+                        f'20日峰值回撤: {dd_from_peak:.1%} (阈值<-3%)',
+                    ]
+
+                if crash_warning['level'] is not None:
+                    logger.warning(f"清仓预警触发! Level={crash_warning['level']}, "
+                                   f"涨家比={today_up_ratio:.1%}, DD={dd_from_peak:.1%}")
+        except Exception as e:
+            logger.warning(f"清仓预警检测失败: {e}")
 
         # ======== 波动/风险维度 (15%) ========
         # 多指数综合: 沪深300(大盘) + 中证2000(小盘) + 中证全指(全市场)
@@ -4587,6 +4670,17 @@ class TomorrowStockSelector:
                 'peak_nav': round(peak_nav, 4),
             }
 
+            # 风险预警评分上限 (优先级最高, 在市况熔断之前)
+            # 6年回测: 极端宽度崩溃约50%反弹/50%继续跌, 不宜强制清仓
+            # 定位: 降低仓位+提示风险, 而非自动清仓
+            crash_level = crash_warning.get('level', None)
+            if crash_level == 0:
+                total_score = min(total_score, 15)   # 极端风险: 建议15%仓位
+            elif crash_level == 1:
+                total_score = min(total_score, 25)   # 严重预警: 建议20%仓位
+            elif crash_level == 2:
+                total_score = min(total_score, 35)   # 高危预警: 建议25%仓位
+
             # 市况熔断 — 仅极端情况硬限 (portfolio_manager circuit breaker)
             ret_20d = closes[-1] / closes[-20] - 1 if len(closes) >= 20 else 0
             ma60_val = np.mean(closes[-60:]) if len(closes) >= 60 else closes[-1]
@@ -4600,7 +4694,10 @@ class TomorrowStockSelector:
 
         # 建议仓位: 评分驱动基础仓位 × CPPI动态调节
         # CPPI不改分数, 只调仓位 — 防止熊市反弹中误加仓
-        if total_score >= 80:
+        crash_level = crash_warning.get('level', None)
+        if crash_level == 0:
+            base_pos = 0.15; env_label = '极端风险'; env_emoji = '🚨🚨'
+        elif total_score >= 80:
             base_pos = 0.90; env_label = '强势'; env_emoji = '🟢🟢'
         elif total_score >= 60:
             base_pos = 0.65; env_label = '偏多'; env_emoji = '🟢'
@@ -4612,7 +4709,10 @@ class TomorrowStockSelector:
             base_pos = 0.05; env_label = '恶劣'; env_emoji = '🔴'
 
         # 仓位建议 (回测验证: 评分分档直接映射最优, CPPI乘数无增量价值)
-        position_advice = f'{max(0, base_pos - 0.10):.0%}-{min(1, base_pos + 0.10):.0%}'
+        if crash_level == 0:
+            position_advice = '5%-15% (极端风险)'
+        else:
+            position_advice = f'{max(0, base_pos - 0.10):.0%}-{min(1, base_pos + 0.10):.0%}'
 
         # 为每个维度添加label
         for key in results:
@@ -4638,6 +4738,7 @@ class TomorrowStockSelector:
             'env_label': env_label,
             'env_emoji': env_emoji,
             'cppi': cppi_info,
+            'crash_warning': crash_warning,
         }
 
     def _format_trading_environment(self, env: Dict[str, Any]) -> str:
@@ -4657,7 +4758,37 @@ class TomorrowStockSelector:
             'model_signal': '35%',
         }
 
+        # 清仓预警横幅 (在所有内容之前, 最醒目位置)
+        crash_warning = env.get('crash_warning', {})
+        crash_level = crash_warning.get('level', None)
+
         section = "\n## 🌡️ 交易环境监测\n\n"
+
+        if crash_level is not None:
+            if crash_level == 0:
+                section += "> ## 🚨🚨🚨 极端风险预警 🚨🚨🚨\n"
+                section += "> **连续2日涨家比<15%，市场处于极端状态！建议仓位降至15%以下。**\n"
+                section += "> **注意: 此信号历史上约50%后续继续下跌、50%急速反弹(国家队/V型)，需结合消息面判断。**\n>\n"
+            elif crash_level == 1:
+                section += "> ## ⚠️⚠️ 严重预警 ⚠️⚠️\n"
+                section += "> **连续2日市场宽度恶化，建议仓位降至20%以下！**\n>\n"
+            elif crash_level == 2:
+                section += "> ## ⚠️ 高危预警 ⚠️\n"
+                section += "> **近5日市场宽度持续低迷，建议谨慎控制仓位。**\n>\n"
+
+            for reason in crash_warning.get('reasons', []):
+                section += f"> - {reason}\n"
+
+            # 近日宽度明细表
+            breadth_history = crash_warning.get('multi_day_breadth', [])
+            if breadth_history:
+                section += ">\n> | 日期 | 涨家比 | 跌停数 |\n"
+                section += "> |------|--------|--------|\n"
+                for bdate, bratio, bld in breadth_history[-5:]:
+                    marker = ' !!!' if bratio < 0.15 else ''
+                    section += f"> | {bdate} | {bratio:.1%}{marker} | {bld} |\n"
+            section += "\n"
+
         section += "| 维度 | 权重 | 评分 | 状态 | 关键信号 |\n"
         section += "|------|------|------|------|----------|\n"
 
@@ -4680,9 +4811,15 @@ class TomorrowStockSelector:
         # 环境解读
         section += f"> 📌 **环境评级: {env['env_emoji']} {env['env_label']}** — 综合评分 {env['total_score']}/100，建议总仓位 {env['position_advice']}\n"
 
-        # 生成操作建议
+        # 生成操作建议 (清仓预警覆盖常规建议)
         score = env['total_score']
-        if score >= 80:
+        if crash_level == 0:
+            advice = "极端风险！连续2日涨家比<15%，市场处于极端波动区间。建议仓位降至15%以下，严格止损。注意: 历史上此信号约50%后续反弹，需结合政策面/消息面综合判断"
+        elif crash_level == 1:
+            advice = "严重预警！连续2日市场宽度恶化，建议仓位降至20%以下，仅保留最强确定性品种"
+        elif crash_level == 2:
+            advice = "高危预警！近5日市场宽度持续低迷，建议控制仓位在25%以下，严格止损"
+        elif score >= 80:
             advice = "市场强势运行，可积极参与，关注量能持续性和板块轮动节奏"
         elif score >= 60:
             advice = "环境偏暖，可正常操作，侧重模型高分+策略确认的品种"
