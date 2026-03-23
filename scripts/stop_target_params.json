@@ -24,7 +24,7 @@
     "target_max_wide": 0.12,
     "target_min_normal": 0.08,
     "target_min_wide": 0.04,
-    "target_ml_scale": 1.2,
+    "target_ml_scale": 0.8,
 
     "blend_high_conf_threshold": 0.7,
     "blend_high_pred_threshold": 0.01,
