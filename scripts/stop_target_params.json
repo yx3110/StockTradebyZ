@@ -20,7 +20,7 @@
     "bearish_pred_threshold": -0.005,
     "bearish_tighten": 0.01,
 
-    "target_max_normal": 0.06,
+    "target_max_normal": 0.08,
     "target_max_wide": 0.09,
     "target_min_normal": 0.03,
     "target_min_wide": 0.04,
