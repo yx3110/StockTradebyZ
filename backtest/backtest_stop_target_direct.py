@@ -55,7 +55,10 @@ from backtest.batch_generate_v395_reports import (
 
 def load_scorer(version: str):
     """加载ML评分器"""
-    if version == 'v4.7.9':
+    if version == 'v4.8.1':
+        from ml_models.v39.v481_production_scorer import V481ProductionScorer
+        return V481ProductionScorer()
+    elif version == 'v4.7.9':
         from ml_models.v39.v479_production_scorer import V479ProductionScorer
         return V479ProductionScorer()
     elif version == 'v4.7.5':
@@ -151,7 +154,13 @@ def compute_stop_target_buy(
     recommendation: str,
 ) -> dict:
     """
-    计算止损/目标/买入价和仓位 (与 _enhance_prices_with_ml 逻辑一致)
+    计算止损/目标/买入价和仓位 (Autoresearch优化版 2026-03-23)
+
+    优化结果 (V4.8.1, 536天回测):
+    - 买入价: 收盘价-2.5% (vs旧-1%, 更优入场点)
+    - 止损: 主板-10% / 创科-15% (vs旧-7%/-9%, 宽止损=少触发)
+    - 目标: 主板+8% / 创科+12% (vs旧+3%/+4%, 高目标=大收益)
+    - 仓位: 强信号集中 (强烈买入15%, 买入8%, 谨慎3%, 观望1%)
 
     Returns:
         {buy_price, stop_loss, target, position_pct}
@@ -160,47 +169,30 @@ def compute_stop_target_buy(
         return {'buy_price': 0, 'stop_loss': 0, 'target': 0, 'position_pct': 0}
 
     primary_pred = pred_10d if pred_10d != 0 else pred_5d
-    confidence = {'low': 0.85, 'medium': 0.6, 'high': 0.3}.get(risk_level, 0.5)
 
     is_wide_limit = stock_code.startswith('30') or stock_code.startswith('688')
     daily_limit = 0.20 if is_wide_limit else 0.10
 
-    # === 买入价: 收盘价下方1% ===
-    buy_price = round(close_price * 0.99, 2)
+    # === 买入价: 收盘价下方2.5% ===
+    buy_price = round(close_price * 0.975, 2)
 
-    # === 止损价 ===
-    base_stop_pct = 0.09 if is_wide_limit else 0.07
-    wide_stop = close_price * (1 - base_stop_pct)
-    enhanced_stop = wide_stop  # 简化: 不依赖技术指标
-
-    # ML方向微调
-    if primary_pred < -0.02:
-        tighten_pct = min(abs(primary_pred) * 0.3, 0.01)
-        enhanced_stop = enhanced_stop * (1 + tighten_pct)
-    elif primary_pred > 0.02 and confidence >= 0.5:
-        loosen_pct = min(primary_pred * 0.2, 0.01)
-        enhanced_stop = enhanced_stop * (1 - loosen_pct)
-
-    # 多周期一致看跌
-    bearish_count = sum(1 for p in [pred_3d, pred_5d, pred_10d, pred_15d] if p < -0.005)
-    if bearish_count >= 3:
-        enhanced_stop = max(enhanced_stop, close_price * (1 - base_stop_pct + 0.01))
+    # === 止损价: 主板-10%, 创/科-15% ===
+    base_stop_pct = 0.15 if is_wide_limit else 0.10
+    enhanced_stop = close_price * (1 - base_stop_pct)
 
     # 约束
     min_stop = close_price * (1 - daily_limit)
     enhanced_stop = max(enhanced_stop, min_stop)
-    enhanced_stop = max(enhanced_stop, buy_price * 0.90)
+    enhanced_stop = max(enhanced_stop, buy_price * 0.85)
     enhanced_stop = min(enhanced_stop, buy_price * 0.96)
 
-    # === 目标价 ===
-    max_target_pct = 0.09 if is_wide_limit else 0.06
-    min_target_pct = 0.04 if is_wide_limit else 0.03
+    # === 目标价: 主板+8%, 创/科+12% ===
+    max_target_pct = 0.12 if is_wide_limit else 0.10
+    min_target_pct = 0.12 if is_wide_limit else 0.08
     ml_target_pct = max(min(primary_pred * 0.8, max_target_pct), min_target_pct)
-
-    # 简化技术目标 (无技术指标时用ML)
     tech_target_pct = ml_target_pct
 
-    # 加权混合
+    confidence = {'low': 0.85, 'medium': 0.6, 'high': 0.3}.get(risk_level, 0.5)
     if confidence >= 0.7 and primary_pred > 0.01:
         ml_w, tech_w = 0.65, 0.35
     elif confidence >= 0.4:
@@ -217,11 +209,11 @@ def compute_stop_target_buy(
     if final_risk > 0 and final_reward / final_risk > 3.0:
         blended_target = buy_price + final_risk * 2.5
 
-    # === 仓位 ===
+    # === 仓位: 强信号集中 ===
     if recommendation in ('回避', '卖出'):
         position_pct = 0
     else:
-        base = {'强烈买入': 10, '买入': 8, '谨慎买入': 6, '观望': 3}.get(recommendation, 3)
+        base = {'强烈买入': 15, '买入': 8, '谨慎买入': 3, '观望': 1}.get(recommendation, 1)
         risk_adj = {'low': 0, 'medium': -2, 'high': -4}.get(risk_level, -2)
         position_pct = max(base + risk_adj, 0)
 

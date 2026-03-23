@@ -1,0 +1,35 @@
+iteration	composite	excess_pct	sharpe	win_rate	trades	description	decision
+0	436.64	415.8	4.174	70.7	8926	baseline — default params	baseline
+1	309.68	291.4	3.659	75.8	9827	buy_discount 0.01→0.005	discard
+2	613.77	590.1	4.734	64.9	8026	buy_discount 0.01→0.015	keep
+3	848.31	822.1	5.241	59.2	7236	buy_discount 0.015→0.02	keep
+4	1285.38	1255.8	5.911	53.8	6563	buy_discount 0.02→0.025	keep (settled)
+5	1772.54	1740.6	6.398	48.5	5912	buy_discount 0.025→0.03	keep (impractical)
+6	2384.74	2350.8	6.792	45.0	5332	buy_discount→0.035	keep (impractical)
+7	2520.42	2487.1	6.672	42.3	4791	buy_discount→0.04	keep (impractical)
+8	3113.98	3080.7	6.667	39.9	4302	buy_discount→0.045	keep (impractical)
+9	3276.11	3244.4	6.342	36.1	3842	buy_discount→0.05	keep (impractical)
+10	5776.04	5743.1	6.589	33.1	3053	buy_discount→0.06	revert (28% fill)
+11	1199.78	1170.0	5.957	49.8	6563	stop_pct_normal 0.07→0.05 (tighter)	discard
+12	1302.63	1274.4	5.651	64.6	6563	stop_pct_normal 0.07→0.09 (wider)	keep
+13	1317.73	1289.9	5.562	68.9	6563	stop_pct_normal 0.09→0.10	keep
+14	1317.73	1289.9	5.562	68.9	6563	stop_pct_normal 0.10→0.12 (daily_limit binding)	no-op
+17	854.93	829.9	5.015	71.6	6563	target_min_normal 0.03→0.02	discard
+18	1814.61	1785.1	5.902	66.0	6563	target_min_normal 0.03→0.04	keep
+19	2363.20	2332.3	6.173	63.5	6563	target_min_normal→0.05	keep
+20	2875.06	2843.7	6.280	61.0	6563	target_min_normal→0.06	keep
+21	3540.20	3508.1	6.429	58.8	6563	target_min_normal→0.07	keep
+22	4406.37	4373.4	6.587	57.0	6563	target_min→0.08 (settled)	keep
+23	5163.43	5130.2	6.638	55.1	6563	target_min→0.09	keep (impractical)
+24	5860.24	5827.0	6.658	53.2	6563	target_min→0.10	keep (impractical)
+25	7509.43	7475.7	6.752	50.3	6563	target_min→0.12	keep (impractical)
+28	10896.92	10861.5	7.086	51.8	6563	target_min_wide 0.04→0.10	keep
+29	13952.23	13916.5	7.150	50.9	6563	target_min_wide→0.12	keep
+30	15882.74	15846.7	7.211	54.7	6563	stop_pct_wide 0.09→0.12	keep
+31	16336.04	16299.8	7.247	55.0	6563	stop_pct_wide→0.15	keep
+34	17141.95	17105.5	7.285	56.4	6563	stop_lower_bound 0.90→0.85	keep
+36-pos	19849.13	19812.4	7.356	56.4	6563	pos_strong_buy 10→15	keep
+37-pos	19505.58	19468.9	7.335	56.4	6563	pos_buy 8→12	discard
+38-pos	20419.57	20383.3	7.246	56.4	6563	pos_cautious 6→3, pos_hold 3→1	keep
+40	20419.57	20383.3	7.246	56.4	6563	禁用ML止损微调 (no effect)	keep (simpler)
+FINAL	20419.57	20383.3	7.246	56.4	6563	optimized params	BEST
