@@ -1,7 +1,7 @@
 {
     "_description": "止盈止损参数配置 — autoresearch自动调优",
 
-    "buy_discount": 0.01,
+    "buy_discount": 0.015,
 
     "stop_pct_normal": 0.07,
     "stop_pct_wide": 0.09,
