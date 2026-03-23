@@ -1,0 +1,45 @@
+{
+    "_description": "止盈止损参数配置 — autoresearch自动调优",
+
+    "buy_discount": 0.01,
+
+    "stop_pct_normal": 0.07,
+    "stop_pct_wide": 0.09,
+    "stop_upper_bound": 0.96,
+    "stop_lower_bound": 0.90,
+
+    "ml_tighten_threshold": -0.02,
+    "ml_tighten_factor": 0.3,
+    "ml_tighten_cap": 0.01,
+    "ml_loosen_threshold": 0.02,
+    "ml_loosen_factor": 0.2,
+    "ml_loosen_cap": 0.01,
+    "ml_loosen_confidence_min": 0.5,
+
+    "bearish_count_threshold": 3,
+    "bearish_pred_threshold": -0.005,
+    "bearish_tighten": 0.01,
+
+    "target_max_normal": 0.06,
+    "target_max_wide": 0.09,
+    "target_min_normal": 0.03,
+    "target_min_wide": 0.04,
+    "target_ml_scale": 0.8,
+
+    "blend_high_conf_threshold": 0.7,
+    "blend_high_pred_threshold": 0.01,
+    "blend_high_ml_w": 0.65,
+    "blend_mid_conf_threshold": 0.4,
+    "blend_mid_ml_w": 0.45,
+    "blend_low_ml_w": 0.25,
+
+    "rr_cap": 3.0,
+    "rr_fallback": 2.5,
+
+    "pos_strong_buy": 10,
+    "pos_buy": 8,
+    "pos_cautious": 6,
+    "pos_hold": 3,
+    "pos_risk_adj_medium": -2,
+    "pos_risk_adj_high": -4
+}
