@@ -6,7 +6,7 @@
     "stop_pct_normal": 0.10,
     "stop_pct_wide": 0.15,
     "stop_upper_bound": 0.96,
-    "stop_lower_bound": 0.90,
+    "stop_lower_bound": 0.85,
 
     "ml_tighten_threshold": -0.02,
     "ml_tighten_factor": 0.3,
