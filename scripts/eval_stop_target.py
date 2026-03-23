@@ -276,8 +276,16 @@ def run_eval():
         print("-999", flush=True)
         return
 
-    # ── Strategy metrics ──
-    daily = filled.groupby('analysis_date')['trade_return'].mean().sort_index()
+    # ── Strategy metrics (position-weighted) ──
+    def pos_weighted_return(g):
+        weights = g['position_pct'].values.astype(float)
+        if weights.sum() == 0:
+            return g['trade_return'].mean()
+        return np.average(g['trade_return'].values, weights=weights)
+
+    daily = filled.groupby('analysis_date').apply(
+        pos_weighted_return, include_groups=False
+    ).sort_index()
     cost_per_trade = 0.003
     daily_net = daily - cost_per_trade
     cumulative = (1 + daily_net).cumprod()
