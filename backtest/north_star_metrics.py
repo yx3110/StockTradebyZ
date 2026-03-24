@@ -912,6 +912,9 @@ def _max_consecutive(bool_series: pd.Series) -> int:
 # Layer 4: 基准对比
 # ═══════════════════════════════════════════════════════
 
+_benchmark_cache = {}  # (index_code, start, end) -> Series
+
+
 def load_benchmark_returns(index_code: str = '000905.SH',
                            start_date: str = None, end_date: str = None,
                            db_path: str = None) -> pd.Series:
@@ -925,6 +928,10 @@ def load_benchmark_returns(index_code: str = '000905.SH',
         start_date: 开始日期 YYYY-MM-DD
         end_date: 结束日期 YYYY-MM-DD
     """
+    cache_key = (index_code, start_date, end_date)
+    if cache_key in _benchmark_cache:
+        return _benchmark_cache[cache_key]
+
     if db_path is None:
         db_path = DB_PATH
 
@@ -958,6 +965,7 @@ def load_benchmark_returns(index_code: str = '000905.SH',
     returns.index = pd.to_datetime(returns.index)
     returns.name = index_code
 
+    _benchmark_cache[cache_key] = returns
     return returns
 
 
@@ -1152,6 +1160,9 @@ def batch_load_universe_median_cap(buy_dates: List[str], db_path: str = None) ->
     return result
 
 
+_metric_data_cache = {}  # tuple(buy_dates) -> (market_cap, limit_up, median_cap)
+
+
 def batch_load_all_metric_data(buy_dates: List[str], db_path: str = None):
     """合并加载market_cap + limit_up + median_cap (2次SQL替代3次, 1个连接替代3个)
 
@@ -1163,6 +1174,10 @@ def batch_load_all_metric_data(buy_dates: List[str], db_path: str = None):
 
     if not buy_dates:
         return {}, {}, {}
+
+    cache_key = tuple(sorted(buy_dates))
+    if cache_key in _metric_data_cache:
+        return _metric_data_cache[cache_key]
 
     conn = sqlite3.connect(db_path)
     conn.execute("PRAGMA busy_timeout = 30000")
@@ -1216,6 +1231,7 @@ def batch_load_all_metric_data(buy_dates: List[str], db_path: str = None):
     for date, group in a_stock.groupby('trade_date'):
         universe_median_cap[date] = group['total_mv'].median()
 
+    _metric_data_cache[cache_key] = (market_cap_data, limit_up_data, universe_median_cap)
     return market_cap_data, limit_up_data, universe_median_cap
 
 

@@ -637,10 +637,16 @@ def _aggregate_benchmark_to_periods(benchmark_daily: pd.Series,
     return s
 
 
+_market_ret_20d_cache = {}  # tuple(dates) -> result
+
+
 def _load_market_return_20d_bulk(dates):
     """批量加载20日市场收益 (用于组合风控)"""
     if not dates:
         return {}
+    cache_key = (min(dates), max(dates))
+    if cache_key in _market_ret_20d_cache:
+        return _market_ret_20d_cache[cache_key]
     conn = sqlite3.connect(DB_PATH)
     try:
         # 获取上证指数收盘价
@@ -668,11 +674,18 @@ def _load_market_return_20d_bulk(dates):
         if d in df.index:
             val = df.loc[d, 'ret_20d']
             result[d] = float(val) if pd.notna(val) else None
+    _market_ret_20d_cache[cache_key] = result
     return result
+
+
+_industry_map_cache = None
 
 
 def _load_industry_map_bulk():
     """批量加载行业映射"""
+    global _industry_map_cache
+    if _industry_map_cache is not None:
+        return _industry_map_cache
     conn = sqlite3.connect(DB_PATH)
     try:
         rows = conn.execute(
@@ -680,7 +693,8 @@ def _load_industry_map_bulk():
         ).fetchall()
     finally:
         conn.close()
-    return {code: (ind or '未知') for code, ind in rows}
+    _industry_map_cache = {code: (ind or '未知') for code, ind in rows}
+    return _industry_map_cache
 
 
 # ═══════════════════════════════════════════════════

@@ -1,6 +1,9 @@
 # Credentials (NEVER commit)
 wqbrain_integration/credentials.json
 
+# Eval cache (autoresearch acceleration)
+scripts/.eval_cache/
+
 # Large database files
 data_adapter/stock_data.db
 data_adapter/stock_data.db-shm
