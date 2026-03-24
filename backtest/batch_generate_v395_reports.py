@@ -172,7 +172,7 @@ def load_securities_info() -> Dict[str, Dict]:
     rows = conn.execute("""
         SELECT code, name, industry, area
         FROM securities
-        WHERE type = 'A股'
+        WHERE type IN ('A股', 'ETF_基金')
     """).fetchall()
     conn.close()
     info = {}
@@ -248,8 +248,8 @@ def score_all_stocks_from_preloaded(
     if features_df is None or len(features_df) == 0:
         return {}
 
-    # V4.8.3: 唯一使用 predict_scores() 而非 predict_scores_from_preloaded 的版本
-    if version == 'v4.8.3':
+    # V4.8.3/V4.8.4/V4.8.5/V4.8.6: 使用 predict_scores() (需加载 brain_alpha_cache)
+    if version in ('v4.8.3', 'v4.8.4', 'v4.8.5', 'v4.8.6'):
         all_codes = features_df['code'].tolist()
         return scorer.predict_scores(all_codes, date)
 
@@ -393,6 +393,338 @@ def score_all_stocks_from_preloaded(
     return results
 
 
+def bulk_preload_scorer_caches(scorer, dates: List[str]):
+    """
+    批量预加载 scorer 内部缓存，避免逐日 SQL 查询。
+
+    预填充: _financial_cache, _micro_cache, _tech_feature_cache,
+            _exec_cache, _next_trade_date_cache, _market_return_cache,
+            _daily_basic_extra_cache (new)
+
+    Speedup: ~450 per-date SQL → ~6 bulk SQL
+    """
+    if not dates:
+        return
+
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("PRAGMA busy_timeout = 30000")
+
+    # ── 0. 全交易日索引 (用于 next_trade_date) ──
+    min_date = min(dates)
+    all_td = [r[0] for r in conn.execute(
+        "SELECT DISTINCT trade_date FROM daily_quotes WHERE trade_date >= ? ORDER BY trade_date",
+        (min_date,)).fetchall()]
+    td_idx = {d: i for i, d in enumerate(all_td)}
+
+    # Pre-fill _next_trade_date_cache
+    if hasattr(scorer, '_next_trade_date_cache'):
+        import bisect
+        for d in dates:
+            if d in scorer._next_trade_date_cache:
+                continue
+            idx = bisect.bisect_right(all_td, d)
+            scorer._next_trade_date_cache[d] = all_td[idx] if idx < len(all_td) else None
+
+    # ── 1. Financial features (roe等) ──
+    financial_cols = getattr(scorer, 'extra_features_financial', [])
+    if financial_cols and hasattr(scorer, '_financial_cache'):
+        t0 = time.time()
+        uncached = [d for d in dates if d not in scorer._financial_cache]
+        if uncached:
+            select_cols = ', '.join([f'fi.{col}' for col in financial_cols])
+            # 一次性加载所有财务数据 (按security_id+ann_date), 然后用pandas做"最近公告"逻辑
+            query = f"""
+            SELECT s.code, fi.security_id, fi.ann_date, fi.id, {select_cols}
+            FROM financial_indicator fi
+            JOIN securities s ON fi.security_id = s.id
+            WHERE fi.ann_date IS NOT NULL AND fi.ann_date != ''
+              AND fi.ann_date <= ?
+            """
+            df_fi_all = pd.read_sql_query(query, conn, params=[max(uncached)])
+            if not df_fi_all.empty:
+                # 确保 ann_date 是字符串类型 (DB中可能混合int/str)
+                df_fi_all['ann_date'] = df_fi_all['ann_date'].astype(str)
+                # 匹配原始SQL: MAX(id) per security_id WHERE ann_date <= date
+                for date in uncached:
+                    valid = df_fi_all[df_fi_all['ann_date'] <= date]
+                    if len(valid) > 0:
+                        # MAX(id) per security_id (与原始SQL一致)
+                        idx = valid.groupby('security_id')['id'].idxmax()
+                        latest = valid.loc[idx]
+                        scorer._financial_cache[date] = latest[['code'] + financial_cols].reset_index(drop=True)
+                    else:
+                        scorer._financial_cache[date] = pd.DataFrame(columns=['code'] + financial_cols)
+            else:
+                for date in uncached:
+                    scorer._financial_cache[date] = pd.DataFrame(columns=['code'] + financial_cols)
+        print(f"  [bulk] Financial cache: {len(dates)} days ({time.time()-t0:.1f}s)")
+
+    # ── 2. Daily basic extra (dv_ttm, turnover_rate_f, float_ratio) ──
+    if hasattr(scorer, '_load_daily_basic_extra'):
+        t0 = time.time()
+        # 创建缓存字典 (scorer没有内置的)
+        if not hasattr(scorer, '_daily_basic_extra_cache'):
+            scorer._daily_basic_extra_cache = {}
+        CHUNK = 100
+        all_extra_dates = [d for d in dates if d not in scorer._daily_basic_extra_cache]
+        for ci in range(0, len(all_extra_dates), CHUNK):
+            chunk = all_extra_dates[ci:ci + CHUNK]
+            ph = ','.join(['?' for _ in chunk])
+            query = f"""
+            SELECT s.code, db.trade_date, db.dv_ttm, db.turnover_rate_f, db.circ_mv, db.total_mv
+            FROM daily_basic db
+            JOIN securities s ON db.security_id = s.id
+            WHERE db.trade_date IN ({ph})
+            """
+            df = pd.read_sql_query(query, conn, params=chunk)
+            if not df.empty:
+                for date, grp in df.groupby('trade_date'):
+                    g = grp.drop(columns=['trade_date']).copy()
+                    g['float_ratio'] = g['circ_mv'] / g['total_mv'].clip(lower=1e-8)
+                    g.drop(columns=['circ_mv', 'total_mv'], inplace=True)
+                    scorer._daily_basic_extra_cache[date] = g
+            for d in chunk:
+                if d not in scorer._daily_basic_extra_cache:
+                    scorer._daily_basic_extra_cache[d] = pd.DataFrame()
+        print(f"  [bulk] Daily basic extra: {len(dates)} days ({time.time()-t0:.1f}s)")
+
+    # ── 3. Technical features ──
+    tech_features = getattr(scorer, 'extra_tech_features', None)
+    if tech_features and hasattr(scorer, '_tech_feature_cache'):
+        t0 = time.time()
+        all_tech_dates = [d for d in dates if d not in scorer._tech_feature_cache]
+        CHUNK = 100
+        for ci in range(0, len(all_tech_dates), CHUNK):
+            chunk = all_tech_dates[ci:ci + CHUNK]
+            ph = ','.join(['?' for _ in chunk])
+            query = f"""
+            SELECT s.code, ti.trade_date,
+                   ti.kdj_k, ti.kdj_j, ti.macd_dif, ti.macd_dea, ti.macd_macd,
+                   ti.boll_upper, ti.boll_lower, ti.atr_14,
+                   q.close, q.high, q.low
+            FROM technical_indicators ti
+            JOIN securities s ON ti.security_id = s.id
+            JOIN daily_quotes q ON q.security_id = s.id AND q.trade_date = ti.trade_date
+            WHERE ti.trade_date IN ({ph})
+            """
+            df = pd.read_sql_query(query, conn, params=chunk)
+            if not df.empty:
+                for date, grp in df.groupby('trade_date'):
+                    scorer._tech_feature_cache[date] = grp.drop(columns=['trade_date']).reset_index(drop=True)
+            for d in chunk:
+                if d not in scorer._tech_feature_cache:
+                    scorer._tech_feature_cache[d] = pd.DataFrame()
+        print(f"  [bulk] Tech features: {len(dates)} days ({time.time()-t0:.1f}s)")
+
+    # ── 4. Executability data ──
+    if hasattr(scorer, '_exec_cache'):
+        t0 = time.time()
+        all_exec_dates = [d for d in dates if d not in scorer._exec_cache]
+        # 需要 T日 + T+1日 的数据
+        all_needed_dates = set()
+        date_to_next = {}
+        for d in all_exec_dates:
+            all_needed_dates.add(d)
+            nd = scorer._next_trade_date_cache.get(d)
+            if nd:
+                all_needed_dates.add(nd)
+                date_to_next[d] = nd
+            else:
+                date_to_next[d] = d
+        needed_sorted = sorted(all_needed_dates)
+
+        if needed_sorted:
+            CHUNK = 100
+            # 批量加载涨跌幅和换手率
+            pct_data = {}  # {trade_date: {code: pct}}
+            tr_data = {}   # {trade_date: {code: turnover_rate}}
+            for ci in range(0, len(needed_sorted), CHUNK):
+                chunk = needed_sorted[ci:ci + CHUNK]
+                ph = ','.join(['?' for _ in chunk])
+                query = f"""
+                SELECT s.code, q.trade_date, q.price_change_pct
+                FROM daily_quotes q
+                JOIN securities s ON q.security_id = s.id
+                WHERE s.type = 'A股' AND q.trade_date IN ({ph})
+                """
+                df = pd.read_sql_query(query, conn, params=chunk)
+                for td, grp in df.groupby('trade_date'):
+                    pct_data[td] = dict(zip(grp['code'], grp['price_change_pct']))
+
+                query2 = f"""
+                SELECT s.code, db.trade_date, db.turnover_rate
+                FROM daily_basic db
+                JOIN securities s ON db.security_id = s.id
+                WHERE db.trade_date IN ({ph})
+                """
+                df2 = pd.read_sql_query(query2, conn, params=chunk)
+                for td, grp in df2.groupby('trade_date'):
+                    tr_data[td] = dict(zip(grp['code'], grp['turnover_rate']))
+
+            # 组装 exec_cache
+            all_codes_query = [r[0] for r in conn.execute(
+                "SELECT code FROM securities WHERE type = 'A股'").fetchall()]
+            for d in all_exec_dates:
+                nd = date_to_next[d]
+                records = []
+                for code in all_codes_query:
+                    records.append({
+                        'code': code,
+                        'pct_t': pct_data.get(d, {}).get(code),
+                        'pct_t1': pct_data.get(nd, {}).get(code),
+                        'turnover_rate': tr_data.get(d, {}).get(code),
+                    })
+                scorer._exec_cache[d] = pd.DataFrame(records)
+        print(f"  [bulk] Executability: {len(all_exec_dates)} days ({time.time()-t0:.1f}s)")
+
+    # ── 5. Microstructure features (最重的：40天滑动窗口) ──
+    micro_cols = (getattr(scorer, 'extra_features_microstructure', []) +
+                  getattr(scorer, 'extra_features_reversal', []) +
+                  getattr(scorer, 'extra_features_risk', []))
+    if micro_cols and hasattr(scorer, '_micro_cache'):
+        t0 = time.time()
+        all_micro_dates = sorted([d for d in dates if d not in scorer._micro_cache])
+        if all_micro_dates:
+            # 计算需要的日期范围 (最早日期 -60 天 到 最晚日期)
+            earliest = all_micro_dates[0]
+            latest = all_micro_dates[-1]
+            query = """
+            SELECT s.code, q.trade_date, q.close, q.volume, q.price_change_pct
+            FROM daily_quotes q
+            JOIN securities s ON q.security_id = s.id
+            WHERE s.type = 'A股' AND q.trade_date >= date(?, '-60 days') AND q.trade_date <= ?
+            ORDER BY s.code, q.trade_date
+            """
+            df_all = pd.read_sql_query(query, conn, params=[earliest, latest])
+            print(f"  [bulk] Microstructure raw data: {len(df_all)} rows ({time.time()-t0:.1f}s)")
+
+            if not df_all.empty:
+                t1 = time.time()
+                # 预处理: 转换类型
+                df_all['close'] = pd.to_numeric(df_all['close'], errors='coerce')
+                df_all['volume'] = pd.to_numeric(df_all['volume'], errors='coerce')
+                df_all['price_change_pct'] = pd.to_numeric(df_all['price_change_pct'], errors='coerce').fillna(0)
+
+                # 按 code 分组，一次性计算所有日期
+                has_micro = bool(getattr(scorer, 'extra_features_microstructure', []))
+                has_reversal = bool(getattr(scorer, 'extra_features_reversal', []))
+                has_risk = bool(getattr(scorer, 'extra_features_risk', []))
+
+                # 建立日期集合和交易日列表
+                target_dates_set = set(all_micro_dates)
+                all_trade_dates_in_data = sorted(df_all['trade_date'].unique())
+                trade_date_positions = {d: i for i, d in enumerate(all_trade_dates_in_data)}
+
+                # 按日期预分配结果
+                micro_results = {d: [] for d in all_micro_dates}
+
+                # 预计算每个target date的40日历天窗口起始日期
+                from datetime import datetime as _dt, timedelta as _td
+                target_window_start = {}
+                for d in all_micro_dates:
+                    dt_obj = _dt.strptime(d, '%Y-%m-%d')
+                    target_window_start[d] = (dt_obj - _td(days=40)).strftime('%Y-%m-%d')
+
+                for code, grp in df_all.groupby('code'):
+                    grp = grp.sort_values('trade_date')
+                    if len(grp) < 5:
+                        continue
+                    close_arr = grp['close'].values.astype(float)
+                    vol_arr = grp['volume'].values.astype(float)
+                    pct_arr = grp['price_change_pct'].values.astype(float)
+                    grp_dates = grp['trade_date'].values
+
+                    for j, td in enumerate(grp_dates):
+                        if td not in target_dates_set:
+                            continue
+                        # 40日历天窗口 (匹配SQL: date(?, '-40 days'))
+                        win_start = target_window_start[td]
+                        start_j = j
+                        while start_j > 0 and grp_dates[start_j - 1] >= win_start:
+                            start_j -= 1
+                        close = close_arr[start_j:j + 1]
+                        volume = vol_arr[start_j:j + 1]
+                        pct = pct_arr[start_j:j + 1]
+
+                        if len(close) < 5:
+                            continue
+
+                        row = {'code': code}
+
+                        if has_micro:
+                            abs_ret = np.abs(pct[-20:]) if len(pct) >= 20 else np.abs(pct)
+                            vol_safe = np.where(volume[-20:] > 0, volume[-20:], 1e-8) if len(volume) >= 20 else np.where(volume > 0, volume, 1e-8)
+                            row['amihud_illiquidity'] = float(np.mean(abs_ret / vol_safe))
+
+                            n = min(10, len(close))
+                            if n >= 5:
+                                corr = np.corrcoef(close[-n:], volume[-n:])[0, 1]
+                                row['volume_price_corr_10d'] = float(corr) if not np.isnan(corr) else 0.0
+                            else:
+                                row['volume_price_corr_10d'] = 0.0
+
+                            n_dd = min(20, len(close))
+                            window = close[-n_dd:]
+                            running_max = np.maximum.accumulate(window)
+                            dd = (window - running_max) / np.where(running_max > 0, running_max, 1e-8)
+                            row['max_drawdown_20d'] = float(np.min(dd))
+
+                            n_ud = min(10, len(pct))
+                            up_vol = np.sum(volume[-n_ud:][pct[-n_ud:] > 0])
+                            dn_vol = np.sum(volume[-n_ud:][pct[-n_ud:] < 0])
+                            row['updown_volume_asymmetry'] = float(up_vol / max(dn_vol, 1e-8))
+
+                        if has_reversal:
+                            row['return_1d'] = float(close[-1] / close[-2] - 1) if len(close) >= 2 else 0.0
+                            row['return_3d'] = float(close[-1] / close[-4] - 1) if len(close) >= 4 else 0.0
+
+                        if has_risk:
+                            n_risk = min(20, len(close))
+                            daily_ret = np.diff(close[-n_risk:]) / close[-n_risk:-1]
+                            if len(daily_ret) >= 5:
+                                demeaned = daily_ret - np.mean(daily_ret)
+                                row['idio_volatility_20d'] = float(np.std(demeaned))
+                            else:
+                                row['idio_volatility_20d'] = 0.0
+
+                        micro_results[td].append(row)
+
+                for d in all_micro_dates:
+                    scorer._micro_cache[d] = pd.DataFrame(micro_results[d]) if micro_results[d] else pd.DataFrame()
+                print(f"  [bulk] Microstructure compute: {len(all_micro_dates)} days ({time.time()-t1:.1f}s)")
+
+    # ── 6. Market return 20d ──
+    if hasattr(scorer, '_market_return_cache'):
+        t0 = time.time()
+        query = """
+        SELECT q.trade_date, q.close
+        FROM daily_quotes q
+        JOIN securities s ON q.security_id = s.id
+        WHERE s.code = '000300.SH' AND q.trade_date >= date(?, '-45 days') AND q.trade_date <= ?
+        ORDER BY q.trade_date
+        """
+        df_mkt = pd.read_sql_query(query, conn, params=[min_date, max(dates)])
+        if not df_mkt.empty:
+            mkt_close = df_mkt['close'].values.astype(float)
+            mkt_dates = df_mkt['trade_date'].values
+            mkt_idx = {d: i for i, d in enumerate(mkt_dates)}
+            for d in dates:
+                if d in scorer._market_return_cache:
+                    continue
+                if d in mkt_idx:
+                    i = mkt_idx[d]
+                    if i >= 20:
+                        ret = mkt_close[i] / mkt_close[i - 20] - 1
+                        scorer._market_return_cache[d] = float(ret)
+                    else:
+                        scorer._market_return_cache[d] = None
+                else:
+                    scorer._market_return_cache[d] = None
+        print(f"  [bulk] Market return: {len(dates)} days ({time.time()-t0:.1f}s)")
+
+    conn.close()
+
+
 def _merge_daily_basic_features(features_df: pd.DataFrame,
                                  daily_basic_df: pd.DataFrame) -> pd.DataFrame:
     """将预加载的 daily_basic 合并到特征 DataFrame"""
@@ -461,45 +793,58 @@ def build_analysis_json(
 def build_markdown_summary(analysis: dict, date: str) -> str:
     """生成简要 Markdown 报告 (可选)"""
     stocks = analysis.get('all_stocks_with_scores', [])
+    version = analysis.get('scoring_version', 'V3.95')
     date_str = date.replace('-', '')
 
+    # 过滤: 只保留A股 (排除ETF/基金/指数, 代码6位纯数字 + .SZ/.SH)
+    a_stocks = [s for s in stocks
+                if s.get('stock_name', '').startswith('Stock_') is False
+                and s.get('industry', '') != ''
+                and len(s.get('stock_code', '')) <= 6]
+
+    # 按 pred_10d 排序 (连续值, 不受全局百分位离散化影响)
+    a_stocks.sort(key=lambda x: float(x.get('pred_10d', 0) or 0), reverse=True)
+
     lines = [
-        f"# V3.95 选股评分报告 {date}",
+        f"# {version} 选股评分报告 {date}",
         f"",
         f"*批量快速生成 (纯ML评分模式) | {datetime.now().strftime('%Y-%m-%d %H:%M')}*",
         f"",
         f"## 评分概览",
         f"",
-        f"- 评分股票数: {len(stocks)}",
+        f"- 评分A股数: {len(a_stocks)} (总评分: {len(stocks)})",
     ]
 
-    if stocks:
-        scores = [s['score'] for s in stocks]
+    if a_stocks:
+        preds = [float(s.get('pred_10d', 0) or 0) for s in a_stocks]
         lines.extend([
-            f"- 最高分: {max(scores):.1f}",
-            f"- 最低分: {min(scores):.1f}",
-            f"- 中位数: {np.median(scores):.1f}",
-            f"- >=85分: {sum(1 for s in scores if s >= 85)}",
-            f"- >=80分: {sum(1 for s in scores if s >= 80)}",
+            f"- Top-10 平均10d预测: {np.mean(preds[:10])*100:+.2f}%",
+            f"- Top-50 平均10d预测: {np.mean(preds[:50])*100:+.2f}%",
+            f"- 全市场中位10d预测: {np.median(preds)*100:+.2f}%",
         ])
 
-    # Top 30 股票列表
-    top_n = min(30, len(stocks))
+    # Top 30 A股 (按 pred_10d)
+    top_n = min(30, len(a_stocks))
     lines.extend([
         f"",
-        f"## Top {top_n} 评分股票",
+        f"## Top {top_n} A股 (按10日预测收益排名)",
         f"",
-        f"| 排名 | 代码 | 名称 | 行业 | 评分 | 3日预测 | 5日预测 | 10日预测 |",
-        f"|:----:|:----:|:----:|:----:|:----:|:-------:|:-------:|:--------:|",
+        f"| 排名 | 代码 | 名称 | 行业 | 评分 | 3日预测 | 5日预测 | 10日预测 | 15日预测 |",
+        f"|:----:|:----:|:----:|:----:|:----:|:-------:|:-------:|:--------:|:--------:|",
     ])
 
-    for i, s in enumerate(stocks[:top_n]):
+    for i, s in enumerate(a_stocks[:top_n]):
+        p3 = float(s.get('pred_3d', 0) or 0) * 100
+        p5 = float(s.get('pred_5d', 0) or 0) * 100
+        p10 = float(s.get('pred_10d', 0) or 0) * 100
+        p15 = float(s.get('pred_15d', 0) or 0) * 100
         lines.append(
-            f"| {i+1} | {s['stock_code']} | {s['stock_name']} | {s.get('industry', '')} "
+            f"| {i+1} | {s['stock_code']} | {s.get('stock_name', '')} | {s.get('industry', '')} "
             f"| {s['score']:.1f} "
-            f"| {s.get('pred_3d', 0)*100:+.2f}% "
-            f"| {s.get('pred_5d', 0)*100:+.2f}% "
-            f"| {s.get('pred_10d', 0)*100:+.2f}% |"
+            f"| {p3:+.2f}% "
+            f"| {p5:+.2f}% "
+            f"| {p10:+.2f}% "
+            f"| {p15:+.2f}% |"
         )
 
     lines.append("")
@@ -516,7 +861,7 @@ def main():
     parser.add_argument('--output-dir', default=None,
                         help='输出目录 (default: reports/daily_selection_v{version}_fast)')
     parser.add_argument('--version', default='v3.95',
-                        choices=['v3.9', 'v3.95', 'v3.96', 'v4.3', 'v4.4', 'v4.4.2', 'v4.6', 'v4.7', 'v4.7.1', 'v4.7.2', 'v4.7.3', 'v4.7.4', 'v4.7.5', 'v4.7.6', 'v4.7.7', 'v4.7.8', 'v4.7.9', 'v4.8.0', 'v4.8.1', 'v4.8.2', 'v4.8.3', 'v5.0', 'alpha158'],
+                        choices=['v3.9', 'v3.95', 'v3.96', 'v4.3', 'v4.4', 'v4.4.2', 'v4.6', 'v4.7', 'v4.7.1', 'v4.7.2', 'v4.7.3', 'v4.7.4', 'v4.7.5', 'v4.7.6', 'v4.7.7', 'v4.7.8', 'v4.7.9', 'v4.8.0', 'v4.8.1', 'v4.8.2', 'v4.8.3', 'v4.8.4', 'v4.8.5', 'v4.8.6', 'v5.0', 'alpha158'],
                         help='评分版本 (default: v3.95)')
     parser.add_argument('--force', action='store_true',
                         help='强制覆盖已有报告')
@@ -601,6 +946,15 @@ def main():
     elif args.version == 'v3.96':
         from ml_models.v39.v396_production_scorer import V396ProductionScorer
         scorer = V396ProductionScorer(model_type='small_data')
+    elif args.version == 'v4.8.6':
+        from ml_models.v39.v486_production_scorer import V486ProductionScorer
+        scorer = V486ProductionScorer()
+    elif args.version == 'v4.8.5':
+        from ml_models.v39.v485_production_scorer import V485ProductionScorer
+        scorer = V485ProductionScorer()
+    elif args.version == 'v4.8.4':
+        from ml_models.v39.v484_production_scorer import V484ProductionScorer
+        scorer = V484ProductionScorer()
     elif args.version == 'v4.8.3':
         from ml_models.v39.v483_production_scorer import V483ProductionScorer
         scorer = V483ProductionScorer()
@@ -686,6 +1040,32 @@ def main():
     t_info = time.time()
     securities_info = load_securities_info()
     print(f"[5/5] 证券信息加载完成: {len(securities_info)} 只 ({time.time()-t_info:.1f}秒)")
+
+    # ========== 5.5. 批量预加载 scorer 内部缓存 (避免逐日SQL) ==========
+    if hasattr(scorer, '_micro_cache') or hasattr(scorer, '_financial_cache'):
+        t_bulk = time.time()
+        bulk_preload_scorer_caches(scorer, dates_to_generate)
+        # Monkey-patch _load_daily_basic_extra 使用批量缓存
+        if hasattr(scorer, '_daily_basic_extra_cache'):
+            _orig_load_daily_basic_extra = scorer._load_daily_basic_extra
+            def _patched_load_daily_basic_extra(features_df, date):
+                cache = scorer._daily_basic_extra_cache
+                if date in cache and len(cache[date]) > 0:
+                    df_extra = cache[date]
+                    features_df = features_df.merge(df_extra, on='code', how='left')
+                    for col in ['dv_ttm', 'turnover_rate_f', 'float_ratio']:
+                        if col in features_df.columns:
+                            median_val = features_df[col].median()
+                            features_df[col] = features_df[col].fillna(
+                                median_val if not pd.isna(median_val) else 0.0)
+                        else:
+                            features_df[col] = 0.0
+                    return features_df
+                return _orig_load_daily_basic_extra(features_df, date)
+            scorer._load_daily_basic_extra = _patched_load_daily_basic_extra
+        print(f"[5.5] Scorer缓存批量预加载完成 ({time.time()-t_bulk:.1f}秒)")
+    else:
+        print(f"[5.5] Scorer缓存批量预加载: 跳过 (scorer不支持)")
 
     t_init = time.time() - t0
     print(f"\n初始化完成, 总耗时: {t_init:.1f}秒")

@@ -324,33 +324,28 @@ def compute_ic_monotonicity(scores: pd.Series, returns: pd.Series,
     Returns:
         float (0-5): 单调性分数，5.0=完美单调
     """
+    # 预过滤 + 合并为DataFrame，避免per-date字符串比较 (200x加速)
+    valid = scores.notna() & returns.notna()
+    if valid.sum() < min_stocks:
+        return 0.0
+    tmp = pd.DataFrame({'date': dates[valid].values,
+                        'score': scores[valid].values,
+                        'ret': returns[valid].values})
+
     monotonicity_scores = []
-
-    for date in sorted(dates.unique()):
-        mask = (dates == date) & scores.notna() & returns.notna()
-        day_scores = scores[mask]
-        day_returns = returns[mask]
-
-        if len(day_scores) < min_stocks:
+    for _, grp in tmp.groupby('date'):
+        if len(grp) < min_stocks:
             continue
-
-        # 按分数分n_quantiles档
         try:
-            quantile_labels = pd.qcut(day_scores, n_quantiles, labels=False, duplicates='drop')
+            quantile_labels = pd.qcut(grp['score'], n_quantiles, labels=False, duplicates='drop')
         except ValueError:
             continue
-
-        # 各档平均收益
-        group_means = day_returns.groupby(quantile_labels).mean().sort_index()
+        group_means = grp['ret'].groupby(quantile_labels).mean().sort_index()
         if len(group_means) < 3:
             continue
-
-        # 计算相邻档位的正确排序数 (higher quantile should have higher return)
         n_pairs = len(group_means) - 1
         correct = sum(1 for i in range(n_pairs) if group_means.iloc[i+1] > group_means.iloc[i])
-        # 缩放到0-5
-        mono_score = correct / n_pairs * 5.0
-        monotonicity_scores.append(mono_score)
+        monotonicity_scores.append(correct / n_pairs * 5.0)
 
     return np.mean(monotonicity_scores) if monotonicity_scores else 0.0
 
@@ -1703,29 +1698,30 @@ def compute_cumulative_quantile_monotonicity(scores: pd.Series,
 
     Returns: 0-5 score, 5.0 = 完美单调.
     """
+    # 预过滤 + 合并为DataFrame，避免per-date字符串比较 (200x加速)
+    valid = scores.notna() & returns.notna()
+    if valid.sum() < min_stocks:
+        return 0.0
+    tmp = pd.DataFrame({'date': dates[valid].values,
+                        'score': scores[valid].values,
+                        'ret': returns[valid].values})
+
     # 每个分位组收集日均收益
     quantile_daily_returns = {q: [] for q in range(n_quantiles)}
 
-    for date in sorted(dates.unique()):
-        mask = (dates == date) & scores.notna() & returns.notna()
-        day_scores = scores[mask]
-        day_returns = returns[mask]
-
-        if len(day_scores) < min_stocks:
+    for _, grp in tmp.groupby('date'):
+        if len(grp) < min_stocks:
             continue
-
         try:
-            labels = pd.qcut(day_scores, n_quantiles, labels=False, duplicates='drop')
+            labels = pd.qcut(grp['score'], n_quantiles, labels=False, duplicates='drop')
         except ValueError:
             continue
-
         if labels.nunique() < n_quantiles:
             continue
-
         for q in range(n_quantiles):
             q_mask = labels == q
             if q_mask.any():
-                quantile_daily_returns[q].append(day_returns[q_mask].mean())
+                quantile_daily_returns[q].append(grp.loc[q_mask, 'ret'].mean())
 
     # 需要足够多的天数
     min_len = min(len(v) for v in quantile_daily_returns.values())
