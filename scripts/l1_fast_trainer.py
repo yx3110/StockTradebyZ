@@ -118,6 +118,9 @@ class L1FastTrainer:
         if l1_start is None:
             two_years_ago = (datetime.now() - timedelta(days=730)).strftime('%Y-%m-%d')
             l1_start = two_years_ago
+        # Normalize YYYYMMDD → YYYY-MM-DD (DB uses YYYY-MM-DD format)
+        if len(l1_start) == 8 and '-' not in l1_start:
+            l1_start = f"{l1_start[:4]}-{l1_start[4:6]}-{l1_start[6:]}"
 
         print(f"[L1] 加载数据 from {l1_start} ...")
 

@@ -644,23 +644,28 @@ def _run_subprocess_training(
         '--sharpe-blend', str(sharpe_blend),
     ]
 
-    # Pass through optional training parameters
-    num_boost_round = training_cfg.get('num_boost_round')
-    if num_boost_round:
-        train_cmd += ['--num-boost-round', str(num_boost_round)]
+    # Note: num_boost_round is NOT a CLI arg of train_v395_multi_target.py
+    # It's hardcoded per version in the training script. To change it,
+    # modify the training script directly or use a different version flag.
 
     print(f"[{level}] 训练命令: {' '.join(train_cmd)}")
     try:
         result = subprocess.run(
             train_cmd,
             cwd=str(PROJECT_ROOT),
-            capture_output=False,
+            capture_output=True,
             text=True,
             timeout=7200,  # 2 hours max
         )
         if result.returncode != 0:
-            msg = f"Training subprocess failed with return code {result.returncode}"
+            stderr_tail = (result.stderr or '')[-2000:]
+            msg = f"Training failed (rc={result.returncode}): {stderr_tail}"
+            print(f"[{level}] {msg}")
             return _error_result_level(variant_name, msg, level)
+        # Print training stdout for visibility
+        if result.stdout:
+            for line in result.stdout.strip().split('\n')[-10:]:
+                print(f"  [train] {line}")
     except subprocess.TimeoutExpired:
         return _error_result_level(variant_name, "Training subprocess timed out (>2h)", level)
     except Exception as e:
@@ -686,12 +691,14 @@ def _run_subprocess_training(
         result = subprocess.run(
             batch_cmd,
             cwd=str(PROJECT_ROOT),
-            capture_output=False,
+            capture_output=True,
             text=True,
             timeout=7200,
         )
         if result.returncode != 0:
-            msg = f"Batch report subprocess failed with return code {result.returncode}"
+            stderr_tail = (result.stderr or '')[-2000:]
+            msg = f"Report gen failed (rc={result.returncode}): {stderr_tail}"
+            print(f"[{level}] {msg}")
             return _error_result_level(variant_name, msg, level)
     except subprocess.TimeoutExpired:
         return _error_result_level(variant_name, "Batch report subprocess timed out (>2h)", level)
