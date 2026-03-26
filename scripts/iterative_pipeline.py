@@ -659,7 +659,7 @@ def _run_subprocess_training(
             cwd=str(PROJECT_ROOT),
             capture_output=True,
             text=True,
-            timeout=7200,  # 2 hours max
+            timeout=36000,  # 10 hours max (V486 WF训练可能需要6-8h)
         )
         if result.returncode != 0:
             stderr_tail = (result.stderr or '')[-2000:]
@@ -697,7 +697,7 @@ def _run_subprocess_training(
             cwd=str(PROJECT_ROOT),
             capture_output=True,
             text=True,
-            timeout=7200,
+            timeout=36000,
         )
         if result.returncode != 0:
             stderr_tail = (result.stderr or '')[-2000:]
