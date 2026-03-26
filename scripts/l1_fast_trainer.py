@@ -351,10 +351,8 @@ class L1FastTrainer:
                 feat_imp = sorted(zip(feat_cols, importance), key=lambda x: x[1], reverse=True)
                 metrics['top10_feature_importance'] = feat_imp[:10]
 
-        # train_val_gap = train_ic_10d - test_ic_10d
-        train_ic = all_ic_10d.get('train', 0.0)
-        test_ic = all_ic_10d.get('test', 0.0)
-        metrics['train_val_gap'] = train_ic - test_ic
+        # train_val_gap = train_ic_10d - val_ic_10d (overfitting proxy)
+        metrics['train_val_gap'] = metrics.get('train_ic_10d', 0.0) - metrics.get('val_ic_10d', 0.0)
         metrics['n_features'] = len(feat_cols)
 
         return metrics
