@@ -160,8 +160,10 @@ class L1FastTrainer:
             feat_df.drop(columns=[c for c in remove_list if c in feat_df.columns],
                          inplace=True)
 
-        # Market feature columns
-        market_cols = [c for c in df.columns if c.startswith('market_')]
+        # Market feature columns (also apply removal)
+        remove_set = set(remove_list) if remove_list else set()
+        market_cols = [c for c in df.columns
+                       if c.startswith('market_') and c not in remove_set]
 
         # Build final dataframe
         meta_cols = ['code', 'trade_date', 'label_5d', 'label_10d']
