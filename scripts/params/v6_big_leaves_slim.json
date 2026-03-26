@@ -1,0 +1,23 @@
+{
+    "variant_name": "v6_big_leaves_slim",
+    "base_version": "v486",
+    "features": {
+        "add": [],
+        "remove": [
+            "pe_industry_rank", "pb_industry_rank", "ps_industry_rank",
+            "sw_l1_code",
+            "industry_relative_strength", "industry_return_20d", "industry_return_5d",
+            "market_drawdown_20d", "market_volume_ratio", "market_position_20d"
+        ]
+    },
+    "training": {
+        "start_date": "2020-01-01",
+        "l1_start_date": "2024-01-01",
+        "l1_num_boost_round": 150,
+        "num_leaves": 63,
+        "min_data_in_leaf": 100,
+        "sharpe_blend": 0.3,
+        "purge_days": 15
+    },
+    "scoring": {"rank_field": "pred_10d", "top_n": 10, "focus_days": 10}
+}

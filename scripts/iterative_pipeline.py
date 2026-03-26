@@ -644,9 +644,13 @@ def _run_subprocess_training(
         '--sharpe-blend', str(sharpe_blend),
     ]
 
-    # Note: num_boost_round is NOT a CLI arg of train_v395_multi_target.py
-    # It's hardcoded per version in the training script. To change it,
-    # modify the training script directly or use a different version flag.
+    # Pass through hyperparameter overrides
+    num_leaves = training_cfg.get('num_leaves')
+    if num_leaves:
+        train_cmd += ['--num-leaves', str(num_leaves)]
+    min_data = training_cfg.get('min_data_in_leaf')
+    if min_data:
+        train_cmd += ['--min-data-in-leaf', str(min_data)]
 
     print(f"[{level}] 训练命令: {' '.join(train_cmd)}")
     try:
