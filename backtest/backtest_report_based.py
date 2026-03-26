@@ -1660,6 +1660,150 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
     }
 
 
+def compute_ns_scores(summary: dict, focus_days: int,
+                      n_trading_days: int = 0,
+                      n_trials: int = 10) -> dict:
+    """
+    从 run_single_backtest() 返回的 summary 计算北极星 V2/V3/V4 评分.
+
+    Args:
+        summary:          run_single_backtest() 返回值中的 'summary' 字段
+                          (dict, key = holding_days, value = metrics dict)
+        focus_days:       关注的持仓天数（如 10），必须存在于 summary 中
+        n_trading_days:   回测涵盖的交易日数（用于长度折扣和短窗口警告）
+        n_trials:         回测试验次数（用于 V3 统计鲁棒性校正，默认10）
+
+    Returns:
+        {
+            'v2_score':  int,    # 原始总分 (0-105)
+            'v2_pct':    float,  # 百分比 0-100
+            'v2_grade':  str,    # S/A+/A/B/C/D
+            'v3_score':  int,    # 原始总分 (0-125)
+            'v3_pct':    float,  # 加权+折扣后百分比 0-100
+            'v3_grade':  str,    # S/A+/A/B/C/D
+            'v3_details': dict,  # compute_v3_score() 完整返回值
+            'v4_score':  int,    # 原始总分 (0-155)
+            'v4_pct':    float,  # 加权+折扣后百分比 0-100
+            'v4_grade':  str,    # S/A+/A/B/C/D
+            'v4_details': dict,  # compute_v4_score() 完整返回值
+        }
+        若 focus_days 不在 summary 中则返回全零占位 dict.
+    """
+    if focus_days not in summary:
+        return {
+            'v2_score': 0, 'v2_pct': 0.0, 'v2_grade': 'D',
+            'v3_score': 0, 'v3_pct': 0.0, 'v3_grade': 'D', 'v3_details': {},
+            'v4_score': 0, 'v4_pct': 0.0, 'v4_grade': 'D', 'v4_details': {},
+        }
+
+    s = summary[focus_days]
+
+    # ── V2 metric value map（与 _print_scorecard_v2 保持一致）──────────
+    v2_metric_values = {
+        'daily_ic':               s.get('ic_mean', 0),
+        'icir':                   s.get('icir', 0),
+        'ic_positive_pct':        s.get('ic_positive_pct', 0),
+        'ic_monotonicity':        s.get('ic_monotonicity', 0),
+        'ic_time_stability':      s.get('ic_time_stability', 999),
+        'signal_half_life':       s.get('signal_half_life', 0),
+        'annual_turnover':        s.get('annual_turnover', 0),
+        'annual_cost_drag':       s.get('annual_cost_drag', 0),
+        'net_gross_ratio':        s.get('net_gross_ratio', 0),
+        'limit_up_fail_rate':     s.get('limit_up_fail_rate', 0),
+        'liquidity_coverage':     s.get('liquidity_coverage', 0),
+        'max_drawdown':           s.get('max_drawdown', 0),
+        'sharpe_ratio':           s.get('sharpe_ratio', 0),
+        'sortino_ratio':          s.get('sortino_ratio', 0),
+        'calmar_ratio':           s.get('calmar_ratio', 0),
+        'worst_rolling_60d_icir': s.get('worst_rolling_60d_icir', None),
+        'annual_return':          s.get('annual_return', 0),
+        'monthly_win_rate':       s.get('monthly_win_rate', 0),
+        'half_period_consistency': s.get('half_period_consistency', 0),
+        'cap_balance_ratio':      s.get('cap_balance_ratio', 0),
+        'median_market_cap_bn':   s.get('median_market_cap_bn', 0),
+    }
+
+    # V2 计算
+    v2_total = 0
+    v2_max = 0
+    for metric_key, target_info in NORTH_STAR_TARGETS_V2.items():
+        current = v2_metric_values.get(metric_key)
+        if current is None:
+            continue
+        score, _ = score_metric_v2(current, target_info)
+        v2_total += score
+        v2_max += 5
+
+    v2_pct = v2_total / v2_max * 100 if v2_max > 0 else 0.0
+    v2_grade = compute_v2_grade(v2_total, v2_max)
+
+    # ── V3 metric value map（与 _print_scorecard_v3 保持一致）──────────
+    ic_mono_val = s.get('ic_monotonicity_v3')
+    if ic_mono_val is None or ic_mono_val == 0:
+        ic_mono_val = s.get('ic_monotonicity', 0)
+
+    v3_metric_values = {
+        'daily_ic':              s.get('ic_mean', 0),
+        'icir':                  s.get('icir', 0),
+        'ic_positive_pct':       s.get('ic_positive_pct', 0),
+        'ic_monotonicity':       ic_mono_val,
+        'ic_time_stability':     s.get('ic_time_stability', 999),
+        'signal_half_life':      s.get('signal_half_life', 0),
+        'bear_icir':             s.get('bear_icir'),
+        'ic_decay_ratio':        s.get('ic_decay_ratio', 0),
+        'annual_turnover':       s.get('annual_turnover', 0),
+        'annual_cost_drag':      s.get('annual_cost_drag', 0),
+        'net_gross_ratio':       s.get('net_gross_ratio', 0),
+        'limit_up_fail_rate':    s.get('limit_up_fail_rate', 0),
+        'liquidity_coverage':    s.get('liquidity_coverage', 0),
+        'max_drawdown':          s.get('max_drawdown', 0),
+        'sharpe_ratio':          s.get('sharpe_ratio', 0),
+        'sortino_ratio':         s.get('sortino_ratio', 0),
+        'calmar_ratio':          s.get('calmar_ratio', 0),
+        'worst_rolling_60d_icir': s.get('worst_rolling_60d_icir', None),
+        'tail_ratio':            s.get('tail_ratio', 0),
+        'max_consecutive_loss_periods': s.get('max_consecutive_loss_periods', 0),
+        'annual_return':         s.get('annual_return', 0),
+        'monthly_win_rate':      s.get('monthly_win_rate', 0),
+        'half_period_consistency': s.get('half_period_consistency', 0),
+        'probabilistic_sharpe':  s.get('probabilistic_sharpe', 0),
+        'deflated_sharpe':       s.get('deflated_sharpe', 0),
+    }
+
+    v3_result = compute_v3_score(v3_metric_values, n_trading_days, n_trials)
+
+    # ── V4 metric value map（与 _print_scorecard_v4 保持一致）──────────
+    benchmark_info = s.get('benchmark_info') or {}
+    v4_bm = s.get('v4_benchmark_metrics') or {}
+
+    v4_metric_values = dict(v3_metric_values)  # 继承 V3 全部字段
+    v4_metric_values.update({
+        # L5 超额收益新字段
+        'excess_annual_return':  benchmark_info.get('excess_annual_return', 0),
+        'information_ratio':     benchmark_info.get('information_ratio', 0),
+        'excess_win_rate':       v4_bm.get('excess_win_rate', 0),
+        'excess_max_drawdown':   v4_bm.get('excess_max_drawdown', 0),
+        'bear_excess_return':    v4_bm.get('bear_excess_return'),
+        'up_capture_ratio':      v4_bm.get('up_capture_ratio', 0),
+    })
+
+    v4_result = compute_v4_score(v4_metric_values, n_trading_days, n_trials)
+
+    return {
+        'v2_score': v2_total,
+        'v2_pct':   v2_pct,
+        'v2_grade': v2_grade,
+        'v3_score': v3_result['total_score'],
+        'v3_pct':   v3_result['final_pct'],
+        'v3_grade': v3_result['grade'],
+        'v3_details': v3_result,
+        'v4_score': v4_result['total_score'],
+        'v4_pct':   v4_result['final_pct'],
+        'v4_grade': v4_result['grade'],
+        'v4_details': v4_result,
+    }
+
+
 def _print_scorecard(s, label, days):
     """打印北极星评分卡"""
     print(f"\n  {'═'*60}")
