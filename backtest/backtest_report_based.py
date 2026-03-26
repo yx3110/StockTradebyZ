@@ -1531,7 +1531,7 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
             # V2新增
             'ic_monotonicity': ic_mono,
             'ic_time_stability': ic_time_stability_cv,
-            'worst_rolling_60d_icir': worst_rolling.get('worst_icir', None),
+            'worst_rolling_60d_icir': (worst_rolling or {}).get('worst_icir', None),
             'half_period_consistency': half_consistency.get('ratio', 0),
             'net_gross_ratio': ngr,
             'limit_up_fail_rate': exec_metrics.get('limit_up_fail_rate', 0),
@@ -1576,7 +1576,8 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
         print(f"    换手率(年化):  {annual_turnover_val:.1f}倍 (调仓{rebal_freq_annual:.0f}次/年)")
         print(f"    IC单调性:      {ic_mono:.2f}/5.0")
         print(f"    IC稳定性(CV):  {ic_time_stability_cv:.2f}")
-        print(f"    最差60日ICIR:  {worst_rolling.get('worst_icir', 0):.3f}")
+        _worst_icir = (worst_rolling or {}).get('worst_icir', 0) or 0
+        print(f"    最差60日ICIR:  {_worst_icir:.3f}")
         print(f"    前后半段一致:  {half_consistency.get('ratio', 0):.2f}")
         print(f"    净/毛收益比:   {ngr:.2f}")
         print(f"    涨停失败率:    {exec_metrics.get('limit_up_fail_rate', 0):.1%}")

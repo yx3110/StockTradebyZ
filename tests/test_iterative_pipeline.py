@@ -218,3 +218,53 @@ class TestL1FastTrainer:
         print(f"  test_icir_10d= {metrics['test_icir_10d']:.4f}")
         print(f"  gate_pass    = {result['gate_pass']}")
         print(f"  duration     = {result['duration_sec']:.1f}s")
+
+
+# ---------------------------------------------------------------------------
+# Task 4: L2 Mini Report Generation + NS Evaluation
+# ---------------------------------------------------------------------------
+class TestL2QuickEval:
+
+    def test_run_l2_returns_mini_ns(self):
+        """L2 generates mini reports and returns NS score."""
+        from scripts.iterative_pipeline import run_l1, run_l2
+        params = {
+            'variant_name': 'test_l2',
+            'training': {
+                'l1_start_date': '20250601',
+                'l1_num_boost_round': 30,
+                'purge_days': 10,
+            },
+            'scoring': {'top_n': 10, 'focus_days': 10, 'rank_field': 'pred_10d'},
+        }
+        l1_result = run_l1(params)
+        l2_result = run_l2(params, l1_result, n_days=20)
+
+        assert l2_result['level'] == 'L2'
+        assert 'mini_ns_raw' in l2_result
+        assert 'metrics' in l2_result
+        assert 'gate_pass' in l2_result
+        assert isinstance(l2_result['mini_ns_raw'], (int, float))
+
+        # Structural checks on metrics
+        metrics = l2_result['metrics']
+        assert 'ic_10d' in metrics
+        assert 'max_drawdown' in metrics
+        assert 'sharpe' in metrics
+
+        # Values must be numeric/finite
+        assert np.isfinite(metrics['ic_10d'])
+        assert np.isfinite(metrics['max_drawdown'])
+
+        # gate_pass is determined by the gate conditions
+        assert isinstance(l2_result['gate_pass'], bool)
+
+        # mini_ns_calibrated should be numeric
+        assert isinstance(l2_result['mini_ns_calibrated'], float)
+
+        print(f"\n  mini_ns_raw        = {l2_result['mini_ns_raw']}")
+        print(f"  mini_ns_grade      = {l2_result['mini_ns_grade']}")
+        print(f"  ic_10d             = {metrics['ic_10d']:.4f}")
+        print(f"  max_drawdown       = {metrics['max_drawdown']:.3f}")
+        print(f"  gate_pass          = {l2_result['gate_pass']}")
+        print(f"  duration           = {l2_result['duration_sec']:.1f}s")
