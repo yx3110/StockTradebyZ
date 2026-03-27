@@ -9153,15 +9153,14 @@ class V486Trainer(V485Trainer):
 
     def train_single_target_models(self, X_train, X_val, y_train, y_val, target_name: str,
                                     sample_weights_train=None):
-        """V4.8.6: CatBoost YetiRankPairwise NDCG@10 (原生top-K排名优化)
+        """V4.8.6: CatBoost YetiRank NDCG@10 + XGBoost rank:ndcg topk
 
-        替换CatBoost回归为CatBoost排名模型:
-        - loss_function='YetiRankPairwise' + top=10
-        - 直接优化NDCG@10, 梯度来自top-10位置的排列采样
-        - 其他5个模型(LGB/XGB/RF/HGB/LGBRank)保持不变
+        两个模型从回归替换为排名:
+        1. CatBoost: YetiRankPairwise NDCG@10
+        2. XGBoost: rank:ndcg + lambdarank_pair_method=topk + num_pair=15
+        其他4个模型(LGB/RF/HGB/LGBRank)保持回归。
 
-        参考: ICML 2023 "Which Tricks Are Important for Learning to Rank?"
-        YetiRank在top-K指标上全面超越LambdaMART。
+        Ensemble中排名模型占比: 3/6 (cb+xgb+lgb_rank) vs 3/6回归(lgb+rf+hgb)
         """
         import gc
 
@@ -9218,11 +9217,10 @@ class V486Trainer(V485Trainer):
                             rel[pct >= 0.80] = 4
                             relevance_val[mask] = rel
 
-                    # CatBoost Pool with group_id
+                    # CatBoost Pool with group_id (YetiRankPairwise不支持weight)
                     cb_pool_train = cb.Pool(
                         X_train, label=relevance_train,
                         group_id=train_group_id,
-                        weight=sample_weights_train
                     )
 
                     cb_params = {
@@ -9262,6 +9260,95 @@ class V486Trainer(V485Trainer):
 
                 except Exception as e:
                     logger.warning(f"    CatBoost YetiRank失败, 保留回归版: {e}")
+
+        # === 替换XGBoost回归为rank:ndcg topk ===
+        if 'xgb' in models:
+            train_dates = getattr(self, 'train_dates', None)
+            val_dates = getattr(self, 'val_dates', None)
+
+            if train_dates is not None and len(train_dates) == len(y_train):
+                try:
+                    from scipy.stats import rankdata
+                    logger.info(f"  V4.8.6 XGBoost rank:ndcg topk ({target_name})...")
+
+                    # 构建group (每日一组)
+                    unique_train_dates = np.unique(train_dates)
+                    group_train = []
+                    for d in unique_train_dates:
+                        group_train.append(int(np.sum(train_dates == d)))
+
+                    # relevance labels (quintile 0-4)
+                    relevance_train = np.zeros(len(y_train), dtype=np.float32)
+                    for d in unique_train_dates:
+                        mask = train_dates == d
+                        y_d = y_train[mask]
+                        if len(y_d) < 20:
+                            continue
+                        pct = rankdata(y_d) / len(y_d)
+                        rel = np.zeros(len(y_d), dtype=np.float32)
+                        rel[pct >= 0.20] = 1
+                        rel[pct >= 0.40] = 2
+                        rel[pct >= 0.60] = 3
+                        rel[pct >= 0.80] = 4
+                        relevance_train[mask] = rel
+
+                    dtrain = xgb.DMatrix(X_train, label=relevance_train)
+                    dtrain.set_group(group_train)
+
+                    # Validation
+                    dval = xgb.DMatrix(X_val, label=np.zeros(len(y_val)))
+                    if val_dates is not None and len(val_dates) == len(y_val):
+                        unique_val_dates = np.unique(val_dates)
+                        group_val = [int(np.sum(val_dates == d)) for d in unique_val_dates]
+                        relevance_val = np.zeros(len(y_val), dtype=np.float32)
+                        for d in unique_val_dates:
+                            mask = val_dates == d
+                            y_d = y_val[mask]
+                            if len(y_d) < 20:
+                                continue
+                            pct = rankdata(y_d) / len(y_d)
+                            rel = np.zeros(len(y_d), dtype=np.float32)
+                            rel[pct >= 0.20] = 1
+                            rel[pct >= 0.40] = 2
+                            rel[pct >= 0.60] = 3
+                            rel[pct >= 0.80] = 4
+                            relevance_val[mask] = rel
+                        dval = xgb.DMatrix(X_val, label=relevance_val)
+                        dval.set_group(group_val)
+
+                    xgb_rank_params = {
+                        'objective': 'rank:ndcg',
+                        'eval_metric': 'ndcg@10',
+                        'lambdarank_pair_method': 'topk',
+                        'lambdarank_num_pair_per_sample': 15,
+                        'max_depth': 6,
+                        'learning_rate': 0.02,
+                        'subsample': 0.7,
+                        'colsample_bytree': 0.6,
+                        'reg_alpha': 0.5,
+                        'reg_lambda': 3.0,
+                        'min_child_weight': 100,
+                        'verbosity': 0,
+                    }
+
+                    xgb_rank_model = xgb.train(
+                        xgb_rank_params, dtrain,
+                        num_boost_round=1000,
+                        evals=[(dtrain, 'train'), (dval, 'val')],
+                        early_stopping_rounds=30,
+                        verbose_eval=False
+                    )
+
+                    models['xgb'] = xgb_rank_model
+                    pred_train['xgb'] = xgb_rank_model.predict(xgb.DMatrix(X_train))
+                    pred_val['xgb'] = xgb_rank_model.predict(xgb.DMatrix(X_val))
+
+                    logger.info(f"    XGBoost rank:ndcg topk ({target_name}): 完成")
+
+                    del dtrain, dval
+                    import gc; gc.collect()
+                except Exception as e:
+                    logger.warning(f"    XGBoost rank:ndcg失败, 保留回归版: {e}")
 
         return models, pred_train, pred_val
 
@@ -11146,6 +11233,7 @@ def main():
                 purge_days=max(args.purge_days, 15))
     elif args.v485:
         trainer = V485Trainer()
+        _apply_overrides(trainer)
         trainer.walk_forward_train(
             start_date=args.start_date, end_date=args.end_date,
             purge_days=max(args.purge_days, 15))
