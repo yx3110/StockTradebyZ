@@ -651,6 +651,14 @@ def _run_subprocess_training(
     min_data = training_cfg.get('min_data_in_leaf')
     if min_data:
         train_cmd += ['--min-data-in-leaf', str(min_data)]
+    # Feature blacklist (from features.remove)
+    feature_blacklist = params.get('features', {}).get('remove', [])
+    if feature_blacklist:
+        train_cmd += ['--feature-blacklist', ','.join(feature_blacklist)]
+    # Head weight
+    head_weight = training_cfg.get('head_weight', 0)
+    if head_weight > 0:
+        train_cmd += ['--head-weight', str(head_weight)]
 
     print(f"[{level}] 训练命令: {' '.join(train_cmd)}")
     try:

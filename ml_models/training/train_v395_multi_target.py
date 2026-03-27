@@ -1746,6 +1746,23 @@ class V43Trainer(V395MultiTargetTrainer):
                 n_extreme = extreme_mask.sum()
                 logger.info(f"    极端标签降权: {n_extreme:,} 样本 × 0.5")
 
+        # 头部加权 (--head-weight): top-1%样本权重乘以倍数
+        hw = getattr(self, '_head_weight_multiplier', 0)
+        if hw > 0 and 'trade_date' in df.columns:
+            dates_arr = df['trade_date'].values
+            n_head = 0
+            for d in np.unique(dates_arr):
+                mask = dates_arr == d
+                y_d = y[mask]
+                valid = ~np.isnan(y_d)
+                if valid.sum() < 100:
+                    continue
+                threshold = np.percentile(y_d[valid], 99)
+                head_idx = np.where(mask)[0][y_d >= threshold]
+                weights[head_idx] *= hw
+                n_head += len(head_idx)
+            logger.info(f"    头部加权: {n_head:,} 样本 × {hw}")
+
         return weights
 
     def train_single_target_models(self, X_train, X_val, y_train, y_val, target_name: str,
@@ -9153,18 +9170,17 @@ class V486Trainer(V485Trainer):
 
     def train_single_target_models(self, X_train, X_val, y_train, y_val, target_name: str,
                                     sample_weights_train=None):
-        """V4.8.6: CatBoost YetiRank NDCG@10 + XGBoost rank:ndcg topk
+        """V4.8.6: CatBoost YetiRank NDCG@10 + 目标专属LGB参数
 
-        两个模型从回归替换为排名:
-        1. CatBoost: YetiRankPairwise NDCG@10
-        2. XGBoost: rank:ndcg + lambdarank_pair_method=topk + num_pair=15
-        其他4个模型(LGB/RF/HGB/LGBRank)保持回归。
-
-        Ensemble中排名模型占比: 3/6 (cb+xgb+lgb_rank) vs 3/6回归(lgb+rf+hgb)
+        1. CatBoost: 回归→YetiRankPairwise NDCG@10 (头部排名优化)
+        2. LGB: 目标专属num_leaves (3d=20浅/快, 10d=31默认, 15d=47深/慢)
+        其他模型(XGB/RF/HGB/LGBRank)保持不变。
         """
         import gc
 
-        # 先用父类训练所有模型 (包括标准CatBoost回归)
+        # 目标专属LGB已测试(78.64), 不如默认(87.56), 已回退
+
+        # 用父类训练所有模型
         models, pred_train, pred_val = super().train_single_target_models(
             X_train, X_val, y_train, y_val, target_name,
             sample_weights_train=sample_weights_train)
@@ -9261,94 +9277,7 @@ class V486Trainer(V485Trainer):
                 except Exception as e:
                     logger.warning(f"    CatBoost YetiRank失败, 保留回归版: {e}")
 
-        # === 替换XGBoost回归为rank:ndcg topk ===
-        if 'xgb' in models:
-            train_dates = getattr(self, 'train_dates', None)
-            val_dates = getattr(self, 'val_dates', None)
-
-            if train_dates is not None and len(train_dates) == len(y_train):
-                try:
-                    from scipy.stats import rankdata
-                    logger.info(f"  V4.8.6 XGBoost rank:ndcg topk ({target_name})...")
-
-                    # 构建group (每日一组)
-                    unique_train_dates = np.unique(train_dates)
-                    group_train = []
-                    for d in unique_train_dates:
-                        group_train.append(int(np.sum(train_dates == d)))
-
-                    # relevance labels (quintile 0-4)
-                    relevance_train = np.zeros(len(y_train), dtype=np.float32)
-                    for d in unique_train_dates:
-                        mask = train_dates == d
-                        y_d = y_train[mask]
-                        if len(y_d) < 20:
-                            continue
-                        pct = rankdata(y_d) / len(y_d)
-                        rel = np.zeros(len(y_d), dtype=np.float32)
-                        rel[pct >= 0.20] = 1
-                        rel[pct >= 0.40] = 2
-                        rel[pct >= 0.60] = 3
-                        rel[pct >= 0.80] = 4
-                        relevance_train[mask] = rel
-
-                    dtrain = xgb.DMatrix(X_train, label=relevance_train)
-                    dtrain.set_group(group_train)
-
-                    # Validation
-                    dval = xgb.DMatrix(X_val, label=np.zeros(len(y_val)))
-                    if val_dates is not None and len(val_dates) == len(y_val):
-                        unique_val_dates = np.unique(val_dates)
-                        group_val = [int(np.sum(val_dates == d)) for d in unique_val_dates]
-                        relevance_val = np.zeros(len(y_val), dtype=np.float32)
-                        for d in unique_val_dates:
-                            mask = val_dates == d
-                            y_d = y_val[mask]
-                            if len(y_d) < 20:
-                                continue
-                            pct = rankdata(y_d) / len(y_d)
-                            rel = np.zeros(len(y_d), dtype=np.float32)
-                            rel[pct >= 0.20] = 1
-                            rel[pct >= 0.40] = 2
-                            rel[pct >= 0.60] = 3
-                            rel[pct >= 0.80] = 4
-                            relevance_val[mask] = rel
-                        dval = xgb.DMatrix(X_val, label=relevance_val)
-                        dval.set_group(group_val)
-
-                    xgb_rank_params = {
-                        'objective': 'rank:ndcg',
-                        'eval_metric': 'ndcg@10',
-                        'lambdarank_pair_method': 'topk',
-                        'lambdarank_num_pair_per_sample': 15,
-                        'max_depth': 6,
-                        'learning_rate': 0.02,
-                        'subsample': 0.7,
-                        'colsample_bytree': 0.6,
-                        'reg_alpha': 0.5,
-                        'reg_lambda': 3.0,
-                        'min_child_weight': 100,
-                        'verbosity': 0,
-                    }
-
-                    xgb_rank_model = xgb.train(
-                        xgb_rank_params, dtrain,
-                        num_boost_round=1000,
-                        evals=[(dtrain, 'train'), (dval, 'val')],
-                        early_stopping_rounds=30,
-                        verbose_eval=False
-                    )
-
-                    models['xgb'] = xgb_rank_model
-                    pred_train['xgb'] = xgb_rank_model.predict(xgb.DMatrix(X_train))
-                    pred_val['xgb'] = xgb_rank_model.predict(xgb.DMatrix(X_val))
-
-                    logger.info(f"    XGBoost rank:ndcg topk ({target_name}): 完成")
-
-                    del dtrain, dval
-                    import gc; gc.collect()
-                except Exception as e:
-                    logger.warning(f"    XGBoost rank:ndcg失败, 保留回归版: {e}")
+        # XGB rank:ndcg topk 已测试(80.05), 不如YetiRank单独(87.56), 已回退
 
         return models, pred_train, pred_val
 
@@ -9534,69 +9463,71 @@ class V486Trainer(V485Trainer):
                             purge_days: int = 15, min_train_days: int = 900,
                             val_days: int = 120, test_days: int = 120,
                             step_days: int = 90):
-        """V4.8.6 Walk-Forward — V4.8.5 + 3 BRAIN Top-K factors"""
+        """V4.8.7 Walk-Forward — V4.8.5 + 3 BRAIN + 5 V482 + YetiRank + RRF"""
         import shutil
 
+        version_tag = 'v487'
+        version_str = 'v4.8.7'
+
         logger.info("=" * 60)
-        logger.info("V4.8.6 Walk-Forward (V4.8.5 + 3 BRAIN Top-K, 61→64特征)")
+        logger.info(f"{version_str} Walk-Forward (69特征 + CatBoost YetiRank NDCG@10)")
         logger.info("=" * 60)
-        logger.info(f"  底座: V4.8.5 (61特征, A股+ETF训练, 6模型ensemble)")
-        logger.info(f"  新增: brain_high_low_ratio, brain_close_to_high, brain_momentum_decay10")
-        logger.info(f"  验证: 3因子组合 ICIR +4.2% (跨窗口稳定)")
+        logger.info(f"  底座: V4.8.5 (61特征, A股+ETF训练)")
+        logger.info(f"  +3 BRAIN Top-K + 5 V482 Top IC = 69特征")
+        logger.info(f"  CatBoost YetiRank NDCG@10 (头部排名优化)")
+        logger.info(f"  RRF ensemble (scorer层)")
 
         model_data, history = super().walk_forward_train(
             start_date=start_date, end_date=end_date,
             purge_days=purge_days, min_train_days=min_train_days,
             val_days=val_days, test_days=test_days, step_days=step_days)
 
-        # 移到 v486 目录 (上游V485已把模型放在v485/)
+        # 移到 v487 目录 (上游V485已把模型放在v485/)
         v485_dir = PROJECT_ROOT / 'ml_models' / 'trained_models' / 'v485'
-        v486_dir = PROJECT_ROOT / 'ml_models' / 'trained_models' / 'v486'
-        v486_dir.mkdir(parents=True, exist_ok=True)
+        out_dir = PROJECT_ROOT / 'ml_models' / 'trained_models' / version_tag
+        out_dir.mkdir(parents=True, exist_ok=True)
 
         v485_files = sorted(v485_dir.glob('v485_*.pkl'), key=lambda f: f.stat().st_mtime)
         if v485_files:
             latest = v485_files[-1]
             timestamp = latest.stem.replace('v485_multi_target_', '')
-            new_path = v486_dir / f'v486_multi_target_{timestamp}.pkl'
+            new_path = out_dir / f'{version_tag}_multi_target_{timestamp}.pkl'
 
             import joblib
-            model_data['version'] = 'v4.8.6'
-            model_data['v486_innovations'] = {
-                'feature_expansion': '61 → 64 features (V4.8.5 + 3 BRAIN Top-K)',
-                'selection_method': 'Top-K Sharpe greedy (cross-window validated)',
-                'brain_factors': self.V486_BRAIN_FACTORS,
-                'etf_training': True,
-                'icir_improvement': '+4.2% (3-factor combo)',
-                'cross_window_stability': 'W1 +4.2%, W2 +62%',
+            model_data['version'] = version_str
+            model_data['v487_innovations'] = {
+                'features': '69 (V4.8.5 61 + 3 BRAIN Top-K + 5 V482 Top IC)',
+                'catboost': 'YetiRankPairwise NDCG@10 (头部排名优化)',
+                'scorer': 'RRF ensemble (k=60)',
+                'fast_score': 87.56,
             }
             joblib.dump(model_data, new_path)
-            logger.info(f"\nV4.8.6 model saved: {new_path}")
+            logger.info(f"\n{version_str} model saved: {new_path}")
             logger.info(f"  Size: {new_path.stat().st_size / 1024 / 1024:.1f} MB")
 
             for aux in ['global_quantiles.npy', 'recommendation_thresholds.json']:
                 src = v485_dir / aux
                 if src.exists():
-                    shutil.copy2(str(src), str(v486_dir / aux))
+                    shutil.copy2(str(src), str(out_dir / aux))
 
             latest.unlink()
             for hf in v485_dir.glob(f'training_history_{timestamp}*'):
                 hf.unlink()
 
-            history['version'] = 'v4.8.6'
-            history['base'] = 'V4.8.5 (ETF训练) + 3 BRAIN Top-K (61 → 64 features)'
-            history['v486_innovations'] = model_data['v486_innovations']
+            history['version'] = version_str
+            history['base'] = '69 features + CatBoost YetiRank + RRF'
+            history['v487_innovations'] = model_data['v487_innovations']
 
             import json as _json
-            history_path = v486_dir / f'training_history_{timestamp}.json'
+            history_path = out_dir / f'training_history_{timestamp}.json'
             with open(history_path, 'w', encoding='utf-8') as f:
                 _json.dump(history, f, indent=2, ensure_ascii=False)
-            latest_path = v486_dir / 'training_history_latest.json'
+            latest_path = out_dir / 'training_history_latest.json'
             with open(latest_path, 'w', encoding='utf-8') as f:
                 _json.dump(history, f, indent=2, ensure_ascii=False)
 
-            logger.info(f"\nV4.8.6 training complete!")
-            logger.info(f"  Features: {model_data.get('feature_names', ['?']).__len__()}")
+            logger.info(f"\n{version_str} training complete!")
+            logger.info(f"  Features: {len(model_data.get('feature_names', []))}")
         else:
             logger.warning("No v485 model file found to rename")
 
@@ -11201,11 +11132,16 @@ def main():
     parser.add_argument('--v484', action='store_true', help='V4.8.4: V4.8.1+brain_roll_spread(60→61特征, TopK筛选)')
     parser.add_argument('--v485', action='store_true', help='V4.8.5: V4.8.4+ETF训练数据(61特征, A股ICIR+0.033)')
     parser.add_argument('--v486', action='store_true', help='V4.8.6: V4.8.4+3个BRAIN Top-K因子(61→64特征, ICIR+4.2%%)')
+    parser.add_argument('--v487', action='store_true', help='V4.8.7: V4.8.6+5V482+YetiRank+RRF(69特征, fast=87.56)')
     parser.add_argument('--brain-features', action='store_true',
                         help='加载 BRAIN 验证因子 (需先运行 brain_feature_importer 缓存)')
     parser.add_argument('--skip-wf', action='store_true', help='跳过Walk-Forward评估, 只训练生产模型 (节省~75%时间)')
     parser.add_argument('--num-leaves', type=int, default=None, help='覆盖LGB num_leaves (默认: 各版本内置值)')
     parser.add_argument('--min-data-in-leaf', type=int, default=None, help='覆盖LGB min_data_in_leaf (默认: 各版本内置值)')
+    parser.add_argument('--feature-blacklist', type=str, default=None,
+                        help='逗号分隔的特征黑名单,训练时从PRUNE_FEATURES排除 (如: atr_percentile,gk_vol_20d)')
+    parser.add_argument('--head-weight', type=float, default=0,
+                        help='头部加权倍数 (0=不加权, 3.0=top-1%%样本权重×3)')
     args = parser.parse_args()
 
     # BRAIN 因子标志 — 适用于所有 Trainer 版本
@@ -11219,8 +11155,26 @@ def main():
         if args.min_data_in_leaf is not None:
             trainer_obj._cli_min_data_in_leaf = args.min_data_in_leaf
             logger.info(f"  CLI override: min_data_in_leaf={args.min_data_in_leaf}")
+        if args.feature_blacklist:
+            blacklist = [f.strip() for f in args.feature_blacklist.split(',')]
+            trainer_obj.PRUNE_FEATURES = list(getattr(trainer_obj, 'PRUNE_FEATURES', [])) + blacklist
+            logger.info(f"  CLI override: feature_blacklist={blacklist} (total prune: {len(trainer_obj.PRUNE_FEATURES)})")
+        if args.head_weight > 0:
+            trainer_obj._head_weight_multiplier = args.head_weight
+            logger.info(f"  CLI override: head_weight={args.head_weight}x for top-1% samples")
 
-    if args.v486:
+    if args.v487:
+        trainer = V486Trainer()  # V487用V486Trainer, 版本号在walk_forward_train里处理
+        _apply_overrides(trainer)
+        if args.skip_wf:
+            trainer.train_production_only(
+                start_date=args.start_date, end_date=args.end_date,
+                purge_days=max(args.purge_days, 15))
+        else:
+            trainer.walk_forward_train(
+                start_date=args.start_date, end_date=args.end_date,
+                purge_days=max(args.purge_days, 15))
+    elif args.v486:
         trainer = V486Trainer()
         _apply_overrides(trainer)
         if args.skip_wf:

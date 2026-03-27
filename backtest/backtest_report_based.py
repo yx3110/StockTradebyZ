@@ -813,7 +813,8 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
                         vol_target=0.0, cppi_floor=0.0, cppi_multiplier=3.0,
                         sector_diversify=0,
                         min_turnover_rate=0.0, replace_threshold=0.0,
-                        hold_buffer=0):
+                        hold_buffer=0,
+                        rerank_reports=None, rerank_pool=100):
     """运行单个报告目录的回测（含北极星指标）
 
     Args:
@@ -950,6 +951,19 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
                     stocks_filtered = [s for s in stocks if s['code'] not in low_liq_codes]
                     if len(stocks_filtered) >= top_n:
                         stocks = stocks_filtered
+
+        # 两阶段精排: 用第二报告集对候选池重排名
+        if rerank_reports and date in rerank_reports:
+            pool = stocks[:rerank_pool]  # 阶段1: 从primary取候选池
+            pool_codes = set(s['code'] for s in pool)
+            rerank_day = rerank_reports[date]
+            # 阶段2: 用rerank报告的rank_score重排候选
+            rerank_subset = [s for s in rerank_day if s['code'] in pool_codes]
+            rerank_subset.sort(key=lambda x: x['rank_score'], reverse=True)
+            # 替换stocks为重排结果 (保留原始stocks中不在rerank的部分作为后备)
+            reranked_codes = set(s['code'] for s in rerank_subset)
+            remaining = [s for s in pool if s['code'] not in reranked_codes]
+            stocks = rerank_subset + remaining
 
         # 持仓保留加分: 已持有股票的rank_score乘以(1+bonus)
         if retention_bonus > 0 and prev_top_codes:

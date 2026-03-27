@@ -125,8 +125,16 @@ def run_backtest(report_dir, label, top_n=20, benchmark='000905.SH', focus_days=
                  retention_bonus=0.0, score_floor=0.0, min_holdings=3,
                  risk_control=False,
                  vol_target=0.0, cppi_floor=0.0, cppi_multiplier=3.0,
-                 sector_diversify=0, rank_field='auto', hold_buffer=0):
-    """运行单个模型的回测"""
+                 sector_diversify=0, rank_field='auto', hold_buffer=0,
+                 rerank_dir=None, rerank_pool=100):
+    """运行单个模型的回测
+
+    Args:
+        rerank_dir: 可选的第二报告目录，用于两阶段精排
+                    阶段1: 从 report_dir 选 rerank_pool 只候选
+                    阶段2: 用 rerank_dir 的排名在候选中精选 top_n
+        rerank_pool: 阶段1候选池大小 (默认100)
+    """
     from backtest import backtest_report_based as brb
     from backtest import north_star_metrics as nsm
 
@@ -138,6 +146,15 @@ def run_backtest(report_dir, label, top_n=20, benchmark='000905.SH', focus_days=
     if not reports:
         print(f"  ⚠️ 无报告: {report_dir}")
         return None
+
+    # 两阶段精排: 加载第二报告集
+    rerank_reports = None
+    if rerank_dir:
+        rerank_reports = brb.load_reports(rerank_dir, rank_field=rank_field)
+        if rerank_reports:
+            print(f"  两阶段精排: primary={report_dir}, rerank={rerank_dir} (pool={rerank_pool})")
+        else:
+            print(f"  ⚠️ rerank报告为空: {rerank_dir}")
 
     # 打印评估窗口摘要
     all_dates = sorted(reports.keys())
@@ -152,7 +169,8 @@ def run_backtest(report_dir, label, top_n=20, benchmark='000905.SH', focus_days=
         vol_target=vol_target, cppi_floor=cppi_floor,
         cppi_multiplier=cppi_multiplier,
         sector_diversify=sector_diversify,
-        hold_buffer=hold_buffer
+        hold_buffer=hold_buffer,
+        rerank_reports=rerank_reports, rerank_pool=rerank_pool
     )
     return result
 
@@ -509,8 +527,8 @@ def main():
                         help='V4.5: CPPI乘数 (默认3.0)')
     parser.add_argument('--sector-diversify', type=int, default=0,
                         help='行业分散: 单行业最多N只 (0=关闭, 推荐2)')
-    parser.add_argument('--rank-field', type=str, default='auto',
-                        help='排名字段: auto=优先pred_10d, score=全局百分位, composite=多周期融合')
+    parser.add_argument('--rank-field', type=str, default='composite',
+                        help='排名字段: composite=多周期融合(与选股一致,默认), auto=优先pred_10d, score=全局百分位')
     parser.add_argument('--hold-buffer', type=float, default=0,
                         help='持仓缓冲区倍数 (0=关闭, 推荐2-3). 现有持仓在top_n*(1+buffer)内保留')
     parser.add_argument('--score-version', type=str, default='both', choices=['v2', 'v3', 'both'],
