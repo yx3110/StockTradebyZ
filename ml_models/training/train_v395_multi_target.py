@@ -11162,6 +11162,9 @@ def main():
         if args.head_weight > 0:
             trainer_obj._head_weight_multiplier = args.head_weight
             logger.info(f"  CLI override: head_weight={args.head_weight}x for top-1% samples")
+        if args.sharpe_blend != 0.3:  # 0.3 is the default, only override if different
+            trainer_obj.sharpe_label_blend = args.sharpe_blend
+            logger.info(f"  CLI override: sharpe_label_blend={args.sharpe_blend}")
 
     if args.v487:
         trainer = V486Trainer()  # V487用V486Trainer, 版本号在walk_forward_train里处理
