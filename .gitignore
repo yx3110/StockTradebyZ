@@ -3,6 +3,7 @@ wqbrain_integration/credentials.json
 
 # Eval cache (autoresearch acceleration)
 scripts/.eval_cache/
+backtest/.eval_cache/
 
 # Large database files
 data_adapter/stock_data.db
