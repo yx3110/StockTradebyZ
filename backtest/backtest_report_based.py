@@ -875,7 +875,8 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
                         sector_diversify=0,
                         min_turnover_rate=0.0, replace_threshold=0.0,
                         hold_buffer=0,
-                        rerank_reports=None, rerank_pool=100):
+                        rerank_reports=None, rerank_pool=100,
+                        cache=None):
     """运行单个报告目录的回测（含北极星指标）
 
     Args:
@@ -972,7 +973,7 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
         turnover_data = batch_load_market_cap_data(dates_all_tr)
         print(f"  流动性过滤数据: {len(turnover_data)}天换手率数据")
 
-    # 批量预加载所有日期的未来收益率 (使用模块级缓存，多模型对比时复用)
+    # 批量预加载所有日期的未来收益率 (三级缓存: 持久化磁盘 → 模块级内存 → 重新计算)
     import time as _time
     _t0_batch = _time.time()
     _all_report_dates_for_batch = sorted(reports.keys())
@@ -981,11 +982,24 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
     if _cache_key in _future_returns_cache:
         _batch_future_returns = _future_returns_cache[_cache_key]
         _next_trading_date_map = _next_trading_dates_cache.get(_cache_key, {})
-        print(f"  未来收益缓存命中: {len(_batch_future_returns)}天 (0.0秒)")
+        print(f"  未来收益缓存命中(内存): {len(_batch_future_returns)}天 (0.0秒)")
+    elif cache is not None:
+        _batch_future_returns = cache.get_future_returns(
+            _all_report_dates_for_batch,
+            loader_fn=lambda dates: batch_get_all_future_returns(dates, HOLDING_DAYS)
+        )
+        _next_trading_date_map = cache.get_trading_dates_map(
+            _all_report_dates_for_batch,
+            loader_fn=_batch_get_next_trading_dates
+        )
+        # 同时填充模块级缓存
+        if len(_future_returns_cache) < 10:
+            _future_returns_cache[_cache_key] = _batch_future_returns
+            _next_trading_dates_cache[_cache_key] = _next_trading_date_map
+        print(f"  未来收益缓存命中(磁盘): {len(_batch_future_returns)}天, 耗时{_time.time()-_t0_batch:.1f}秒")
     else:
         _batch_future_returns = batch_get_all_future_returns(_all_report_dates_for_batch, HOLDING_DAYS)
         _next_trading_date_map = _batch_get_next_trading_dates(_all_report_dates_for_batch)
-        # 缓存结果 (限制缓存大小，避免内存爆炸)
         if len(_future_returns_cache) < 10:
             _future_returns_cache[_cache_key] = _batch_future_returns
             _next_trading_dates_cache[_cache_key] = _next_trading_date_map
@@ -1401,7 +1415,13 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
 
     # V2: 批量加载市值/涨停数据 (合并为2次SQL替代3次, 1个连接替代3个)
     all_buy_dates = sorted(set(df['buy_date'].tolist()))
-    market_cap_data, limit_up_data, universe_median_cap = batch_load_all_metric_data(all_buy_dates)
+    if cache is not None:
+        market_cap_data, limit_up_data, universe_median_cap = cache.get_metric_data(
+            all_buy_dates,
+            loader_fn=lambda dates: batch_load_all_metric_data(dates)
+        )
+    else:
+        market_cap_data, limit_up_data, universe_median_cap = batch_load_all_metric_data(all_buy_dates)
 
     for days in HOLDING_DAYS:
         sub = df[df['days'] == days].sort_values('date')
