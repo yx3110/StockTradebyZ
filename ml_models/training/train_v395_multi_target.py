@@ -11164,6 +11164,14 @@ def main():
             logger.info(f"  CLI override: head_weight={args.head_weight}x for top-1% samples")
         if args.sharpe_blend != 0.3:  # 0.3 is the default, only override if different
             trainer_obj.sharpe_label_blend = args.sharpe_blend
+            # Also override per-target TARGET_SHARPE_BLEND if it exists
+            if hasattr(trainer_obj, 'TARGET_SHARPE_BLEND'):
+                ratio = args.sharpe_blend / 0.3  # scale factor vs default
+                new_blend = {}
+                for k, v in trainer_obj.TARGET_SHARPE_BLEND.items():
+                    new_blend[k] = min(v * ratio, 0.95)  # cap at 95%
+                trainer_obj.TARGET_SHARPE_BLEND = new_blend
+                logger.info(f"  CLI override: TARGET_SHARPE_BLEND={new_blend}")
             logger.info(f"  CLI override: sharpe_label_blend={args.sharpe_blend}")
 
     if args.v487:
