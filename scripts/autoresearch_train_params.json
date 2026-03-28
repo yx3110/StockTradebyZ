@@ -1,0 +1,25 @@
+{
+    "start_date": "2022-01-01",
+    "end_date": "2026-02-13",
+    "report_start_date": "2024-01-01",
+    "purge_days": 15,
+
+    "num_leaves": 31,
+    "learning_rate": 0.02,
+    "min_data_in_leaf": 200,
+    "num_boost_round": 1000,
+    "reg_alpha": 0.5,
+    "reg_lambda": 3.0,
+
+    "extra_prune_features": [],
+
+    "sharpe_blend_3d": 0.00,
+    "sharpe_blend_5d": 0.25,
+    "sharpe_blend_10d": 0.35,
+    "sharpe_blend_15d": 0.35,
+
+    "mode": "fast",
+    "train_version": "--v487",
+    "batch_version": "v4.8.7",
+    "output_version": "v487_exp"
+}

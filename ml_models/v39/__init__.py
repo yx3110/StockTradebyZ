@@ -43,6 +43,11 @@ from .v479_production_scorer import V479ProductionScorer
 from .v480_production_scorer import V480ProductionScorer
 from .v481_production_scorer import V481ProductionScorer
 from .v482_production_scorer import V482ProductionScorer
+from .v483_production_scorer import V483ProductionScorer
+from .v484_production_scorer import V484ProductionScorer
+from .v485_production_scorer import V485ProductionScorer
+from .v486_production_scorer import V486ProductionScorer
+from .v487_production_scorer import V487ProductionScorer
 from .alpha158_production_scorer import Alpha158ProductionScorer
 
 # 导出
@@ -67,5 +72,10 @@ __all__ = [
     'V480ProductionScorer',
     'V481ProductionScorer',
     'V482ProductionScorer',
+    'V483ProductionScorer',
+    'V484ProductionScorer',
+    'V485ProductionScorer',
+    'V486ProductionScorer',
+    'V487ProductionScorer',
     'Alpha158ProductionScorer',
 ]

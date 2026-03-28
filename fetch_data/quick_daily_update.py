@@ -786,6 +786,17 @@ def quick_daily_update(date: str = None, skip_financial: bool = True):
     # 释放缓存
     stock_data_cache = None
 
+    # 11.5. 更新BRAIN因子缓存 (V4.8.4 brain_roll_spread等)
+    logger.info("【步骤11.5】更新BRAIN因子缓存...")
+    try:
+        from wqbrain_integration.cache_brain_features import batch_compute
+        brain_count = batch_compute(db_path, date, date)
+        stats['brain_cache'] = brain_count
+        logger.info(f"  BRAIN缓存更新完成: {brain_count} 条")
+    except Exception as e:
+        logger.warning(f"  BRAIN缓存更新失败: {e}")
+        stats['brain_cache'] = 0
+
     # 12. 更新GRU神经网络嵌入缓存 (V5.0)
     logger.info("【步骤12/12】更新GRU神经网络嵌入缓存...")
     stats['neural_embed'] = update_neural_embeddings(date)

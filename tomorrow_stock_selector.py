@@ -43,7 +43,7 @@ logger = logging.getLogger("tomorrow_selector")
 DEPRECATED_VERSIONS = {'v2', 'v3', 'v3.1', 'v3.2', 'v3.3', 'v3.4', 'v3.41',
                        'v3.5', 'v3.51', 'v3.52', 'v3.53', 'v3.6', 'v3.7',
                        'v3.8', 'v3.81', 'v3.94', 'v4'}
-ACTIVE_VERSIONS = {'v3.9', 'v3.95', 'v3.96', 'v4.0', 'v4.2', 'v4.3', 'v4.4', 'v4.4.2', 'v4.5', 'v4.6', 'v4.7.1', 'v4.7.2', 'v4.7.3', 'v4.7.4', 'v4.7.5', 'v4.7.6', 'v4.7.7', 'v4.7.8', 'v4.7.9', 'v4.8.0', 'v4.8.1', 'v4.8.2', 'v5.0'}
+ACTIVE_VERSIONS = {'v3.9', 'v3.95', 'v3.96', 'v4.0', 'v4.2', 'v4.3', 'v4.4', 'v4.4.2', 'v4.5', 'v4.6', 'v4.7.1', 'v4.7.2', 'v4.7.3', 'v4.7.4', 'v4.7.5', 'v4.7.6', 'v4.7.7', 'v4.7.8', 'v4.7.9', 'v4.8.0', 'v4.8.1', 'v4.8.2', 'v4.8.4', 'v4.8.5', 'v4.8.6', 'v5.0'}
 
 class TomorrowStockSelector:
     """明日股票选择器"""
@@ -89,6 +89,27 @@ class TomorrowStockSelector:
             from ml_models.v39.strategy_based_return_predictor import StrategyBasedReturnPredictor
             self.strategy_return_predictor = StrategyBasedReturnPredictor()
             logger.info("🔬 已初始化V5.0 Unified Feature Fusion评分系统 (v39+v40+neural)")
+        elif scoring_version == "v4.8.6":
+            from ml_models.v39.v486_production_scorer import V486ProductionScorer
+            self.scoring_engine_v44 = V486ProductionScorer(model_type='small_data')
+            self.v44_batch_cache = {}
+            from ml_models.v39.strategy_based_return_predictor import StrategyBasedReturnPredictor
+            self.strategy_return_predictor = StrategyBasedReturnPredictor()
+            logger.info("V4.8.6 (64 features + RRF ensemble, 头部区分度优化)")
+        elif scoring_version == "v4.8.5":
+            from ml_models.v39.v485_production_scorer import V485ProductionScorer
+            self.scoring_engine_v44 = V485ProductionScorer(model_type='small_data')
+            self.v44_batch_cache = {}
+            from ml_models.v39.strategy_based_return_predictor import StrategyBasedReturnPredictor
+            self.strategy_return_predictor = StrategyBasedReturnPredictor()
+            logger.info("V4.8.5 (61 features, trained on A股+ETF)")
+        elif scoring_version == "v4.8.4":
+            from ml_models.v39.v484_production_scorer import V484ProductionScorer
+            self.scoring_engine_v44 = V484ProductionScorer(model_type='small_data')
+            self.v44_batch_cache = {}
+            from ml_models.v39.strategy_based_return_predictor import StrategyBasedReturnPredictor
+            self.strategy_return_predictor = StrategyBasedReturnPredictor()
+            logger.info("V4.8.4 (61 features = V4.8.1 + brain_roll_spread)")
         elif scoring_version == "v4.8.2":
             from ml_models.v39.v482_production_scorer import V482ProductionScorer
             self.scoring_engine_v44 = V482ProductionScorer(model_type='small_data')
@@ -1764,7 +1785,7 @@ class TomorrowStockSelector:
             if hasattr(self, 'scoring_version') and self.scoring_version in [
                 "v3.9", "v3.94", "v3.95", "v3.96", "v4.0", "v4.2", "v4.3",
                 "v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7", "v4.7.1", "v4.7.2",
-                "v4.7.3", "v4.7.4", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.7.9", "v4.8.0", "v4.8.1", "v4.8.2", "v5.0"]:
+                "v4.7.3", "v4.7.4", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.7.9", "v4.8.0", "v4.8.1", "v4.8.2", "v4.8.4", "v4.8.5", "v4.8.6", "v5.0"]:
                 recommendation = base_recommendation
                 confidence = base_confidence
 
@@ -2050,7 +2071,7 @@ class TomorrowStockSelector:
             if trade_date is None:
                 trade_date = datetime.now().strftime('%Y-%m-%d')
 
-            if self.scoring_version in ("v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.4", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.7.9", "v4.8.0", "v4.8.1", "v4.8.2", "v5.0"):
+            if self.scoring_version in ("v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.4", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.7.9", "v4.8.0", "v4.8.1", "v4.8.2", "v4.8.4", "v4.8.5", "v4.8.6", "v5.0"):
                 # V4.4+: V4.3信号+增强模块
                 try:
                     if stock_code in self.v44_batch_cache:
@@ -3424,7 +3445,7 @@ class TomorrowStockSelector:
         stock_with_scores = []
 
         # 🚀 V4.4/V4.4.2批量评分预计算
-        if hasattr(self, 'scoring_version') and self.scoring_version in ("v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.4", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.7.9", "v4.8.0", "v4.8.1", "v4.8.2", "v5.0") and all_stocks:
+        if hasattr(self, 'scoring_version') and self.scoring_version in ("v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.4", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.7.9", "v4.8.0", "v4.8.1", "v4.8.2", "v4.8.4", "v4.8.5", "v4.8.6", "v5.0") and all_stocks:
             if self.v44_batch_cache:
                 logger.info(f"✅ V4.4使用预填充缓存：{len(self.v44_batch_cache)}只股票")
             else:
@@ -3666,49 +3687,59 @@ class TomorrowStockSelector:
             if i % progress_interval == 0:
                 logger.info(f"已计算 {i}/{len(all_stocks)} 只股票的评分...")
         
-        # 过滤 ST股/涨停板/停牌股 (T+1不可买入)
+        # 过滤 *ST退市风险股/涨停板/停牌股 (T+1不可买入)
+        # 注意: 普通ST保留(有些假ST股质量不错)，只剔除*ST(退市风险警示)
         if stock_with_scores and target_date is not None:
             try:
                 trade_date_str = target_date.strftime('%Y-%m-%d') if hasattr(target_date, 'strftime') else str(target_date)
                 from data_adapter.database_manager import DatabaseManager
                 db = DatabaseManager()
-                filter_codes = [s.get('code', s.get('stock', '')) for s in stock_with_scores]
-                filter_query = """
-                    SELECT s.code, dq.is_limit_up, dq.is_st, dq.is_suspend
-                    FROM daily_quotes dq
-                    JOIN securities s ON dq.security_id = s.id
-                    WHERE dq.trade_date = ? AND s.code IN ({})
-                """.format(','.join('?' * len(filter_codes)))
+
+                # 不用IN子句(全市场7000+股票会超SQLite参数限制)，直接查当天全部
                 import sqlite3
                 conn = sqlite3.connect(str(db.db_path))
-                filter_df = pd.read_sql_query(filter_query, conn, params=[trade_date_str] + filter_codes)
+                filter_df = pd.read_sql_query("""
+                    SELECT s.code, s.name, dq.is_limit_up, dq.is_suspend
+                    FROM daily_quotes dq
+                    JOIN securities s ON dq.security_id = s.id
+                    WHERE dq.trade_date = ?
+                """, conn, params=[trade_date_str])
                 conn.close()
 
                 if len(filter_df) > 0:
-                    blocked_codes = set()
-                    for _, row in filter_df.iterrows():
-                        if row.get('is_limit_up', 0) == 1 or row.get('is_st', 0) == 1 or row.get('is_suspend', 0) == 1:
-                            blocked_codes.add(row['code'])
+                    # *ST退市风险股 (用securities.name判断，比is_st字段更可靠)
+                    star_st_codes = set(filter_df[filter_df['name'].str.contains(r'\*ST', na=False)]['code'])
+                    # 涨停/停牌股
+                    limit_up_codes = set(filter_df[filter_df['is_limit_up'] == 1]['code'])
+                    suspend_codes = set(filter_df[filter_df['is_suspend'] == 1]['code'])
 
-                    if blocked_codes:
-                        before_count = len(stock_with_scores)
-                        # Mark rather than remove — add warning flag
-                        for s in stock_with_scores:
-                            code = s.get('code', s.get('stock', ''))
-                            if code in blocked_codes:
-                                reasons = []
-                                frow = filter_df[filter_df['code'] == code].iloc[0]
-                                if frow.get('is_limit_up', 0) == 1:
-                                    reasons.append('涨停')
-                                if frow.get('is_st', 0) == 1:
-                                    reasons.append('ST')
-                                if frow.get('is_suspend', 0) == 1:
-                                    reasons.append('停牌')
-                                s['exec_warning'] = '|'.join(reasons)
-                                s['recommendation'] = '观望'
-                        logger.info(f"⚠️ 过滤{len(blocked_codes)}只不可买入股票 (涨停/ST/停牌): {list(blocked_codes)[:5]}...")
+                    def _get_stock_code(s):
+                        return s.get('stock_code') or s.get('code') or s.get('stock') or ''
+
+                    before_count = len(stock_with_scores)
+                    # *ST股直接从列表中移除(不值得展示)
+                    stock_with_scores = [
+                        s for s in stock_with_scores
+                        if _get_stock_code(s) not in star_st_codes
+                    ]
+                    # 涨停/停牌股标记为观望
+                    for s in stock_with_scores:
+                        code = _get_stock_code(s)
+                        reasons = []
+                        if code in limit_up_codes:
+                            reasons.append('涨停')
+                        if code in suspend_codes:
+                            reasons.append('停牌')
+                        if reasons:
+                            s['exec_warning'] = '|'.join(reasons)
+                            s['recommendation'] = '观望'
+
+                    removed_st = before_count - len(stock_with_scores)
+                    marked_count = len([s for s in stock_with_scores if s.get('exec_warning')])
+                    if removed_st > 0 or marked_count > 0:
+                        logger.info(f"⚠️ 剔除{removed_st}只*ST退市风险股, 标记{marked_count}只涨停/停牌股")
             except Exception as e:
-                logger.warning(f"ST/涨停/停牌过滤失败: {e}")
+                logger.warning(f"*ST/涨停/停牌过滤失败: {e}")
 
         # 定义推荐等级权重用于排序
         def get_recommendation_weight(stock):
@@ -5074,7 +5105,7 @@ class TomorrowStockSelector:
         elif hasattr(self, 'scoring_version') and self.scoring_version == "v3.5":
             report += "| 排名 | 股票代码 | 股票名称 | 选中策略 | 量化评分 | 投资建议 | 技术 | 基本 | 表现 | 市场 | 知行 | 知行信号 |\n"
             report += "|------|----------|----------|----------|----------|----------|------|------|------|------|------|----------|\n"
-        elif hasattr(self, 'scoring_version') and self.scoring_version in ["v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.4", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.7.9", "v4.8.0", "v4.8.1", "v4.8.2", "v5.0"]:
+        elif hasattr(self, 'scoring_version') and self.scoring_version in ["v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.4", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.7.9", "v4.8.0", "v4.8.1", "v4.8.2", "v4.8.4", "v4.8.5", "v4.8.6", "v5.0"]:
             # V4.4+ 多目标预测 - 按composite排序，展示composite+各周期预测
             report += "| 排名 | 股票代码 | 股票名称 | 选中策略 | Composite | 投资建议 | 预测10d | 收盘价 | 买入价 | 止损价 | 目标价 | 仓位 |\n"
             report += "|------|----------|----------|----------|-----------|----------|---------|--------|--------|--------|--------|------|\n"
@@ -5130,7 +5161,7 @@ class TomorrowStockSelector:
             show_indices = set(range(len(stocks_data)))
 
         # V4.4+: 按排名覆盖投资建议 (回测验证: top8 alpha最强)
-        if hasattr(self, 'scoring_version') and self.scoring_version in ["v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.4", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.7.9", "v4.8.0", "v4.8.1", "v4.8.2", "v5.0"]:
+        if hasattr(self, 'scoring_version') and self.scoring_version in ["v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.4", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.7.9", "v4.8.0", "v4.8.1", "v4.8.2", "v4.8.4", "v4.8.5", "v4.8.6", "v5.0"]:
             for rank_i, s in enumerate(stocks_data):
                 if rank_i < 8:
                     s['recommendation'] = '强烈买入'
@@ -5205,7 +5236,7 @@ class TomorrowStockSelector:
             factor_scores = stock.get('factor_scores', {})
             
             # 根据评分系统版本处理不同的因子评分
-            if hasattr(self, 'scoring_version') and self.scoring_version in ["v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.4", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.7.9", "v4.8.0", "v4.8.1", "v4.8.2", "v5.0"]:
+            if hasattr(self, 'scoring_version') and self.scoring_version in ["v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.4", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.7.9", "v4.8.0", "v4.8.1", "v4.8.2", "v4.8.4", "v4.8.5", "v4.8.6", "v5.0"]:
                 # V4.4+ 多目标预测字段 (推荐阈值已校准到post-isotonic尺度)
                 pred_3d = stock.get('pred_3d', 0.0)
                 predicted_return = stock.get('predicted_return_5d', stock.get('pred_5d', 0.0))
@@ -5355,7 +5386,7 @@ class TomorrowStockSelector:
                 market_regime_score = 0  # v2/v3没有市场环境分
             
             # 根据评分系统版本输出不同格式
-            if hasattr(self, 'scoring_version') and self.scoring_version in ["v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.4", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.7.9", "v4.8.0", "v4.8.1", "v4.8.2", "v5.0"]:
+            if hasattr(self, 'scoring_version') and self.scoring_version in ["v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.4", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.7.9", "v4.8.0", "v4.8.1", "v4.8.2", "v4.8.4", "v4.8.5", "v4.8.6", "v5.0"]:
                 # V4.4+ 多目标预测 - composite排序
                 composite_val = stock.get('composite', 0)
                 close_price = stock.get('close_price', 0)
@@ -5590,9 +5621,9 @@ def main(target_date: str = None, scoring_version: str = "v3", stocks_only: bool
     if scoring_version == "v4.8":
         scoring_version = "v4.8.0"
     # v3.6、v3.7、v3.8、v3.9、v3.94、v3.95版本应该只评价股票，因为ETF等因子无法与股票直接对比
-    if scoring_version in ["v3.6", "v3.7", "v3.8", "v3.81", "v3.9", "v3.94", "v3.95", "v3.96", "v4.0", "v4.2", "v4.3", "v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.7.9", "v4.8.0", "v4.8.1", "v4.8.2", "v5.0"] and not stocks_only:
+    if scoring_version in ["v3.6", "v3.7", "v3.8", "v3.81", "v3.9", "v3.94", "v3.95", "v3.96", "v4.0", "v4.2", "v4.3", "v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.7.9", "v4.8.0", "v4.8.1", "v4.8.2", "v4.8.4", "v5.0"] and not stocks_only:
         stocks_only = True
-        logger.info(f"🔍 {scoring_version}机器学习版本自动开启仅股票模式（ETF等因子与股票不可比）")
+        logger.info(f"🔍 {scoring_version}机器学习版本自动开启仅股票模式（ETF预测信心不足）")
     
     if target_date:
         # 检查是否为交易日
@@ -5837,6 +5868,12 @@ def main(target_date: str = None, scoring_version: str = "v3", stocks_only: bool
         report_dir = Path("reports/daily_selection_v5.0")
     elif scoring_version == "v4.7.1":
         report_dir = Path("reports/daily_selection_v4.7.1")
+    elif scoring_version == "v4.8.6":
+        report_dir = Path("reports/daily_selection_v4.8.6")
+    elif scoring_version == "v4.8.5":
+        report_dir = Path("reports/daily_selection_v4.8.5")
+    elif scoring_version == "v4.8.4":
+        report_dir = Path("reports/daily_selection_v4.8.4")
     elif scoring_version == "v4.8.2":
         report_dir = Path("reports/daily_selection_v4.8.2")
     elif scoring_version == "v4.8.1":
@@ -5953,9 +5990,9 @@ if __name__ == "__main__":
                        choices=['v2', 'v3', 'v3.1', 'v3.2', 'v3.3', 'v3.4', 'v3.41',
                                 'v3.5', 'v3.51', 'v3.52', 'v3.53', 'v3.6', 'v3.7',
                                 'v3.8', 'v3.81', 'v3.9', 'v3.94', 'v3.95', 'v3.96',
-                                'v4', 'v4.0', 'v4.2', 'v4.3', 'v4.4', 'v4.4.2', 'v4.5', 'v4.6', 'v4.7.1', 'v4.7.2', 'v4.7.3', 'v4.7.5', 'v4.7.6', 'v4.7.7', 'v4.7.8', 'v4.7.9', 'v4.8', 'v4.8.0', 'v4.8.1', 'v4.8.2', 'v5.0'],
-                       default='v3.9',
-                       help='评分版本 (默认v3.9)。'
+                                'v4', 'v4.0', 'v4.2', 'v4.3', 'v4.4', 'v4.4.2', 'v4.5', 'v4.6', 'v4.7.1', 'v4.7.2', 'v4.7.3', 'v4.7.5', 'v4.7.6', 'v4.7.7', 'v4.7.8', 'v4.7.9', 'v4.8', 'v4.8.0', 'v4.8.1', 'v4.8.2', 'v4.8.4', 'v4.8.5', 'v4.8.6', 'v5.0'],
+                       default='v4.8.6',
+                       help='评分版本 (默认v4.8.5)。'
                             '活跃版本: v3.9(生产A级), v3.96(Robust Z-Score,ICIR>0.2), '
                             'v4.3(Walk-Forward+强正则), v4.4(V4.3+6增强模块), '
                             'v4.4.2(V4.4+三层组合风控), '
