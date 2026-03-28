@@ -62,28 +62,11 @@ sys.path.append('/Users/yangxu/StockTradebyZ')
 from data_adapter.database_manager import DatabaseManager
 from stock_selctor.Selector import BBIKDJSelector, BBIShortLongSelector, BreakoutVolumeKDJSelector, PeakKDJSelector
 
-# Phase 3 增量学习组件 - 完整实现
-try:
-    from incremental_learning.engines.incremental_learner import IncrementalLearner as AdvancedIncrementalLearner
-    from incremental_learning.engines.adaptive_forgetting import AdaptiveForgettingEngine
-    from incremental_learning.engines.online_validation import OnlineValidationEngine
-    from incremental_learning.engines.model_drift_detector import ModelDriftDetector
-    from incremental_learning.engines.performance_tracker import PerformanceTracker
-    PHASE3_COMPONENTS_AVAILABLE = True
-    print("✅ Phase 3 增量学习组件加载成功")
-except ImportError as e:
-    print(f"⚠️ Phase 3 组件导入失败: {e}")
-    PHASE3_COMPONENTS_AVAILABLE = False
+# Phase 3 增量学习组件 (incremental_learning目录已移除, 标记不可用)
+PHASE3_COMPONENTS_AVAILABLE = False
 
-# Phase 2 实时特征组件
-try:
-    from incremental_learning.features.realtime_calculator import RealtimeFeatureCalculator as AdvancedRealtimeCalculator
-    from incremental_learning.features.sentiment_indicators import SentimentIndicatorCalculator
-    PHASE2_COMPONENTS_AVAILABLE = True
-    print("✅ Phase 2 实时特征组件加载成功")
-except ImportError as e:
-    print(f"⚠️ Phase 2 组件导入失败: {e}")
-    PHASE2_COMPONENTS_AVAILABLE = False
+# Phase 2 实时特征组件 (incremental_learning目录已移除, 标记不可用)
+PHASE2_COMPONENTS_AVAILABLE = False
 
 # =============================================================================
 # V3.8新增：增量学习辅助类 (基础实现)
