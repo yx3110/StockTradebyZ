@@ -186,7 +186,7 @@ def _parse_single_report(json_file, rank_field):
     return date, stock_list
 
 
-def load_reports(report_dir, rank_field='auto'):
+def load_reports(report_dir, rank_field='auto', cache=None):
     """加载所有JSON报告，返回 {date: [{code, score, pred_3d, ..., rank_score}, ...]}
 
     Args:
@@ -196,7 +196,20 @@ def load_reports(report_dir, rank_field='auto'):
             'score'     = 强制用全局百分位分
             'pred_Xd'   = 用原始预测值 (e.g. pred_10d, pred_15d)
             'composite' = 多周期加权排名融合 (pred_3d/5d/10d/15d)
+        cache: 可选的EvalCache实例, 启用持久化缓存
     """
+    # 尝试从持久化缓存加载
+    if cache is not None:
+        return cache.get_parsed_reports(
+            str(report_dir), rank_field,
+            loader_fn=lambda d, r: _load_reports_impl(d, r)
+        )
+
+    return _load_reports_impl(report_dir, rank_field)
+
+
+def _load_reports_impl(report_dir, rank_field):
+    """实际的报告加载实现 (原load_reports逻辑)."""
     report_dir = Path(report_dir)
     reports = {}
 
