@@ -1419,14 +1419,18 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
         # --- 多偏移量鲁棒月度胜率（消除起始偏移artifact）---
         # 单一偏移量的月度胜率受起始点影响大，改为平均所有可能的偏移量
         if days > 1 and len(sub) > days * 3:
+            # Pre-compute datetime index once (avoid repeated pd.to_datetime in loop)
+            sub_with_dt = sub[['date', 'avg_top_return']].copy()
+            sub_with_dt['dt'] = pd.to_datetime(sub_with_dt['date'])
+            sub_with_dt['period'] = sub_with_dt['dt'].dt.to_period('M')
+
             all_monthly = []
-            for offset in range(min(days, len(sub))):
-                offset_sub = sub.iloc[offset::days]
+            n_offsets = min(days, len(sub_with_dt))
+            for offset in range(n_offsets):
+                offset_sub = sub_with_dt.iloc[offset::days]
                 if len(offset_sub) < 3:
                     continue
-                offset_rets = offset_sub.set_index('date')['avg_top_return']
-                offset_rets.index = pd.to_datetime(offset_rets.index)
-                monthly = offset_rets.groupby(offset_rets.index.to_period('M')).apply(
+                monthly = offset_sub.groupby('period')['avg_top_return'].apply(
                     lambda x: (1 + x).prod() - 1)
                 all_monthly.append(monthly)
             if all_monthly:
