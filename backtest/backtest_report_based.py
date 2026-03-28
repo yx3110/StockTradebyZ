@@ -80,6 +80,54 @@ from backtest.north_star_metrics import (
 HOLDING_DAYS = [1, 3, 5, 7, 10, 15, 20]
 
 
+def _vectorized_daily_ic(picks_df: pd.DataFrame, return_col: str) -> pd.DataFrame:
+    """Compute daily IC (Spearman) via vectorized rank + Pearson, replacing per-date loop.
+
+    Returns DataFrame with columns: date, ic, p_val, n_stocks
+    """
+    valid = picks_df[['date', 'score', return_col]].dropna(subset=[return_col])
+    if len(valid) == 0:
+        return pd.DataFrame(columns=['date', 'ic', 'p_val', 'n_stocks'])
+
+    # Filter groups with >= 5 stocks
+    counts = valid.groupby('date').size()
+    valid_dates = counts[counts >= 5].index
+    valid = valid[valid['date'].isin(valid_dates)]
+    if len(valid) == 0:
+        return pd.DataFrame(columns=['date', 'ic', 'p_val', 'n_stocks'])
+
+    # Rank within each date group (Spearman = Pearson on ranks)
+    valid = valid.copy()
+    valid['rank_s'] = valid.groupby('date')['score'].rank()
+    valid['rank_r'] = valid.groupby('date')[return_col].rank()
+
+    # Standardize ranks within each group: (rank - mean) / std
+    g = valid.groupby('date')
+    for col in ['rank_s', 'rank_r']:
+        mean = g[col].transform('mean')
+        std = g[col].transform('std')
+        valid[col + '_z'] = (valid[col] - mean) / std.replace(0, np.nan)
+
+    # Pearson on standardized ranks = Spearman
+    valid['product'] = valid['rank_s_z'] * valid['rank_r_z']
+    result = valid.groupby('date').agg(
+        ic=('product', 'mean'),
+        n_stocks=('score', 'size'),
+    ).reset_index()
+
+    # Drop NaN ICs (from zero-std groups)
+    result = result.dropna(subset=['ic'])
+
+    # p-value approximation: t = ic * sqrt((n-2)/(1-ic^2))
+    n = result['n_stocks']
+    ic = result['ic']
+    t_stat = ic * np.sqrt((n - 2) / (1 - ic**2).clip(lower=1e-10))
+    from scipy.stats import t as t_dist
+    result['p_val'] = 2 * t_dist.sf(np.abs(t_stat), df=n - 2)
+
+    return result[['date', 'ic', 'p_val', 'n_stocks']]
+
+
 # JSON解析: 优先用orjson (3-5x快于stdlib json)
 try:
     import orjson as _orjson
@@ -1272,17 +1320,9 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
         else:
             ic, p_val = 0, 1
 
-        # 逐日IC序列 (优化: 预分组避免重复filter)
+        # 逐日IC序列 (向量化: groupby rank + Pearson, 替代逐日spearmanr循环)
         return_col = f'return_{days}d'
-        valid_picks = picks_df[['date', 'score', return_col]].dropna(subset=[return_col])
-        ic_records = []
-        if len(valid_picks) > 0:
-            for date, group in valid_picks.groupby('date'):
-                if len(group) >= 5:
-                    day_ic, day_p = spearmanr(group['score'].values, group[return_col].values)
-                    if not np.isnan(day_ic):
-                        ic_records.append({'date': date, 'ic': day_ic, 'p_val': day_p, 'n_stocks': len(group)})
-        ic_df = pd.DataFrame(ic_records) if ic_records else pd.DataFrame()
+        ic_df = _vectorized_daily_ic(picks_df, return_col)
         daily_ic_series[days] = ic_df
 
         # ICIR = mean(daily_IC) / std(daily_IC)
