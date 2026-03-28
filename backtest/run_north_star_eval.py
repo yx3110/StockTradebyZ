@@ -148,7 +148,7 @@ def run_backtest(report_dir, label, top_n=20, benchmark='000905.SH', focus_days=
                  risk_control=False,
                  vol_target=0.0, cppi_floor=0.0, cppi_multiplier=3.0,
                  sector_diversify=0, rank_field='auto', hold_buffer=0,
-                 rerank_dir=None, rerank_pool=100):
+                 rerank_dir=None, rerank_pool=100, cache=None):
     """运行单个模型的回测
 
     Args:
@@ -164,7 +164,7 @@ def run_backtest(report_dir, label, top_n=20, benchmark='000905.SH', focus_days=
     nsm.DB_PATH = DB_PATH
     brb.DB_PATH = DB_PATH
 
-    reports = brb.load_reports(report_dir, rank_field=rank_field)
+    reports = brb.load_reports(report_dir, rank_field=rank_field, cache=cache)
     if not reports:
         print(f"  ⚠️ 无报告: {report_dir}")
         return None
@@ -172,7 +172,7 @@ def run_backtest(report_dir, label, top_n=20, benchmark='000905.SH', focus_days=
     # 两阶段精排: 加载第二报告集
     rerank_reports = None
     if rerank_dir:
-        rerank_reports = brb.load_reports(rerank_dir, rank_field=rank_field)
+        rerank_reports = brb.load_reports(rerank_dir, rank_field=rank_field, cache=cache)
         if rerank_reports:
             print(f"  两阶段精排: primary={report_dir}, rerank={rerank_dir} (pool={rerank_pool})")
         else:
@@ -192,7 +192,8 @@ def run_backtest(report_dir, label, top_n=20, benchmark='000905.SH', focus_days=
         cppi_multiplier=cppi_multiplier,
         sector_diversify=sector_diversify,
         hold_buffer=hold_buffer,
-        rerank_reports=rerank_reports, rerank_pool=rerank_pool
+        rerank_reports=rerank_reports, rerank_pool=rerank_pool,
+        cache=cache,
     )
     return result
 
@@ -203,6 +204,10 @@ def run_comparison(top_n=20, benchmark='000905.SH', focus_days=10):
     from backtest import north_star_metrics as nsm
     nsm.DB_PATH = DB_PATH
     brb.DB_PATH = DB_PATH
+
+    from backtest.eval_cache import EvalCache
+    shared_cache = EvalCache()
+    print(f"  共享缓存: {shared_cache.cache_dir}")
 
     report_dirs = {
         'v3.9': str(PROJECT_ROOT / 'reports' / 'daily_selection_v3.9'),
@@ -228,14 +233,15 @@ def run_comparison(top_n=20, benchmark='000905.SH', focus_days=10):
         if not os.path.isdir(dir_path):
             print(f"  跳过 {label}: 目录不存在")
             continue
-        reports = brb.load_reports(dir_path)
+        reports = brb.load_reports(dir_path, cache=shared_cache)
         if not reports:
             print(f"  跳过 {label}: 无报告")
             continue
         print(f"\n{'#'*80}")
         result = brb.run_single_backtest(
             reports, label, top_n=top_n,
-            benchmark_code=benchmark, focus_days=focus_days
+            benchmark_code=benchmark, focus_days=focus_days,
+            cache=shared_cache,
         )
         if result:
             results.append(result)
@@ -285,7 +291,8 @@ def run_extended_backtest(report_dir, extended_dir, label, top_n=20,
                            benchmark='000905.SH', focus_days=10, retention_bonus=0.0,
                            score_floor=0.0, min_holdings=3, risk_control=False,
                            vol_target=0.0, cppi_floor=0.0, cppi_multiplier=3.0,
-                           sector_diversify=0, rank_field='auto', hold_buffer=0):
+                           sector_diversify=0, rank_field='auto', hold_buffer=0,
+                           cache=None):
     """
     扩展窗口回测: 合并现有报告+扩展期报告，运行V2评分
 
@@ -313,7 +320,7 @@ def run_extended_backtest(report_dir, extended_dir, label, top_n=20,
         return None
 
     # 回测合并后的报告
-    reports = brb.load_reports(merged_dir, rank_field=rank_field)
+    reports = brb.load_reports(merged_dir, rank_field=rank_field, cache=cache)
     if not reports:
         print(f"  ⚠️ 加载报告失败: {merged_dir}")
         return None
@@ -330,7 +337,8 @@ def run_extended_backtest(report_dir, extended_dir, label, top_n=20,
         vol_target=vol_target, cppi_floor=cppi_floor,
         cppi_multiplier=cppi_multiplier,
         sector_diversify=sector_diversify,
-        hold_buffer=hold_buffer
+        hold_buffer=hold_buffer,
+        cache=cache,
     )
     return result
 
@@ -598,6 +606,9 @@ def main():
     if args.generate_extended:
         generate_extended_reports(args.scoring_version, args.extended_start, resolved_ext_end)
 
+    from backtest.eval_cache import EvalCache
+    cache = EvalCache()
+
     if args.backtest:
         if args.report_dir:
             result = run_backtest(args.report_dir, args.label, args.top_n, args.benchmark,
@@ -606,7 +617,7 @@ def main():
                                   args.risk_control,
                                   args.vol_target, args.cppi_floor, args.cppi_multiplier,
                                   args.sector_diversify, args.rank_field,
-                                  args.hold_buffer)
+                                  args.hold_buffer, cache=cache)
         else:
             # 默认回测v3.95 RobustZScore
             default_dir = str(PROJECT_ROOT / 'reports' / 'daily_selection_v3.95_robust_zscore')
@@ -616,7 +627,7 @@ def main():
                                   args.risk_control,
                                   args.vol_target, args.cppi_floor, args.cppi_multiplier,
                                   args.sector_diversify, args.rank_field,
-                                  args.hold_buffer)
+                                  args.hold_buffer, cache=cache)
 
     if args.regime_analysis:
         report_dir = args.report_dir or str(
@@ -640,7 +651,8 @@ def main():
                 args.top_n, args.benchmark, args.focus_days, args.retention_bonus,
                 args.score_floor, args.min_holdings, args.risk_control,
                 args.vol_target, args.cppi_floor, args.cppi_multiplier,
-                args.sector_diversify, args.rank_field, args.hold_buffer
+                args.sector_diversify, args.rank_field, args.hold_buffer,
+                cache=cache,
             )
 
     if args.compare:
