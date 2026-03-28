@@ -46,7 +46,7 @@ DB_PATH = str(PROJECT_ROOT / 'data_adapter' / 'stock_data.db')
 
 
 def generate_reports(scoring_version='v3.95', start_date='auto', end_date='auto'):
-    """批量生成选股报告 (并行版)"""
+    """批量生成选股报告 (快速版: 优先使用batch_generate批量模式)"""
     import subprocess
 
     # auto 日期: 从数据库获取最新可用范围
@@ -61,22 +61,44 @@ def generate_reports(scoring_version='v3.95', start_date='auto', end_date='auto'
             print("  ⚠️ 无法从数据库检测日期范围")
             return
 
-    print(f"\n{'='*60}")
-    print(f"  批量生成 {scoring_version} 报告: {start_date} → {end_date}")
-    print(f"{'='*60}\n")
-
-    dates = _get_trading_dates(start_date, end_date)
-    print(f"  共 {len(dates)} 个交易日")
-
-    # 跳过已有报告
+    # 确定报告输出目录
     if scoring_version == 'v3.95':
         report_dir = PROJECT_ROOT / 'reports' / 'daily_selection_v3.95_robust_zscore'
     else:
         report_dir = PROJECT_ROOT / 'reports' / f'daily_selection_{scoring_version}'
 
+    print(f"\n{'='*60}")
+    print(f"  批量生成 {scoring_version} 报告: {start_date} → {end_date}")
+    print(f"{'='*60}\n")
+
+    # 尝试使用快速批量生成器 (in-process, 不走subprocess)
+    batch_script = PROJECT_ROOT / 'backtest' / 'batch_generate_v395_reports.py'
+    if batch_script.exists():
+        cmd = [
+            sys.executable, str(batch_script),
+            '--version', scoring_version,
+            '--start-date', start_date,
+            '--end-date', end_date,
+            '--output-dir', str(report_dir),
+        ]
+        print(f"  使用快速批量生成器: {batch_script.name}")
+        try:
+            result = subprocess.run(cmd, timeout=3600, cwd=str(PROJECT_ROOT))
+            if result.returncode == 0:
+                print(f"  报告生成完成")
+                return
+            else:
+                print(f"  快速生成器失败 (rc={result.returncode}), 回退到逐日模式")
+        except subprocess.TimeoutExpired:
+            print(f"  快速生成器超时, 回退到逐日模式")
+
+    # 回退: 原始逐日subprocess模式
+    dates = _get_trading_dates(start_date, end_date)
+    print(f"  共 {len(dates)} 个交易日 (逐日模式)")
+
     existing = set()
     if report_dir.exists():
-        for f in report_dir.glob('*.md'):
+        for f in report_dir.glob('*.json'):
             name = f.stem
             if '_' in name:
                 date_str = name.split('_')[-1]
