@@ -171,7 +171,13 @@ def _parse_single_report(json_file, rank_field):
                 'strategies': s.get('strategies', []),
                 'n_strategies': s.get('selected_by_strategies', 1),
             }
-            if rank_field in ('auto', 'composite'):
+            if rank_field == 'head_rank':
+                # Q95 Widen-then-Concentrate: lower head_rank = better
+                hr = s.get('head_rank', 9999)
+                entry['rank_score'] = -hr  # negate so higher = better
+                entry['head_rank'] = hr
+                entry['in_head_pool'] = s.get('in_head_pool', False)
+            elif rank_field in ('auto', 'composite'):
                 entry['rank_score'] = entry.get('pred_10d') or score
             elif rank_field == 'score':
                 entry['rank_score'] = score

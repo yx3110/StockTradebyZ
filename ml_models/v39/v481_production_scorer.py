@@ -559,6 +559,8 @@ class V481ProductionScorer(V476ProductionScorer):
         X = features_df[available_cols].fillna(0).values
         X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
         codes = features_df['code'].tolist()
+        self._last_pred_codes = codes  # Save for consensus/Q95 analysis
+        self._last_X = X  # Save feature matrix for Q95 model
 
         # Step 2: Model predictions
         model_predictions_success = False
@@ -566,6 +568,8 @@ class V481ProductionScorer(V476ProductionScorer):
             '3d': np.zeros(len(X)), '5d': np.zeros(len(X)),
             '10d': np.zeros(len(X)), '15d': np.zeros(len(X))
         }
+        # Store per-model predictions for consensus/confidence analysis
+        self._per_model_preds = {}
 
         for target in ['3d', '5d', '10d', '15d']:
             if target not in self.models or not self.models[target]:
@@ -596,6 +600,9 @@ class V481ProductionScorer(V476ProductionScorer):
                     rp = preds[rn]
                     rp_std = max(np.std(rp), 1e-8)
                     preds[rn] = (rp - np.mean(rp)) / rp_std * t_std + t_mean
+
+            # Save per-model predictions before averaging
+            self._per_model_preds[target] = dict(preds)
 
             target_w = self.weights.get(f'label_{target}', {})
             success_count = len(preds)

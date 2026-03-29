@@ -9150,6 +9150,268 @@ class V485Trainer(V484Trainer):
         return model_data, history
 
 
+class V490Trainer(V485Trainer):
+    """V4.9.0 训练器 — V4.8.5底座 + Q95分位数模型 + 头尾20%加权 + LambdaRank trunc=10
+
+    底座: V4.8.5 (V4.8.4 + ETF训练数据, 61特征, A股ICIR+0.033)
+    新增:
+    1. 头尾20%样本加权(×5): 让梯度集中在最赚/最亏的股票 (区分度提升)
+    2. LambdaRank truncation_level=10: 梯度仅看top-10排名 (更聚焦)
+       - 10档relevance (0-9), num_leaves=31, lr=0.03, min_data=200
+    3. LGB-Quantile-95: 预测95%分位数 (捕捉右尾收益)
+       - num_leaves=31, lr=0.05, min_child_samples=100
+    """
+
+    HEAD_TAIL_PCT = 0.20       # top/bottom 20% per date
+    HEAD_TAIL_WEIGHT = 5.0     # weight multiplier for head/tail stocks
+    RANK_TRUNCATION = 10       # LambdaRank truncation level
+    RANK_GRADES = 10           # number of relevance grades (0-9)
+    Q95_ALPHA = 0.95           # quantile regression alpha
+
+    def compute_sample_weights(self, df: pd.DataFrame, y: np.ndarray) -> np.ndarray:
+        """V4.9.0: 父类权重 + 头尾20%加权(×5)"""
+        from scipy.stats import rankdata
+
+        weights = super().compute_sample_weights(df, y)
+
+        # 头尾20%加权: 每日截面中top-20%和bottom-20%的股票权重×5
+        if 'trade_date' in df.columns:
+            dates = df['trade_date'].values
+            unique_dates = np.unique(dates)
+            ht_factor = np.ones(len(y), dtype=np.float64)
+            n_upweighted = 0
+
+            for d in unique_dates:
+                mask = dates == d
+                n = mask.sum()
+                if n < 20:
+                    continue
+                y_day = y[mask]
+                ranks = rankdata(y_day)
+                pct = (ranks - 1) / (n - 1)  # 0 to 1
+
+                # bottom 20% or top 80%+
+                head_tail = (pct < self.HEAD_TAIL_PCT) | (pct >= (1.0 - self.HEAD_TAIL_PCT))
+                # Apply to the global mask
+                idx = np.where(mask)[0]
+                ht_idx = idx[head_tail]
+                ht_factor[ht_idx] = self.HEAD_TAIL_WEIGHT
+                n_upweighted += head_tail.sum()
+
+            weights *= ht_factor
+            logger.info(f"    V4.9.0 头尾加权: {n_upweighted:,} 样本 × {self.HEAD_TAIL_WEIGHT} "
+                        f"(top/bottom {self.HEAD_TAIL_PCT*100:.0f}% daily)")
+
+        return weights
+
+    def train_single_target_models(self, X_train, X_val, y_train, y_val, target_name: str,
+                                    sample_weights_train=None):
+        """V4.9.0: 父类6模型 + 重训LambdaRank(trunc=10, 10档) + 新增lgb_q95"""
+        import gc
+
+        # 父类训练6个基础模型 (lgb, xgb, cb, rf, hgb, lgb_rank)
+        models, pred_train, pred_val = super().train_single_target_models(
+            X_train, X_val, y_train, y_val, target_name,
+            sample_weights_train=sample_weights_train)
+
+        # ===== 1. 重训 LambdaRank: truncation=10, 10档relevance =====
+        if '3d' not in target_name:
+            train_dates = getattr(self, 'train_dates', None)
+            val_dates = getattr(self, 'val_dates', None)
+
+            if train_dates is not None and len(train_dates) == len(y_train):
+                try:
+                    from scipy.stats import rankdata as _rankdata
+                    logger.info(f"  V4.9.0 LambdaRank trunc={self.RANK_TRUNCATION}, "
+                                f"{self.RANK_GRADES}档 ({target_name})...")
+
+                    n_grades = self.RANK_GRADES  # 10 grades: 0-9
+
+                    unique_train_dates = np.unique(train_dates)
+                    relevance_train = np.zeros(len(y_train), dtype=np.int32)
+                    group_train = []
+                    for d in unique_train_dates:
+                        mask = train_dates == d
+                        n = mask.sum()
+                        group_train.append(n)
+                        if n >= 10:
+                            ranks = _rankdata(y_train[mask])
+                            pct = (ranks - 1) / (n - 1)
+                            relevance_train[mask] = np.clip(
+                                (pct * n_grades).astype(int), 0, n_grades - 1)
+                        else:
+                            relevance_train[mask] = n_grades // 2
+
+                    relevance_val = np.zeros(len(y_val), dtype=np.int32)
+                    group_val = []
+                    if val_dates is not None and len(val_dates) == len(y_val):
+                        unique_val_dates = np.unique(val_dates)
+                        for d in unique_val_dates:
+                            mask = val_dates == d
+                            n = mask.sum()
+                            group_val.append(n)
+                            if n >= 10:
+                                ranks = _rankdata(y_val[mask])
+                                pct = (ranks - 1) / (n - 1)
+                                relevance_val[mask] = np.clip(
+                                    (pct * n_grades).astype(int), 0, n_grades - 1)
+                            else:
+                                relevance_val[mask] = n_grades // 2
+
+                    lgb_rank_params = {
+                        'objective': 'lambdarank',
+                        'metric': 'ndcg', 'eval_at': [10, 50],
+                        'lambdarank_truncation_level': self.RANK_TRUNCATION,
+                        'num_leaves': 31, 'learning_rate': 0.03,
+                        'feature_fraction': 0.6, 'bagging_fraction': 0.7, 'bagging_freq': 5,
+                        'reg_alpha': 0.5, 'reg_lambda': 3.0,
+                        'min_data_in_leaf': 200, 'min_gain_to_split': 0.01,
+                        'path_smooth': 5.0, 'verbose': -1,
+                    }
+
+                    lgb_rank_train = lgb.Dataset(X_train, label=relevance_train,
+                                                  group=group_train, free_raw_data=True)
+                    lgb_rank_val = lgb.Dataset(X_val, label=relevance_val,
+                                                group=group_val, reference=lgb_rank_train,
+                                                free_raw_data=True)
+
+                    lgb_rank_model = lgb.train(
+                        lgb_rank_params, lgb_rank_train,
+                        num_boost_round=500,
+                        valid_sets=[lgb_rank_train, lgb_rank_val],
+                        callbacks=[lgb.early_stopping(30), lgb.log_evaluation(0)]
+                    )
+                    models['lgb_rank'] = lgb_rank_model  # overwrite parent's lgb_rank
+                    pred_train['lgb_rank'] = lgb_rank_model.predict(X_train)
+                    pred_val['lgb_rank'] = lgb_rank_model.predict(X_val)
+                    logger.info(f"    V4.9.0 LambdaRank ({target_name}): trunc={self.RANK_TRUNCATION}, "
+                                f"grades={n_grades}, best_iter={lgb_rank_model.best_iteration}")
+                    del lgb_rank_train, lgb_rank_val
+                    gc.collect()
+                except Exception as e:
+                    logger.warning(f"    V4.9.0 LambdaRank ({target_name}) 失败: {e}")
+
+        # ===== 2. 新增 LGB-Quantile-95: 捕捉右尾收益 =====
+        logger.info(f"  V4.9.0 LGB-Quantile-95 ({target_name})...")
+        try:
+            q95_params = {
+                'objective': 'quantile',
+                'alpha': self.Q95_ALPHA,
+                'metric': 'quantile',
+                'num_leaves': 31,
+                'learning_rate': 0.05,
+                'feature_fraction': 0.6,
+                'bagging_fraction': 0.7,
+                'bagging_freq': 5,
+                'reg_alpha': 0.5,
+                'reg_lambda': 3.0,
+                'min_data_in_leaf': 100,
+                'min_gain_to_split': 0.01,
+                'path_smooth': 5.0,
+                'verbose': -1,
+            }
+
+            lgb_q95_train = lgb.Dataset(X_train, label=y_train,
+                                         weight=sample_weights_train, free_raw_data=True)
+            lgb_q95_val = lgb.Dataset(X_val, label=y_val, reference=lgb_q95_train,
+                                       free_raw_data=True)
+
+            q95_model = lgb.train(
+                q95_params, lgb_q95_train,
+                num_boost_round=500,
+                valid_sets=[lgb_q95_train, lgb_q95_val],
+                callbacks=[lgb.early_stopping(30), lgb.log_evaluation(0)]
+            )
+            models['lgb_q95'] = q95_model
+            pred_train['lgb_q95'] = q95_model.predict(X_train)
+            pred_val['lgb_q95'] = q95_model.predict(X_val)
+            logger.info(f"    LGB-Q95 ({target_name}): best_iter={q95_model.best_iteration}")
+            del lgb_q95_train, lgb_q95_val
+            gc.collect()
+        except Exception as e:
+            logger.warning(f"    LGB-Q95 ({target_name}) 失败: {e}")
+
+        return models, pred_train, pred_val
+
+    def walk_forward_train(self, start_date: str = None, end_date: str = None,
+                            purge_days: int = 15, min_train_days: int = 900,
+                            val_days: int = 120, test_days: int = 120,
+                            step_days: int = 90):
+        """V4.9.0 Walk-Forward — V4.8.5 + Q95分位数 + 头尾加权 + LambdaRank trunc=10"""
+        import shutil
+
+        version_tag = 'v490'
+        version_str = 'v4.9.0'
+
+        logger.info("=" * 60)
+        logger.info(f"{version_str} Walk-Forward (V4.8.5 + Q95 + 头尾加权 + LambdaRank trunc=10)")
+        logger.info("=" * 60)
+        logger.info(f"  底座: V4.8.5 (61特征, ETF训练数据)")
+        logger.info(f"  新增1: 头尾{self.HEAD_TAIL_PCT*100:.0f}%加权 × {self.HEAD_TAIL_WEIGHT}")
+        logger.info(f"  新增2: LambdaRank trunc={self.RANK_TRUNCATION}, {self.RANK_GRADES}档relevance")
+        logger.info(f"  新增3: LGB-Quantile-{self.Q95_ALPHA*100:.0f} (右尾收益预测)")
+
+        # 调用V485的walk_forward_train (会保存v485格式)
+        model_data, history = super().walk_forward_train(
+            start_date=start_date, end_date=end_date,
+            purge_days=purge_days, min_train_days=min_train_days,
+            val_days=val_days, test_days=test_days, step_days=step_days)
+
+        # 把v485目录的模型移到v490
+        v485_dir = PROJECT_ROOT / 'ml_models' / 'trained_models' / 'v485'
+        out_dir = PROJECT_ROOT / 'ml_models' / 'trained_models' / version_tag
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        v485_files = sorted(v485_dir.glob('v485_*.pkl'), key=lambda f: f.stat().st_mtime)
+        if v485_files:
+            latest = v485_files[-1]
+            timestamp = latest.stem.replace('v485_multi_target_', '')
+            new_path = out_dir / f'{version_tag}_multi_target_{timestamp}.pkl'
+
+            import joblib
+            model_data['version'] = version_str
+            model_data['v490_innovations'] = {
+                'base': 'V4.8.5 (61 features, ETF training data)',
+                'head_tail_weighting': f'top/bottom {self.HEAD_TAIL_PCT*100:.0f}% × {self.HEAD_TAIL_WEIGHT}',
+                'lambdarank': f'truncation={self.RANK_TRUNCATION}, grades={self.RANK_GRADES}',
+                'quantile_model': f'LGB objective=quantile alpha={self.Q95_ALPHA}',
+            }
+            joblib.dump(model_data, new_path)
+            logger.info(f"\n{version_str} model saved: {new_path}")
+            logger.info(f"  Size: {new_path.stat().st_size / 1024 / 1024:.1f} MB")
+
+            # 复制辅助文件
+            for aux in ['global_quantiles.npy', 'recommendation_thresholds.json']:
+                src = v485_dir / aux
+                if src.exists():
+                    shutil.copy2(str(src), str(out_dir / aux))
+
+            # 清理v485临时文件
+            latest.unlink()
+            for hf in v485_dir.glob(f'training_history_{timestamp}*'):
+                hf.unlink()
+
+            # 保存训练历史
+            history['version'] = version_str
+            history['base'] = 'V4.8.5 + Q95 quantile + head-tail 20% weighting + LambdaRank trunc=10'
+            history['v490_innovations'] = model_data['v490_innovations']
+
+            import json as _json
+            history_path = out_dir / f'training_history_{timestamp}.json'
+            with open(history_path, 'w', encoding='utf-8') as f:
+                _json.dump(history, f, indent=2, ensure_ascii=False)
+            latest_path = out_dir / 'training_history_latest.json'
+            with open(latest_path, 'w', encoding='utf-8') as f:
+                _json.dump(history, f, indent=2, ensure_ascii=False)
+
+            logger.info(f"\n{version_str} training complete!")
+            logger.info(f"  Features: {len(model_data.get('feature_names', []))}")
+        else:
+            logger.warning("No v485 model file found to rename")
+
+        return model_data, history
+
+
 class V486Trainer(V485Trainer):
     """V4.8.6 训练器 — V4.8.5底座 + 3个BRAIN因子 + 头部区分度优化 (61 → 64特征)
 
@@ -9517,6 +9779,236 @@ class V486Trainer(V485Trainer):
             history['version'] = version_str
             history['base'] = '69 features + CatBoost YetiRank + RRF'
             history['v487_innovations'] = model_data['v487_innovations']
+
+            import json as _json
+            history_path = out_dir / f'training_history_{timestamp}.json'
+            with open(history_path, 'w', encoding='utf-8') as f:
+                _json.dump(history, f, indent=2, ensure_ascii=False)
+            latest_path = out_dir / 'training_history_latest.json'
+            with open(latest_path, 'w', encoding='utf-8') as f:
+                _json.dump(history, f, indent=2, ensure_ascii=False)
+
+            logger.info(f"\n{version_str} training complete!")
+            logger.info(f"  Features: {len(model_data.get('feature_names', []))}")
+        else:
+            logger.warning("No v485 model file found to rename")
+
+        return model_data, history
+
+
+class V488Trainer(V486Trainer):
+    """V4.9.0 训练器 — V4.8.7底座 + 3项北极星V4优化
+
+    底座: V4.8.6 (=V4.8.7, 69特征, YetiRank, RRF)
+    新增:
+    1. 基准超额标签: label = stock_return - benchmark_return (中证500)
+       → 提升L5超额收益指标 (excess_annual_return, IR, excess_win_rate)
+    2. 强化熊市样本加权: market_return_20d<-5% → ×2.5 (原V4.4用×2.0)
+       → 提升L1 bear_icir + L5 bear_excess_return
+    3. 单调性感知集成: IC权重×60% + 单调性权重×40% (借鉴V4.4 Module A)
+       → 提升L1 ic_monotonicity 3.25→4.0+
+    """
+
+    BENCHMARK_CODE = '000905.SH'  # 中证500
+    BEAR_WEIGHT_MULTIPLIER = 2.5   # 熊市加权倍数 (vs V4.4的2.0)
+
+    def load_data(self, start_date: str = None, end_date: str = None) -> pd.DataFrame:
+        """V4.9.0: 父类加载 + 基准超额标签"""
+        df = super().load_data(start_date, end_date)
+
+        # ===== 基准超额标签: label -= benchmark_return =====
+        logger.info("V4.9.0: 计算基准超额收益标签...")
+        conn = sqlite3.connect(self.db_path)
+
+        # 加载基准指数收盘价
+        bm_query = """
+        SELECT q.trade_date, q.close
+        FROM daily_quotes q
+        JOIN securities s ON q.security_id = s.id
+        WHERE s.code = ?
+        ORDER BY q.trade_date
+        """
+        bm_df = pd.read_sql(bm_query, conn, params=[self.BENCHMARK_CODE])
+        conn.close()
+
+        if bm_df.empty:
+            logger.warning(f"  基准 {self.BENCHMARK_CODE} 无数据, 跳过基准超额")
+            return df
+
+        bm_df = bm_df.sort_values('trade_date').reset_index(drop=True)
+
+        # 计算基准未来N天收益
+        for n, label_col in [(3, 'label_3d'), (5, 'label_5d'),
+                              (10, 'label_10d'), (15, 'label_15d')]:
+            if label_col not in df.columns:
+                continue
+            bm_df[f'bm_ret_{n}d'] = bm_df['close'].shift(-n) / bm_df['close'] - 1
+
+        bm_ret_map = {}
+        for _, row in bm_df.iterrows():
+            d = row['trade_date']
+            bm_ret_map[d] = {
+                3: row.get('bm_ret_3d', np.nan),
+                5: row.get('bm_ret_5d', np.nan),
+                10: row.get('bm_ret_10d', np.nan),
+                15: row.get('bm_ret_15d', np.nan),
+            }
+
+        # 减去基准收益
+        for n, label_col in [(3, 'label_3d'), (5, 'label_5d'),
+                              (10, 'label_10d'), (15, 'label_15d')]:
+            if label_col not in df.columns:
+                continue
+            bm_rets = df['trade_date'].map(lambda d: bm_ret_map.get(d, {}).get(n, 0.0)).fillna(0.0)
+            raw_mean = df[label_col].mean()
+            df[label_col] = df[label_col] - bm_rets.values
+            new_mean = df[label_col].mean()
+            logger.info(f"  {label_col} 基准超额: raw={raw_mean:.6f} → excess={new_mean:.6f} "
+                         f"(benchmark avg={bm_rets.mean():.6f})")
+
+        logger.info(f"  V4.9.0 基准超额标签完成 (基准: {self.BENCHMARK_CODE})")
+        return df
+
+    def compute_sample_weights(self, df: pd.DataFrame, y: np.ndarray) -> np.ndarray:
+        """V4.9.0: 父类权重 + 强化熊市加权×2.5"""
+        weights = super().compute_sample_weights(df, y)
+
+        # 强化熊市样本加权 (比V4.4的×2.0更激进)
+        if 'market_return_20d' in df.columns:
+            bear = df['market_return_20d'].values < -0.05
+            n_bear = bear.sum()
+            weights[bear] *= self.BEAR_WEIGHT_MULTIPLIER
+            logger.info(f"    V4.9.0 熊市加权: {n_bear:,} 样本 × {self.BEAR_WEIGHT_MULTIPLIER} "
+                         f"(market_return_20d < -5%)")
+        return weights
+
+    def calculate_ensemble_weights(self, predictions_val: dict, y_val) -> dict:
+        """V4.9.0: IC×60% + 单调性×40% (提升ic_monotonicity分数)"""
+        val_dates = getattr(self, 'val_dates', None)
+
+        if val_dates is None:
+            return super().calculate_ensemble_weights(predictions_val, y_val)
+
+        unique_dates = np.unique(val_dates)
+        mean_ics = {}
+        monotonicity_scores = {}
+
+        for name, pred in predictions_val.items():
+            daily_ics = []
+            for d in unique_dates:
+                mask = val_dates == d
+                p_d = pred[mask]
+                y_d = y_val[mask]
+                valid = ~(np.isnan(p_d) | np.isnan(y_d))
+                if valid.sum() < 20:
+                    continue
+                from scipy.stats import spearmanr
+                ic, _ = spearmanr(p_d[valid], y_d[valid])
+                if not np.isnan(ic):
+                    daily_ics.append(ic)
+            mean_ics[name] = np.mean(daily_ics) if daily_ics else 0
+
+            # 单调性: 预测分5组, 计算实际收益的单调递增程度
+            mono_vals = []
+            for d in unique_dates:
+                mask = val_dates == d
+                p_d = pred[mask]
+                y_d = y_val[mask]
+                valid = ~(np.isnan(p_d) | np.isnan(y_d))
+                if valid.sum() < 50:
+                    continue
+                p_v, y_v = p_d[valid], y_d[valid]
+                try:
+                    quintiles = pd.qcut(p_v, 5, labels=False, duplicates='drop')
+                    q_means = pd.Series(y_v).groupby(quintiles).mean()
+                    if len(q_means) >= 5:
+                        # 单调性 = 连续递增的对数
+                        mono = sum(1 for i in range(1, len(q_means))
+                                   if q_means.iloc[i] > q_means.iloc[i-1])
+                        mono_vals.append(mono)
+                except Exception:
+                    pass
+            monotonicity_scores[name] = np.mean(mono_vals) if mono_vals else 0
+
+        # 混合权重: 60% IC + 40% monotonicity
+        final_weights = {}
+        ic_sum = sum(max(v, 0) for v in mean_ics.values())
+        mono_sum = sum(max(v, 0) for v in monotonicity_scores.values())
+
+        for name in predictions_val:
+            ic_w = max(mean_ics.get(name, 0), 0) / ic_sum if ic_sum > 0 else 1 / len(predictions_val)
+            mono_w = max(monotonicity_scores.get(name, 0), 0) / mono_sum if mono_sum > 0 else 1 / len(predictions_val)
+            final_weights[name] = 0.6 * ic_w + 0.4 * mono_w
+
+        # 归一化
+        w_sum = sum(final_weights.values())
+        if w_sum > 0:
+            final_weights = {k: v / w_sum for k, v in final_weights.items()}
+
+        logger.info(f"    V4.8.8 集成权重 (IC×60%+Mono×40%):")
+        for name in sorted(final_weights):
+            logger.info(f"      {name}: IC={mean_ics.get(name, 0):.4f} "
+                         f"Mono={monotonicity_scores.get(name, 0):.2f} "
+                         f"→ W={final_weights[name]:.3f}")
+        return final_weights, mean_ics
+
+    def walk_forward_train(self, start_date: str = None, end_date: str = None,
+                            purge_days: int = 15, min_train_days: int = 900,
+                            val_days: int = 120, test_days: int = 120,
+                            step_days: int = 90):
+        """V4.9.0 Walk-Forward — V4.8.7底座 + 超额标签 + 熊市加权 + 单调性集成"""
+        import shutil
+
+        version_tag = 'v488'
+        version_str = 'v4.8.8'
+
+        logger.info("=" * 60)
+        logger.info(f"{version_str} Walk-Forward (69特征 + 基准超额标签 + 熊市加权 + 单调性集成)")
+        logger.info("=" * 60)
+        logger.info(f"  底座: V4.8.6/V4.8.7 (69特征, YetiRank, RRF)")
+        logger.info(f"  新增: 基准超额标签({self.BENCHMARK_CODE}), 熊市×{self.BEAR_WEIGHT_MULTIPLIER}")
+        logger.info(f"  集成: IC×60% + 单调性×40%")
+
+        model_data, history = super().walk_forward_train(
+            start_date=start_date, end_date=end_date,
+            purge_days=purge_days, min_train_days=min_train_days,
+            val_days=val_days, test_days=test_days, step_days=step_days)
+
+        # 移到 v488 目录
+        v485_dir = PROJECT_ROOT / 'ml_models' / 'trained_models' / 'v485'
+        out_dir = PROJECT_ROOT / 'ml_models' / 'trained_models' / version_tag
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        v485_files = sorted(v485_dir.glob('v485_*.pkl'), key=lambda f: f.stat().st_mtime)
+        if v485_files:
+            latest = v485_files[-1]
+            timestamp = latest.stem.replace('v485_multi_target_', '')
+            new_path = out_dir / f'{version_tag}_multi_target_{timestamp}.pkl'
+
+            import joblib
+            model_data['version'] = version_str
+            model_data['v488_innovations'] = {
+                'base': 'V4.8.7 (69特征, YetiRank NDCG@10, RRF ensemble)',
+                'benchmark_excess': f'label -= {self.BENCHMARK_CODE} return (超额收益训练)',
+                'bear_weight': f'market_return_20d<-5% → ×{self.BEAR_WEIGHT_MULTIPLIER}',
+                'ensemble': 'IC×60% + Monotonicity×40% (单调性感知集成)',
+            }
+            joblib.dump(model_data, new_path)
+            logger.info(f"\n{version_str} model saved: {new_path}")
+            logger.info(f"  Size: {new_path.stat().st_size / 1024 / 1024:.1f} MB")
+
+            for aux in ['global_quantiles.npy', 'recommendation_thresholds.json']:
+                src = v485_dir / aux
+                if src.exists():
+                    shutil.copy2(str(src), str(out_dir / aux))
+
+            latest.unlink()
+            for hf in v485_dir.glob(f'training_history_{timestamp}*'):
+                hf.unlink()
+
+            history['version'] = version_str
+            history['base'] = '69 features + benchmark-excess + bear×2.5 + mono-ensemble'
+            history['v488_innovations'] = model_data['v488_innovations']
 
             import json as _json
             history_path = out_dir / f'training_history_{timestamp}.json'
@@ -11132,6 +11624,9 @@ def main():
     parser.add_argument('--v484', action='store_true', help='V4.8.4: V4.8.1+brain_roll_spread(60→61特征, TopK筛选)')
     parser.add_argument('--v485', action='store_true', help='V4.8.5: V4.8.4+ETF训练数据(61特征, A股ICIR+0.033)')
     parser.add_argument('--v486', action='store_true', help='V4.8.6: V4.8.4+3个BRAIN Top-K因子(61→64特征, ICIR+4.2%%)')
+    parser.add_argument('--v490', action='store_true',
+        help='V4.9.0: V4.8.5+Q95分位数+头尾20%%加权+LambdaRank trunc=10')
+    parser.add_argument('--v488', action='store_true', help='V4.9.0: V4.8.7+基准超额标签+熊市×2.5+单调性集成(69特征, 目标S级)')
     parser.add_argument('--v487', action='store_true', help='V4.8.7: V4.8.6+5V482+YetiRank+RRF(69特征, fast=87.56)')
     parser.add_argument('--brain-features', action='store_true',
                         help='加载 BRAIN 验证因子 (需先运行 brain_feature_importer 缓存)')
@@ -11174,7 +11669,29 @@ def main():
                 logger.info(f"  CLI override: TARGET_SHARPE_BLEND={new_blend}")
             logger.info(f"  CLI override: sharpe_label_blend={args.sharpe_blend}")
 
-    if args.v487:
+    if args.v490:
+        trainer = V490Trainer()
+        _apply_overrides(trainer)
+        if args.skip_wf:
+            trainer.train_production_only(
+                start_date=args.start_date, end_date=args.end_date,
+                purge_days=max(args.purge_days, 15))
+        else:
+            trainer.walk_forward_train(
+                start_date=args.start_date, end_date=args.end_date,
+                purge_days=max(args.purge_days, 15))
+    elif args.v488:
+        trainer = V488Trainer()
+        _apply_overrides(trainer)
+        if args.skip_wf:
+            trainer.train_production_only(
+                start_date=args.start_date, end_date=args.end_date,
+                purge_days=max(args.purge_days, 15))
+        else:
+            trainer.walk_forward_train(
+                start_date=args.start_date, end_date=args.end_date,
+                purge_days=max(args.purge_days, 15))
+    elif args.v487:
         trainer = V486Trainer()  # V487用V486Trainer, 版本号在walk_forward_train里处理
         _apply_overrides(trainer)
         if args.skip_wf:
