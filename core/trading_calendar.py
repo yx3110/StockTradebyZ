@@ -24,11 +24,10 @@ def is_trading_day(date_str: str) -> bool:
         True 如果是交易日
     """
     try:
-        # 1. 尝试 Tushare API
-        if _check_via_tushare(date_str):
-            return True
-        if _check_via_tushare(date_str) is False:
-            return False
+        # 1. 尝试 Tushare API (单次调用，缓存结果)
+        tushare_result = _check_via_tushare(date_str)
+        if tushare_result is not None:
+            return tushare_result
     except Exception:
         pass
 

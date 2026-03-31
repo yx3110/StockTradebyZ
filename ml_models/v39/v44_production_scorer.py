@@ -329,7 +329,8 @@ class V44ProductionScorer(V43ProductionScorer):
                 continue
 
             # T+1近涨停 (涨幅>5%) → 大幅降权 (仅offline_mode)
-            if pct_t1 > 0.05:
+            pct_t1 = d_t1.get('pct_change', 0) if offline_mode else 0
+            if offline_mode and pct_t1 > 0.05:
                 results[code]['score'] *= 0.2
                 results[code]['exec_filter'] = 'near_limit_up_t1'
                 continue

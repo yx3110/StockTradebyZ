@@ -696,6 +696,7 @@ def main():
                                   args.vol_target, args.cppi_floor, args.cppi_multiplier,
                                   args.sector_diversify, args.rank_field,
                                   args.hold_buffer, cache=cache,
+                                  ema_alpha=args.ema_alpha,
                                   wf_summary_path=args.wf_summary)
 
     if args.regime_analysis:
