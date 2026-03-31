@@ -1998,6 +1998,12 @@ class V43Trainer(V395MultiTargetTrainer):
             })
             cursor += step_days
 
+        # fast-check: 只取最后N个窗口
+        _max_windows = getattr(self, '_fast_check_max_windows', None)
+        if _max_windows and len(windows) > _max_windows:
+            logger.info(f"  [FAST-CHECK] 截取最后 {_max_windows}/{len(windows)} 个窗口")
+            windows = windows[-_max_windows:]
+
         logger.info(f"  Walk-Forward 窗口数: {len(windows)}")
         for i, w in enumerate(windows):
             logger.info(f"    窗口 {i+1}: train<='{w['train_end']}', val={w['val_start']}~{w['val_end']}, "
@@ -2099,6 +2105,15 @@ class V43Trainer(V395MultiTargetTrainer):
             wf_summary[target_key] = summary
             logger.info(f"  {target_key}: IC={summary['mean_ic']:.4f}±{summary['std_ic']:.4f}, "
                          f"ICIR={summary['mean_icir']:.4f}±{summary['std_icir']:.4f}")
+
+        # fast-check: 跳过生产模型训练和保存, 只输出WF指标
+        if getattr(self, '_fast_check', False):
+            duration = (datetime.now() - start_time).total_seconds()
+            logger.info("\n" + "=" * 60)
+            logger.info(f"[FAST-CHECK 完成] 耗时 {duration:.0f}s ({duration/60:.1f}min)")
+            logger.info("跳过生产模型训练和保存 (仅验证方向)")
+            logger.info("=" * 60)
+            return {'walk_forward_metrics': wf_summary, 'fast_check': True}, {'walk_forward_summary': wf_summary}
 
         # 5. 训练最终生产模型 (85% train + 15% val for early stopping)
         logger.info("\n" + "=" * 60)
@@ -2519,6 +2534,12 @@ class V44Trainer(V43Trainer):
             })
             cursor += step_days
 
+        # fast-check: 只取最后N个窗口
+        _max_windows = getattr(self, '_fast_check_max_windows', None)
+        if _max_windows and len(windows) > _max_windows:
+            logger.info(f"  [FAST-CHECK] 截取最后 {_max_windows}/{len(windows)} 个窗口")
+            windows = windows[-_max_windows:]
+
         logger.info(f"  Walk-Forward 窗口数: {len(windows)}")
         for i, w in enumerate(windows):
             logger.info(f"    窗口 {i+1}: train<='{w['train_end']}', val={w['val_start']}~{w['val_end']}, "
@@ -2619,6 +2640,15 @@ class V44Trainer(V43Trainer):
             wf_summary[target_key] = summary
             logger.info(f"  {target_key}: IC={summary['mean_ic']:.4f}±{summary['std_ic']:.4f}, "
                          f"ICIR={summary['mean_icir']:.4f}±{summary['std_icir']:.4f}")
+
+        # fast-check: 跳过生产模型训练和保存, 只输出WF指标
+        if getattr(self, '_fast_check', False):
+            duration = (datetime.now() - start_time).total_seconds()
+            logger.info("\n" + "=" * 60)
+            logger.info(f"[FAST-CHECK 完成] 耗时 {duration:.0f}s ({duration/60:.1f}min)")
+            logger.info("跳过生产模型训练和保存 (仅验证方向)")
+            logger.info("=" * 60)
+            return {'walk_forward_metrics': wf_summary, 'fast_check': True}, {'walk_forward_summary': wf_summary}
 
         # 5. 训练最终生产模型 (85% train + 15% val for early stopping)
         logger.info("\n" + "=" * 60)
@@ -3085,6 +3115,12 @@ class V46Trainer(V44Trainer):
             })
             cursor += step_days
 
+        # fast-check: 只取最后N个窗口
+        _max_windows = getattr(self, '_fast_check_max_windows', None)
+        if _max_windows and len(windows) > _max_windows:
+            logger.info(f"  [FAST-CHECK] 截取最后 {_max_windows}/{len(windows)} 个窗口")
+            windows = windows[-_max_windows:]
+
         logger.info(f"  Walk-Forward 窗口数: {len(windows)}")
         for i, w in enumerate(windows):
             logger.info(f"    窗口 {i+1}: train<='{w['train_end']}', val={w['val_start']}~{w['val_end']}, "
@@ -3185,6 +3221,15 @@ class V46Trainer(V44Trainer):
             wf_summary[target_key] = summary
             logger.info(f"  {target_key}: IC={summary['mean_ic']:.4f}±{summary['std_ic']:.4f}, "
                          f"ICIR={summary['mean_icir']:.4f}±{summary['std_icir']:.4f}")
+
+        # fast-check: 跳过生产模型训练和保存, 只输出WF指标
+        if getattr(self, '_fast_check', False):
+            duration = (datetime.now() - start_time).total_seconds()
+            logger.info("\n" + "=" * 60)
+            logger.info(f"[FAST-CHECK 完成] 耗时 {duration:.0f}s ({duration/60:.1f}min)")
+            logger.info("跳过生产模型训练和保存 (仅验证方向)")
+            logger.info("=" * 60)
+            return {'walk_forward_metrics': wf_summary, 'fast_check': True}, {'walk_forward_summary': wf_summary}
 
         # 5. 训练最终生产模型 (85% train + 15% val)
         logger.info("\n" + "=" * 60)
@@ -3556,6 +3601,12 @@ class V47Trainer(V46Trainer):
             })
             cursor += step_days
 
+        # fast-check: 只取最后N个窗口
+        _max_windows = getattr(self, '_fast_check_max_windows', None)
+        if _max_windows and len(windows) > _max_windows:
+            logger.info(f"  [FAST-CHECK] 截取最后 {_max_windows}/{len(windows)} 个窗口")
+            windows = windows[-_max_windows:]
+
         logger.info(f"  Walk-Forward 窗口数: {len(windows)}")
         for i, w in enumerate(windows):
             logger.info(f"    窗口 {i+1}: train<='{w['train_end']}', val={w['val_start']}~{w['val_end']}, "
@@ -3652,6 +3703,15 @@ class V47Trainer(V46Trainer):
             wf_summary[target_key] = summary
             logger.info(f"  {target_key}: IC={summary['mean_ic']:.4f}±{summary['std_ic']:.4f}, "
                          f"ICIR={summary['mean_icir']:.4f}±{summary['std_icir']:.4f}")
+
+        # fast-check: 跳过生产模型训练和保存, 只输出WF指标
+        if getattr(self, '_fast_check', False):
+            duration = (datetime.now() - start_time).total_seconds()
+            logger.info("\n" + "=" * 60)
+            logger.info(f"[FAST-CHECK 完成] 耗时 {duration:.0f}s ({duration/60:.1f}min)")
+            logger.info("跳过生产模型训练和保存 (仅验证方向)")
+            logger.info("=" * 60)
+            return {'walk_forward_metrics': wf_summary, 'fast_check': True}, {'walk_forward_summary': wf_summary}
 
         # 5. 训练最终V4.7生产模型 (85% train + 15% val)
         logger.info("\n" + "=" * 60)
@@ -4598,6 +4658,12 @@ class V471Trainer(V44Trainer):
             })
             cursor += step_days
 
+        # fast-check: 只取最后N个窗口
+        _max_windows = getattr(self, '_fast_check_max_windows', None)
+        if _max_windows and len(windows) > _max_windows:
+            logger.info(f"  [FAST-CHECK] 截取最后 {_max_windows}/{len(windows)} 个窗口")
+            windows = windows[-_max_windows:]
+
         logger.info(f"  Walk-Forward 窗口数: {len(windows)}")
         for i, w in enumerate(windows):
             logger.info(f"    窗口 {i+1}: train<='{w['train_end']}', val={w['val_start']}~{w['val_end']}, "
@@ -4710,6 +4776,15 @@ class V471Trainer(V44Trainer):
             wf_summary[target_key] = summary
             logger.info(f"  {target_key}: IC={summary['mean_ic']:.4f}±{summary['std_ic']:.4f}, "
                          f"ICIR={summary['mean_icir']:.4f}±{summary['std_icir']:.4f}")
+
+        # fast-check: 跳过生产模型训练和保存, 只输出WF指标
+        if getattr(self, '_fast_check', False):
+            duration = (datetime.now() - start_time).total_seconds()
+            logger.info("\n" + "=" * 60)
+            logger.info(f"[FAST-CHECK 完成] 耗时 {duration:.0f}s ({duration/60:.1f}min)")
+            logger.info("跳过生产模型训练和保存 (仅验证方向)")
+            logger.info("=" * 60)
+            return {'walk_forward_metrics': wf_summary, 'fast_check': True}, {'walk_forward_summary': wf_summary}
 
         # 5. 训练最终生产模型 (85% train + 15% val)
         logger.info("\n" + "=" * 60)
@@ -5038,6 +5113,12 @@ class V472Trainer(V471Trainer):
             })
             cursor += step_days
 
+        # fast-check: 只取最后N个窗口
+        _max_windows = getattr(self, '_fast_check_max_windows', None)
+        if _max_windows and len(windows) > _max_windows:
+            logger.info(f"  [FAST-CHECK] 截取最后 {_max_windows}/{len(windows)} 个窗口")
+            windows = windows[-_max_windows:]
+
         logger.info(f"  Walk-Forward 窗口数: {len(windows)}")
         for i, w in enumerate(windows):
             logger.info(f"    窗口 {i+1}: train<='{w['train_end']}', val={w['val_start']}~{w['val_end']}, "
@@ -5148,6 +5229,15 @@ class V472Trainer(V471Trainer):
             wf_summary[target_key] = summary
             logger.info(f"  {target_key}: IC={summary['mean_ic']:.4f}±{summary['std_ic']:.4f}, "
                          f"ICIR={summary['mean_icir']:.4f}±{summary['std_icir']:.4f}")
+
+        # fast-check: 跳过生产模型训练和保存, 只输出WF指标
+        if getattr(self, '_fast_check', False):
+            duration = (datetime.now() - start_time).total_seconds()
+            logger.info("\n" + "=" * 60)
+            logger.info(f"[FAST-CHECK 完成] 耗时 {duration:.0f}s ({duration/60:.1f}min)")
+            logger.info("跳过生产模型训练和保存 (仅验证方向)")
+            logger.info("=" * 60)
+            return {'walk_forward_metrics': wf_summary, 'fast_check': True}, {'walk_forward_summary': wf_summary}
 
         # 5. 训练最终生产模型 (85% train + 15% val)
         logger.info("\n" + "=" * 60)
@@ -5705,6 +5795,12 @@ class V473Trainer(V472Trainer):
             })
             cursor += step_days
 
+        # fast-check: 只取最后N个窗口
+        _max_windows = getattr(self, '_fast_check_max_windows', None)
+        if _max_windows and len(windows) > _max_windows:
+            logger.info(f"  [FAST-CHECK] 截取最后 {_max_windows}/{len(windows)} 个窗口")
+            windows = windows[-_max_windows:]
+
         logger.info(f"  Walk-Forward窗口: {len(windows)}")
         for i, w in enumerate(windows):
             logger.info(f"    窗口 {i+1}: train<='{w['train_end']}', val={w['val_start']}~{w['val_end']}, "
@@ -5819,6 +5915,15 @@ class V473Trainer(V472Trainer):
                 summary = {'mean_ic': 0, 'std_ic': 0, 'mean_icir': 0, 'std_icir': 0, 'n_windows': 0}
                 logger.info(f"  {target_key}: (skipped, no WF windows)")
             wf_summary[target_key] = summary
+
+        # fast-check: 跳过生产模型训练和保存, 只输出WF指标
+        if getattr(self, '_fast_check', False):
+            duration = (datetime.now() - start_time).total_seconds()
+            logger.info("\n" + "=" * 60)
+            logger.info(f"[FAST-CHECK 完成] 耗时 {duration:.0f}s ({duration/60:.1f}min)")
+            logger.info("跳过生产模型训练和保存 (仅验证方向)")
+            logger.info("=" * 60)
+            return {'walk_forward_metrics': wf_summary, 'fast_check': True}, {'walk_forward_summary': wf_summary}
 
         # 5. 训练最终生产模型 (85% train + 15% val)
         logger.info("\n" + "=" * 60)
@@ -6270,6 +6375,12 @@ class V474Trainer(V473Trainer):
             })
             cursor += step_days
 
+        # fast-check: 只取最后N个窗口
+        _max_windows = getattr(self, '_fast_check_max_windows', None)
+        if _max_windows and len(windows) > _max_windows:
+            logger.info(f"  [FAST-CHECK] 截取最后 {_max_windows}/{len(windows)} 个窗口")
+            windows = windows[-_max_windows:]
+
         logger.info(f"  Walk-Forward窗口: {len(windows)}")
         for i, w in enumerate(windows):
             logger.info(f"    窗口 {i+1}: train<='{w['train_end']}', val={w['val_start']}~{w['val_end']}, "
@@ -6384,6 +6495,15 @@ class V474Trainer(V473Trainer):
                 summary = {'mean_ic': 0, 'std_ic': 0, 'mean_icir': 0, 'std_icir': 0, 'n_windows': 0}
                 logger.info(f"  {target_key}: (skipped, no WF windows)")
             wf_summary[target_key] = summary
+
+        # fast-check: 跳过生产模型训练和保存, 只输出WF指标
+        if getattr(self, '_fast_check', False):
+            duration = (datetime.now() - start_time).total_seconds()
+            logger.info("\n" + "=" * 60)
+            logger.info(f"[FAST-CHECK 完成] 耗时 {duration:.0f}s ({duration/60:.1f}min)")
+            logger.info("跳过生产模型训练和保存 (仅验证方向)")
+            logger.info("=" * 60)
+            return {'walk_forward_metrics': wf_summary, 'fast_check': True}, {'walk_forward_summary': wf_summary}
 
         # 5. 训练最终生产模型
         logger.info("\n" + "=" * 60)
@@ -6725,6 +6845,12 @@ class V475Trainer(V473Trainer):
             })
             cursor += step_days
 
+        # fast-check: 只取最后N个窗口
+        _max_windows = getattr(self, '_fast_check_max_windows', None)
+        if _max_windows and len(windows) > _max_windows:
+            logger.info(f"  [FAST-CHECK] 截取最后 {_max_windows}/{len(windows)} 个窗口")
+            windows = windows[-_max_windows:]
+
         logger.info(f"  Walk-Forward窗口: {len(windows)}")
         for i, w in enumerate(windows):
             logger.info(f"    窗口 {i+1}: train<='{w['train_end']}', val={w['val_start']}~{w['val_end']}, "
@@ -6857,6 +6983,15 @@ class V475Trainer(V473Trainer):
 
         # Store for embedding in model
         self._adaptive_target_weights = adaptive_weights
+
+        # fast-check: 跳过生产模型训练和保存, 只输出WF指标
+        if getattr(self, '_fast_check', False):
+            duration = (datetime.now() - start_time).total_seconds()
+            logger.info("\n" + "=" * 60)
+            logger.info(f"[FAST-CHECK 完成] 耗时 {duration:.0f}s ({duration/60:.1f}min)")
+            logger.info("跳过生产模型训练和保存 (仅验证方向)")
+            logger.info("=" * 60)
+            return {'walk_forward_metrics': wf_summary, 'fast_check': True}, {'walk_forward_summary': wf_summary}
 
         # 5. 训练最终生产模型
         logger.info("\n" + "=" * 60)
@@ -7317,6 +7452,15 @@ class V476Trainer(V475Trainer):
         logger.info(f"  Fixed weights:    {self.target_weights}")
         logger.info(f"  Adaptive weights: {adaptive_weights}")
         self._adaptive_target_weights = adaptive_weights
+
+        # fast-check: 跳过生产模型训练和保存, 只输出WF指标
+        if getattr(self, '_fast_check', False):
+            duration = (datetime.now() - start_time).total_seconds()
+            logger.info("\n" + "=" * 60)
+            logger.info(f"[FAST-CHECK 完成] 耗时 {duration:.0f}s ({duration/60:.1f}min)")
+            logger.info("跳过生产模型训练和保存 (仅验证方向)")
+            logger.info("=" * 60)
+            return {'walk_forward_metrics': wf_summary, 'fast_check': True}, {'walk_forward_summary': wf_summary}
 
         # 5. Train final production model
         logger.info("\n" + "=" * 60)
@@ -7842,6 +7986,10 @@ class V477Trainer(V475Trainer):
             purge_days=purge_days, min_train_days=min_train_days,
             val_days=val_days, test_days=test_days, step_days=step_days)
 
+        # fast-check: 不保存模型, 直接返回WF指标
+        if model_data.get('fast_check'):
+            return model_data, history
+
         # 将模型从v475目录移到v477目录
         v475_dir = PROJECT_ROOT / 'ml_models' / 'trained_models' / 'v475'
         v477_dir = PROJECT_ROOT / 'ml_models' / 'trained_models' / 'v477'
@@ -7953,6 +8101,10 @@ class V478Trainer(V477Trainer):
             self, start_date=start_date, end_date=end_date,
             purge_days=purge_days, min_train_days=min_train_days,
             val_days=val_days, test_days=test_days, step_days=step_days)
+
+        # fast-check: 不保存模型, 直接返回WF指标
+        if model_data.get('fast_check'):
+            return model_data, history
 
         # 将模型从v475目录移到v478目录
         v475_dir = PROJECT_ROOT / 'ml_models' / 'trained_models' / 'v475'
@@ -8066,6 +8218,10 @@ class V479Trainer(V477Trainer):
             purge_days=purge_days, min_train_days=min_train_days,
             val_days=val_days, test_days=test_days, step_days=step_days)
 
+        # fast-check: 不保存模型, 直接返回WF指标
+        if model_data.get('fast_check'):
+            return model_data, history
+
         # 将模型从v475目录移到v479目录
         v475_dir = PROJECT_ROOT / 'ml_models' / 'trained_models' / 'v475'
         v479_dir = PROJECT_ROOT / 'ml_models' / 'trained_models' / 'v479'
@@ -8168,6 +8324,10 @@ class V480Trainer(V475Trainer):
             start_date=start_date, end_date=end_date,
             purge_days=purge_days, min_train_days=min_train_days,
             val_days=val_days, test_days=test_days, step_days=step_days)
+
+        # fast-check: 不保存模型, 直接返回WF指标
+        if model_data.get('fast_check'):
+            return model_data, history
 
         # 将模型从v475目录移到v480目录
         import shutil
@@ -8527,6 +8687,10 @@ class V481Trainer(V475Trainer):
             purge_days=purge_days, min_train_days=min_train_days,
             val_days=val_days, test_days=test_days, step_days=step_days)
 
+        # fast-check: 不保存模型, 直接返回WF指标
+        if model_data.get('fast_check'):
+            return model_data, history
+
         # 将模型从v475目录移到v481目录
         v475_dir = PROJECT_ROOT / 'ml_models' / 'trained_models' / 'v475'
         v481_dir = PROJECT_ROOT / 'ml_models' / 'trained_models' / 'v481'
@@ -8682,6 +8846,10 @@ class V484Trainer(V481Trainer):
             start_date=start_date, end_date=end_date,
             purge_days=purge_days, min_train_days=min_train_days,
             val_days=val_days, test_days=test_days, step_days=step_days)
+
+        # fast-check: 不保存模型, 直接返回WF指标
+        if model_data.get('fast_check'):
+            return model_data, history
 
         # 移到 v484 目录
         v481_dir = PROJECT_ROOT / 'ml_models' / 'trained_models' / 'v481'
@@ -9096,6 +9264,10 @@ class V485Trainer(V484Trainer):
             purge_days=purge_days, min_train_days=min_train_days,
             val_days=val_days, test_days=test_days, step_days=step_days)
 
+        # fast-check: 不保存模型, 直接返回WF指标
+        if model_data.get('fast_check'):
+            return model_data, history
+
         # 把v484目录的模型移到v485
         v484_dir = PROJECT_ROOT / 'ml_models' / 'trained_models' / 'v484'
         v485_dir = PROJECT_ROOT / 'ml_models' / 'trained_models' / 'v485'
@@ -9357,6 +9529,10 @@ class V490Trainer(V485Trainer):
             purge_days=purge_days, min_train_days=min_train_days,
             val_days=val_days, test_days=test_days, step_days=step_days)
 
+        # fast-check: 不保存模型, 直接返回WF指标
+        if model_data.get('fast_check'):
+            return model_data, history
+
         # 把v485目录的模型移到v490
         v485_dir = PROJECT_ROOT / 'ml_models' / 'trained_models' / 'v485'
         out_dir = PROJECT_ROOT / 'ml_models' / 'trained_models' / version_tag
@@ -9408,6 +9584,227 @@ class V490Trainer(V485Trainer):
             logger.info(f"  Features: {len(model_data.get('feature_names', []))}")
         else:
             logger.warning("No v485 model file found to rename")
+
+        return model_data, history
+
+
+class V4901Trainer(V490Trainer):
+    """V4.9.0.1 训练器 — V4.9.0去掉头尾加权 (只保留Q95+truncation=10)
+
+    V4.9.0发现头尾加权×5导致预测尺度偏移(97%为正)。
+    V4.9.0.1去掉compute_sample_weights覆盖，恢复V485的正常样本权重。
+    保留: Q95分位数模型 + LambdaRank truncation=10
+    """
+
+    HEAD_TAIL_PCT = 0.0   # 禁用头尾加权
+    HEAD_TAIL_WEIGHT = 1.0
+
+    def compute_sample_weights(self, df: pd.DataFrame, y: np.ndarray) -> np.ndarray:
+        """V4.9.0.1: 跳过V4.9.0的头尾加权, 直接用V4.8.5的权重"""
+        return V485Trainer.compute_sample_weights(self, df, y)
+
+    def walk_forward_train(self, start_date=None, end_date=None,
+                            purge_days=15, min_train_days=900,
+                            val_days=120, test_days=120, step_days=90):
+        """V4.9.0.1 Walk-Forward — 保存为v4901格式"""
+        import shutil
+
+        version_tag = 'v4901'
+        version_str = 'v4.9.0.1'
+
+        logger.info("=" * 60)
+        logger.info(f"{version_str} Walk-Forward (V4.9.0 去头尾加权, 只保留Q95+trunc=10)")
+        logger.info("=" * 60)
+        logger.info(f"  底座: V4.8.5 (61特征, ETF训练数据)")
+        logger.info(f"  保留: LambdaRank trunc={self.RANK_TRUNCATION}, {self.RANK_GRADES}档")
+        logger.info(f"  保留: LGB-Quantile-{self.Q95_ALPHA*100:.0f}")
+        logger.info(f"  去除: 头尾加权 (V4.9.0的偏移问题)")
+
+        # 调用V485的walk_forward (跳过V490的rename逻辑)
+        model_data, history = V485Trainer.walk_forward_train(
+            self, start_date=start_date, end_date=end_date,
+            purge_days=purge_days, min_train_days=min_train_days,
+            val_days=val_days, test_days=test_days, step_days=step_days)
+
+        # fast-check: 不保存模型, 直接返回WF指标
+        if model_data.get('fast_check'):
+            return model_data, history
+
+        # 重命名 v485 → v4901
+        v485_dir = PROJECT_ROOT / 'ml_models' / 'trained_models' / 'v485'
+        out_dir = PROJECT_ROOT / 'ml_models' / 'trained_models' / version_tag
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        v485_files = sorted(v485_dir.glob('v485_*.pkl'), key=lambda f: f.stat().st_mtime)
+        if v485_files:
+            latest = v485_files[-1]
+            timestamp = latest.stem.replace('v485_multi_target_', '')
+            new_path = out_dir / f'{version_tag}_multi_target_{timestamp}.pkl'
+
+            import joblib
+            model_data['version'] = version_str
+            model_data['v4901_innovations'] = {
+                'base': 'V4.9.0 minus head-tail weighting',
+                'lambdarank': f'truncation={self.RANK_TRUNCATION}, grades={self.RANK_GRADES}',
+                'quantile_model': f'LGB objective=quantile alpha={self.Q95_ALPHA}',
+                'removed': 'head-tail 20% × 5.0 weighting (caused prediction scale shift)',
+            }
+            joblib.dump(model_data, new_path)
+            logger.info(f"\n{version_str} model saved: {new_path}")
+
+            for aux in ['global_quantiles.npy', 'recommendation_thresholds.json']:
+                src = v485_dir / aux
+                if src.exists():
+                    shutil.copy2(str(src), str(out_dir / aux))
+
+            latest.unlink()
+            for hf in v485_dir.glob(f'training_history_{timestamp}*'):
+                hf.unlink()
+
+            import json as _json
+            history['version'] = version_str
+            history_path = out_dir / f'training_history_{timestamp}.json'
+            with open(history_path, 'w', encoding='utf-8') as f:
+                _json.dump(history, f, indent=2, ensure_ascii=False)
+            latest_path = out_dir / 'training_history_latest.json'
+            with open(latest_path, 'w', encoding='utf-8') as f:
+                _json.dump(history, f, indent=2, ensure_ascii=False)
+
+        return model_data, history
+
+
+class V4902Trainer(V4901Trainer):
+    """V4.9.0.2 训练器 — Sharpe-Blend↑ + 下行加权×1.5 + WF摘要自动保存
+
+    基于V4.9.0.1:
+    - Sharpe-Blend提升: 3d=0.25, 5d=0.45, 10d=0.50, 15d=0.50 (更强Sharpe信号)
+    - 下行加权: 负收益样本权重×1.5 (惩罚亏损预测错误)
+    - WF摘要: 训练完成后自动保存IS/OOS Sharpe JSON摘要
+    """
+
+    TARGET_SHARPE_BLEND = {
+        'label_3d':  0.25,   # 0.10 → 0.25
+        'label_5d':  0.45,   # 0.25 → 0.45
+        'label_10d': 0.50,   # 0.35 → 0.50
+        'label_15d': 0.50,   # 0.35 → 0.50
+    }
+
+    DOWNSIDE_WEIGHT = 1.5  # 负收益样本权重乘数
+
+    def compute_sample_weights(self, df: pd.DataFrame, y: np.ndarray) -> np.ndarray:
+        """V4.9.0.2: V4.8.5权重 + 下行加权×1.5"""
+        weights = V485Trainer.compute_sample_weights(self, df, y)
+        # 负收益样本额外加权
+        neg_mask = y < 0
+        if neg_mask.any():
+            weights[neg_mask] *= self.DOWNSIDE_WEIGHT
+            logger.info(f"  [V4.9.0.2] 下行加权: {neg_mask.sum()}/{len(y)} 负样本 × {self.DOWNSIDE_WEIGHT}")
+        return weights
+
+    @staticmethod
+    def _extract_wf_summary(history: dict) -> dict:
+        """从训练history中提取WF摘要 (IS/OOS Sharpe per window per target)"""
+        summary = {'windows': [], 'targets': {}}
+        windows = history.get('walk_forward_windows', [])
+        for i, w in enumerate(windows):
+            win_info = {
+                'window': i,
+                'train_end': w.get('train_end', ''),
+                'test_end': w.get('test_end', ''),
+            }
+            summary['windows'].append(win_info)
+            for tgt in ['label_3d', 'label_5d', 'label_10d', 'label_15d']:
+                if tgt not in summary['targets']:
+                    summary['targets'][tgt] = {'is_sharpe': [], 'oos_sharpe': [], 'oos_ic': [], 'oos_icir': []}
+                metrics = w.get('metrics', {}).get(tgt, {})
+                summary['targets'][tgt]['is_sharpe'].append(metrics.get('is_sharpe', None))
+                summary['targets'][tgt]['oos_sharpe'].append(metrics.get('oos_sharpe', None))
+                summary['targets'][tgt]['oos_ic'].append(metrics.get('oos_ic', None))
+                summary['targets'][tgt]['oos_icir'].append(metrics.get('oos_icir', None))
+        # 计算均值
+        for tgt, vals in summary['targets'].items():
+            for k in ['is_sharpe', 'oos_sharpe', 'oos_ic', 'oos_icir']:
+                valid = [v for v in vals[k] if v is not None]
+                vals[f'{k}_mean'] = float(np.mean(valid)) if valid else None
+        return summary
+
+    def walk_forward_train(self, start_date=None, end_date=None,
+                            purge_days=15, min_train_days=900,
+                            val_days=120, test_days=120, step_days=90):
+        """V4.9.0.2 Walk-Forward — 保存为v4902格式 + WF摘要JSON"""
+        import shutil
+
+        version_tag = 'v4902'
+        version_str = 'v4.9.0.2'
+
+        logger.info("=" * 60)
+        logger.info(f"{version_str} Walk-Forward (Sharpe-Blend↑ + 下行加权×{self.DOWNSIDE_WEIGHT})")
+        logger.info("=" * 60)
+        logger.info(f"  底座: V4.9.0.1 (V4.8.5 + Q95 + LambdaRank trunc={self.RANK_TRUNCATION})")
+        logger.info(f"  Sharpe-Blend: {self.TARGET_SHARPE_BLEND}")
+        logger.info(f"  下行加权: 负收益样本 × {self.DOWNSIDE_WEIGHT}")
+
+        # 调用V485的walk_forward (跳过V490的rename逻辑)
+        model_data, history = V485Trainer.walk_forward_train(
+            self, start_date=start_date, end_date=end_date,
+            purge_days=purge_days, min_train_days=min_train_days,
+            val_days=val_days, test_days=test_days, step_days=step_days)
+
+        # fast-check: 不保存模型, 直接返回WF指标
+        if model_data.get('fast_check'):
+            return model_data, history
+
+        # 重命名 v485 → v4902
+        v485_dir = PROJECT_ROOT / 'ml_models' / 'trained_models' / 'v485'
+        out_dir = PROJECT_ROOT / 'ml_models' / 'trained_models' / version_tag
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        v485_files = sorted(v485_dir.glob('v485_*.pkl'), key=lambda f: f.stat().st_mtime)
+        if v485_files:
+            latest = v485_files[-1]
+            timestamp = latest.stem.replace('v485_multi_target_', '')
+            new_path = out_dir / f'{version_tag}_multi_target_{timestamp}.pkl'
+
+            import joblib
+            model_data['version'] = version_str
+            model_data['v4902_innovations'] = {
+                'base': 'V4.9.0.1 (Q95 + LambdaRank trunc=10, no head-tail)',
+                'sharpe_blend': self.TARGET_SHARPE_BLEND,
+                'downside_weight': self.DOWNSIDE_WEIGHT,
+                'lambdarank': f'truncation={self.RANK_TRUNCATION}, grades={self.RANK_GRADES}',
+                'quantile_model': f'LGB objective=quantile alpha={self.Q95_ALPHA}',
+            }
+            joblib.dump(model_data, new_path)
+            logger.info(f"\n{version_str} model saved: {new_path}")
+
+            for aux in ['global_quantiles.npy', 'recommendation_thresholds.json']:
+                src = v485_dir / aux
+                if src.exists():
+                    shutil.copy2(str(src), str(out_dir / aux))
+
+            latest.unlink()
+            for hf in v485_dir.glob(f'training_history_{timestamp}*'):
+                hf.unlink()
+
+            import json as _json
+            history['version'] = version_str
+            history_path = out_dir / f'training_history_{timestamp}.json'
+            with open(history_path, 'w', encoding='utf-8') as f:
+                _json.dump(history, f, indent=2, ensure_ascii=False)
+            latest_path = out_dir / 'training_history_latest.json'
+            with open(latest_path, 'w', encoding='utf-8') as f:
+                _json.dump(history, f, indent=2, ensure_ascii=False)
+
+            # V4.9.0.2 新增: WF摘要JSON
+            wf_summary = self._extract_wf_summary(history)
+            wf_summary['version'] = version_str
+            wf_summary['timestamp'] = timestamp
+            wf_summary['sharpe_blend'] = self.TARGET_SHARPE_BLEND
+            wf_summary['downside_weight'] = self.DOWNSIDE_WEIGHT
+            summary_path = out_dir / f'wf_summary_{timestamp}.json'
+            with open(summary_path, 'w', encoding='utf-8') as f:
+                _json.dump(wf_summary, f, indent=2, ensure_ascii=False)
+            logger.info(f"  WF摘要: {summary_path}")
 
         return model_data, history
 
@@ -9744,6 +10141,10 @@ class V486Trainer(V485Trainer):
             purge_days=purge_days, min_train_days=min_train_days,
             val_days=val_days, test_days=test_days, step_days=step_days)
 
+        # fast-check: 不保存模型, 直接返回WF指标
+        if model_data.get('fast_check'):
+            return model_data, history
+
         # 移到 v487 目录 (上游V485已把模型放在v485/)
         v485_dir = PROJECT_ROOT / 'ml_models' / 'trained_models' / 'v485'
         out_dir = PROJECT_ROOT / 'ml_models' / 'trained_models' / version_tag
@@ -9790,6 +10191,700 @@ class V486Trainer(V485Trainer):
 
             logger.info(f"\n{version_str} training complete!")
             logger.info(f"  Features: {len(model_data.get('feature_names', []))}")
+        else:
+            logger.warning("No v485 model file found to rename")
+
+        return model_data, history
+
+
+class V492Trainer(V485Trainer):
+    """V4.9.2 训练器 — V4.8.5底座 + 特征优化 + WF60d + 时间加权
+
+    特征: 61 - 5(弱) + 5(V482) + 5(Alpha158) = 66特征
+    删除: dv_ttm, max_pct_change_5d, brain_roll_spread, cci_14, macd_hist
+    新增V482: high_52w_ratio, residual_momentum, turnover_reversal, sumd_20d, realized_skew_20d
+    新增Alpha158: CORR_20d, CNTP_20d, RSQR_20d, KSFT, IMAX_20d
+    训练: WF step_days=60 (6窗口), 时间加权集成, 5d权重降至0.10
+    """
+
+    PRUNE_FEATURES_V492 = [
+        'dv_ttm', 'max_pct_change_5d', 'brain_roll_spread', 'cci_14', 'macd_hist',
+    ]
+
+    V492_NEW_FACTORS = [
+        # V482 Tier-1 (已有IC验证)
+        'high_52w_ratio', 'residual_momentum', 'turnover_reversal',
+        'sumd_20d', 'realized_skew_20d',
+        # Alpha158 (全新概念)
+        'corr_close_vol_20d', 'cntp_20d', 'rsqr_20d', 'ksft', 'imax_20d',
+    ]
+
+    def load_data(self, start_date: str = None, end_date: str = None) -> pd.DataFrame:
+        """V4.9.2: V4.8.5基础 + 删弱因子 + 加10新因子"""
+        df = super().load_data(start_date, end_date)
+
+        logger.info("V4.9.2: 计算10个新因子...")
+
+        date_min = df['trade_date'].min()
+        date_max = df['trade_date'].max()
+        conn = sqlite3.connect(self.db_path)
+
+        from datetime import datetime as dt_cls, timedelta as td_cls
+        try:
+            ext_start_252 = (dt_cls.strptime(date_min, '%Y-%m-%d') - td_cls(days=370)).strftime('%Y-%m-%d')
+        except Exception:
+            ext_start_252 = (dt_cls.strptime(date_min, '%Y%m%d') - td_cls(days=370)).strftime('%Y%m%d')
+
+        ohlcv_query = """
+        SELECT s.code, q.trade_date, q.open, q.high, q.low, q.close,
+               q.volume, q.price_change_pct
+        FROM daily_quotes q
+        JOIN securities s ON q.security_id = s.id
+        WHERE s.type = 'A股' AND q.trade_date >= ? AND q.trade_date <= ?
+        ORDER BY s.code, q.trade_date
+        """
+        df_ohlcv = pd.read_sql(ohlcv_query, conn, params=[ext_start_252, date_max])
+        logger.info(f"  OHLCV (252d扩展): {len(df_ohlcv):,} 行")
+
+        # 行业信息 (for residual_momentum)
+        industry_query = "SELECT code, industry FROM securities WHERE type = 'A股' AND industry IS NOT NULL"
+        df_industry = pd.read_sql(industry_query, conn)
+        code_to_industry = dict(zip(df_industry['code'], df_industry['industry']))
+
+        # 换手率
+        basic_query = """
+        SELECT s.code, db.trade_date, db.turnover_rate
+        FROM daily_basic db JOIN securities s ON db.security_id = s.id
+        WHERE db.trade_date >= ? AND db.trade_date <= ?
+        """
+        df_basic = pd.read_sql(basic_query, conn, params=[ext_start_252, date_max])
+        conn.close()
+
+        if len(df_ohlcv) == 0:
+            for col in self.V492_NEW_FACTORS:
+                df[col] = 0.0
+            return df
+
+        df_ohlcv = df_ohlcv.merge(df_basic[['code', 'trade_date', 'turnover_rate']],
+                                   on=['code', 'trade_date'], how='left')
+        df_ohlcv['turnover_rate'] = df_ohlcv['turnover_rate'].fillna(0.0)
+
+        # 全市场每日中位数收益 (for residual_momentum)
+        market_daily_ret = {}
+        for td, grp in df_ohlcv.groupby('trade_date'):
+            pcts = pd.to_numeric(grp['price_change_pct'], errors='coerce').dropna()
+            if len(pcts) > 0:
+                market_daily_ret[td] = float(pcts.median())
+
+        logger.info("  逐股计算10个新因子...")
+        factor_parts = []
+        n_stocks = df_ohlcv['code'].nunique()
+        processed = 0
+
+        for code, grp in df_ohlcv.groupby('code'):
+            grp = grp.sort_values('trade_date').copy()
+            n = len(grp)
+            if n < 25:
+                continue
+
+            close = grp['close'].values.astype(float)
+            open_ = grp['open'].values.astype(float)
+            high = grp['high'].values.astype(float)
+            low = grp['low'].values.astype(float)
+            volume = grp['volume'].values.astype(float)
+            pct = pd.to_numeric(grp['price_change_pct'], errors='coerce').fillna(0).values.astype(float)
+            turnover = grp['turnover_rate'].values.astype(float)
+            dates = grp['trade_date'].values
+
+            out = pd.DataFrame({'code': code, 'trade_date': dates})
+            close_s = pd.Series(close)
+            pct_s = pd.Series(pct)
+
+            # === V482 factors ===
+
+            # 1. high_52w_ratio: close / max(high, 252d)
+            high_s = pd.Series(high)
+            max_252 = high_s.rolling(252, min_periods=60).max().values
+            max_252_safe = np.where(max_252 > 1e-8, max_252, 1e-8)
+            out['high_52w_ratio'] = close / max_252_safe
+
+            # 2. residual_momentum: 去市场后的残差动量
+            mkt_rets = np.array([market_daily_ret.get(d, 0.0) for d in dates])
+            resid_mom = np.full(n, np.nan)
+            for i in range(25, n):
+                stock_r = pct[i-25:i]
+                mkt_r = mkt_rets[i-25:i]
+                mkt_var = np.var(mkt_r)
+                if mkt_var > 1e-12:
+                    beta = np.cov(stock_r, mkt_r)[0, 1] / mkt_var
+                else:
+                    beta = 0.0
+                residual = stock_r - beta * mkt_r
+                resid_mom[i] = np.sum(residual[:20])
+            out['residual_momentum'] = resid_mom
+
+            # 3. turnover_reversal: -rolling_mean(turnover, 20d)
+            turn_s = pd.Series(turnover)
+            out['turnover_reversal'] = -turn_s.rolling(20, min_periods=5).mean().values
+
+            # 4. sumd_20d: (Σgains - Σlosses) / (Σgains + Σlosses)
+            gains = np.where(pct > 0, pct, 0.0)
+            losses = np.where(pct < 0, -pct, 0.0)
+            sum_gains = pd.Series(gains).rolling(20, min_periods=5).sum().values
+            sum_losses = pd.Series(losses).rolling(20, min_periods=5).sum().values
+            denom = sum_gains + sum_losses
+            denom_safe = np.where(denom > 1e-8, denom, 1e-8)
+            out['sumd_20d'] = (sum_gains - sum_losses) / denom_safe
+
+            # 5. realized_skew_20d: skewness of daily returns
+            skew = np.full(n, np.nan)
+            for i in range(19, n):
+                r = pct[i-19:i+1]
+                mu = np.mean(r)
+                sigma = np.std(r)
+                if sigma > 1e-8:
+                    skew[i] = np.mean(((r - mu) / sigma) ** 3)
+                else:
+                    skew[i] = 0.0
+            out['realized_skew_20d'] = skew
+
+            # === Alpha158 factors ===
+
+            # 6. CORR_20d: Corr(close, log(volume+1), 20)
+            log_vol = np.log(volume + 1)
+            corr_vals = np.full(n, np.nan)
+            for i in range(19, n):
+                c_w = close[i-19:i+1]
+                v_w = log_vol[i-19:i+1]
+                if np.std(c_w) > 1e-8 and np.std(v_w) > 1e-8:
+                    corr_vals[i] = np.corrcoef(c_w, v_w)[0, 1]
+            out['corr_close_vol_20d'] = corr_vals
+
+            # 7. CNTP_20d: fraction of up-days in 20d window
+            up_flag = (close > np.concatenate([[close[0]], close[:-1]])).astype(float)
+            out['cntp_20d'] = pd.Series(up_flag).rolling(20, min_periods=5).mean().values
+
+            # 8. RSQR_20d: R-squared of linear fit (trendiness)
+            rsqr = np.full(n, np.nan)
+            for i in range(19, n):
+                y = close[i-19:i+1]
+                x = np.arange(20)
+                if np.std(y) > 1e-8:
+                    corr = np.corrcoef(x, y)[0, 1]
+                    rsqr[i] = corr ** 2
+            out['rsqr_20d'] = rsqr
+
+            # 9. KSFT: (2*close - high - low) / open (intraday direction)
+            open_safe = np.where(open_ > 1e-8, open_, 1e-8)
+            out['ksft'] = (2 * close - high - low) / open_safe
+
+            # 10. IMAX_20d: position of highest price in 20d window (0=oldest, 1=newest)
+            imax = np.full(n, np.nan)
+            for i in range(19, n):
+                h_window = high[i-19:i+1]
+                imax[i] = np.argmax(h_window) / 19.0
+            out['imax_20d'] = imax
+
+            factor_parts.append(out)
+            processed += 1
+            if processed % 1000 == 0:
+                logger.info(f"    已处理 {processed}/{n_stocks} 只股票")
+
+        if not factor_parts:
+            for col in self.V492_NEW_FACTORS:
+                df[col] = 0.0
+            return df
+
+        df_factors = pd.concat(factor_parts, ignore_index=True)
+        logger.info(f"  新因子计算完成: {len(df_factors):,} 行, {processed} 只股票")
+
+        # 合并到主df
+        for col in self.V492_NEW_FACTORS:
+            if col in df_factors.columns:
+                factor_map = df_factors.set_index(['code', 'trade_date'])[col]
+                df_key = df[['code', 'trade_date']].copy()
+                df_key['_idx'] = range(len(df_key))
+                merged = df_key.merge(
+                    df_factors[['code', 'trade_date', col]],
+                    on=['code', 'trade_date'], how='left')
+                merged = merged.sort_values('_idx')
+                df[col] = merged[col].values
+            else:
+                df[col] = 0.0
+            df[col] = df[col].fillna(0.0)
+            n_nonzero = (df[col] != 0).sum()
+            logger.info(f"    {col}: {n_nonzero:,} 非零值 ({n_nonzero/len(df)*100:.1f}%)")
+
+        # 删除弱因子
+        for col in self.PRUNE_FEATURES_V492:
+            if col in df.columns:
+                df.drop(col, axis=1, inplace=True)
+                logger.info(f"  删除弱因子: {col}")
+
+        logger.info(f"  V4.9.2 特征优化完成: {len([c for c in df.columns if c not in ('code','trade_date','label_3d','label_5d','label_10d','label_15d','is_limit_up','is_limit_down','sw_l1_code')])} 特征")
+        return df
+
+    def walk_forward_train(self, start_date: str = None, end_date: str = None,
+                            purge_days: int = 15, min_train_days: int = 900,
+                            val_days: int = 120, test_days: int = 120,
+                            step_days: int = 60):
+        """V4.9.2 Walk-Forward — step=60d + 时间加权集成"""
+        import shutil
+
+        version_tag = 'v492'
+        version_str = 'v4.9.2'
+
+        logger.info("=" * 60)
+        logger.info(f"{version_str} Walk-Forward (66特征 + WF60d + 时间加权)")
+        logger.info("=" * 60)
+        logger.info(f"  底座: V4.8.5 (61-5+10 = 66特征)")
+        logger.info(f"  删除: {self.PRUNE_FEATURES_V492}")
+        logger.info(f"  新增: {self.V492_NEW_FACTORS}")
+        logger.info(f"  WF步长: {step_days}天 (默认60)")
+
+        # 修改5d目标权重 (ICIR=-0.33, 降权)
+        if hasattr(self, 'target_weights'):
+            old_5d = self.target_weights.get('label_5d', 0.25)
+            self.target_weights['label_5d'] = 0.10
+            self.target_weights['label_10d'] = self.target_weights.get('label_10d', 0.35) + 0.075
+            self.target_weights['label_15d'] = self.target_weights.get('label_15d', 0.20) + 0.075
+            logger.info(f"  5d权重: {old_5d} → 0.10 (剩余分配给10d/15d)")
+
+        model_data, history = super().walk_forward_train(
+            start_date=start_date, end_date=end_date,
+            purge_days=purge_days, min_train_days=min_train_days,
+            val_days=val_days, test_days=test_days, step_days=step_days)
+
+        # 保存到v492目录
+        v485_dir = PROJECT_ROOT / 'ml_models' / 'trained_models' / 'v485'
+        out_dir = PROJECT_ROOT / 'ml_models' / 'trained_models' / version_tag
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        v485_files = sorted(v485_dir.glob('v485_*.pkl'), key=lambda f: f.stat().st_mtime)
+        if v485_files:
+            latest = v485_files[-1]
+            timestamp = latest.stem.replace('v485_multi_target_', '')
+            new_path = out_dir / f'{version_tag}_multi_target_{timestamp}.pkl'
+
+            import joblib
+            model_data['version'] = version_str
+            model_data['v492_innovations'] = {
+                'base': 'V4.8.5 - 5弱因子 + 5 V482因子 + 5 Alpha158因子',
+                'pruned': self.PRUNE_FEATURES_V492,
+                'added': self.V492_NEW_FACTORS,
+                'wf_step_days': step_days,
+                'target_5d_weight': 0.10,
+            }
+
+            joblib.dump(model_data, new_path)
+            logger.info(f"\n{version_str} model saved: {new_path}")
+            logger.info(f"  Size: {new_path.stat().st_size / 1024 / 1024:.1f} MB")
+
+            for aux in ['global_quantiles.npy', 'recommendation_thresholds.json']:
+                src = v485_dir / aux
+                if src.exists():
+                    shutil.copy2(str(src), str(out_dir / aux))
+
+            history['version'] = version_str
+            history['base'] = f'V4.8.5 + 10新因子 - 5弱因子 + WF{step_days}d'
+            history['v492_innovations'] = model_data['v492_innovations']
+
+            import json as _json
+            history_path = out_dir / f'training_history_{timestamp}.json'
+            with open(history_path, 'w', encoding='utf-8') as f:
+                _json.dump(history, f, indent=2, ensure_ascii=False)
+            latest_path = out_dir / 'training_history_latest.json'
+            with open(latest_path, 'w', encoding='utf-8') as f:
+                _json.dump(history, f, indent=2, ensure_ascii=False)
+
+            logger.info(f"\n{version_str} training complete!")
+        else:
+            logger.warning("No v485 model file found to rename")
+
+        return model_data, history
+
+
+class V491Trainer(V485Trainer):
+    """V4.9.1 训练器 — V4.8.5底座 + 三管齐下改进
+
+    底座: V4.8.5 (61特征, A股+ETF训练, 当前北极星最优)
+    三项改进:
+    A) 基准超额标签: label = stock_return - benchmark_return (中证500)
+       → 提升L5超额收益指标, 让模型专注alpha而非beta
+    B) 市场门控模型: 额外训练LightGBM二分类器预测"未来10天市场是否正收益"
+       → 推理时confidence<0.3不推荐任何股票, 降低MaxDD
+    C) 3个排名平滑特征: feature_momentum_5d, signal_consistency_5d, consecutive_strength_5d
+       → 偏好信号稳定的股票, 降低换手率
+    """
+
+    BENCHMARK_CODE = '000905.SH'  # 中证500
+    BEAR_WEIGHT_MULTIPLIER = 2.0  # 熊市加权倍数 (温和)
+
+    # 排名平滑特征名
+    SMOOTHING_FEATURES = ['feature_momentum_5d', 'signal_consistency_5d', 'consecutive_strength_5d']
+
+    def load_data(self, start_date: str = None, end_date: str = None) -> pd.DataFrame:
+        """V4.9.1: V4.8.5基础 + 基准超额标签 + 排名平滑特征"""
+        df = super().load_data(start_date, end_date)
+
+        # ===== 方案A: 基准超额标签 =====
+        logger.info("V4.9.1 方案A: 计算基准超额收益标签...")
+        conn = sqlite3.connect(self.db_path)
+
+        bm_query = """
+        SELECT q.trade_date, q.close
+        FROM daily_quotes q
+        JOIN securities s ON q.security_id = s.id
+        WHERE s.code = ?
+        ORDER BY q.trade_date
+        """
+        bm_df = pd.read_sql(bm_query, conn, params=[self.BENCHMARK_CODE])
+
+        if not bm_df.empty:
+            bm_df = bm_df.sort_values('trade_date').reset_index(drop=True)
+
+            # 计算基准未来N天收益
+            for n, label_col in [(3, 'label_3d'), (5, 'label_5d'),
+                                  (10, 'label_10d'), (15, 'label_15d')]:
+                if label_col not in df.columns:
+                    continue
+                bm_df[f'bm_ret_{n}d'] = bm_df['close'].shift(-n) / bm_df['close'] - 1
+
+            bm_ret_map = {}
+            for _, row in bm_df.iterrows():
+                d = row['trade_date']
+                bm_ret_map[d] = {
+                    3: row.get('bm_ret_3d', np.nan),
+                    5: row.get('bm_ret_5d', np.nan),
+                    10: row.get('bm_ret_10d', np.nan),
+                    15: row.get('bm_ret_15d', np.nan),
+                }
+
+            for n, label_col in [(3, 'label_3d'), (5, 'label_5d'),
+                                  (10, 'label_10d'), (15, 'label_15d')]:
+                if label_col not in df.columns:
+                    continue
+                bm_rets = df['trade_date'].map(lambda d, _n=n: bm_ret_map.get(d, {}).get(_n, 0.0)).fillna(0.0)
+                raw_mean = df[label_col].mean()
+                df[label_col] = df[label_col] - bm_rets.values
+                new_mean = df[label_col].mean()
+                logger.info(f"  {label_col} 基准超额: raw={raw_mean:.6f} → excess={new_mean:.6f}")
+
+            # 保存基准收益供市场门控使用
+            self._bm_ret_map = bm_ret_map
+            logger.info(f"  方案A完成 (基准: {self.BENCHMARK_CODE})")
+        else:
+            self._bm_ret_map = {}
+            logger.warning(f"  基准 {self.BENCHMARK_CODE} 无数据, 跳过超额标签")
+
+        # ===== 方案C: 排名平滑特征 =====
+        logger.info("V4.9.1 方案C: 计算排名平滑特征...")
+        self._compute_smoothing_features(df)
+
+        conn.close()
+        return df
+
+    def _compute_smoothing_features(self, df: pd.DataFrame):
+        """方案C: 计算3个排名平滑特征
+
+        1. feature_momentum_5d: 核心特征过去5天的平均变化率 (小=稳定)
+        2. signal_consistency_5d: 过去5天pred_proxy预测值的一致性 (大=稳定)
+        3. consecutive_strength_5d: 过去5天中有几天该股票处于Top-5% (连续强度)
+        """
+        if 'trade_date' not in df.columns or 'code' not in df.columns:
+            for col in self.SMOOTHING_FEATURES:
+                df[col] = 0.0
+            return
+
+        # 选择核心因子列用于计算momentum (避免用所有列)
+        core_cols = [c for c in ['close_to_ma5', 'close_to_ma20', 'rsi_14',
+                                  'volume_ratio_5', 'kdj_j', 'macd_hist',
+                                  'atr_percentile', 'vol_concentration']
+                     if c in df.columns]
+
+        if not core_cols:
+            # fallback到任何可用的stock feature
+            exclude = {'code', 'trade_date', 'label_3d', 'label_5d', 'label_10d', 'label_15d',
+                       'is_limit_up', 'is_limit_down', 'sw_l1_code'}
+            core_cols = [c for c in df.columns if c not in exclude
+                         and df[c].dtype in ('float64', 'float32', 'int64')][:10]
+
+        df.sort_values(['code', 'trade_date'], inplace=True)
+
+        # Feature 1: feature_momentum_5d — 核心特征5天变化的绝对值平均
+        # 值越小 → 特征越稳定 → 排名越不容易翻转
+        logger.info(f"    计算feature_momentum_5d (基于{len(core_cols)}个核心特征)...")
+        if core_cols:
+            core_vals = df[core_cols].values
+            shifted_vals = df.groupby('code')[core_cols].shift(5).values
+            abs_change = np.abs(core_vals - shifted_vals)
+            # 取均值, NaN用0.5填充(中性值)
+            df['feature_momentum_5d'] = np.nanmean(abs_change, axis=1)
+            df['feature_momentum_5d'] = df['feature_momentum_5d'].fillna(
+                df['feature_momentum_5d'].median() if df['feature_momentum_5d'].notna().any() else 0.5
+            )
+        else:
+            df['feature_momentum_5d'] = 0.0
+
+        # Feature 2: signal_consistency_5d — 代理预测信号5天一致性
+        # 用核心特征的rank_score代理: 高一致性 → 信号不是偶然spike
+        logger.info("    计算signal_consistency_5d...")
+        if core_cols:
+            # 用核心特征简单加权作为proxy score
+            proxy = df[core_cols].rank(pct=True).mean(axis=1)
+            df['_proxy_score'] = proxy
+            # 5天rolling std (按code分组)
+            df['signal_consistency_5d'] = (
+                df.groupby('code')['_proxy_score']
+                .rolling(5, min_periods=2).std().reset_index(level=0, drop=True)
+            )
+            # 反转: std越小 → 一致性越高, 用 1/(1+std) 归一化
+            df['signal_consistency_5d'] = 1.0 / (1.0 + df['signal_consistency_5d'].fillna(0.5))
+            df.drop('_proxy_score', axis=1, inplace=True)
+        else:
+            df['signal_consistency_5d'] = 0.5
+
+        # Feature 3: consecutive_strength_5d — 连续5天处于Top-5%的比率
+        # 值高 → 不是偶然冲进top → 值得持有
+        logger.info("    计算consecutive_strength_5d...")
+        if core_cols:
+            proxy = df[core_cols].rank(pct=True).mean(axis=1)
+            # 每日截面Top-5%标记
+            dates = df['trade_date'].values
+            is_top5 = np.zeros(len(df), dtype=np.float64)
+            for d in np.unique(dates):
+                mask = dates == d
+                vals = proxy.values[mask]
+                if len(vals) > 20:
+                    threshold = np.percentile(vals, 95)
+                    is_top5[mask] = (vals >= threshold).astype(float)
+
+            df['_is_top5'] = is_top5
+            df['consecutive_strength_5d'] = (
+                df.groupby('code')['_is_top5']
+                .rolling(5, min_periods=1).mean().reset_index(level=0, drop=True)
+            )
+            df['consecutive_strength_5d'] = df['consecutive_strength_5d'].fillna(0.0)
+            df.drop('_is_top5', axis=1, inplace=True)
+        else:
+            df['consecutive_strength_5d'] = 0.0
+
+        n_smooth = sum(1 for c in self.SMOOTHING_FEATURES if c in df.columns)
+        logger.info(f"  方案C完成: {n_smooth}个排名平滑特征已添加")
+
+    def compute_sample_weights(self, df: pd.DataFrame, y: np.ndarray) -> np.ndarray:
+        """V4.9.1: V4.8.5权重 + 温和熊市加权×2.0"""
+        weights = super().compute_sample_weights(df, y)
+
+        # 熊市样本加权 (market_return_20d < -5%)
+        if 'market_return_20d' in df.columns:
+            bear = df['market_return_20d'].values < -0.05
+            n_bear = bear.sum()
+            weights[bear] *= self.BEAR_WEIGHT_MULTIPLIER
+            logger.info(f"    V4.9.1 熊市加权: {n_bear:,} 样本 × {self.BEAR_WEIGHT_MULTIPLIER}")
+        return weights
+
+    def _train_market_gate_model(self, df: pd.DataFrame):
+        """方案B: 训练市场门控LightGBM二分类器
+
+        输入: 10个市场特征
+        输出: P(未来10天市场正收益)
+        用于推理时: confidence<0.3 → 不推荐任何股票
+        """
+        logger.info("\nV4.9.1 方案B: 训练市场门控模型...")
+
+        market_cols = [c for c in [
+            'market_return_20d', 'market_return_10d', 'market_return_5d',
+            'market_volatility_20d', 'market_volatility_10d',
+            'market_up_ratio_20d', 'market_up_ratio_10d',
+            'market_drawdown_20d', 'market_volume_ratio',
+            'market_position_20d', 'market_momentum_20d', 'market_momentum_5d'
+        ] if c in df.columns]
+
+        if len(market_cols) < 5:
+            logger.warning(f"  市场特征不足({len(market_cols)}), 跳过市场门控训练")
+            return None
+
+        # 构造市场级标签: 每天一行, label=1 if 基准未来10天正收益
+        dates = df['trade_date'].unique()
+        gate_rows = []
+        for d in sorted(dates):
+            bm_ret = self._bm_ret_map.get(d, {}).get(10, None)
+            if bm_ret is None or np.isnan(bm_ret):
+                continue
+            day_mask = df['trade_date'] == d
+            if day_mask.sum() == 0:
+                continue
+            # 用该天任意一行的市场特征(都相同)
+            first_idx = df.index[day_mask][0]
+            row = {'trade_date': d, 'gate_label': 1 if bm_ret > 0 else 0}
+            for col in market_cols:
+                row[col] = df.at[first_idx, col]
+            gate_rows.append(row)
+
+        if len(gate_rows) < 100:
+            logger.warning(f"  市场门控样本不足({len(gate_rows)}), 跳过")
+            return None
+
+        gate_df = pd.DataFrame(gate_rows)
+        gate_df = gate_df.sort_values('trade_date').reset_index(drop=True)
+
+        # 时间分割: 后20%做验证
+        split_idx = int(len(gate_df) * 0.8)
+        train_g = gate_df.iloc[:split_idx]
+        val_g = gate_df.iloc[split_idx:]
+
+        X_train = train_g[market_cols].values
+        y_train = train_g['gate_label'].values
+        X_val = val_g[market_cols].values
+        y_val = val_g['gate_label'].values
+
+        gate_params = {
+            'objective': 'binary',
+            'metric': 'auc',
+            'num_leaves': 8,          # 极简模型防过拟合
+            'learning_rate': 0.05,
+            'feature_fraction': 0.8,
+            'bagging_fraction': 0.8,
+            'bagging_freq': 3,
+            'reg_alpha': 1.0,
+            'reg_lambda': 5.0,
+            'min_data_in_leaf': 20,
+            'verbose': -1,
+        }
+
+        ds_train = lgb.Dataset(X_train, y_train)
+        ds_val = lgb.Dataset(X_val, y_val, reference=ds_train)
+
+        gate_model = lgb.train(
+            gate_params, ds_train,
+            num_boost_round=200,
+            valid_sets=[ds_val],
+            callbacks=[lgb.early_stopping(20), lgb.log_evaluation(0)]
+        )
+
+        # 验证集效果
+        val_pred = gate_model.predict(X_val)
+        from sklearn.metrics import roc_auc_score
+        try:
+            auc = roc_auc_score(y_val, val_pred)
+        except Exception:
+            auc = 0.5
+
+        # 统计: 正市场的比例
+        pos_ratio = y_train.mean()
+        val_pos_ratio = y_val.mean()
+
+        logger.info(f"  市场门控模型训练完成:")
+        logger.info(f"    训练集: {len(train_g)}天, 正比例={pos_ratio:.1%}")
+        logger.info(f"    验证集: {len(val_g)}天, 正比例={val_pos_ratio:.1%}, AUC={auc:.3f}")
+        logger.info(f"    Trees: {gate_model.num_trees()}")
+        logger.info(f"    特征: {market_cols}")
+
+        return {
+            'model': gate_model,
+            'feature_names': market_cols,
+            'auc': auc,
+            'train_pos_ratio': pos_ratio,
+            'val_pos_ratio': val_pos_ratio,
+        }
+
+    def walk_forward_train(self, start_date: str = None, end_date: str = None,
+                            purge_days: int = 15, min_train_days: int = 900,
+                            val_days: int = 120, test_days: int = 120,
+                            step_days: int = 90):
+        """V4.9.1 Walk-Forward — V4.8.5底座 + 超额标签 + 市场门控 + 排名平滑"""
+        import shutil
+
+        version_tag = 'v491'
+        version_str = 'v4.9.1'
+
+        logger.info("=" * 60)
+        logger.info(f"{version_str} Walk-Forward (61特征+3平滑 + 超额标签 + 市场门控)")
+        logger.info("=" * 60)
+        logger.info(f"  底座: V4.8.5 (61特征, A股+ETF)")
+        logger.info(f"  方案A: 基准超额标签 ({self.BENCHMARK_CODE})")
+        logger.info(f"  方案B: 市场门控模型 (LGB binary)")
+        logger.info(f"  方案C: 3个排名平滑特征")
+
+        # 先加载数据 (触发方案A超额标签 + 方案C平滑特征)
+        # 注意: super().walk_forward_train 会调用 self.load_data()
+        # 但我们需要在WF之前训练市场门控模型
+
+        # Step 1: 加载完整数据用于市场门控训练
+        logger.info("\n[预加载] 加载完整数据用于市场门控训练...")
+        full_df = self.load_data(start_date, end_date)
+        gate_result = self._train_market_gate_model(full_df)
+
+        # 清理全量df，WF时会重新加载
+        del full_df
+        import gc
+        gc.collect()
+
+        # Step 2: 正常WF训练 (V4.8.5流程 + 超额标签 + 平滑特征)
+        model_data, history = super().walk_forward_train(
+            start_date=start_date, end_date=end_date,
+            purge_days=purge_days, min_train_days=min_train_days,
+            val_days=val_days, test_days=test_days, step_days=step_days)
+
+        # fast-check: 不保存模型, 直接返回WF指标
+        if model_data.get('fast_check'):
+            return model_data, history
+
+        # Step 3: 保存到v491目录
+        v485_dir = PROJECT_ROOT / 'ml_models' / 'trained_models' / 'v485'
+        out_dir = PROJECT_ROOT / 'ml_models' / 'trained_models' / version_tag
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        v485_files = sorted(v485_dir.glob('v485_*.pkl'), key=lambda f: f.stat().st_mtime)
+        if v485_files:
+            latest = v485_files[-1]
+            timestamp = latest.stem.replace('v485_multi_target_', '')
+            new_path = out_dir / f'{version_tag}_multi_target_{timestamp}.pkl'
+
+            import joblib
+
+            # 注入市场门控模型到模型包
+            if gate_result:
+                model_data['market_gate'] = gate_result
+                logger.info(f"  市场门控模型已注入 (AUC={gate_result['auc']:.3f})")
+            else:
+                model_data['market_gate'] = None
+
+            model_data['version'] = version_str
+            model_data['v491_innovations'] = {
+                'base': 'V4.8.5 (61特征, A股+ETF训练)',
+                'scheme_a': f'基准超额标签: label -= {self.BENCHMARK_CODE} return',
+                'scheme_b': f'市场门控: LGB binary (AUC={gate_result["auc"]:.3f})' if gate_result else '市场门控: 训练失败',
+                'scheme_c': f'排名平滑: {self.SMOOTHING_FEATURES}',
+                'bear_weight': f'market_return_20d<-5% → ×{self.BEAR_WEIGHT_MULTIPLIER}',
+            }
+            model_data['smoothing_features'] = self.SMOOTHING_FEATURES
+
+            joblib.dump(model_data, new_path)
+            logger.info(f"\n{version_str} model saved: {new_path}")
+            logger.info(f"  Size: {new_path.stat().st_size / 1024 / 1024:.1f} MB")
+
+            # 复制辅助文件
+            for aux in ['global_quantiles.npy', 'recommendation_thresholds.json']:
+                src = v485_dir / aux
+                if src.exists():
+                    shutil.copy2(str(src), str(out_dir / aux))
+
+            # 保存训练历史
+            history['version'] = version_str
+            history['base'] = 'V4.8.5 + 基准超额标签 + 市场门控 + 排名平滑'
+            history['v491_innovations'] = model_data['v491_innovations']
+
+            import json as _json
+            history_path = out_dir / f'training_history_{timestamp}.json'
+            with open(history_path, 'w', encoding='utf-8') as f:
+                _json.dump(history, f, indent=2, ensure_ascii=False)
+            latest_path = out_dir / 'training_history_latest.json'
+            with open(latest_path, 'w', encoding='utf-8') as f:
+                _json.dump(history, f, indent=2, ensure_ascii=False)
+
+            logger.info(f"\n{version_str} training complete!")
         else:
             logger.warning("No v485 model file found to rename")
 
@@ -9973,6 +11068,10 @@ class V488Trainer(V486Trainer):
             start_date=start_date, end_date=end_date,
             purge_days=purge_days, min_train_days=min_train_days,
             val_days=val_days, test_days=test_days, step_days=step_days)
+
+        # fast-check: 不保存模型, 直接返回WF指标
+        if model_data.get('fast_check'):
+            return model_data, history
 
         # 移到 v488 目录
         v485_dir = PROJECT_ROOT / 'ml_models' / 'trained_models' / 'v485'
@@ -10478,6 +11577,10 @@ class V482Trainer(V481Trainer):
             start_date=start_date, end_date=end_date,
             purge_days=purge_days, min_train_days=min_train_days,
             val_days=val_days, test_days=test_days, step_days=step_days)
+
+        # fast-check: 不保存模型, 直接返回WF指标
+        if model_data.get('fast_check'):
+            return model_data, history
 
         # 将模型从v481目录移到v482目录
         v481_dir = PROJECT_ROOT / 'ml_models' / 'trained_models' / 'v481'
@@ -11212,6 +12315,12 @@ class V48Trainer(V472Trainer):
             })
             cursor += step_days
 
+        # fast-check: 只取最后N个窗口
+        _max_windows = getattr(self, '_fast_check_max_windows', None)
+        if _max_windows and len(windows) > _max_windows:
+            logger.info(f"  [FAST-CHECK] 截取最后 {_max_windows}/{len(windows)} 个窗口")
+            windows = windows[-_max_windows:]
+
         logger.info(f"  Walk-Forward 窗口数: {len(windows)}")
         for i, w in enumerate(windows):
             logger.info(f"    窗口 {i+1}: train<='{w['train_end']}', val={w['val_start']}~{w['val_end']}, "
@@ -11322,6 +12431,15 @@ class V48Trainer(V472Trainer):
             wf_summary[target_key] = summary
             logger.info(f"  {target_key}: IC={summary['mean_ic']:.4f}±{summary['std_ic']:.4f}, "
                          f"ICIR={summary['mean_icir']:.4f}±{summary['std_icir']:.4f}")
+
+        # fast-check: 跳过生产模型训练和保存, 只输出WF指标
+        if getattr(self, '_fast_check', False):
+            duration = (datetime.now() - start_time).total_seconds()
+            logger.info("\n" + "=" * 60)
+            logger.info(f"[FAST-CHECK 完成] 耗时 {duration:.0f}s ({duration/60:.1f}min)")
+            logger.info("跳过生产模型训练和保存 (仅验证方向)")
+            logger.info("=" * 60)
+            return {'walk_forward_metrics': wf_summary, 'fast_check': True}, {'walk_forward_summary': wf_summary}
 
         # 5. 训练最终生产模型 (85% train + 15% val)
         logger.info("\n" + "=" * 60)
@@ -11624,13 +12742,23 @@ def main():
     parser.add_argument('--v484', action='store_true', help='V4.8.4: V4.8.1+brain_roll_spread(60→61特征, TopK筛选)')
     parser.add_argument('--v485', action='store_true', help='V4.8.5: V4.8.4+ETF训练数据(61特征, A股ICIR+0.033)')
     parser.add_argument('--v486', action='store_true', help='V4.8.6: V4.8.4+3个BRAIN Top-K因子(61→64特征, ICIR+4.2%%)')
+    parser.add_argument('--v492', action='store_true',
+        help='V4.9.2: V4.8.5-5弱+5V482+5Alpha158=66特征, WF60d, 5d降权')
+    parser.add_argument('--v491', action='store_true',
+        help='V4.9.1: V4.8.5+基准超额标签+市场门控+排名平滑(64特征, 目标:降MDD+降换手+提超额)')
     parser.add_argument('--v490', action='store_true',
         help='V4.9.0: V4.8.5+Q95分位数+头尾20%%加权+LambdaRank trunc=10')
+    parser.add_argument('--v4901', action='store_true',
+        help='V4.9.0.1: V4.9.0去头尾加权(只保留Q95+trunc=10, 修复预测偏移)')
+    parser.add_argument('--v4902', action='store_true',
+        help='V4.9.0.2: V4.9.0.1+Sharpe-Blend↑+下行加权×1.5+WF摘要')
     parser.add_argument('--v488', action='store_true', help='V4.9.0: V4.8.7+基准超额标签+熊市×2.5+单调性集成(69特征, 目标S级)')
     parser.add_argument('--v487', action='store_true', help='V4.8.7: V4.8.6+5V482+YetiRank+RRF(69特征, fast=87.56)')
     parser.add_argument('--brain-features', action='store_true',
                         help='加载 BRAIN 验证因子 (需先运行 brain_feature_importer 缓存)')
     parser.add_argument('--skip-wf', action='store_true', help='跳过Walk-Forward评估, 只训练生产模型 (节省~75%时间)')
+    parser.add_argument('--fast-check', action='store_true',
+                        help='快速方向验证: 2个WF窗口+少数据+浅树, 不保存模型, 仅输出IC/ICIR (~2分钟)')
     parser.add_argument('--num-leaves', type=int, default=None, help='覆盖LGB num_leaves (默认: 各版本内置值)')
     parser.add_argument('--min-data-in-leaf', type=int, default=None, help='覆盖LGB min_data_in_leaf (默认: 各版本内置值)')
     parser.add_argument('--feature-blacklist', type=str, default=None,
@@ -11642,8 +12770,29 @@ def main():
     # BRAIN 因子标志 — 适用于所有 Trainer 版本
     _use_brain = getattr(args, 'brain_features', False)
 
+    # --fast-check: 自动覆盖参数用于快速方向验证
+    if args.fast_check:
+        logger.info("=" * 60)
+        logger.info("[FAST-CHECK 模式] 快速方向验证 (不保存模型)")
+        logger.info("=" * 60)
+        if args.start_date == '2020-01-01':  # 只在用户没手动设置时覆盖
+            args.start_date = '2022-01-01'
+            logger.info(f"  auto: start_date → {args.start_date} (减少数据量)")
+        if args.num_leaves is None:
+            args.num_leaves = 15
+            logger.info(f"  auto: num_leaves → 15 (浅树加速)")
+        args.skip_wf = False  # fast-check 需要WF, 不能skip
+        logger.info(f"  auto: max_windows → 2 (只验证最近2个窗口)")
+        logger.info(f"  auto: 不保存模型文件")
+        logger.info("")
+
     # Apply CLI hyperparameter overrides to any trainer
     def _apply_overrides(trainer_obj):
+        # fast-check 模式设置
+        if args.fast_check:
+            trainer_obj._fast_check = True
+            trainer_obj._fast_check_max_windows = 2
+
         if args.num_leaves is not None:
             trainer_obj._cli_num_leaves = args.num_leaves
             logger.info(f"  CLI override: num_leaves={args.num_leaves}")
@@ -11669,7 +12818,41 @@ def main():
                 logger.info(f"  CLI override: TARGET_SHARPE_BLEND={new_blend}")
             logger.info(f"  CLI override: sharpe_label_blend={args.sharpe_blend}")
 
-    if args.v490:
+    if args.v492:
+        trainer = V492Trainer()
+        _apply_overrides(trainer)
+        trainer.walk_forward_train(
+            start_date=args.start_date, end_date=args.end_date,
+            purge_days=max(args.purge_days, 15))
+    elif args.v491:
+        trainer = V491Trainer()
+        _apply_overrides(trainer)
+        trainer.walk_forward_train(
+            start_date=args.start_date, end_date=args.end_date,
+            purge_days=max(args.purge_days, 15))
+    elif args.v4902:
+        trainer = V4902Trainer()
+        _apply_overrides(trainer)
+        if args.skip_wf:
+            trainer.train_production_only(
+                start_date=args.start_date, end_date=args.end_date,
+                purge_days=max(args.purge_days, 15))
+        else:
+            trainer.walk_forward_train(
+                start_date=args.start_date, end_date=args.end_date,
+                purge_days=max(args.purge_days, 15))
+    elif args.v4901:
+        trainer = V4901Trainer()
+        _apply_overrides(trainer)
+        if args.skip_wf:
+            trainer.train_production_only(
+                start_date=args.start_date, end_date=args.end_date,
+                purge_days=max(args.purge_days, 15))
+        else:
+            trainer.walk_forward_train(
+                start_date=args.start_date, end_date=args.end_date,
+                purge_days=max(args.purge_days, 15))
+    elif args.v490:
         trainer = V490Trainer()
         _apply_overrides(trainer)
         if args.skip_wf:
@@ -11721,52 +12904,62 @@ def main():
             purge_days=max(args.purge_days, 15))
     elif args.v484:
         trainer = V484Trainer()
+        _apply_overrides(trainer)
         trainer.walk_forward_train(
             start_date=args.start_date, end_date=args.end_date,
             purge_days=max(args.purge_days, 15))
     elif args.v483:
         trainer = V483Trainer()
+        _apply_overrides(trainer)
         trainer.walk_forward_train(
             start_date=args.start_date, end_date=args.end_date,
             purge_days=max(args.purge_days, 15))
     elif args.v482:
         trainer = V482Trainer()
+        _apply_overrides(trainer)
         trainer.use_brain_features = _use_brain
         trainer.walk_forward_train(
             start_date=args.start_date, end_date=args.end_date,
             purge_days=max(args.purge_days, 15))
     elif args.v481:
         trainer = V481Trainer()
+        _apply_overrides(trainer)
         trainer.walk_forward_train(
             start_date=args.start_date, end_date=args.end_date,
             purge_days=max(args.purge_days, 15))
     elif args.v480:
         trainer = V480Trainer()
+        _apply_overrides(trainer)
         trainer.walk_forward_train(
             start_date=args.start_date, end_date=args.end_date,
             purge_days=max(args.purge_days, 15))
     elif args.v479:
         trainer = V479Trainer()
+        _apply_overrides(trainer)
         trainer.walk_forward_train(
             start_date=args.start_date, end_date=args.end_date,
             purge_days=max(args.purge_days, 15))
     elif args.v478:
         trainer = V478Trainer()
+        _apply_overrides(trainer)
         trainer.walk_forward_train(
             start_date=args.start_date, end_date=args.end_date,
             purge_days=max(args.purge_days, 15))
     elif args.v477:
         trainer = V477Trainer()
+        _apply_overrides(trainer)
         trainer.walk_forward_train(
             start_date=args.start_date, end_date=args.end_date,
             purge_days=max(args.purge_days, 15))
     elif args.v476:
         trainer = V476Trainer()
+        _apply_overrides(trainer)
         trainer.walk_forward_train(
             start_date=args.start_date, end_date=args.end_date,
             purge_days=max(args.purge_days, 15))
     elif args.v475:
         trainer = V475Trainer()
+        _apply_overrides(trainer)
         if args.skip_wf:
             trainer.train_production_only(
                 start_date=args.start_date, end_date=args.end_date,
@@ -11777,26 +12970,31 @@ def main():
                 purge_days=max(args.purge_days, 15))
     elif args.v474:
         trainer = V474Trainer()
+        _apply_overrides(trainer)
         trainer.walk_forward_train(
             start_date=args.start_date, end_date=args.end_date,
             purge_days=max(args.purge_days, 15))
     elif args.v473:
         trainer = V473Trainer()
+        _apply_overrides(trainer)
         trainer.walk_forward_train(
             start_date=args.start_date, end_date=args.end_date,
             purge_days=max(args.purge_days, 15))
     elif args.v472:
         trainer = V472Trainer()
+        _apply_overrides(trainer)
         trainer.walk_forward_train(
             start_date=args.start_date, end_date=args.end_date,
             purge_days=max(args.purge_days, 15))
     elif args.v471:
         trainer = V471Trainer()
+        _apply_overrides(trainer)
         trainer.walk_forward_train(
             start_date=args.start_date, end_date=args.end_date,
             purge_days=max(args.purge_days, 15))
     elif args.v47:
         trainer = V47Trainer()
+        _apply_overrides(trainer)
         if args.skip_wf:
             trainer.train_production_only(
                 start_date=args.start_date, end_date=args.end_date,
@@ -11807,21 +13005,25 @@ def main():
                 purge_days=max(args.purge_days, 15))
     elif args.v46:
         trainer = V46Trainer()
+        _apply_overrides(trainer)
         trainer.walk_forward_train(
             start_date=args.start_date, end_date=args.end_date,
             purge_days=max(args.purge_days, 15))
     elif args.v44:
         trainer = V44Trainer()
+        _apply_overrides(trainer)
         trainer.walk_forward_train(
             start_date=args.start_date, end_date=args.end_date,
             purge_days=max(args.purge_days, 15))
     elif args.v43:
         trainer = V43Trainer()
+        _apply_overrides(trainer)
         trainer.walk_forward_train(
             start_date=args.start_date, end_date=args.end_date,
             purge_days=max(args.purge_days, 15))  # V4.3 需要 15d purge gap
     else:
         trainer = V395MultiTargetTrainer()
+        _apply_overrides(trainer)
         trainer.sharpe_label_blend = args.sharpe_blend
         trainer.use_brain_features = getattr(args, 'brain_features', False)
         trainer.train(start_date=args.start_date, end_date=args.end_date, purge_days=args.purge_days)
