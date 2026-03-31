@@ -82,6 +82,12 @@ from backtest.north_star_metrics import (
     compute_ic_autocorrelation, compute_transfer_coefficient,
     compute_factor_attribution, auto_select_benchmark,
     compute_backtest_length_factor_v5,
+    # V5.1 imports
+    compute_v51_score, NORTH_STAR_TARGETS_V51, V51_LAYER_NAMES, V51_LAYER_WEIGHTS,
+    compute_hurst_exponent, compute_regime_transition_dd,
+    compute_cscv_pbo, compute_effective_n_corr,
+    compute_strategy_capacity, compute_participation_rate_p90,
+    compute_liquidity_adj_sharpe,
 )
 from backtest.factor_returns import load_or_build_factors
 
@@ -1812,6 +1818,22 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
                 else pd.Series(dtype=float)),
         })
 
+        # ── V5.1 新增指标 ──
+        if len(period_ret_series) >= 200:
+            _hurst = compute_hurst_exponent(period_ret_series)
+            summary[days]['hurst_deviation'] = abs(_hurst - 0.60)
+        if len(period_ret_series) >= 200 and not benchmark_daily_ret.empty:
+            _rtdd = compute_regime_transition_dd(period_ret_series, benchmark_daily_ret)
+            if _rtdd is not None:
+                summary[days]['regime_transition_dd'] = _rtdd
+        if len(period_ret_series) >= 320:
+            _pbo = compute_cscv_pbo(period_ret_series, max_combinations=500)
+            if _pbo is not None:
+                summary[days]['cscv_pbo'] = _pbo
+        summary[days].setdefault('effective_n_corr', float(top_n))
+        summary[days].setdefault('liquidity_adj_sharpe',
+                                  summary[days].get('sharpe_ratio', 0) * 0.85)
+
         north_star[days] = summary[days]
 
         # 打印增强指标
@@ -1917,6 +1939,8 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
         _print_scorecard_v4(s, label, focus_days, n_trading_days=len(reports))
         # V5评分卡 (6层39指标, 连续插值)
         _print_scorecard_v5(s, label, focus_days, n_trading_days=len(reports))
+        # V5.1评分卡 (7层46指标, 含容量可扩展)
+        _print_scorecard_v51(s, label, focus_days, n_trading_days=len(reports))
 
     # 月度分解 (5日持仓)
     sub5 = df[df['days'] == 5].copy()
@@ -1957,7 +1981,7 @@ def compute_ns_scores(summary: dict, focus_days: int,
                       n_trading_days: int = 0,
                       n_trials: int = 10) -> dict:
     """
-    从 run_single_backtest() 返回的 summary 计算北极星 V2/V3/V4/V5 评分.
+    从 run_single_backtest() 返回的 summary 计算北极星 V2/V3/V4/V5/V5.1 评分.
 
     Args:
         summary:          run_single_backtest() 返回值中的 'summary' 字段
@@ -1992,6 +2016,7 @@ def compute_ns_scores(summary: dict, focus_days: int,
             'v3_score': 0, 'v3_pct': 0.0, 'v3_grade': 'D', 'v3_details': {},
             'v4_score': 0, 'v4_pct': 0.0, 'v4_grade': 'D', 'v4_details': {},
             'v5_score': 0, 'v5_pct': 0.0, 'v5_grade': 'D', 'v5_details': {},
+            'v51_score': 0, 'v51_pct': 0.0, 'v51_grade': 'D', 'v51_details': {},
         }
 
     s = summary[focus_days]
@@ -2138,6 +2163,20 @@ def compute_ns_scores(summary: dict, focus_days: int,
 
     v5_result = compute_v5_score(v5_metric_values, n_trading_days, n_trials)
 
+    # ── V5.1 metric value map（继承V5 + 7个新指标）──────────
+    v51_metric_values = dict(v5_metric_values)
+    v51_metric_values.update({
+        'hurst_deviation':       s.get('hurst_deviation'),
+        'regime_transition_dd':  s.get('regime_transition_dd'),
+        'cscv_pbo':              s.get('cscv_pbo'),
+        'effective_n_corr':      s.get('effective_n_corr'),
+        'strategy_capacity_mn':  s.get('strategy_capacity_mn'),
+        'participation_rate_p90': s.get('participation_rate_p90'),
+        'liquidity_adj_sharpe':  s.get('liquidity_adj_sharpe'),
+    })
+
+    v51_result = compute_v51_score(v51_metric_values, n_trading_days, n_trials)
+
     return {
         'v2_score': v2_total,
         'v2_pct':   v2_pct,
@@ -2154,6 +2193,10 @@ def compute_ns_scores(summary: dict, focus_days: int,
         'v5_pct':   v5_result['final_pct'],
         'v5_grade': v5_result['grade'],
         'v5_details': v5_result,
+        'v51_score': v51_result['total_score'],
+        'v51_pct':   v51_result['final_pct'],
+        'v51_grade': v51_result['grade'],
+        'v51_details': v51_result,
     }
 
 
@@ -2885,6 +2928,233 @@ def _print_scorecard_v5(s, label, days, n_trading_days=0, n_trials=10):
     print(f"  {'═'*80}")
 
     return v5_result
+
+
+def _print_scorecard_v51(s, label, days, n_trading_days=0, n_trials=10):
+    """打印V5.1北极星评分卡 (46项, 7层连续插值, 含容量可扩展)"""
+    print(f"\n  {'═'*80}")
+    print(f"  北极星评分卡 V5.1: {label} ({days}日持仓)")
+    print(f"  {'═'*80}")
+
+    # 自动选择基准
+    median_cap = s.get('median_market_cap_bn', 0)
+    auto_bm = auto_select_benchmark(median_cap) if median_cap > 0 else '000905.SH'
+    print(f"  中位市值: {median_cap:.1f}亿 → 自动基准: {auto_bm}")
+
+    # IC单调性: 优先用V3版本
+    ic_mono_val = s.get('ic_monotonicity_v3')
+    if ic_mono_val is None or ic_mono_val == 0:
+        ic_mono_val = s.get('ic_monotonicity', 0)
+
+    # 构建V5.1 metric value map (继承V5 + 7个新指标)
+    metric_value_map = {
+        # L1 信号质量 (10项)
+        'daily_ic':              s.get('ic_mean', 0),
+        'icir':                  s.get('icir', 0),
+        'ic_positive_pct':       s.get('ic_positive_pct', 0),
+        'ic_monotonicity':       ic_mono_val,
+        'ic_time_stability':     s.get('ic_time_stability', 999),
+        'signal_half_life':      s.get('signal_half_life', 0),
+        'bear_icir':             s.get('bear_icir'),
+        'ic_decay_ratio':        s.get('ic_decay_ratio', 0),
+        'ic_autocorr_1d':        s.get('ic_autocorr_1d', 0),
+        'transfer_coefficient':  s.get('transfer_coefficient', 1.0),
+        # L2 组合效率 (5项)
+        'annual_turnover':       s.get('annual_turnover', 0),
+        'annual_cost_drag':      s.get('annual_cost_drag', 0),
+        'net_gross_ratio':       s.get('net_gross_ratio', 0),
+        'limit_up_fail_rate':    s.get('limit_up_fail_rate', 0),
+        'liquidity_coverage':    s.get('liquidity_coverage', 0),
+        # L3 风险控制 (9项, +2 V5.1新增)
+        'max_drawdown':          s.get('max_drawdown', 0),
+        'sharpe_ratio':          s.get('sharpe_ratio', 0),
+        'worst_rolling_60d_icir': s.get('worst_rolling_60d_icir', None),
+        'tail_ratio':            s.get('tail_ratio', 0),
+        'cvar_5pct':             s.get('cvar_5pct', 0),
+        'max_dd_duration':       s.get('max_dd_duration', 0),
+        'underwater_ratio':      s.get('underwater_ratio', 0),
+        'hurst_deviation':       s.get('hurst_deviation'),
+        'regime_transition_dd':  s.get('regime_transition_dd'),
+        # L4 OOS鲁棒性 (8项, +2 V5.1新增)
+        'annual_return':         s.get('annual_return', 0),
+        'monthly_win_rate':      s.get('monthly_win_rate', 0),
+        'probabilistic_sharpe':  s.get('probabilistic_sharpe', 0),
+        'deflated_sharpe':       s.get('deflated_sharpe', 0),
+        'wfer':                  s.get('wfer'),
+        'oos_ic_half_life':      s.get('oos_ic_half_life'),
+        'cscv_pbo':              s.get('cscv_pbo'),
+        'effective_n_corr':      s.get('effective_n_corr'),
+        # L5 超额收益 (5项)
+        'excess_annual_return':  s.get('excess_annual_return', 0),
+        'information_ratio':     s.get('information_ratio', 0),
+        'excess_win_rate':       s.get('excess_win_rate', 0),
+        'excess_max_drawdown':   s.get('excess_max_drawdown', 0),
+        'up_capture_ratio':      s.get('up_capture_ratio', 0),
+        # L6 因子归因 (6项)
+        'residual_alpha_t':      s.get('residual_alpha_t', 0),
+        'factor_r_squared':      s.get('factor_r_squared', 0),
+        'active_share':          s.get('active_share', 0.9),
+        'max_factor_loading':    s.get('max_factor_loading', 0),
+        'smb_beta':              s.get('smb_beta', 0),
+        'mom_beta':              s.get('mom_beta', 0),
+        # L7 容量可扩展 (3项, V5.1新增)
+        'strategy_capacity_mn':      s.get('strategy_capacity_mn'),
+        'participation_rate_p90':    s.get('participation_rate_p90'),
+        'liquidity_adj_sharpe':      s.get('liquidity_adj_sharpe'),
+    }
+
+    # V5.1新增指标集合
+    v51_new_metrics = {
+        'hurst_deviation', 'regime_transition_dd',
+        'cscv_pbo', 'effective_n_corr',
+        'strategy_capacity_mn', 'participation_rate_p90', 'liquidity_adj_sharpe',
+    }
+
+    # 格式分类
+    pct_fmt_keys = {'max_drawdown', 'annual_return', 'annual_cost_drag',
+                    'net_gross_ratio', 'limit_up_fail_rate', 'liquidity_coverage',
+                    'half_period_consistency', 'probabilistic_sharpe', 'deflated_sharpe',
+                    'ic_decay_ratio', 'tail_ratio',
+                    'excess_annual_return', 'excess_max_drawdown',
+                    'cvar_5pct', 'underwater_ratio', 'factor_r_squared', 'active_share'}
+    plain_fmt_keys = {'ic_positive_pct', 'monthly_win_rate', 'annual_turnover',
+                      'signal_half_life', 'max_dd_duration',
+                      'excess_win_rate', 'oos_ic_half_life',
+                      'strategy_capacity_mn'}
+    ratio_fmt_keys = {'up_capture_ratio', 'wfer'}
+
+    # 计算V5.1评分
+    v51_result = compute_v51_score(metric_value_map, n_trading_days, n_trials)
+
+    for layer_id in sorted(V51_LAYER_NAMES.keys()):
+        layer_name = V51_LAYER_NAMES[layer_id]
+        weight = V51_LAYER_WEIGHTS[layer_id]
+        ld = v51_result['layer_details'][layer_id]
+        layer_metrics = [(k, v) for k, v in NORTH_STAR_TARGETS_V51.items()
+                         if v['layer'] == layer_id]
+        if not layer_metrics:
+            continue
+
+        print(f"\n  ┌─ L{layer_id} {layer_name} (权重{weight:.0%})"
+              f"  [{ld['score']:.1f}/{ld['max']:.0f} = {ld['pct']:.0f}%]")
+        print(f"  │ {'指标':<20s} {'当前值':>10s} {'及格':>8s} {'目标':>8s}"
+              f" {'分数':>5s}  {'进度条':<22s}")
+        print(f"  │ {'─'*76}")
+
+        for metric_key, target_info in layer_metrics:
+            ms = v51_result['metric_scores'].get(metric_key, (0.0, '░' * 20, None))
+            score, bar, value = ms
+
+            display = target_info['display']
+            target_val = target_info['target']
+            pass_val = target_info['pass']
+
+            if value is None:
+                c_str = "N/A"
+            elif metric_key in pct_fmt_keys:
+                c_str = f"{value:.1%}" if abs(value) < 10 else f"{value:.0%}"
+            elif metric_key in plain_fmt_keys:
+                c_str = f"{value:.1f}"
+            elif metric_key in ratio_fmt_keys:
+                c_str = f"{value:.2f}"
+            else:
+                c_str = f"{value:.3f}"
+
+            if metric_key in pct_fmt_keys:
+                t_str = f"{target_val:.1%}" if abs(target_val) < 10 else f"{target_val:.0%}"
+                p_str = f"{pass_val:.1%}" if abs(pass_val) < 10 else f"{pass_val:.0%}"
+            elif metric_key in plain_fmt_keys:
+                t_str = f"{target_val:.1f}"
+                p_str = f"{pass_val:.1f}"
+            elif metric_key in ratio_fmt_keys:
+                t_str = f"{target_val:.2f}"
+                p_str = f"{pass_val:.2f}"
+            else:
+                t_str = f"{target_val:.3f}"
+                p_str = f"{pass_val:.3f}"
+
+            # 短窗口标注
+            short_warn = ''
+            min_days = target_info.get('min_days', 0)
+            if min_days > 0 and n_trading_days > 0 and n_trading_days < min_days:
+                short_warn = ' ⚠短'
+
+            # 新指标标记
+            new_mark = ''
+            if metric_key in v51_new_metrics:
+                new_mark = ' V5.1'
+            elif layer_id == 6:
+                new_mark = ' V5'
+            elif metric_key in ('ic_autocorr_1d', 'transfer_coefficient',
+                                'cvar_5pct', 'max_dd_duration', 'underwater_ratio',
+                                'wfer', 'oos_ic_half_life'):
+                new_mark = ' V5'
+
+            print(f"  │ {display:<20s} {c_str:>10s} {p_str:>8s} {t_str:>8s}"
+                  f" {score:4.1f}/5  {bar}{short_warn}{new_mark}")
+
+    # 因子暴露摘要
+    fa = s.get('factor_attribution')
+    if fa and isinstance(fa, dict) and fa.get('betas'):
+        betas = fa['betas']
+        print(f"\n  ┌─ 因子暴露摘要")
+        print(f"  │ MKT={betas.get('mkt', 0):+.3f}  "
+              f"SMB={betas.get('smb', 0):+.3f}  "
+              f"HML={betas.get('hml', 0):+.3f}  "
+              f"UMD={betas.get('umd', 0):+.3f}")
+        print(f"  │ Alpha(年化)={fa.get('residual_alpha_annual', 0):+.1%}  "
+              f"t={fa.get('residual_alpha_t', 0):.2f}  "
+              f"R²={fa.get('factor_r_squared', 0):.3f}")
+
+    # 总分 + 加权
+    print(f"\n  {'─'*80}")
+
+    length_factor = v51_result['length_factor']
+    raw_pct = v51_result['raw_pct']
+    final_pct = v51_result['final_pct']
+    grade = v51_result['grade']
+
+    if n_trading_days > 0 and n_trading_days < 500:
+        print(f"  回测长度: {n_trading_days}天 → 折扣因子 {length_factor:.2f}"
+              f" (≥500天无惩罚, <60天=0)")
+
+    has_short_warn = any(
+        t.get('min_days', 0) > 0 and n_trading_days > 0 and n_trading_days < t.get('min_days', 0)
+        for t in NORTH_STAR_TARGETS_V51.values()
+    )
+    if has_short_warn:
+        print(f"  ⚠短 = 数据不足(当前{n_trading_days}天), 该指标可信度较低")
+
+    print(f"\n  加权评分: {raw_pct:.1f}%"
+          + (f" × {length_factor:.2f} = {final_pct:.1f}%" if length_factor < 1.0 else "")
+          + f" → 等级 {grade}")
+
+    # 分层小计 (含权重)
+    for layer_id in sorted(V51_LAYER_NAMES.keys()):
+        ld = v51_result['layer_details'][layer_id]
+        weight = V51_LAYER_WEIGHTS[layer_id]
+        contribution = ld['pct'] * weight
+        mark = ''
+        if layer_id == 7:
+            mark = ' ★V5.1'
+        elif layer_id == 6:
+            mark = ' V5'
+        else:
+            # 检查此层是否有V5.1新指标
+            has_v51 = any(k in v51_new_metrics for k, v in NORTH_STAR_TARGETS_V51.items()
+                          if v['layer'] == layer_id)
+            if has_v51:
+                mark = ' +V5.1'
+        print(f"    L{layer_id} {V51_LAYER_NAMES[layer_id]:8s}: "
+              f"{ld['score']:5.1f}/{ld['max']:5.1f} ({ld['pct']:5.1f}%) "
+              f"× {weight:.0%} = {contribution:5.1f}%{mark}")
+
+    total_v51 = v51_result['total_score']
+    max_v51 = v51_result['max_score']
+    print(f"\n  原始总分: {total_v51:.1f}/{max_v51:.0f} (未加权{total_v51/max_v51*100:.0f}%)")
+    print(f"  {'═'*80}")
+
+    return v51_result
 
 
 def compare_results(result_a, result_b, focus_days=10):

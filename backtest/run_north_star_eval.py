@@ -609,12 +609,14 @@ def main():
     parser.add_argument('--hold-buffer', type=float, default=0,
                         help='持仓缓冲区倍数 (0=关闭, 推荐2-3). 现有持仓在top_n*(1+buffer)内保留')
     parser.add_argument('--score-version', type=str, default='both',
-                        choices=['v2', 'v3', 'v4', 'v5', 'both', 'all'],
-                        help='评分卡版本: v2/v3/v4/v5/both(v2+v4)/all(v2+v4+v5) (default: both)')
+                        choices=['v2', 'v3', 'v4', 'v5', 'v51', 'both', 'all'],
+                        help='评分卡版本: v2/v3/v4/v5/v51/both(v2+v4)/all(全部) (default: both)')
     parser.add_argument('--n-trials', type=int, default=10,
                         help='DSR多重测试校正: 尝试过的策略变体数 (default: 10)')
     parser.add_argument('--wf-summary', type=str, default=None,
                         help='WF训练摘要JSON路径 (V5 WFER+OOS半衰期)')
+    parser.add_argument('--assumed-aum', type=float, default=100,
+                        help='V5.1容量评估假设AUM (百万RMB, default: 100)')
     args = parser.parse_args()
 
     # --production: 生产配置覆盖
