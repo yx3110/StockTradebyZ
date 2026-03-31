@@ -286,17 +286,23 @@ class V44ProductionScorer(V43ProductionScorer):
 
         return results
 
-    def _apply_executability_filters(self, results: Dict[str, Dict], date: str) -> Dict[str, Dict]:
-        """Module E: 可执行性过滤 (V4.4.1: T+1涨停检测 + 更严门槛)
+    def _apply_executability_filters(self, results: Dict[str, Dict], date: str,
+                                      offline_mode: bool = False) -> Dict[str, Dict]:
+        """Module E: 可执行性过滤
 
-        关键修复: 北极星评估在买入日T+1检测涨停, 我们也必须检查T+1数据。
-        报告生成于T日, 股票在T+1买入。T日涨5%的股票, T+1很可能涨停。
+        online模式(默认): 仅用T日数据, 不访问未来数据。适用于实盘选股。
+        offline模式: 使用T+1数据做回测可执行性评估, 仅用于离线回测。
+
+        Args:
+            offline_mode: True=回测模式(可用T+1), False=线上模式(仅T日)
         """
         exec_data_t = self._load_executability_data(date, list(results.keys()))
 
-        # 加载T+1数据 (买入日)
-        next_date = self._get_next_trading_date(date)
-        exec_data_t1 = self._load_executability_data(next_date, list(results.keys())) if next_date else {}
+        # T+1数据仅在离线回测模式下加载
+        exec_data_t1 = {}
+        if offline_mode:
+            next_date = self._get_next_trading_date(date)
+            exec_data_t1 = self._load_executability_data(next_date, list(results.keys())) if next_date else {}
 
         for code in list(results.keys()):
             d_t = exec_data_t.get(code, {})
@@ -307,12 +313,13 @@ class V44ProductionScorer(V43ProductionScorer):
             is_bse = code.startswith('8')
             limit_threshold = 0.195 if is_cyb_kc else (0.295 if is_bse else 0.095)
 
-            # T+1实际涨停 → 评分清零 (买入日不可买入, 直接匹配北极星判定)
-            pct_t1 = d_t1.get('pct_change', 0)
-            if pct_t1 >= limit_threshold:
-                results[code]['score'] = 0.0
-                results[code]['exec_filter'] = 'limit_up_t1'
-                continue
+            # T+1实际涨停 → 评分清零 (仅offline_mode, 买入日不可买入)
+            if offline_mode:
+                pct_t1 = d_t1.get('pct_change', 0)
+                if pct_t1 >= limit_threshold:
+                    results[code]['score'] = 0.0
+                    results[code]['exec_filter'] = 'limit_up_t1'
+                    continue
 
             # T日涨停 → 评分清零 (T+1大概率高开或继续涨停)
             pct_t = d_t.get('pct_change', 0)
@@ -321,7 +328,7 @@ class V44ProductionScorer(V43ProductionScorer):
                 results[code]['exec_filter'] = 'limit_up'
                 continue
 
-            # T+1近涨停 (涨幅>5%) → 大幅降权
+            # T+1近涨停 (涨幅>5%) → 大幅降权 (仅offline_mode)
             if pct_t1 > 0.05:
                 results[code]['score'] *= 0.2
                 results[code]['exec_filter'] = 'near_limit_up_t1'

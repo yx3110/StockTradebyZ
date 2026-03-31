@@ -78,7 +78,7 @@ X = X.fillna(X.median())
 # 3. 划分训练/测试集
 print("\n[3/5] 划分训练/测试集...")
 X_train, X_test, y_train, y_test = train_test_split(
-    X, y, test_size=0.2, random_state=42, shuffle=True
+    X, y, test_size=0.2, random_state=42, shuffle=False  # 时序数据禁止shuffle
 )
 print(f"  训练集: {X_train.shape[0]:,}")
 print(f"  测试集: {X_test.shape[0]:,}")
