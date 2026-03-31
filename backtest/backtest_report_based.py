@@ -1835,6 +1835,44 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
         summary[days].setdefault('liquidity_adj_sharpe',
                                   summary[days].get('sharpe_ratio', 0) * 0.85)
 
+        # ── V5.1 容量数据补齐 ──
+        try:
+            # 从 holdings_by_date 收集所有持仓过的股票代码
+            _held_codes = set()
+            for _codes in holdings_by_date.values():
+                if _codes:
+                    _held_codes.update(_codes)
+            _held_codes.discard('')
+
+            if _held_codes and len(_held_codes) >= 3:
+                import sqlite3 as _sqlite3
+                _db_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                        'data_adapter', 'stock_data.db')
+                _conn = _sqlite3.connect(_db_path, timeout=30)
+                _placeholders = ','.join('?' * len(_held_codes))
+                _vol_df = pd.read_sql(f"""
+                    SELECT s.code,
+                           AVG(dq.volume * dq.close) as adv_20d_value,
+                           AVG(ABS(dq.price_change_pct)) as daily_vol
+                    FROM daily_quotes dq
+                    JOIN securities s ON dq.security_id = s.id
+                    WHERE s.code IN ({_placeholders})
+                      AND dq.trade_date >= ?
+                    GROUP BY s.code
+                    HAVING COUNT(*) >= 10
+                """, _conn, params=list(_held_codes) + [start_d])
+                _conn.close()
+
+                if not _vol_df.empty and len(_vol_df) >= 2:
+                    _ann_ret = summary[days].get('annual_return', 0.2)
+                    _turnover = summary[days].get('annual_turnover', 30) / 100
+                    summary[days]['strategy_capacity_mn'] = compute_strategy_capacity(
+                        _vol_df, _ann_ret, _turnover, n_positions=top_n)
+                    summary[days]['participation_rate_p90'] = compute_participation_rate_p90(
+                        _vol_df, assumed_aum_mn=100, n_positions=top_n)
+        except Exception as _e:
+            logger.debug(f"Capacity metrics: {_e}")
+
         north_star[days] = summary[days]
 
         # 打印增强指标
