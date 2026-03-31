@@ -62,9 +62,12 @@ class DatabaseManager:
         """获取数据库连接的上下文管理器"""
         conn = sqlite3.connect(
             str(self.db_path),
-            detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES
+            detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES,
+            timeout=30  # busy_timeout 30秒
         )
         conn.row_factory = sqlite3.Row  # 支持通过列名访问
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute("PRAGMA journal_mode = WAL")
         try:
             yield conn
         finally:
@@ -74,7 +77,7 @@ class DatabaseManager:
         """执行查询并返回结果"""
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            if params:
+            if params is not None:
                 cursor.execute(query, params)
             else:
                 cursor.execute(query)

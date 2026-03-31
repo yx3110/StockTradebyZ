@@ -12,7 +12,10 @@ from typing import Dict, List, Optional, Any
 import logging
 
 from data_access import StockDataDAO, BacktraderDataAdapter
-from database_manager import DatabaseManager
+try:
+    from .database_manager import DatabaseManager
+except ImportError:
+    from database_manager import DatabaseManager
 
 logger = logging.getLogger(__name__)
 

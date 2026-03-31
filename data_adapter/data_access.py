@@ -10,7 +10,10 @@ from typing import List, Dict, Optional, Tuple, Union
 from datetime import datetime, timedelta
 import logging
 
-from database_manager import DatabaseManager
+try:
+    from .database_manager import DatabaseManager
+except ImportError:
+    from database_manager import DatabaseManager
 
 logger = logging.getLogger(__name__)
 
@@ -92,9 +95,20 @@ class StockDataDAO:
         """
         # 默认字段
         if fields is None:
-            fields = ['trade_date', 'open', 'high', 'low', 'close', 'volume', 
+            fields = ['trade_date', 'open', 'high', 'low', 'close', 'volume',
                      'price_change_pct', 'is_limit_up', 'is_limit_down']
-        
+
+        # 白名单校验防止SQL注入
+        ALLOWED_FIELDS = {
+            'trade_date', 'open', 'high', 'low', 'close', 'volume',
+            'price_change_pct', 'is_limit_up', 'is_limit_down', 'amount',
+            'turnover_rate', 'pe_ttm', 'pb', 'ps_ttm', 'market_cap',
+            'total_mv', 'circ_mv', 'security_id',
+        }
+        for f in fields:
+            if f not in ALLOWED_FIELDS:
+                raise ValueError(f"非法字段名: {f}")
+
         field_str = ', '.join([f"q.{field}" for field in fields])
         
         query = f"""
@@ -235,6 +249,9 @@ class StockDataDAO:
         query += " ORDER BY sig.comprehensive_score DESC"
         
         if top_n:
+            top_n = int(top_n)  # 防止SQL注入
+            if top_n < 1 or top_n > 10000:
+                raise ValueError(f"top_n 必须在 1-10000 之间: {top_n}")
             query += f" LIMIT {top_n}"
         
         with self.db.get_connection() as conn:
