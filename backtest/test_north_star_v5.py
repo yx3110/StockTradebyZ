@@ -293,10 +293,11 @@ class TestV5Score:
 
     def test_auto_select_benchmark(self):
         from backtest.north_star_metrics import auto_select_benchmark
-        assert auto_select_benchmark(100) == '000300.SH'
-        assert auto_select_benchmark(20) == '000905.SH'
-        assert auto_select_benchmark(8) == '000852.SH'
-        assert auto_select_benchmark(3) == '932000.CSI'
+        assert auto_select_benchmark(100) == '000300.SH'   # 大盘
+        assert auto_select_benchmark(60) == '000905.SH'    # 中盘 (was CSI300 with old threshold)
+        assert auto_select_benchmark(20) == '000905.SH'    # 中盘
+        assert auto_select_benchmark(8) == '000852.SH'     # 中小盘
+        assert auto_select_benchmark(3) == '932000.CSI'    # 小盘
 
     def test_39_metrics(self):
         """V5应有恰好39个指标"""

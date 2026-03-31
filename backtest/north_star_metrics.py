@@ -2961,7 +2961,7 @@ def compute_backtest_length_factor_v5(n_days: int, min_days: int = 500) -> float
 
 def auto_select_benchmark(median_market_cap_bn: float) -> str:
     """根据策略持仓市值中位数自动选择最匹配基准."""
-    if median_market_cap_bn >= 50:
+    if median_market_cap_bn >= 80:
         return '000300.SH'
     if median_market_cap_bn >= 15:
         return '000905.SH'
