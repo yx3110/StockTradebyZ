@@ -291,7 +291,7 @@ class V391MultiPeriodTrainer:
             X, np.arange(len(X)),
             test_size=test_size,
             random_state=random_state,
-            shuffle=True
+            shuffle=False  # 时序数据禁止shuffle
         )
 
         logger.info(f"  训练集: {X_train.shape[0]:,} 样本")

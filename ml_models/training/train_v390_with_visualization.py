@@ -403,7 +403,7 @@ class V390VisualizedTrainer:
         logger.info("="*80)
 
         X_train, X_val, y_train, y_val = train_test_split(
-            X, y, test_size=test_size, random_state=random_state, shuffle=True
+            X, y, test_size=test_size, random_state=random_state, shuffle=False  # 时序数据禁止shuffle
         )
 
         logger.info(f"  训练集: {X_train.shape[0]:,} 样本")

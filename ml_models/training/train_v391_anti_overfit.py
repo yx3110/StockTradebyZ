@@ -166,7 +166,7 @@ class AntiOverfitV391Trainer:
                 if isinstance(features, dict):
                     features_list.append(features)
                     valid_indices.append(idx)
-            except:
+            except Exception:
                 continue
 
             if len(features_list) % 50000 == 0 and len(features_list) > 0:

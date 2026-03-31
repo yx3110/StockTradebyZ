@@ -104,7 +104,7 @@ class Config:
 
     # Flask配置
     SECRET_KEY = os.environ.get('SECRET_KEY') or 'dev-secret-key-change-in-production'
-    DEBUG = True
+    DEBUG = os.environ.get('FLASK_DEBUG', 'false').lower() in ('true', '1')
 
     # 目录配置
     BASE_DIR = BASE_DIR
@@ -149,8 +149,8 @@ class Config:
     # 分页配置
     ITEMS_PER_PAGE = 50
 
-    # Python解释器路径
-    PYTHON_EXECUTABLE = '/Users/yangxu/miniconda3/bin/python3'
+    # Python解释器路径 (支持环境变量覆盖)
+    PYTHON_EXECUTABLE = os.environ.get('PYTHON_EXECUTABLE', 'python3')
 
 
 class DevelopmentConfig(Config):

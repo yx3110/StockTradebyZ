@@ -1085,14 +1085,14 @@ class V390ProductionScorer:
             security_id = row[0]
             stock_name = row[1]
 
-            # 获取最近可用的行情数据（不限制日期）
+            # 获取预测日及之前的行情数据（防止未来数据泄漏）
             df_quotes = pd.read_sql_query("""
                 SELECT trade_date, open, high, low, close, volume, price_change_pct
                 FROM daily_quotes
-                WHERE security_id = ?
+                WHERE security_id = ? AND trade_date <= ?
                 ORDER BY trade_date DESC
                 LIMIT 60
-            """, conn, params=(security_id,))
+            """, conn, params=(security_id, trade_date))
 
             conn.close()
 

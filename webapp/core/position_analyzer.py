@@ -129,7 +129,7 @@ class PositionAnalyzer:
                 if row and row[0]:
                     current_price = float(row[0])
                     avg_cost = current_price
-            except:
+            except Exception:
                 pass
 
         # 最终回退
@@ -298,7 +298,7 @@ class PositionAnalyzer:
             result = cursor.fetchone()[0]
             conn.close()
             return result or datetime.now().strftime('%Y-%m-%d')
-        except:
+        except Exception:
             return datetime.now().strftime('%Y-%m-%d')
 
     def _get_ml_score(self, code: str, trade_date: str) -> Dict:
@@ -1252,7 +1252,7 @@ class PositionAnalyzer:
                             result = self.ml_scorer.predict_score(code, trade_date)
                             if result:
                                 ml_batch[code] = result
-                        except:
+                        except Exception:
                             pass
                 logger.info(f"批量ML评分完成: {len(ml_batch)}/{len(all_codes)} 只股票")
             except Exception as e:
@@ -1265,7 +1265,7 @@ class PositionAnalyzer:
                     try:
                         first_date = datetime.strptime(pos['first_buy_date'], '%Y-%m-%d')
                         holding_days = (datetime.now() - first_date).days
-                    except:
+                    except Exception:
                         pass
 
                 # 确保参数有效
@@ -1293,7 +1293,7 @@ class PositionAnalyzer:
                         if row and row[0]:
                             current_price = float(row[0])
                             avg_cost = current_price if avg_cost is None else avg_cost
-                    except:
+                    except Exception:
                         pass
 
                 if current_price is None:

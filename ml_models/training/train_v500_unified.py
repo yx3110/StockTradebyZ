@@ -274,13 +274,9 @@ class V500UnifiedTrainer:
                 excess_mean = df[label_col].mean()
                 logger.info(f"    {label_col}: raw={raw_mean:.6f} → excess={excess_mean:.6f}")
 
-        # --- Step 7: 标签 Winsorization ---
-        for label_col in ['label_3d', 'label_5d', 'label_10d']:
-            lo = df[label_col].quantile(0.01)
-            hi = df[label_col].quantile(0.99)
-            n_clipped = ((df[label_col] < lo) | (df[label_col] > hi)).sum()
-            df[label_col] = df[label_col].clip(lo, hi)
-            logger.info(f"  标签winsorize {label_col}: [{lo:.4f}, {hi:.4f}], 裁剪{n_clipped:,}个")
+        # --- Step 7: 标签 Winsorization (bounds将在split后仅从训练集计算) ---
+        # 注意: 此处仅做占位标记, 实际winsorize在split_data()中执行以避免数据泄漏
+        logger.info("  标签 winsorization 将在 train/test split 后执行(防泄漏)")
 
         # --- Step 8: 缺失值处理 ---
         # 市场特征 ffill
@@ -392,9 +388,9 @@ class V500UnifiedTrainer:
         y_5d = df['label_5d'].values
         y_10d = df['label_10d'].values
 
-        # Per-feature winsorization
-        X, self.winsorize_bounds = self._winsorize_features(X)
-        logger.info(f"  特征 winsorization: {len(self.winsorize_bounds)} 列")
+        # 特征 winsorization 推迟到 split_data() 中仅用训练集bounds
+        logger.info(f"  特征 winsorization 将在 train/test split 后执行(防泄漏)")
+        self.winsorize_bounds = None  # 占位, split_data中赋值
 
         return X, y_3d, y_5d, y_10d, df
 
@@ -447,6 +443,28 @@ class V500UnifiedTrainer:
             result[f'y3d_{name}'] = y_3d[mask]
             result[f'y5d_{name}'] = y_5d[mask]
             result[f'y10d_{name}'] = y_10d[mask]
+
+        # --- 特征 Winsorization: 仅用训练集计算bounds, 应用到所有集 ---
+        result['X_train'], self.winsorize_bounds = self._winsorize_features(result['X_train'])
+        for split_name in ['val', 'test']:
+            X_s = result[f'X_{split_name}']
+            for i, (lo, hi) in enumerate(self.winsorize_bounds):
+                if lo != hi:
+                    X_s[:, i] = np.clip(X_s[:, i], lo, hi)
+            result[f'X_{split_name}'] = X_s
+        logger.info(f"  特征 winsorization (train-only bounds): {len(self.winsorize_bounds)} 列")
+
+        # --- 标签 Winsorization: 仅用训练集计算bounds ---
+        self.label_winsorize_bounds = {}
+        for label_key in ['y3d', 'y5d', 'y10d']:
+            train_y = result[f'{label_key}_train']
+            lo = float(np.percentile(train_y, 1))
+            hi = float(np.percentile(train_y, 99))
+            n_clipped = int(((train_y < lo) | (train_y > hi)).sum())
+            self.label_winsorize_bounds[label_key] = (lo, hi)
+            for split_name in ['train', 'val', 'test']:
+                result[f'{label_key}_{split_name}'] = np.clip(result[f'{label_key}_{split_name}'], lo, hi)
+            logger.info(f"  标签winsorize {label_key}: [{lo:.4f}, {hi:.4f}], train裁剪{n_clipped:,}个")
 
         logger.info(f"  训练集: {len(result['X_train']):,}, <= {train_date_end}")
         logger.info(f"  验证集: {len(result['X_val']):,}, {val_date_start} ~ {val_date_end}")

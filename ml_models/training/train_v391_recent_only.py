@@ -107,7 +107,7 @@ class RecentOnlyV391Trainer:
                 if isinstance(features, dict):
                     features_list.append(features)
                     valid_indices.append(idx)
-            except:
+            except Exception:
                 continue
 
         df_valid = df.loc[valid_indices].copy()

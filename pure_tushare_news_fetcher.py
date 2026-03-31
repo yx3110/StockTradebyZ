@@ -231,7 +231,7 @@ class PureTushareNewsFetcher:
                                             pub_time = datetime.strptime(f"{event_date} {event_time}", '%Y%m%d %H:%M').strftime('%Y-%m-%d %H:%M:%S')
                                         else:
                                             pub_time = datetime.strptime(event_date, '%Y%m%d').strftime('%Y-%m-%d %H:%M:%S')
-                                    except:
+                                    except Exception:
                                         pub_time = datetime.strptime(event_date, '%Y%m%d').strftime('%Y-%m-%d %H:%M:%S')
                                     
                                     # 生成财经日历新闻
@@ -291,7 +291,7 @@ class PureTushareNewsFetcher:
                         try:
                             end_date_formatted = datetime.strptime(end_date, '%Y%m%d').strftime('%Y年%m月%d日')
                             period = end_date_formatted[:7]  # 2024年12月 -> 2024年12
-                        except:
+                        except Exception:
                             end_date_formatted = end_date
                             period = end_date
                         
@@ -302,14 +302,14 @@ class PureTushareNewsFetcher:
                             try:
                                 pre_date_formatted = datetime.strptime(pre_date, '%Y%m%d').strftime('%Y年%m月%d日')
                                 content += f"，预计披露日期：{pre_date_formatted}"
-                            except:
+                            except Exception:
                                 content += f"，预计披露日期：{pre_date}"
                         
                         if actual_date and actual_date != 'nan':
                             try:
                                 actual_date_formatted = datetime.strptime(actual_date, '%Y%m%d').strftime('%Y年%m月%d日')
                                 content += f"，实际披露日期：{actual_date_formatted}"
-                            except:
+                            except Exception:
                                 content += f"，实际披露日期：{actual_date}"
                         
                         news_item = {
@@ -357,7 +357,7 @@ class PureTushareNewsFetcher:
                         # 格式化上市日期
                         try:
                             list_date_formatted = datetime.strptime(list_date, '%Y%m%d').strftime('%Y年%m月%d日')
-                        except:
+                        except Exception:
                             list_date_formatted = list_date
                         
                         # 生成股票基础信息
@@ -476,13 +476,13 @@ class PureTushareNewsFetcher:
             for fmt in formats:
                 try:
                     return datetime.strptime(datetime_str, fmt)
-                except:
+                except Exception:
                     continue
             
             # 如果都失败，返回当前时间
             return datetime.now()
             
-        except:
+        except Exception:
             return datetime.now()
     
     def _generate_news_summary(self, news_items: List[Dict], stock_name: str) -> str:

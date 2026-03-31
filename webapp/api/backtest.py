@@ -389,7 +389,7 @@ def get_backtest_summary():
                     version_stats[version]['count'] += 1
                     version_stats[version]['total_return'] += result.get('total_return', 0)
                     version_stats[version]['sharpe_sum'] += result.get('sharpe_ratio', 0)
-            except:
+            except Exception:
                 pass
 
         # 计算平均值

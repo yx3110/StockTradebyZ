@@ -134,7 +134,7 @@ class CachedScorer:
                 features = json.loads(row['features_json'])
                 features_list.append(features)
                 codes.append(row['code'])
-            except:
+            except Exception:
                 continue
 
         if not features_list:
@@ -225,7 +225,7 @@ class CachedScorer:
                     'market_momentum_20d': row['market_momentum_20d'],
                     'market_momentum_5d': row['market_momentum_5d']
                 })
-            except:
+            except Exception:
                 continue
 
         if not features_list:
@@ -243,7 +243,7 @@ class CachedScorer:
         if self.scaler and 'main' in self.scaler:
             try:
                 X = self.scaler['main'].transform(X)
-            except:
+            except Exception:
                 pass
 
         # 多目标预测
@@ -263,7 +263,7 @@ class CachedScorer:
                     weight = self.weights.get(f'label_{target}', {}).get(name, 0.2)
                     target_pred += weight * pred
                     total_weight += weight
-                except:
+                except Exception:
                     continue
 
             if total_weight > 0:

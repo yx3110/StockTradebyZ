@@ -124,42 +124,42 @@ class TradingAdvisor:
                 try:
                     price = float(line.split('**收盘价**:')[1].split('元')[0].strip())
                     current_stock['current_price'] = price
-                except:
+                except Exception:
                     pass
             
             elif '- **建议买入价**:' in line:
                 try:
                     price = float(line.split('**建议买入价**:')[1].split('元')[0].strip())
                     current_stock['suggested_buy_price'] = price
-                except:
+                except Exception:
                     pass
             
             elif '- **建议止损价**:' in line:
                 try:
                     price = float(line.split('**建议止损价**:')[1].split('元')[0].strip())
                     current_stock['stop_loss_price'] = price
-                except:
+                except Exception:
                     pass
             
             elif '- **建议止盈价**:' in line:
                 try:
                     price = float(line.split('**建议止盈价**:')[1].split('元')[0].strip())
                     current_stock['target_price'] = price
-                except:
+                except Exception:
                     pass
             
             elif '- **综合评分**:' in line:
                 try:
                     score = float(line.split('**综合评分**:')[1].split('分')[0].strip())
                     current_stock['score'] = score
-                except:
+                except Exception:
                     pass
             
             elif '- **通过策略数**:' in line:
                 try:
                     count = int(line.split('**通过策略数**:')[1].split('个')[0].strip())
                     current_stock['strategy_count'] = count
-                except:
+                except Exception:
                     pass
         
         if current_stock:

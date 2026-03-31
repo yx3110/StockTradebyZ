@@ -125,7 +125,7 @@ def quick_analysis():
                 content = f.read()
                 if "不是交易日" not in content:
                     valid_reports += 1
-        except:
+        except Exception:
             continue
 
     logger.info(f"📈 发现 {len(report_files)} 个选股报告文件")

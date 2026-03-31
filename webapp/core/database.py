@@ -137,7 +137,7 @@ class DatabaseManager:
             # 为已有的positions表添加group_id列（如果不存在）
             try:
                 cursor.execute('ALTER TABLE positions ADD COLUMN group_id INTEGER')
-            except:
+            except Exception:
                 pass  # 列已存在
 
             # 为已有的positions表添加风控列（如果不存在）
@@ -152,7 +152,7 @@ class DatabaseManager:
             for col, coltype in risk_columns:
                 try:
                     cursor.execute(f'ALTER TABLE positions ADD COLUMN {col} {coltype}')
-                except:
+                except Exception:
                     pass  # 列已存在
 
             # 交易记录表
@@ -201,7 +201,7 @@ class DatabaseManager:
             for col, coltype in [('kelly_position', 'REAL'), ('predicted_return_5d', 'REAL')]:
                 try:
                     cursor.execute(f'ALTER TABLE recommendations ADD COLUMN {col} {coltype}')
-                except:
+                except Exception:
                     pass  # 列已存在
 
             # 交易评估表
@@ -342,7 +342,7 @@ class DatabaseManager:
             try:
                 cursor.execute("SELECT COUNT(*) FROM technical_indicators")
                 total_indicators = cursor.fetchone()[0]
-            except:
+            except Exception:
                 pass
 
             # 数据库大小
@@ -362,7 +362,7 @@ class DatabaseManager:
                         date_range = f'{years}年{months}月'
                     else:
                         date_range = f'{months}月'
-                except:
+                except Exception:
                     date_range = f'{earliest_date} - {latest_date}'
 
             return {

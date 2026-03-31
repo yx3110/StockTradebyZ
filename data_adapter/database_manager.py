@@ -6,29 +6,29 @@
 
 import sqlite3
 import logging
+import threading
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 from contextlib import contextmanager
 import pandas as pd
 from datetime import datetime
 
-# 配置日志
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
 class DatabaseManager:
-    """SQLite数据库管理器"""
-    
+    """SQLite数据库管理器 (线程本地连接复用)"""
+
     def __init__(self, db_path: str = "data_adapter/stock_data.db"):
         """
         初始化数据库管理器
-        
+
         Args:
             db_path: 数据库文件路径
         """
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._local = threading.local()  # 线程本地连接复用
         self._init_database()
     
     def _init_database(self):
@@ -57,24 +57,52 @@ class DatabaseManager:
             else:
                 logger.info(f"数据库已存在，跳过表结构创建: {self.db_path}")
     
-    @contextmanager
-    def get_connection(self):
-        """获取数据库连接的上下文管理器"""
+    def _make_connection(self) -> sqlite3.Connection:
+        """创建新的数据库连接并设置必要的PRAGMA"""
         conn = sqlite3.connect(
             str(self.db_path),
-            detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES
+            detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES,
+            timeout=30  # busy_timeout 30秒
         )
-        conn.row_factory = sqlite3.Row  # 支持通过列名访问
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute("PRAGMA journal_mode = WAL")
+        return conn
+
+    @contextmanager
+    def get_connection(self):
+        """获取数据库连接的上下文管理器 (线程本地复用)
+
+        同一线程内复用连接避免重复创建开销。
+        连接在线程结束时由 GC 关闭。
+        """
+        conn = getattr(self._local, 'conn', None)
+        if conn is None:
+            conn = self._make_connection()
+            self._local.conn = conn
         try:
             yield conn
-        finally:
+        except Exception:
+            # 出错时关闭并重建连接
+            try:
+                conn.close()
+            except Exception:
+                pass
+            self._local.conn = None
+            raise
+
+    def close(self):
+        """显式关闭当前线程的连接"""
+        conn = getattr(self._local, 'conn', None)
+        if conn is not None:
             conn.close()
+            self._local.conn = None
     
     def execute_query(self, query: str, params: Optional[tuple] = None) -> List[sqlite3.Row]:
         """执行查询并返回结果"""
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            if params:
+            if params is not None:
                 cursor.execute(query, params)
             else:
                 cursor.execute(query)

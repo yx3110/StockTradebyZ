@@ -12,7 +12,6 @@ from contextlib import contextmanager
 from datetime import datetime
 
 # 设置日志
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 @contextmanager

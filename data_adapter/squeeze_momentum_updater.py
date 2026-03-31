@@ -19,7 +19,10 @@ project_root = os.path.dirname(current_dir)
 sys.path.append(project_root)
 sys.path.append(os.path.join(project_root, 'scoring_improvements'))
 
-from database_manager import DatabaseManager
+try:
+    from .database_manager import DatabaseManager
+except ImportError:
+    from database_manager import DatabaseManager
 
 try:
     from squeeze_momentum_calculator import SqueezeMomentumCalculator
@@ -27,7 +30,6 @@ except ImportError:
     SqueezeMomentumCalculator = None
 
 # 设置日志
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class SqueezeMomentumUpdater:

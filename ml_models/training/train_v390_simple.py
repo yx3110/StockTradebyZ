@@ -60,7 +60,7 @@ for idx, row in tqdm(df_cache.iterrows(), total=len(df_cache), desc="解析进�
         features = json.loads(row['features_json'])
         features_list.append(features)
         labels_list.append(row['label_5d'])
-    except:
+    except Exception:
         continue
 
 # 转换为DataFrame
@@ -78,7 +78,7 @@ X = X.fillna(X.median())
 # 3. 划分训练/测试集
 print("\n[3/5] 划分训练/测试集...")
 X_train, X_test, y_train, y_test = train_test_split(
-    X, y, test_size=0.2, random_state=42, shuffle=True
+    X, y, test_size=0.2, random_state=42, shuffle=False  # 时序数据禁止shuffle
 )
 print(f"  训练集: {X_train.shape[0]:,}")
 print(f"  测试集: {X_test.shape[0]:,}")
