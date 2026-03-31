@@ -3302,3 +3302,88 @@ def compute_liquidity_adj_sharpe(daily_returns: pd.Series,
     if std_r <= 0:
         return 0.0
     return float(mean_r / std_r * np.sqrt(252))
+
+
+# ── V5.1 目标定义 ──
+
+V51_LAYER_NAMES = {
+    1: '信号质量', 2: '组合效率', 3: '风险控制',
+    4: 'OOS鲁棒性', 5: '超额收益', 6: '因子归因', 7: '容量可扩展',
+}
+
+V51_LAYER_WEIGHTS = {
+    1: 0.25, 2: 0.12, 3: 0.18, 4: 0.15, 5: 0.08, 6: 0.08, 7: 0.14,
+}
+
+NORTH_STAR_TARGETS_V51 = dict(NORTH_STAR_TARGETS_V5)
+NORTH_STAR_TARGETS_V51.update({
+    'hurst_deviation': {
+        'pass': 0.15, 'ok': 0.10, 'good': 0.07, 'great': 0.05, 'target': 0.02,
+        'direction': 'lower', 'layer': 3, 'display': 'Hurst偏差', 'min_days': 200,
+    },
+    'regime_transition_dd': {
+        'pass': 3.0, 'ok': 2.5, 'good': 2.0, 'great': 1.5, 'target': 1.0,
+        'direction': 'lower', 'layer': 3, 'display': 'Regime转换DD', 'min_days': 200,
+    },
+    'cscv_pbo': {
+        'pass': 0.50, 'ok': 0.40, 'good': 0.25, 'great': 0.15, 'target': 0.05,
+        'direction': 'lower', 'layer': 4, 'display': 'CSCV PBO', 'min_days': 320,
+    },
+    'effective_n_corr': {
+        'pass': 2.0, 'ok': 3.0, 'good': 4.0, 'great': 6.0, 'target': 8.0,
+        'direction': 'higher', 'layer': 4, 'display': '有效N(相关调整)',
+    },
+    'strategy_capacity_mn': {
+        'pass': 50, 'ok': 200, 'good': 500, 'great': 1000, 'target': 5000,
+        'direction': 'higher', 'layer': 7, 'display': '策略容量(百万)',
+    },
+    'participation_rate_p90': {
+        'pass': 0.10, 'ok': 0.05, 'good': 0.03, 'great': 0.02, 'target': 0.01,
+        'direction': 'lower', 'layer': 7, 'display': '参与率P90',
+    },
+    'liquidity_adj_sharpe': {
+        'pass': 0.5, 'ok': 0.8, 'good': 1.0, 'great': 1.5, 'target': 2.0,
+        'direction': 'higher', 'layer': 7, 'display': '流动性调整Sharpe',
+    },
+})
+
+
+def compute_v51_score(metric_values: Dict[str, float],
+                       n_trading_days: int = 500,
+                       n_trials: int = 10) -> Dict:
+    """V5.1评分: 7层46指标, 满分230, 连续插值."""
+    layer_scores = {i: 0.0 for i in range(1, 8)}
+    layer_maxes = {i: 0.0 for i in range(1, 8)}
+    metric_scores = {}
+    for metric_name, target_info in NORTH_STAR_TARGETS_V51.items():
+        layer = target_info['layer']
+        layer_maxes[layer] += 5.0
+        value = metric_values.get(metric_name)
+        if value is None:
+            metric_scores[metric_name] = (0.0, '░' * 20, None)
+            continue
+        score = score_metric_v5(value, target_info)
+        layer_scores[layer] += score
+        filled = int(score / 5.0 * 20)
+        bar = '█' * filled + '░' * (20 - filled)
+        metric_scores[metric_name] = (score, bar, value)
+    weighted_pct = 0.0
+    layer_details = {}
+    for layer in range(1, 8):
+        lmax = layer_maxes[layer]
+        lscore = layer_scores[layer]
+        lpct = lscore / lmax * 100 if lmax > 0 else 0
+        weight = V51_LAYER_WEIGHTS[layer]
+        weighted_pct += lpct * weight
+        layer_details[layer] = {'score': lscore, 'max': lmax, 'pct': lpct, 'weight': weight}
+    length_factor = compute_backtest_length_factor_v5(n_trading_days)
+    final_pct = weighted_pct * length_factor
+    total_score = sum(layer_scores.values())
+    max_score = sum(layer_maxes.values())
+    grade = compute_v5_grade(final_pct)
+    return {
+        'total_score': total_score, 'max_score': max_score,
+        'raw_pct': weighted_pct, 'length_factor': length_factor,
+        'final_pct': final_pct, 'grade': grade,
+        'layer_details': layer_details, 'metric_scores': metric_scores,
+    }

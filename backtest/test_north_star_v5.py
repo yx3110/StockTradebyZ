@@ -433,3 +433,43 @@ class TestV51L7Capacity:
         la_sharpe = compute_liquidity_adj_sharpe(returns, impact_cost_annual=0.02)
         assert la_sharpe < raw_sharpe + 0.1
         assert la_sharpe > 0
+
+
+class TestV51Score:
+    def test_46_metrics(self):
+        from backtest.north_star_metrics import NORTH_STAR_TARGETS_V51
+        assert len(NORTH_STAR_TARGETS_V51) == 46
+        layer_counts = {}
+        for info in NORTH_STAR_TARGETS_V51.values():
+            l = info['layer']
+            layer_counts[l] = layer_counts.get(l, 0) + 1
+        assert layer_counts == {1: 10, 2: 5, 3: 9, 4: 8, 5: 5, 6: 6, 7: 3}
+
+    def test_max_score_230(self):
+        from backtest.north_star_metrics import compute_v51_score, NORTH_STAR_TARGETS_V51
+        metric_values = {name: 0.01 for name in NORTH_STAR_TARGETS_V51}
+        result = compute_v51_score(metric_values, n_trading_days=600)
+        assert result['max_score'] == 230.0
+
+    def test_seven_layers(self):
+        from backtest.north_star_metrics import compute_v51_score, NORTH_STAR_TARGETS_V51
+        metric_values = {name: 0.01 for name in NORTH_STAR_TARGETS_V51}
+        result = compute_v51_score(metric_values, n_trading_days=600)
+        assert len(result['layer_details']) == 7
+
+    def test_perfect_scores(self):
+        from backtest.north_star_metrics import compute_v51_score, NORTH_STAR_TARGETS_V51
+        metric_values = {}
+        for name, info in NORTH_STAR_TARGETS_V51.items():
+            t = info['target']
+            if info['direction'] == 'higher':
+                metric_values[name] = t * 1.1 if t >= 0 else t * 0.5
+            else:
+                metric_values[name] = t * 0.9 if t > 0 else t * 1.1
+        result = compute_v51_score(metric_values, n_trading_days=600)
+        assert result['final_pct'] >= 99.0
+        assert result['grade'] == 'S'
+
+    def test_weights_sum_to_100(self):
+        from backtest.north_star_metrics import V51_LAYER_WEIGHTS
+        assert abs(sum(V51_LAYER_WEIGHTS.values()) - 1.0) < 0.001
