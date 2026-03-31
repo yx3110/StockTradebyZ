@@ -2758,3 +2758,289 @@ def compute_factor_attribution(portfolio_returns: pd.Series,
         'smb_beta': abs(betas['smb']),
         'mom_beta': abs(betas['umd']),
     }
+
+# ── V5 目标定义 ──
+
+V5_LAYER_NAMES = {
+    1: '信号质量', 2: '组合效率', 3: '风险控制',
+    4: 'OOS鲁棒性', 5: '超额收益', 6: '因子归因',
+}
+
+V5_LAYER_WEIGHTS = {
+    1: 0.30, 2: 0.15, 3: 0.20, 4: 0.15, 5: 0.10, 6: 0.10,
+}
+
+NORTH_STAR_TARGETS_V5 = {
+    # ── L1 信号质量 (10项) ──
+    'daily_ic': {
+        'pass': 0.03, 'ok': 0.04, 'good': 0.05, 'great': 0.06, 'target': 0.08,
+        'direction': 'higher', 'layer': 1, 'display': 'Daily IC',
+    },
+    'icir': {
+        'pass': 0.25, 'ok': 0.35, 'good': 0.45, 'great': 0.55, 'target': 0.70,
+        'direction': 'higher', 'layer': 1, 'display': 'ICIR',
+    },
+    'ic_positive_pct': {
+        'pass': 55, 'ok': 57, 'good': 60, 'great': 63, 'target': 68,
+        'direction': 'higher', 'layer': 1, 'display': 'IC>0%',
+    },
+    'ic_monotonicity': {
+        'pass': 2.5, 'ok': 3.0, 'good': 3.5, 'great': 4.0, 'target': 4.5,
+        'direction': 'higher', 'layer': 1, 'display': 'IC单调性',
+    },
+    'ic_time_stability': {
+        'pass': 2.0, 'ok': 1.5, 'good': 1.0, 'great': 0.8, 'target': 0.6,
+        'direction': 'lower', 'layer': 1, 'display': 'IC稳定性(CV)',
+        'min_days': 120,
+    },
+    'signal_half_life': {
+        'pass': 3, 'ok': 6, 'good': 8, 'great': 12, 'target': 20,
+        'direction': 'higher', 'layer': 1, 'display': '信号半衰期(天)',
+    },
+    'bear_icir': {
+        'pass': 0.05, 'ok': 0.10, 'good': 0.20, 'great': 0.30, 'target': 0.35,
+        'direction': 'higher', 'layer': 1, 'display': '熊市ICIR',
+        'min_days': 60,
+    },
+    'ic_decay_ratio': {
+        'pass': 0.50, 'ok': 0.60, 'good': 0.70, 'great': 0.80, 'target': 0.95,
+        'direction': 'higher', 'layer': 1, 'display': 'IC衰减比',
+        'min_days': 120,
+    },
+    'ic_autocorr_1d': {
+        'pass': 0.10, 'ok': 0.20, 'good': 0.35, 'great': 0.50, 'target': 0.70,
+        'direction': 'higher', 'layer': 1, 'display': 'IC自相关(1d)',
+    },
+    'transfer_coefficient': {
+        'pass': 0.50, 'ok': 0.60, 'good': 0.70, 'great': 0.80, 'target': 0.90,
+        'direction': 'higher', 'layer': 1, 'display': '传递系数',
+    },
+
+    # ── L2 组合效率 (5项) ──
+    'annual_turnover': {
+        'pass': 45, 'ok': 35, 'good': 30, 'great': 25, 'target': 20,
+        'direction': 'lower', 'layer': 2, 'display': '年化换手',
+    },
+    'annual_cost_drag': {
+        'pass': 0.13, 'ok': 0.10, 'good': 0.08, 'great': 0.07, 'target': 0.05,
+        'direction': 'lower', 'layer': 2, 'display': '年化成本',
+    },
+    'net_gross_ratio': {
+        'pass': 0.60, 'ok': 0.70, 'good': 0.75, 'great': 0.80, 'target': 0.85,
+        'direction': 'higher', 'layer': 2, 'display': '净/毛收益比',
+    },
+    'limit_up_fail_rate': {
+        'pass': 0.15, 'ok': 0.10, 'good': 0.08, 'great': 0.05, 'target': 0.02,
+        'direction': 'lower', 'layer': 2, 'display': '涨停失败率',
+    },
+    'liquidity_coverage': {
+        'pass': 0.70, 'ok': 0.80, 'good': 0.85, 'great': 0.90, 'target': 0.95,
+        'direction': 'higher', 'layer': 2, 'display': '流动性覆盖',
+    },
+
+    # ── L3 风险控制 (7项) ──
+    'max_drawdown': {
+        'pass': -0.25, 'ok': -0.18, 'good': -0.12, 'great': -0.10, 'target': -0.08,
+        'direction': 'higher', 'layer': 3, 'display': '最大回撤',
+    },
+    'sharpe_ratio': {
+        'pass': 1.0, 'ok': 1.5, 'good': 2.0, 'great': 2.5, 'target': 3.0,
+        'direction': 'higher', 'layer': 3, 'display': 'Sharpe',
+    },
+    'worst_rolling_60d_icir': {
+        'pass': -0.10, 'ok': 0.0, 'good': 0.10, 'great': 0.20, 'target': 0.30,
+        'direction': 'higher', 'layer': 3, 'display': '最差60日ICIR',
+        'min_days': 120,
+    },
+    'tail_ratio': {
+        'pass': 0.8, 'ok': 1.0, 'good': 1.2, 'great': 1.5, 'target': 2.0,
+        'direction': 'higher', 'layer': 3, 'display': '尾部比率',
+    },
+    'cvar_5pct': {
+        'pass': 0.04, 'ok': 0.03, 'good': 0.02, 'great': 0.015, 'target': 0.01,
+        'direction': 'lower', 'layer': 3, 'display': 'CVaR 5%',
+    },
+    'max_dd_duration': {
+        'pass': 120, 'ok': 90, 'good': 60, 'great': 40, 'target': 20,
+        'direction': 'lower', 'layer': 3, 'display': '最长DD天数',
+    },
+    'underwater_ratio': {
+        'pass': 0.60, 'ok': 0.50, 'good': 0.40, 'great': 0.30, 'target': 0.20,
+        'direction': 'lower', 'layer': 3, 'display': '水下时间比',
+    },
+
+    # ── L4 OOS鲁棒性 (6项) ──
+    'annual_return': {
+        'pass': 0.15, 'ok': 0.20, 'good': 0.30, 'great': 0.40, 'target': 0.50,
+        'direction': 'higher', 'layer': 4, 'display': '年化收益',
+        'min_days': 200,
+    },
+    'monthly_win_rate': {
+        'pass': 55, 'ok': 60, 'good': 67, 'great': 75, 'target': 83,
+        'direction': 'higher', 'layer': 4, 'display': '月度胜率%',
+    },
+    'probabilistic_sharpe': {
+        'pass': 0.80, 'ok': 0.85, 'good': 0.90, 'great': 0.95, 'target': 0.99,
+        'direction': 'higher', 'layer': 4, 'display': 'PSR',
+    },
+    'deflated_sharpe': {
+        'pass': 0.70, 'ok': 0.80, 'good': 0.85, 'great': 0.90, 'target': 0.95,
+        'direction': 'higher', 'layer': 4, 'display': 'DSR',
+    },
+    'wfer': {
+        'pass': 0.20, 'ok': 0.30, 'good': 0.40, 'great': 0.50, 'target': 0.60,
+        'direction': 'higher', 'layer': 4, 'display': 'WF效率比',
+    },
+    'oos_ic_half_life': {
+        'pass': 1, 'ok': 2, 'good': 3, 'great': 6, 'target': 12,
+        'direction': 'higher', 'layer': 4, 'display': 'OOS IC半衰期(月)',
+    },
+
+    # ── L5 超额收益 (5项) ──
+    'excess_annual_return': {
+        'pass': 0.05, 'ok': 0.10, 'good': 0.15, 'great': 0.20, 'target': 0.30,
+        'direction': 'higher', 'layer': 5, 'display': '超额年化',
+        'min_days': 200,
+    },
+    'information_ratio': {
+        'pass': 0.30, 'ok': 0.50, 'good': 0.70, 'great': 1.00, 'target': 1.50,
+        'direction': 'higher', 'layer': 5, 'display': 'IR',
+        'min_days': 120,
+    },
+    'excess_win_rate': {
+        'pass': 50, 'ok': 53, 'good': 55, 'great': 60, 'target': 65,
+        'direction': 'higher', 'layer': 5, 'display': '超额胜率%',
+    },
+    'excess_max_drawdown': {
+        'pass': -0.30, 'ok': -0.20, 'good': -0.15, 'great': -0.10, 'target': -0.05,
+        'direction': 'higher', 'layer': 5, 'display': '超额MaxDD',
+        'min_days': 120,
+    },
+    'up_capture_ratio': {
+        'pass': 0.80, 'ok': 1.00, 'good': 1.10, 'great': 1.20, 'target': 1.40,
+        'direction': 'higher', 'layer': 5, 'display': '上行捕获比',
+        'min_days': 60,
+    },
+
+    # ── L6 因子归因 (6项) ──
+    'residual_alpha_t': {
+        'pass': 1.0, 'ok': 1.5, 'good': 2.0, 'great': 2.5, 'target': 3.0,
+        'direction': 'higher', 'layer': 6, 'display': 'Alpha t值',
+    },
+    'factor_r_squared': {
+        'pass': 0.70, 'ok': 0.60, 'good': 0.50, 'great': 0.35, 'target': 0.20,
+        'direction': 'lower', 'layer': 6, 'display': '因子R²',
+    },
+    'active_share': {
+        'pass': 0.50, 'ok': 0.60, 'good': 0.70, 'great': 0.80, 'target': 0.90,
+        'direction': 'higher', 'layer': 6, 'display': 'Active Share',
+    },
+    'max_factor_loading': {
+        'pass': 1.50, 'ok': 1.20, 'good': 1.00, 'great': 0.80, 'target': 0.50,
+        'direction': 'lower', 'layer': 6, 'display': '最大因子暴露',
+    },
+    'smb_beta': {
+        'pass': 1.50, 'ok': 1.20, 'good': 1.00, 'great': 0.70, 'target': 0.30,
+        'direction': 'lower', 'layer': 6, 'display': '小盘β',
+    },
+    'mom_beta': {
+        'pass': 1.20, 'ok': 1.00, 'good': 0.80, 'great': 0.50, 'target': 0.20,
+        'direction': 'lower', 'layer': 6, 'display': '动量β',
+    },
+}
+
+
+def compute_backtest_length_factor_v5(n_days: int, min_days: int = 500) -> float:
+    """V5回测长度折扣: log曲线, 比V4更严格. <60天直接拒绝."""
+    if n_days >= min_days:
+        return 1.0
+    if n_days < 60:
+        return 0.0
+    return np.log(n_days / 60) / np.log(min_days / 60)
+
+
+def auto_select_benchmark(median_market_cap_bn: float) -> str:
+    """根据策略持仓市值中位数自动选择最匹配基准."""
+    if median_market_cap_bn >= 50:
+        return '000300.SH'
+    if median_market_cap_bn >= 15:
+        return '000905.SH'
+    if median_market_cap_bn >= 5:
+        return '000852.SH'
+    return '932000.CSI'
+
+
+def compute_v5_score(metric_values: Dict[str, float],
+                      n_trading_days: int = 500,
+                      n_trials: int = 10) -> Dict:
+    """
+    V5连续插值加权评分. 6层39指标, 满分195.
+    """
+    layer_scores = {1: 0.0, 2: 0.0, 3: 0.0, 4: 0.0, 5: 0.0, 6: 0.0}
+    layer_maxes = {1: 0.0, 2: 0.0, 3: 0.0, 4: 0.0, 5: 0.0, 6: 0.0}
+    metric_scores = {}
+
+    for metric_name, target_info in NORTH_STAR_TARGETS_V5.items():
+        layer = target_info['layer']
+        layer_maxes[layer] += 5.0
+
+        value = metric_values.get(metric_name)
+        if value is None:
+            metric_scores[metric_name] = (0.0, '░' * 20, None)
+            continue
+
+        score = score_metric_v5(value, target_info)
+        layer_scores[layer] += score
+
+        filled = int(score / 5.0 * 20)
+        bar = '█' * filled + '░' * (20 - filled)
+        metric_scores[metric_name] = (score, bar, value)
+
+    weighted_pct = 0.0
+    layer_details = {}
+    for layer in [1, 2, 3, 4, 5, 6]:
+        lmax = layer_maxes[layer]
+        lscore = layer_scores[layer]
+        lpct = lscore / lmax * 100 if lmax > 0 else 0
+        weight = V5_LAYER_WEIGHTS[layer]
+        weighted_pct += lpct * weight
+        layer_details[layer] = {
+            'score': lscore, 'max': lmax,
+            'pct': lpct, 'weight': weight,
+        }
+
+    length_factor = compute_backtest_length_factor_v5(n_trading_days)
+    final_pct = weighted_pct * length_factor
+
+    total_score = sum(layer_scores.values())
+    max_score = sum(layer_maxes.values())
+
+    grade = compute_v5_grade(final_pct)
+
+    return {
+        'total_score': total_score,
+        'max_score': max_score,
+        'raw_pct': weighted_pct,
+        'length_factor': length_factor,
+        'final_pct': final_pct,
+        'grade': grade,
+        'layer_details': layer_details,
+        'metric_scores': metric_scores,
+    }
+
+
+def compute_v5_grade(pct: float) -> str:
+    """V5等级 (与V2/V3/V4相同阈值)."""
+    for threshold, grade in V2_GRADE_THRESHOLDS:
+        if pct >= threshold:
+            return grade
+    return 'D'
+
+
+# ── V5.1 预留扩展点 (方案C) ──
+# L7 容量与可扩展性 (planned):
+#   strategy_capacity_mn, participation_rate_p90, liquidity_adjusted_sharpe
+# 高级OOS检测 (planned):
+#   cscv_pbo (组合对称交叉验证, Lopez de Prado)
+# 稳定性指标 (planned):
+#   hurst_exponent, regime_transition_dd, effective_n_corr

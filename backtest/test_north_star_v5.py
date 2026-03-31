@@ -235,3 +235,81 @@ class TestFactorAttribution:
         for key in ['residual_alpha', 'residual_alpha_annual', 'residual_alpha_t',
                      'factor_r_squared', 'betas', 'max_factor_loading', 'smb_beta', 'mom_beta']:
             assert key in result
+
+
+class TestV5Score:
+    def test_perfect_scores(self):
+        from backtest.north_star_metrics import compute_v5_score, NORTH_STAR_TARGETS_V5
+        metric_values = {}
+        for name, info in NORTH_STAR_TARGETS_V5.items():
+            target = info['target']
+            if info['direction'] == 'higher':
+                # For positive targets: go 10% above. For negative targets (e.g. -0.08):
+                # "better" means closer to 0, i.e. multiply by 0.9 (less negative).
+                if target >= 0:
+                    metric_values[name] = target * 1.1
+                else:
+                    metric_values[name] = target * 0.9
+            else:
+                # direction='lower': better means smaller value
+                if target >= 0:
+                    metric_values[name] = target * 0.9
+                else:
+                    metric_values[name] = target * 1.1
+        result = compute_v5_score(metric_values, n_trading_days=600)
+        assert result['final_pct'] >= 99.0
+        assert result['grade'] == 'S'
+
+    def test_all_zeros(self):
+        from backtest.north_star_metrics import compute_v5_score
+        result = compute_v5_score({}, n_trading_days=600)
+        assert result['final_pct'] == 0.0
+        assert result['grade'] == 'D'
+
+    def test_length_penalty_v5(self):
+        from backtest.north_star_metrics import compute_backtest_length_factor_v5
+        assert compute_backtest_length_factor_v5(500) == 1.0
+        assert compute_backtest_length_factor_v5(600) == 1.0
+        factor_250 = compute_backtest_length_factor_v5(250)
+        assert 0.6 < factor_250 < 0.7
+        assert compute_backtest_length_factor_v5(60) == 0.0
+        assert compute_backtest_length_factor_v5(30) == 0.0
+
+    def test_six_layers(self):
+        from backtest.north_star_metrics import compute_v5_score, NORTH_STAR_TARGETS_V5
+        metric_values = {name: 0.01 for name in NORTH_STAR_TARGETS_V5}
+        result = compute_v5_score(metric_values, n_trading_days=600)
+        assert len(result['layer_details']) == 6
+        for layer_id in [1, 2, 3, 4, 5, 6]:
+            assert layer_id in result['layer_details']
+
+    def test_continuous_scores_in_result(self):
+        from backtest.north_star_metrics import compute_v5_score
+        metric_values = {'daily_ic': 0.055}
+        result = compute_v5_score(metric_values, n_trading_days=600)
+        ic_score = result['metric_scores']['daily_ic']
+        assert isinstance(ic_score[0], float)
+        assert 3.0 < ic_score[0] < 4.0
+
+    def test_auto_select_benchmark(self):
+        from backtest.north_star_metrics import auto_select_benchmark
+        assert auto_select_benchmark(100) == '000300.SH'
+        assert auto_select_benchmark(20) == '000905.SH'
+        assert auto_select_benchmark(8) == '000852.SH'
+        assert auto_select_benchmark(3) == '932000.CSI'
+
+    def test_39_metrics(self):
+        """V5应有恰好39个指标"""
+        from backtest.north_star_metrics import NORTH_STAR_TARGETS_V5
+        assert len(NORTH_STAR_TARGETS_V5) == 39
+        layer_counts = {}
+        for info in NORTH_STAR_TARGETS_V5.values():
+            l = info['layer']
+            layer_counts[l] = layer_counts.get(l, 0) + 1
+        assert layer_counts == {1: 10, 2: 5, 3: 7, 4: 6, 5: 5, 6: 6}
+
+    def test_max_score_195(self):
+        from backtest.north_star_metrics import compute_v5_score, NORTH_STAR_TARGETS_V5
+        metric_values = {name: 0.01 for name in NORTH_STAR_TARGETS_V5}
+        result = compute_v5_score(metric_values, n_trading_days=600)
+        assert result['max_score'] == 195.0
