@@ -143,12 +143,49 @@ def generate_reports(scoring_version='v3.95', start_date='auto', end_date='auto'
     print(f"\n  报告生成完成 ({done} 份)")
 
 
+def _inject_wf_summary(result, wf_summary_path, focus_days):
+    """从WF训练摘要JSON注入WFER和OOS IC半衰期到回测结果, 并重新打印V5评分卡."""
+    import json
+    try:
+        with open(wf_summary_path, 'r') as f:
+            wf_data = json.load(f)
+    except Exception as e:
+        print(f"  ⚠️ 读取WF摘要失败: {e}")
+        return
+
+    from backtest.north_star_metrics import compute_wfer, compute_oos_ic_half_life
+    from backtest.backtest_report_based import _print_scorecard_v5
+
+    wfer = compute_wfer(wf_data)
+    oos_hl = compute_oos_ic_half_life(wf_data)
+
+    summary = result.get('summary', {})
+    if focus_days in summary:
+        summary[focus_days]['wfer'] = wfer
+        summary[focus_days]['oos_ic_half_life'] = oos_hl
+        print(f"\n  V5 WF摘要注入: WFER={wfer}, OOS IC半衰期={oos_hl}")
+        # 重新打印V5评分卡 (含WFER+OOS IC半衰期)
+        s = summary[focus_days]
+        n_reports = len(result.get('summary', {}).get(focus_days, {}).get('dates', []))
+        if n_reports == 0:
+            # 用reports总数作为交易日数
+            n_reports = len([k for k in summary.keys() if isinstance(k, int) and k > 0])
+            # fallback: 从daily_results推断
+            dr = result.get('daily_results')
+            if dr is not None and hasattr(dr, '__len__'):
+                dates_col = dr['date'].unique() if 'date' in (dr.columns if hasattr(dr, 'columns') else []) else []
+                n_reports = len(dates_col) if len(dates_col) > 0 else n_reports
+        _print_scorecard_v5(s, result.get('label', ''), focus_days,
+                            n_trading_days=n_reports)
+
+
 def run_backtest(report_dir, label, top_n=20, benchmark='000905.SH', focus_days=10,
                  retention_bonus=0.0, score_floor=0.0, min_holdings=3,
                  risk_control=False,
                  vol_target=0.0, cppi_floor=0.0, cppi_multiplier=3.0,
                  sector_diversify=0, rank_field='auto', hold_buffer=0,
-                 rerank_dir=None, rerank_pool=100, cache=None):
+                 rerank_dir=None, rerank_pool=100, cache=None,
+                 ema_alpha=0.0, wf_summary_path=None):
     """运行单个模型的回测
 
     Args:
@@ -194,7 +231,13 @@ def run_backtest(report_dir, label, top_n=20, benchmark='000905.SH', focus_days=
         hold_buffer=hold_buffer,
         rerank_reports=rerank_reports, rerank_pool=rerank_pool,
         cache=cache,
+        ema_alpha=ema_alpha,
     )
+
+    # V5: 注入WF训练摘要 (WFER + OOS IC半衰期)
+    if result and wf_summary_path:
+        _inject_wf_summary(result, wf_summary_path, focus_days)
+
     return result
 
 
@@ -557,15 +600,36 @@ def main():
                         help='V4.5: CPPI乘数 (默认3.0)')
     parser.add_argument('--sector-diversify', type=int, default=0,
                         help='行业分散: 单行业最多N只 (0=关闭, 推荐2)')
+    parser.add_argument('--ema-alpha', type=float, default=0.0,
+                        help='EMA预测平滑alpha (0=关闭, 0.7=生产推荐)')
+    parser.add_argument('--production', action='store_true',
+                        help='生产配置: V4901 + EMA0.7 + Ret0.2 + CPPI(8,20) + SF30 + Focus15 = 92.8%% S级')
     parser.add_argument('--rank-field', type=str, default='composite',
                         help='排名字段: composite=多周期融合(与选股一致,默认), auto=优先pred_10d, score=全局百分位')
     parser.add_argument('--hold-buffer', type=float, default=0,
                         help='持仓缓冲区倍数 (0=关闭, 推荐2-3). 现有持仓在top_n*(1+buffer)内保留')
-    parser.add_argument('--score-version', type=str, default='both', choices=['v2', 'v3', 'both'],
-                        help='评分卡版本: v2=传统等权, v3=加权+统计鲁棒性, both=两者都打印 (default: both)')
+    parser.add_argument('--score-version', type=str, default='both',
+                        choices=['v2', 'v3', 'v4', 'v5', 'both', 'all'],
+                        help='评分卡版本: v2/v3/v4/v5/both(v2+v4)/all(v2+v4+v5) (default: both)')
     parser.add_argument('--n-trials', type=int, default=10,
                         help='DSR多重测试校正: 尝试过的策略变体数 (default: 10)')
+    parser.add_argument('--wf-summary', type=str, default=None,
+                        help='WF训练摘要JSON路径 (V5 WFER+OOS半衰期)')
     args = parser.parse_args()
+
+    # --production: 生产配置覆盖
+    if args.production:
+        args.report_dir = args.report_dir or 'reports/daily_selection_v4901'
+        args.label = args.label if args.label != 'v3.95' else 'V4901-PROD'
+        args.top_n = 10
+        args.focus_days = 15
+        args.retention_bonus = 0.2
+        args.cppi_floor = 0.08
+        args.cppi_multiplier = 20
+        args.score_floor = 30
+        args.ema_alpha = 0.7
+        args.backtest = True
+        print("🏆 生产配置: V4901 + EMA0.7 + Ret0.2 + CPPI(8,20) + SF30 + Focus15 = 92.8% S级")
 
     # ── auto 日期解析 ──
     # 如果指定了 --report-dir 且日期为 auto，从报告目录自动检测
@@ -617,7 +681,9 @@ def main():
                                   args.risk_control,
                                   args.vol_target, args.cppi_floor, args.cppi_multiplier,
                                   args.sector_diversify, args.rank_field,
-                                  args.hold_buffer, cache=cache)
+                                  args.hold_buffer, cache=cache,
+                                  ema_alpha=args.ema_alpha,
+                                  wf_summary_path=args.wf_summary)
         else:
             # 默认回测v3.95 RobustZScore
             default_dir = str(PROJECT_ROOT / 'reports' / 'daily_selection_v3.95_robust_zscore')
@@ -627,7 +693,8 @@ def main():
                                   args.risk_control,
                                   args.vol_target, args.cppi_floor, args.cppi_multiplier,
                                   args.sector_diversify, args.rank_field,
-                                  args.hold_buffer, cache=cache)
+                                  args.hold_buffer, cache=cache,
+                                  wf_summary_path=args.wf_summary)
 
     if args.regime_analysis:
         report_dir = args.report_dir or str(
