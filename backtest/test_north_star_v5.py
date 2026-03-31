@@ -313,3 +313,123 @@ class TestV5Score:
         metric_values = {name: 0.01 for name in NORTH_STAR_TARGETS_V5}
         result = compute_v5_score(metric_values, n_trading_days=600)
         assert result['max_score'] == 195.0
+
+
+class TestV51L3Stability:
+    def test_hurst_random_walk(self):
+        from backtest.north_star_metrics import compute_hurst_exponent
+        np.random.seed(42)
+        returns = pd.Series(np.random.normal(0, 0.02, 1000))
+        h = compute_hurst_exponent(returns)
+        assert 0.35 < h < 0.65, f"Random walk H={h}, expected ~0.5"
+
+    def test_hurst_trending(self):
+        from backtest.north_star_metrics import compute_hurst_exponent
+        np.random.seed(42)
+        rw = np.cumsum(np.random.normal(0.001, 0.005, 1000))
+        returns = pd.Series(np.diff(rw))
+        h = compute_hurst_exponent(returns)
+        assert h > 0.51, f"Trending H={h}, expected >0.51"
+
+    def test_hurst_short_series(self):
+        from backtest.north_star_metrics import compute_hurst_exponent
+        returns = pd.Series(np.random.normal(0, 0.01, 50))
+        assert compute_hurst_exponent(returns) == 0.5
+
+    def test_regime_transition_dd_stable(self):
+        from backtest.north_star_metrics import compute_regime_transition_dd
+        np.random.seed(42)
+        strategy_ret = pd.Series(np.random.normal(0.001, 0.01, 500))
+        benchmark_ret = pd.Series(np.concatenate([
+            np.random.normal(0.002, 0.01, 200),
+            np.random.normal(-0.003, 0.015, 100),
+            np.random.normal(0.001, 0.01, 200),
+        ]))
+        ratio = compute_regime_transition_dd(strategy_ret, benchmark_ret)
+        assert ratio is not None
+        assert ratio < 5.0
+
+    def test_regime_transition_dd_short(self):
+        from backtest.north_star_metrics import compute_regime_transition_dd
+        ret = pd.Series(np.random.normal(0, 0.01, 50))
+        bench = pd.Series(np.random.normal(0, 0.01, 50))
+        assert compute_regime_transition_dd(ret, bench) is None
+
+
+class TestV51L4Advanced:
+    def test_cscv_pbo_random_strategy(self):
+        from backtest.north_star_metrics import compute_cscv_pbo
+        np.random.seed(42)
+        returns = pd.Series(np.random.normal(0, 0.02, 500))
+        pbo = compute_cscv_pbo(returns, n_subperiods=16, max_combinations=200)
+        assert 0.2 < pbo < 0.8, f"Random PBO={pbo}"
+
+    def test_cscv_pbo_strong_strategy(self):
+        from backtest.north_star_metrics import compute_cscv_pbo
+        np.random.seed(42)
+        returns = pd.Series(np.random.normal(0.003, 0.01, 500))
+        pbo = compute_cscv_pbo(returns, n_subperiods=16, max_combinations=200)
+        assert pbo < 0.6
+
+    def test_cscv_pbo_short_series(self):
+        from backtest.north_star_metrics import compute_cscv_pbo
+        returns = pd.Series(np.random.normal(0, 0.02, 100))
+        assert compute_cscv_pbo(returns) is None
+
+    def test_effective_n_uncorrelated(self):
+        from backtest.north_star_metrics import compute_effective_n_corr
+        np.random.seed(42)
+        holdings = pd.DataFrame({f'stock_{i}': np.random.normal(0, 0.02, 100) for i in range(10)})
+        assert compute_effective_n_corr(holdings) > 5.0
+
+    def test_effective_n_highly_correlated(self):
+        from backtest.north_star_metrics import compute_effective_n_corr
+        np.random.seed(42)
+        base = np.random.normal(0, 0.02, 100)
+        holdings = pd.DataFrame({f'stock_{i}': base + np.random.normal(0, 0.003, 100) for i in range(10)})
+        assert compute_effective_n_corr(holdings) < 3.0
+
+    def test_effective_n_single_stock(self):
+        from backtest.north_star_metrics import compute_effective_n_corr
+        holdings = pd.DataFrame({'stock_0': np.random.normal(0, 0.02, 100)})
+        assert compute_effective_n_corr(holdings) == 1.0
+
+
+class TestV51L7Capacity:
+    def test_capacity_high_liquidity(self):
+        from backtest.north_star_metrics import compute_strategy_capacity
+        picks = pd.DataFrame({
+            'code': ['000001.SZ', '600519.SH', '000858.SZ'],
+            'adv_20d_value': [5e8, 3e8, 2e8],
+            'daily_vol': [0.02, 0.015, 0.025],
+        })
+        cap = compute_strategy_capacity(picks, gross_annual_return=0.30, avg_turnover=0.3)
+        assert cap > 200, f"High liquidity capacity={cap}M"
+
+    def test_capacity_low_liquidity(self):
+        from backtest.north_star_metrics import compute_strategy_capacity
+        picks = pd.DataFrame({
+            'code': ['000001.SZ', '600519.SH', '000858.SZ'],
+            'adv_20d_value': [5e6, 3e6, 2e6],
+            'daily_vol': [0.03, 0.035, 0.04],
+        })
+        cap = compute_strategy_capacity(picks, gross_annual_return=0.30, avg_turnover=0.3)
+        assert cap < 200, f"Low liquidity capacity={cap}M"
+
+    def test_participation_rate(self):
+        from backtest.north_star_metrics import compute_participation_rate_p90
+        picks = pd.DataFrame({
+            'code': ['A', 'B', 'C'],
+            'adv_20d_value': [1e8, 5e7, 2e7],
+        })
+        p90 = compute_participation_rate_p90(picks, assumed_aum_mn=10, n_positions=3)
+        assert 0 < p90 < 1.0
+
+    def test_liquidity_adj_sharpe(self):
+        from backtest.north_star_metrics import compute_liquidity_adj_sharpe
+        np.random.seed(42)
+        returns = pd.Series(np.random.normal(0.001, 0.015, 252))
+        raw_sharpe = returns.mean() / returns.std() * np.sqrt(252)
+        la_sharpe = compute_liquidity_adj_sharpe(returns, impact_cost_annual=0.02)
+        assert la_sharpe < raw_sharpe + 0.1
+        assert la_sharpe > 0

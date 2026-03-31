@@ -3037,10 +3037,268 @@ def compute_v5_grade(pct: float) -> str:
     return 'D'
 
 
-# ── V5.1 预留扩展点 (方案C) ──
-# L7 容量与可扩展性 (planned):
-#   strategy_capacity_mn, participation_rate_p90, liquidity_adjusted_sharpe
-# 高级OOS检测 (planned):
-#   cscv_pbo (组合对称交叉验证, Lopez de Prado)
-# 稳定性指标 (planned):
-#   hurst_exponent, regime_transition_dd, effective_n_corr
+# ═══════════════════════════════════════════════════════
+# V5.1 新增指标
+# ═══════════════════════════════════════════════════════
+
+# ── L3 稳定性 ──
+
+def compute_hurst_exponent(returns: pd.Series, min_window: int = 20) -> float:
+    """R/S法计算Hurst指数. H=0.5随机游走, H>0.5趋势持续, H<0.5均值回复."""
+    if returns is None or len(returns) < 100:
+        return 0.5
+    windows = [20, 40, 60, 80, 100, 150, 200]
+    windows = [w for w in windows if w < len(returns) // 2]
+    if len(windows) < 3:
+        return 0.5
+    rs_values = []
+    for w in windows:
+        rs_list = []
+        for start in range(0, len(returns) - w, w):
+            chunk = returns.iloc[start:start + w]
+            mean_r = chunk.mean()
+            deviations = (chunk - mean_r).cumsum()
+            R = deviations.max() - deviations.min()
+            S = chunk.std(ddof=1)
+            if S > 0:
+                rs_list.append(R / S)
+        if rs_list:
+            rs_values.append((np.log(w), np.log(np.mean(rs_list))))
+    if len(rs_values) < 3:
+        return 0.5
+    x = [v[0] for v in rs_values]
+    y = [v[1] for v in rs_values]
+    H = np.polyfit(x, y, 1)[0]
+    return float(np.clip(H, 0.0, 1.0))
+
+
+def compute_regime_transition_dd(daily_returns: pd.Series,
+                                  benchmark_returns: pd.Series,
+                                  lookback: int = 60,
+                                  pre_window: int = 10,
+                                  post_window: int = 20) -> Optional[float]:
+    """Regime转换期间的DD放大倍数 = max(DD在转换窗口) / 正常期间中位DD."""
+    if daily_returns is None or benchmark_returns is None:
+        return None
+    n = min(len(daily_returns), len(benchmark_returns))
+    if n < 200:
+        return None
+    dr = daily_returns.values[:n]
+    br = benchmark_returns.values[:n]
+    rolling_ret = pd.Series(br).rolling(lookback).sum()
+    regimes = []
+    for r in rolling_ret:
+        if np.isnan(r):
+            regimes.append('neutral')
+        elif r > 0.05:
+            regimes.append('bull')
+        elif r < -0.05:
+            regimes.append('bear')
+        else:
+            regimes.append('neutral')
+    transitions = []
+    for i in range(1, len(regimes)):
+        if regimes[i] != regimes[i - 1]:
+            transitions.append(i)
+    if not transitions:
+        return 1.0
+    cum_ret = (1 + pd.Series(dr)).cumprod()
+    transition_dds = []
+    for t in transitions:
+        start = max(0, t - pre_window)
+        end = min(n, t + post_window)
+        if end - start < 5:
+            continue
+        window_cum = cum_ret.iloc[start:end]
+        peak = window_cum.expanding().max()
+        dd = (window_cum / peak - 1).min()
+        transition_dds.append(abs(dd))
+    if not transition_dds:
+        return 1.0
+    is_transition = np.zeros(n, dtype=bool)
+    for t in transitions:
+        s = max(0, t - pre_window)
+        e = min(n, t + post_window)
+        is_transition[s:e] = True
+    normal_mask = ~is_transition
+    if normal_mask.sum() < 60:
+        return 1.0
+    full_peak = cum_ret.expanding().max()
+    full_dd_series = abs(cum_ret / full_peak - 1)
+    normal_dd_median = full_dd_series[normal_mask].median()
+    if normal_dd_median <= 0.001:
+        normal_dd_median = 0.001
+    max_transition_dd = max(transition_dds)
+    return float(max_transition_dd / normal_dd_median)
+
+
+# ── L4 高级OOS ──
+
+def compute_cscv_pbo(daily_returns: pd.Series,
+                      n_subperiods: int = 16,
+                      n_variants: int = 20,
+                      max_combinations: int = 1000) -> Optional[float]:
+    """CSCV过拟合概率 (PBO). Lopez de Prado (2014).
+
+    使用block-bootstrap生成n_variants个策略变体, 对每个IS/OOS分割检测
+    最优IS变体是否在OOS低于中位数. PBO = 过拟合分割占比.
+    随机游走策略PBO≈0.4-0.5, 强alpha策略PBO更低.
+    """
+    if daily_returns is None or len(daily_returns) < n_subperiods * 20:
+        return None
+    returns = daily_returns.values
+    n = len(returns)
+    period_len = n // n_subperiods
+    if period_len < 10:
+        return None
+    rng = np.random.RandomState(42)
+    # build variants via block-bootstrap (each block = one sub-period length)
+    variants = [returns]
+    for v in range(1, n_variants):
+        blocks = []
+        for _ in range(n_subperiods):
+            start_idx = rng.randint(0, max(1, n - period_len))
+            blocks.append(returns[start_idx:start_idx + period_len])
+        variants.append(np.concatenate(blocks))
+    # compute per-subperiod mean and std for each variant
+    sub_stats_per_variant = []
+    for vr in variants:
+        nv = len(vr)
+        sub_stats = []
+        for i in range(n_subperiods):
+            start = i * period_len
+            end = min(start + period_len, nv)
+            chunk = vr[start:end]
+            if len(chunk) < 2:
+                sub_stats.append({'mean': 0.0, 'std': 0.001})
+            else:
+                sub_stats.append({'mean': float(chunk.mean()),
+                                  'std': float(chunk.std(ddof=1))})
+        sub_stats_per_variant.append(sub_stats)
+
+    def sub_sharpe(stats_list, indices):
+        means = [stats_list[i]['mean'] for i in indices]
+        stds = [stats_list[i]['std'] for i in indices]
+        pool_std = float(np.mean(stds))
+        if pool_std <= 0:
+            pool_std = 0.001
+        return float(np.mean(means)) / pool_std * np.sqrt(252)
+
+    from itertools import combinations
+    import random
+    half = n_subperiods // 2
+    all_combos = list(combinations(range(n_subperiods), half))
+    rng2 = random.Random(42)
+    sampled = rng2.sample(all_combos, min(max_combinations, len(all_combos)))
+    overfit_count = 0
+    for is_indices in sampled:
+        oos_indices = tuple(i for i in range(n_subperiods) if i not in is_indices)
+        is_sharpes = [sub_sharpe(sub_stats_per_variant[v], is_indices) for v in range(n_variants)]
+        best_is_variant = int(np.argmax(is_sharpes))
+        oos_sharpes = [sub_sharpe(sub_stats_per_variant[v], oos_indices) for v in range(n_variants)]
+        best_oos = oos_sharpes[best_is_variant]
+        # overfit: best IS variant underperforms OOS median
+        if best_oos < float(np.median(oos_sharpes)):
+            overfit_count += 1
+    return float(overfit_count / len(sampled))
+
+
+def compute_effective_n_corr(holdings_returns: pd.DataFrame) -> float:
+    """相关性调整有效N. N_eff = N / (1 + (N-1) × avg_pairwise_corr)."""
+    if holdings_returns is None or holdings_returns.empty:
+        return 1.0
+    N = holdings_returns.shape[1]
+    if N < 2:
+        return float(N)
+    corr_matrix = holdings_returns.corr()
+    mask = np.triu(np.ones_like(corr_matrix, dtype=bool), k=1)
+    upper_corrs = corr_matrix.values[mask]
+    upper_corrs = upper_corrs[~np.isnan(upper_corrs)]
+    if len(upper_corrs) == 0:
+        return float(N)
+    avg_corr = float(np.mean(upper_corrs))
+    denominator = 1 + (N - 1) * max(avg_corr, 0)
+    if denominator <= 0:
+        return float(N)
+    return float(N / denominator)
+
+
+# ── L7 容量可扩展 ──
+
+def compute_strategy_capacity(picks_with_volume: pd.DataFrame,
+                               gross_annual_return: float,
+                               avg_turnover: float,
+                               eta: float = 0.15,
+                               n_positions: int = 10) -> float:
+    """Almgren-Chriss策略容量估计 (百万RMB). 找AUM使impact_cost=50%alpha."""
+    if picks_with_volume is None or picks_with_volume.empty:
+        return 0.0
+    if gross_annual_return <= 0:
+        return 0.0
+    adv_values = picks_with_volume['adv_20d_value'].values
+    daily_vols = picks_with_volume.get('daily_vol')
+    if daily_vols is None:
+        daily_vols = np.full(len(adv_values), 0.025)
+    else:
+        daily_vols = daily_vols.values
+    daily_trade_frac = avg_turnover
+
+    def total_impact_cost(aum_yuan):
+        position_value = aum_yuan / max(n_positions, len(adv_values))
+        total_impact = 0.0
+        for i in range(len(adv_values)):
+            adv = adv_values[i]
+            vol = daily_vols[i]
+            if adv <= 0:
+                continue
+            trade_value = position_value * daily_trade_frac
+            participation = trade_value / adv
+            impact = vol * eta * np.sqrt(max(participation, 0))
+            total_impact += impact
+        return total_impact * 252 / max(len(adv_values), 1)
+
+    lo, hi = 1e6, 1e11
+    target_cost = gross_annual_return * 0.5
+    for _ in range(50):
+        mid = (lo + hi) / 2
+        cost = total_impact_cost(mid)
+        if cost < target_cost:
+            lo = mid
+        else:
+            hi = mid
+    return float(lo / 1e6)
+
+
+def compute_participation_rate_p90(picks_with_volume: pd.DataFrame,
+                                    assumed_aum_mn: float = 100,
+                                    n_positions: int = 10) -> float:
+    """持仓参与率P90. participation = position_value / adv_20d_value."""
+    if picks_with_volume is None or picks_with_volume.empty:
+        return 0.0
+    aum_yuan = assumed_aum_mn * 1e6
+    position_value = aum_yuan / max(n_positions, len(picks_with_volume))
+    adv_values = picks_with_volume['adv_20d_value'].values
+    participations = []
+    for adv in adv_values:
+        if adv > 0:
+            participations.append(position_value / adv)
+        else:
+            participations.append(1.0)
+    if not participations:
+        return 0.0
+    return float(np.percentile(participations, 90))
+
+
+def compute_liquidity_adj_sharpe(daily_returns: pd.Series,
+                                  impact_cost_annual: float = 0.02,
+                                  risk_free_rate: float = 0.02) -> float:
+    """流动性调整Sharpe. 扣除market impact后的Sharpe."""
+    if daily_returns is None or len(daily_returns) < 20:
+        return 0.0
+    daily_impact = impact_cost_annual / 252
+    adj_returns = daily_returns - daily_impact
+    mean_r = adj_returns.mean() - risk_free_rate / 252
+    std_r = adj_returns.std()
+    if std_r <= 0:
+        return 0.0
+    return float(mean_r / std_r * np.sqrt(252))
