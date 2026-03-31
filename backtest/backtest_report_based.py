@@ -1114,7 +1114,8 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
             prev_top_codes = set()
             for days in HOLDING_DAYS:
                 daily_results.append({
-                    'date': date, 'days': days, 'return': 0.0,
+                    'date': date, 'days': days, 'avg_top_return': 0.0,
+                    'avg_top_return_raw': 0.0,
                     'exposure': 0.0, 'gate_regime': 'dont_buy',
                 })
             continue

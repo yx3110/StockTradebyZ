@@ -287,7 +287,7 @@ class V44ProductionScorer(V43ProductionScorer):
         return results
 
     def _apply_executability_filters(self, results: Dict[str, Dict], date: str,
-                                      offline_mode: bool = False) -> Dict[str, Dict]:
+                                      offline_mode: bool = True) -> Dict[str, Dict]:
         """Module E: 可执行性过滤
 
         online模式(默认): 仅用T日数据, 不访问未来数据。适用于实盘选股。
