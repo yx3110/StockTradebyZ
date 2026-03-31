@@ -22,6 +22,12 @@ from typing import Dict, List, Optional, Tuple
 import sqlite3
 import os
 
+try:
+    import statsmodels.api as sm
+    HAS_STATSMODELS = True
+except ImportError:
+    HAS_STATSMODELS = False
+
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DB_PATH = os.path.join(PROJECT_ROOT, 'data_adapter', 'stock_data.db')
 
@@ -2552,3 +2558,203 @@ def compute_v4_grade(pct: float) -> str:
         if pct >= threshold:
             return grade
     return 'D'
+
+
+# ═══════════════════════════════════════════════════════
+# V5 北极星评分体系 — 连续插值 + 6层39指标
+# ═══════════════════════════════════════════════════════
+
+def score_metric_v5(value: float, target_info: dict) -> float:
+    """
+    V5连续插值评分: 0.0 ~ 5.0 浮点数.
+    direction='higher': breakpoints ascending, value>=target → 5.0
+    direction='lower': breakpoints descending (pass>ok>...>target), value<=target → 5.0
+    """
+    if value is None:
+        return 0.0
+
+    direction = target_info.get('direction', 'higher')
+    bp_raw = [
+        target_info['pass'],
+        target_info['ok'],
+        target_info['good'],
+        target_info['great'],
+        target_info['target'],
+    ]
+
+    if direction == 'lower':
+        bp_values = list(reversed(bp_raw))  # ascending order for np.interp
+        scores = [5.0, 4.0, 3.0, 2.0, 1.0]
+        if value <= bp_raw[-1]:  # target (smallest)
+            return 5.0
+        if value > bp_raw[0]:  # worse than pass (largest)
+            worst = bp_raw[0] * 2
+            if worst <= bp_raw[0]:
+                worst = bp_raw[0] + abs(bp_raw[0])
+            return float(np.interp(value, [bp_raw[0], worst], [1.0, 0.0]))
+        return float(np.interp(value, bp_values, scores))
+    else:
+        if value >= bp_raw[-1]:
+            return 5.0
+        if value <= 0:
+            return 0.0
+        if value < bp_raw[0]:
+            return float(np.interp(value, [0, bp_raw[0]], [0.0, 1.0]))
+        return float(np.interp(value, bp_raw, [1.0, 2.0, 3.0, 4.0, 5.0]))
+
+
+def compute_cvar(returns: pd.Series, alpha: float = 0.05) -> float:
+    """Conditional Value at Risk. Returns positive value representing loss."""
+    if returns.empty:
+        return 0.0
+    var_threshold = returns.quantile(alpha)
+    tail = returns[returns <= var_threshold]
+    if tail.empty:
+        return 0.0
+    return float(-tail.mean())
+
+
+def compute_max_dd_duration(cumulative_returns: pd.Series) -> int:
+    """最长回撤恢复交易日数."""
+    if cumulative_returns.empty or len(cumulative_returns) < 2:
+        return 0
+    peak = cumulative_returns.expanding().max()
+    underwater = cumulative_returns < peak
+    if not underwater.any():
+        return 0
+    is_above = ~underwater
+    groups = is_above.cumsum()
+    underwater_groups = underwater.groupby(groups).sum()
+    underwater_groups = underwater_groups[underwater_groups > 0]
+    if underwater_groups.empty:
+        return 0
+    return int(underwater_groups.max())
+
+
+def compute_underwater_ratio(cumulative_returns: pd.Series) -> float:
+    """水下天数占总天数比例."""
+    if cumulative_returns.empty or len(cumulative_returns) < 2:
+        return 0.0
+    peak = cumulative_returns.expanding().max()
+    underwater = cumulative_returns < peak
+    return float(underwater.mean())
+
+
+def compute_ic_autocorrelation(ic_series: pd.Series, lag: int = 1) -> float:
+    """IC序列自相关系数. 衡量信号持续性."""
+    if ic_series is None or len(ic_series) < lag + 10:
+        return 0.0
+    autocorr = ic_series.autocorr(lag=lag)
+    if np.isnan(autocorr):
+        return 0.0
+    return float(autocorr)
+
+
+def compute_transfer_coefficient(signal_ranks: pd.Series,
+                                  actual_ranks: pd.Series) -> float:
+    """信号到持仓的传递系数 (Spearman相关)."""
+    if signal_ranks is None or actual_ranks is None:
+        return 1.0
+    if len(signal_ranks) < 5:
+        return 1.0
+    corr = signal_ranks.corr(actual_ranks, method='spearman')
+    if np.isnan(corr):
+        return 1.0
+    return float(corr)
+
+
+def compute_wfer(wf_summary: dict) -> Optional[float]:
+    """Walk-Forward Efficiency Ratio = mean(Sharpe_OOS) / mean(Sharpe_IS)."""
+    is_sharpes = wf_summary.get('is_sharpe')
+    oos_sharpes = wf_summary.get('oos_sharpe')
+    if not is_sharpes or not oos_sharpes:
+        return None
+    is_mean = float(np.mean(is_sharpes))
+    oos_mean = float(np.mean(oos_sharpes))
+    if is_mean <= 0:
+        return None
+    return oos_mean / is_mean
+
+
+def compute_oos_ic_half_life(wf_summary: dict) -> Optional[float]:
+    """OOS IC衰减半衰期 (月数). IC(t) = IC_0 * exp(-λt), 半衰期 = ln(2)/λ"""
+    monthly_ics = wf_summary.get('oos_monthly_ics')
+    if not monthly_ics:
+        return None
+    max_months = max(len(m) for m in monthly_ics)
+    if max_months < 2:
+        return None
+    avg_by_month = []
+    for i in range(max_months):
+        vals = [m[i] for m in monthly_ics if len(m) > i and m[i] is not None]
+        if vals:
+            avg_by_month.append(float(np.mean(vals)))
+        else:
+            break
+    if len(avg_by_month) < 2 or avg_by_month[0] <= 0:
+        return 0.0
+    log_ics = [np.log(max(ic, 1e-8)) for ic in avg_by_month]
+    coeffs = np.polyfit(range(len(log_ics)), log_ics, 1)
+    slope = coeffs[0]
+    if slope >= 0:
+        return 12.0
+    half_life = np.log(2) / (-slope)
+    return float(min(half_life, 12.0))
+
+
+def compute_factor_attribution(portfolio_returns: pd.Series,
+                                factor_returns: pd.DataFrame,
+                                risk_free_rate: float = 0.02) -> dict:
+    """Fama-French 4因子归因. R_strategy - Rf = α + β_mkt·MKT + β_smb·SMB + β_hml·HML + β_umd·UMD + ε"""
+    default = {
+        'residual_alpha': 0.0, 'residual_alpha_annual': 0.0,
+        'residual_alpha_t': 0.0, 'factor_r_squared': 0.0,
+        'betas': {'mkt': 0.0, 'smb': 0.0, 'hml': 0.0, 'umd': 0.0},
+        'max_factor_loading': 0.0, 'smb_beta': 0.0, 'mom_beta': 0.0,
+    }
+    if not HAS_STATSMODELS:
+        import warnings
+        warnings.warn("statsmodels not installed — factor attribution unavailable")
+        return default
+    if portfolio_returns is None or factor_returns is None:
+        return default
+    if len(portfolio_returns) < 30:
+        return default
+
+    common = portfolio_returns.index.intersection(factor_returns.index)
+    if len(common) < 30:
+        n = min(len(portfolio_returns), len(factor_returns))
+        if n < 30:
+            return default
+        y = portfolio_returns.values[:n] - risk_free_rate / 252
+        X = factor_returns[['MKT', 'SMB', 'HML', 'UMD']].values[:n]
+    else:
+        y = portfolio_returns.loc[common].values - risk_free_rate / 252
+        X = factor_returns.loc[common, ['MKT', 'SMB', 'HML', 'UMD']].values
+
+    X = sm.add_constant(X)
+    try:
+        model = sm.OLS(y, X).fit()
+    except Exception:
+        return default
+
+    params = model.params if hasattr(model.params, '__getitem__') else list(model.params)
+    tvals = model.tvalues if hasattr(model.tvalues, '__getitem__') else list(model.tvalues)
+    alpha = float(params[0])
+    alpha_t = float(tvals[0])
+    betas = {
+        'mkt': float(params[1]),
+        'smb': float(params[2]),
+        'hml': float(params[3]),
+        'umd': float(params[4]),
+    }
+    return {
+        'residual_alpha': alpha,
+        'residual_alpha_annual': alpha * 252,
+        'residual_alpha_t': alpha_t,
+        'factor_r_squared': float(model.rsquared),
+        'betas': betas,
+        'max_factor_loading': max(abs(betas['smb']), abs(betas['hml']), abs(betas['umd'])),
+        'smb_beta': abs(betas['smb']),
+        'mom_beta': abs(betas['umd']),
+    }
