@@ -51,11 +51,19 @@ from .v487_production_scorer import V487ProductionScorer
 from .v490_production_scorer import V490ProductionScorer
 from .alpha158_production_scorer import Alpha158ProductionScorer
 
-# 导出
+# 补全缺失的 scorer 导入
+from .v395_production_scorer import V395ProductionScorer
+from .v396_production_scorer import V396ProductionScorer
+from .v43_production_scorer import V43ProductionScorer
+
+# 导出 (所有已注册的 scorer)
 __all__ = [
     'V390EnhancedFeatureMLSystem',
     'V390ProductionScorer',
     'V394ProductionScorer',
+    'V395ProductionScorer',
+    'V396ProductionScorer',
+    'V43ProductionScorer',
     'V500ProductionScorer',
     'V44ProductionScorer',
     'V442ProductionScorer',

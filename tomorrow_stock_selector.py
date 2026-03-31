@@ -5560,67 +5560,8 @@ class TomorrowStockSelector:
         
         return report
 
-def is_trading_day(date_str: str) -> bool:
-    """检查指定日期是否为交易日"""
-    try:
-        import tushare as ts
-        from datetime import datetime
-        
-        # 设置tushare token
-        try:
-            with open('config.json', 'r', encoding='utf-8') as f:
-                config = json.load(f)
-                token = config.get('tushare', {}).get('token')
-                if token and token != "YOUR_TUSHARE_TOKEN_HERE":
-                    ts.set_token(token)
-                    pro = ts.pro_api()
-                    
-                    # 转换日期格式
-                    check_date = datetime.strptime(date_str, '%Y-%m-%d').strftime('%Y%m%d')
-                    
-                    # 查询交易日历
-                    cal_df = pro.trade_cal(
-                        exchange='SSE',
-                        start_date=check_date,
-                        end_date=check_date,
-                        fields='cal_date,is_open'
-                    )
-                    
-                    if not cal_df.empty:
-                        return cal_df.iloc[0]['is_open'] == 1
-                        
-        except Exception as e:
-            logger.debug(f"API查询交易日失败: {e}")
-        
-        # 如果API查询失败，先检查数据库中是否有该日期的数据
-        try:
-            import sqlite3
-            db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data_adapter', 'stock_data.db')
-            conn = sqlite3.connect(db_path)
-            cursor = conn.cursor()
-            cursor.execute("SELECT COUNT(*) FROM daily_quotes WHERE trade_date = ?", (date_str,))
-            count = cursor.fetchone()[0]
-            conn.close()
-            if count > 100:  # 有足够多的行情数据，说明是交易日
-                return True
-        except Exception:
-            pass
-
-        # 最后使用简单规则判断（周一到周五）
-        weekday = datetime.strptime(date_str, '%Y-%m-%d').weekday()
-        if weekday >= 5:  # 周六周日
-            return False
-
-        return True
-            
-    except Exception as e:
-        logger.warning(f"交易日检查失败: {e}")
-        # 默认周一到周五为交易日
-        try:
-            weekday = datetime.strptime(date_str, '%Y-%m-%d').weekday()
-            return weekday < 5
-        except:
-            return True
+# is_trading_day 已提取到 core.trading_calendar 模块
+from core.trading_calendar import is_trading_day
 
 def main(target_date: str = None, scoring_version: str = "v3", stocks_only: bool = False, skip_strategies: bool = False, full_market: bool = False):
     """主函数
