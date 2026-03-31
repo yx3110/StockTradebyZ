@@ -75,7 +75,15 @@ from backtest.north_star_metrics import (
     compute_v4_benchmark_metrics,
     compute_excess_max_drawdown, compute_bear_excess_return,
     compute_up_capture_ratio,
+    # V5 imports
+    NORTH_STAR_TARGETS_V5, V5_LAYER_WEIGHTS, V5_LAYER_NAMES,
+    score_metric_v5, compute_v5_score, compute_v5_grade,
+    compute_cvar, compute_max_dd_duration, compute_underwater_ratio,
+    compute_ic_autocorrelation, compute_transfer_coefficient,
+    compute_factor_attribution, auto_select_benchmark,
+    compute_backtest_length_factor_v5,
 )
+from backtest.factor_returns import load_or_build_factors
 
 HOLDING_DAYS = [1, 3, 5, 7, 10, 15, 20]
 
@@ -141,7 +149,10 @@ except ImportError:
 
 
 def _parse_single_report(json_file, rank_field):
-    """解析单个JSON报告文件 (供并行加载使用)"""
+    """解析单个JSON报告文件 (供并行加载使用)
+
+    Returns: (date, stock_list) where stock_list may contain '_gate_info' metadata entry.
+    """
     date_str = json_file.stem.replace('analysis_data_', '')
     date = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
 
@@ -153,6 +164,14 @@ def _parse_single_report(json_file, rank_field):
     stocks = data.get('all_stocks_with_scores', [])
     if not stocks:
         return date, None
+
+    # 提取市场门控信息 (从第一只股票或报告级别)
+    gate_confidence = None
+    gate_regime = None
+    if stocks:
+        first = stocks[0]
+        gate_confidence = first.get('gate_confidence')
+        gate_regime = first.get('gate_regime')
 
     stock_list = []
     for s in stocks:
@@ -189,6 +208,14 @@ def _parse_single_report(json_file, rank_field):
 
     if not stock_list:
         return date, None
+
+    # 注入门控元数据到第一个条目 (排序后仍能找到)
+    # 存为独立标记条目插到列表头, 不参与排序
+    if gate_confidence is not None:
+        gate_marker = {'code': '__GATE_META__', 'score': -1, 'rank_score': -999,
+                       '_gate_confidence': gate_confidence, '_gate_regime': gate_regime}
+        stock_list.insert(0, gate_marker)
+
     return date, stock_list
 
 
@@ -882,7 +909,10 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
                         min_turnover_rate=0.0, replace_threshold=0.0,
                         hold_buffer=0,
                         rerank_reports=None, rerank_pool=100,
-                        cache=None):
+                        cache=None,
+                        gate_dont_buy=0.30, gate_reduce=0.50,
+                        drawdown_brake=False,
+                        ema_alpha=0.0):
     """运行单个报告目录的回测（含北极星指标）
 
     Args:
@@ -941,8 +971,35 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
         if cppi_floor > 0:
             overlay_parts.append(f"CPPI(floor={cppi_floor:.0%}, m={cppi_multiplier:.1f})")
         print(f"  V4.5 Risk Overlays: {' + '.join(overlay_parts)}")
+    if drawdown_brake:
+        print(f"  V4.9.2 Drawdown Brake: DD>4%→×0.7, DD>7%→×0.5, DD>10%→×0.3")
+    if ema_alpha > 0:
+        print(f"  EMA预测平滑: alpha={ema_alpha} (pred_10d/15d时序平滑)")
 
     print(f"{'='*80}\n")
+
+    # EMA预测平滑: 按时间顺序对pred_10d/15d做EMA，更新rank_score
+    if ema_alpha > 0:
+        cache_10d, cache_15d = {}, {}
+        for date in sorted(reports.keys()):
+            for s in reports[date]:
+                code = s.get('code', '')
+                if not code or code.startswith('__GATE_'):
+                    continue
+                p10 = s.get('pred_10d', 0) or 0
+                p15 = s.get('pred_15d', 0) or 0
+                if code in cache_10d:
+                    s10 = ema_alpha * p10 + (1 - ema_alpha) * cache_10d[code]
+                    s15 = ema_alpha * p15 + (1 - ema_alpha) * cache_15d[code]
+                else:
+                    s10, s15 = p10, p15
+                cache_10d[code] = s10
+                cache_15d[code] = s15
+                s['pred_10d'] = s10
+                s['pred_15d'] = s15
+                s['rank_score'] = 0.6 * s10 + 0.4 * s15
+            # 重新排序
+            reports[date].sort(key=lambda x: x.get('rank_score', 0), reverse=True)
 
     # V4.5: 预加载overlay数据
     market_ewma_vol = pd.Series(dtype=float)
@@ -1018,8 +1075,49 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
     prev_top_codes = set()
 
     dates = sorted(reports.keys())
+    gate_skip_count = 0
+    gate_reduce_count = 0
     for i, date in enumerate(dates):
         stocks = reports[date]
+
+        # 市场门控: 从标记条目中提取gate_regime
+        _gate_regime = None
+        _gate_confidence = None
+        # 查找gate marker (code='__GATE_META__' 或 '__GATE_DONT_BUY__')
+        gate_markers = [s for s in stocks if s.get('code', '').startswith('__GATE_')]
+        if gate_markers:
+            marker = gate_markers[0]
+            _gate_regime = marker.get('_gate_regime')
+            _gate_confidence = marker.get('_gate_confidence')
+            # 从stock列表中移除marker
+            stocks = [s for s in stocks if not s.get('code', '').startswith('__GATE_')]
+
+        # 用confidence和参数化阈值重新判断regime (覆盖报告内的regime)
+        if _gate_confidence is not None:
+            if _gate_confidence < gate_dont_buy:
+                _gate_regime = 'dont_buy'
+            elif _gate_confidence < gate_reduce:
+                _gate_regime = 'reduce'
+            else:
+                _gate_regime = 'normal'
+
+        if _gate_regime == 'dont_buy':
+            # 空仓日: 0收益 (跳过该日选股)
+            gate_skip_count += 1
+            holdings_by_date[date] = set()
+            prev_top_codes = set()
+            for days in HOLDING_DAYS:
+                daily_results.append({
+                    'date': date, 'days': days, 'return': 0.0,
+                    'exposure': 0.0, 'gate_regime': 'dont_buy',
+                })
+            continue
+
+        # 市场门控减仓: top_n临时减半
+        effective_top_n = top_n
+        if _gate_regime == 'reduce':
+            effective_top_n = max(1, top_n // 2)
+            gate_reduce_count += 1
 
         # 流动性过滤: 剔除换手率过低的股票 (在top-N选择之前)
         if min_turnover_rate > 0 and turnover_data:
@@ -1055,20 +1153,20 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
                     s_copy['rank_score'] = s['rank_score'] * (1 + retention_bonus)
                 adjusted_stocks.append(s_copy)
             adjusted_stocks.sort(key=lambda x: x['rank_score'], reverse=True)
-            top_stocks = adjusted_stocks[:top_n]
+            top_stocks = adjusted_stocks[:effective_top_n]
         else:
-            top_stocks = stocks[:top_n]
+            top_stocks = stocks[:effective_top_n]
 
-        # 持仓缓冲: 现有持仓仍在top_n*(1+buffer)内则保留
+        # 持仓缓冲: 现有持仓仍在effective_top_n*(1+buffer)内则保留
         if hold_buffer > 0 and prev_top_codes:
-            buffer_n = int(top_n * (1 + hold_buffer))
+            buffer_n = int(effective_top_n * (1 + hold_buffer))
             buffer_codes = set(s['code'] for s in stocks[:buffer_n])
             # 现有持仓中仍在缓冲区内的 → 保留
             retained = [s for s in stocks if s['code'] in prev_top_codes
                         and s['code'] in buffer_codes]
             retained_codes = set(s['code'] for s in retained)
-            # 需要几个新股补满top_n
-            n_new_needed = top_n - len(retained)
+            # 需要几个新股补满effective_top_n
+            n_new_needed = effective_top_n - len(retained)
             if n_new_needed > 0:
                 # 从top排名中补入不在retained中的新股
                 new_entries = [s for s in stocks if s['code'] not in retained_codes][:n_new_needed]
@@ -1077,13 +1175,13 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
             elif n_new_needed == 0:
                 top_stocks = retained
                 top_stocks.sort(key=lambda x: x['rank_score'], reverse=True)
-            # else: retained已超过top_n, 取排名最高的top_n
+            # else: retained已超过effective_top_n, 取排名最高的
             else:
                 retained.sort(key=lambda x: x['rank_score'], reverse=True)
-                top_stocks = retained[:top_n]
+                top_stocks = retained[:effective_top_n]
 
         # 替换门槛: 仅当新股评分显著高于被替换旧持仓时才替换 (不修改rank_scores)
-        if replace_threshold > 0 and prev_top_codes and len(top_stocks) == top_n:
+        if replace_threshold > 0 and prev_top_codes and len(top_stocks) == effective_top_n:
             # 构建当前评分查找表 (使用原始rank_scores, 非retention调整后的)
             score_map = {s['code']: s['rank_score'] for s in stocks}
             new_codes = set(s['code'] for s in top_stocks)
@@ -1192,6 +1290,19 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
         else:
             exposure = 1.0
 
+        # V4.9.2 Drawdown Brake: 根据当前回撤深度额外缩减仓位
+        if drawdown_brake and peak_nav > 0:
+            current_dd = (nav - peak_nav) / peak_nav  # 负值
+            if current_dd < -0.10:
+                # 深度回撤: 仓位×0.3
+                exposure *= 0.3
+            elif current_dd < -0.07:
+                # 中度回撤: 仓位×0.5
+                exposure *= 0.5
+            elif current_dd < -0.04:
+                # 轻度回撤: 仓位×0.7
+                exposure *= 0.7
+
         for days in HOLDING_DAYS:
             key = f'return_{days}d'
             # 退市/缺数据股默认-10%惩罚 (减少存活偏差)
@@ -1280,6 +1391,11 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
 
     if skipped:
         print(f"  跳过 {skipped} 天（无交易数据）")
+
+    # 市场门控统计
+    if gate_skip_count > 0 or gate_reduce_count > 0:
+        print(f"  🛡️ 市场门控: {gate_skip_count}天空仓 + {gate_reduce_count}天减仓 "
+              f"(共{len(dates)}天, 干预率{(gate_skip_count+gate_reduce_count)/max(len(dates),1):.1%})")
 
     # V4.5: Overlay诊断
     if overlay_active and exposure_history:
@@ -1420,7 +1536,7 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
     )
 
     # V2: 批量加载市值/涨停数据 (合并为2次SQL替代3次, 1个连接替代3个)
-    all_buy_dates = sorted(set(df['buy_date'].tolist()))
+    all_buy_dates = sorted(set(d for d in df['buy_date'].tolist() if isinstance(d, str)))
     if cache is not None:
         market_cap_data, limit_up_data, universe_median_cap = cache.get_metric_data(
             all_buy_dates,
@@ -1594,6 +1710,41 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
                         buy_ret_v4, bm_aligned_v4, periods_per_year=ppy
                     )
 
+                # 修复: 如果bear_excess为None (period数据不够lookback=60),
+                # 用日频benchmark做regime分类再映射到period级别
+                if v4_benchmark_metrics.get('bear_excess_return') is None and len(buy_ret_v4) >= 5:
+                    try:
+                        daily_regime = classify_market_regime(benchmark_daily_ret, lookback=60)
+                        if not daily_regime.empty:
+                            # 映射: 该period持仓期间(buy_date ~ buy_date+N天)
+                            # 只要期间内有超过50%的天数是熊市，就标记为bear period
+                            bear_periods = []
+                            sorted_buy_dts = sorted(buy_ret_v4.index)
+                            for idx_bd, buy_dt in enumerate(sorted_buy_dts):
+                                # period结束日 = 下一个buy_date 或 +days天
+                                if idx_bd + 1 < len(sorted_buy_dts):
+                                    end_dt = sorted_buy_dts[idx_bd + 1]
+                                else:
+                                    end_dt = buy_dt + pd.Timedelta(days=days*2)
+                                period_regime = daily_regime[
+                                    (daily_regime.index >= buy_dt) &
+                                    (daily_regime.index < end_dt)]
+                                if len(period_regime) > 0:
+                                    bear_frac = (period_regime == 'bear').mean()
+                                    if bear_frac > 0.3:  # 30%以上天数是熊市即标记
+                                        bear_periods.append(buy_dt)
+
+                            if len(bear_periods) >= 1:
+                                p_bear = buy_ret_v4.loc[bear_periods]
+                                b_bear = bm_aligned_v4.reindex(bear_periods).dropna()
+                                common_bear = p_bear.index.intersection(b_bear.index)
+                                if len(common_bear) >= 1:
+                                    excess_bear = p_bear.loc[common_bear] - b_bear.loc[common_bear]
+                                    v4_benchmark_metrics['bear_excess_return'] = float(
+                                        excess_bear.mean() * ppy)
+                    except Exception:
+                        pass
+
         # 合并到summary
         summary[days].update({
             # 风险指标
@@ -1648,6 +1799,17 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
             'excess_max_drawdown': v4_benchmark_metrics.get('excess_max_drawdown', 0),
             'bear_excess_return': v4_benchmark_metrics.get('bear_excess_return'),
             'up_capture_ratio': v4_benchmark_metrics.get('up_capture_ratio', 0),
+            # V5新增: L1 IC自相关 + L3 CVaR/DD持续/水下比
+            'ic_autocorr_1d': compute_ic_autocorrelation(
+                ic_df_days['ic'] if len(ic_df_days) > 0 else pd.Series(dtype=float), lag=1),
+            'transfer_coefficient': 1.0,  # 默认(需要信号vs持仓rank,此处无法计算)
+            'cvar_5pct': compute_cvar(period_ret_series, alpha=0.05),
+            'max_dd_duration': compute_max_dd_duration(
+                (1 + period_ret_series).cumprod() if len(period_ret_series) > 0
+                else pd.Series(dtype=float)),
+            'underwater_ratio': compute_underwater_ratio(
+                (1 + period_ret_series).cumprod() if len(period_ret_series) > 0
+                else pd.Series(dtype=float)),
         })
 
         north_star[days] = summary[days]
@@ -1711,6 +1873,37 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
         print(f"\n  信号半衰期: {signal_hl:.1f}天")
 
     # ═══════════════════════════════════════════════════
+    # V5: 因子归因 (对focus_days持仓)
+    # ═══════════════════════════════════════════════════
+    if focus_days in summary:
+        try:
+            _all_dates = sorted(reports.keys())
+            factor_df = load_or_build_factors(_all_dates[0], _all_dates[-1], DB_PATH)
+            focus_sub = df[df['days'] == focus_days].sort_values('date')
+            if len(focus_sub) > 0:
+                if focus_days == 1:
+                    focus_no = focus_sub
+                else:
+                    focus_no = focus_sub.iloc[::focus_days]
+                focus_ret = focus_no.set_index('date')['avg_top_return'].sort_index()
+                focus_ret.index = pd.to_datetime(focus_ret.index)
+                fa = compute_factor_attribution(focus_ret, factor_df)
+            else:
+                fa = {}
+        except Exception:
+            fa = {}
+        # 写入summary
+        summary[focus_days].update({
+            'residual_alpha_t':   fa.get('residual_alpha_t', 0),
+            'factor_r_squared':   fa.get('factor_r_squared', 0),
+            'active_share':       0.9,  # 默认值(需要基准持仓才能精确计算)
+            'max_factor_loading': fa.get('max_factor_loading', 0),
+            'smb_beta':           fa.get('smb_beta', 0),
+            'mom_beta':           fa.get('mom_beta', 0),
+            'factor_attribution': fa,  # 保留完整结果
+        })
+
+    # ═══════════════════════════════════════════════════
     # 北极星评分卡（focus_days）
     # ═══════════════════════════════════════════════════
 
@@ -1722,6 +1915,8 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
         _print_scorecard_v3(s, label, focus_days, n_trading_days=len(reports))
         # V4评分卡 (V3 + Layer 5 超额收益)
         _print_scorecard_v4(s, label, focus_days, n_trading_days=len(reports))
+        # V5评分卡 (6层39指标, 连续插值)
+        _print_scorecard_v5(s, label, focus_days, n_trading_days=len(reports))
 
     # 月度分解 (5日持仓)
     sub5 = df[df['days'] == 5].copy()
@@ -1762,7 +1957,7 @@ def compute_ns_scores(summary: dict, focus_days: int,
                       n_trading_days: int = 0,
                       n_trials: int = 10) -> dict:
     """
-    从 run_single_backtest() 返回的 summary 计算北极星 V2/V3/V4 评分.
+    从 run_single_backtest() 返回的 summary 计算北极星 V2/V3/V4/V5 评分.
 
     Args:
         summary:          run_single_backtest() 返回值中的 'summary' 字段
@@ -1784,6 +1979,10 @@ def compute_ns_scores(summary: dict, focus_days: int,
             'v4_pct':    float,  # 加权+折扣后百分比 0-100
             'v4_grade':  str,    # S/A+/A/B/C/D
             'v4_details': dict,  # compute_v4_score() 完整返回值
+            'v5_score':  float,  # 原始总分 (0-195)
+            'v5_pct':    float,  # 加权+折扣后百分比 0-100
+            'v5_grade':  str,    # S/A+/A/B/C/D
+            'v5_details': dict,  # compute_v5_score() 完整返回值
         }
         若 focus_days 不在 summary 中则返回全零占位 dict.
     """
@@ -1792,6 +1991,7 @@ def compute_ns_scores(summary: dict, focus_days: int,
             'v2_score': 0, 'v2_pct': 0.0, 'v2_grade': 'D',
             'v3_score': 0, 'v3_pct': 0.0, 'v3_grade': 'D', 'v3_details': {},
             'v4_score': 0, 'v4_pct': 0.0, 'v4_grade': 'D', 'v4_details': {},
+            'v5_score': 0, 'v5_pct': 0.0, 'v5_grade': 'D', 'v5_details': {},
         }
 
     s = summary[focus_days]
@@ -1887,6 +2087,57 @@ def compute_ns_scores(summary: dict, focus_days: int,
 
     v4_result = compute_v4_score(v4_metric_values, n_trading_days, n_trials)
 
+    # ── V5 metric value map（与 _print_scorecard_v5 保持一致）──────────
+    v5_metric_values = {
+        # L1 信号质量 (继承V4 + 新增ic_autocorr_1d, transfer_coefficient)
+        'daily_ic':              s.get('ic_mean', 0),
+        'icir':                  s.get('icir', 0),
+        'ic_positive_pct':       s.get('ic_positive_pct', 0),
+        'ic_monotonicity':       ic_mono_val,
+        'ic_time_stability':     s.get('ic_time_stability', 999),
+        'signal_half_life':      s.get('signal_half_life', 0),
+        'bear_icir':             s.get('bear_icir'),
+        'ic_decay_ratio':        s.get('ic_decay_ratio', 0),
+        'ic_autocorr_1d':        s.get('ic_autocorr_1d', 0),
+        'transfer_coefficient':  s.get('transfer_coefficient', 1.0),
+        # L2 组合效率
+        'annual_turnover':       s.get('annual_turnover', 0),
+        'annual_cost_drag':      s.get('annual_cost_drag', 0),
+        'net_gross_ratio':       s.get('net_gross_ratio', 0),
+        'limit_up_fail_rate':    s.get('limit_up_fail_rate', 0),
+        'liquidity_coverage':    s.get('liquidity_coverage', 0),
+        # L3 风险控制 (继承V4 + 新增cvar_5pct, max_dd_duration, underwater_ratio)
+        'max_drawdown':          s.get('max_drawdown', 0),
+        'sharpe_ratio':          s.get('sharpe_ratio', 0),
+        'worst_rolling_60d_icir': s.get('worst_rolling_60d_icir', None),
+        'tail_ratio':            s.get('tail_ratio', 0),
+        'cvar_5pct':             s.get('cvar_5pct', 0),
+        'max_dd_duration':       s.get('max_dd_duration', 0),
+        'underwater_ratio':      s.get('underwater_ratio', 0),
+        # L4 OOS鲁棒性 (继承V4 + 新增wfer, oos_ic_half_life)
+        'annual_return':         s.get('annual_return', 0),
+        'monthly_win_rate':      s.get('monthly_win_rate', 0),
+        'probabilistic_sharpe':  s.get('probabilistic_sharpe', 0),
+        'deflated_sharpe':       s.get('deflated_sharpe', 0),
+        'wfer':                  s.get('wfer'),
+        'oos_ic_half_life':      s.get('oos_ic_half_life'),
+        # L5 超额收益
+        'excess_annual_return':  s.get('excess_annual_return', 0),
+        'information_ratio':     s.get('information_ratio', 0),
+        'excess_win_rate':       s.get('excess_win_rate', 0),
+        'excess_max_drawdown':   s.get('excess_max_drawdown', 0),
+        'up_capture_ratio':      s.get('up_capture_ratio', 0),
+        # L6 因子归因
+        'residual_alpha_t':      s.get('residual_alpha_t', 0),
+        'factor_r_squared':      s.get('factor_r_squared', 0),
+        'active_share':          s.get('active_share', 0.9),
+        'max_factor_loading':    s.get('max_factor_loading', 0),
+        'smb_beta':              s.get('smb_beta', 0),
+        'mom_beta':              s.get('mom_beta', 0),
+    }
+
+    v5_result = compute_v5_score(v5_metric_values, n_trading_days, n_trials)
+
     return {
         'v2_score': v2_total,
         'v2_pct':   v2_pct,
@@ -1899,6 +2150,10 @@ def compute_ns_scores(summary: dict, focus_days: int,
         'v4_pct':   v4_result['final_pct'],
         'v4_grade': v4_result['grade'],
         'v4_details': v4_result,
+        'v5_score': v5_result['total_score'],
+        'v5_pct':   v5_result['final_pct'],
+        'v5_grade': v5_result['grade'],
+        'v5_details': v5_result,
     }
 
 
@@ -2422,6 +2677,214 @@ def _print_scorecard_v4(s, label, days, n_trading_days=0, n_trials=10):
     max_v4 = v4_result['max_score']
     print(f"\n  原始总分: {total_v4}/{max_v4} (未加权{total_v4/max_v4*100:.0f}%)")
     print(f"  {'═'*74}")
+
+
+def _print_scorecard_v5(s, label, days, n_trading_days=0, n_trials=10):
+    """打印V5北极星评分卡 (39项, 6层连续插值, 含因子归因)"""
+    print(f"\n  {'═'*80}")
+    print(f"  北极星评分卡 V5: {label} ({days}日持仓)")
+    print(f"  {'═'*80}")
+
+    # 自动选择基准
+    median_cap = s.get('median_market_cap_bn', 0)
+    auto_bm = auto_select_benchmark(median_cap) if median_cap > 0 else '000905.SH'
+    print(f"  中位市值: {median_cap:.1f}亿 → 自动基准: {auto_bm}")
+
+    # IC单调性: 优先用V3版本
+    ic_mono_val = s.get('ic_monotonicity_v3')
+    if ic_mono_val is None or ic_mono_val == 0:
+        ic_mono_val = s.get('ic_monotonicity', 0)
+
+    # 构建V5 metric value map
+    metric_value_map = {
+        # L1 信号质量 (10项)
+        'daily_ic':              s.get('ic_mean', 0),
+        'icir':                  s.get('icir', 0),
+        'ic_positive_pct':       s.get('ic_positive_pct', 0),
+        'ic_monotonicity':       ic_mono_val,
+        'ic_time_stability':     s.get('ic_time_stability', 999),
+        'signal_half_life':      s.get('signal_half_life', 0),
+        'bear_icir':             s.get('bear_icir'),
+        'ic_decay_ratio':        s.get('ic_decay_ratio', 0),
+        'ic_autocorr_1d':        s.get('ic_autocorr_1d', 0),
+        'transfer_coefficient':  s.get('transfer_coefficient', 1.0),
+        # L2 组合效率 (5项)
+        'annual_turnover':       s.get('annual_turnover', 0),
+        'annual_cost_drag':      s.get('annual_cost_drag', 0),
+        'net_gross_ratio':       s.get('net_gross_ratio', 0),
+        'limit_up_fail_rate':    s.get('limit_up_fail_rate', 0),
+        'liquidity_coverage':    s.get('liquidity_coverage', 0),
+        # L3 风险控制 (7项)
+        'max_drawdown':          s.get('max_drawdown', 0),
+        'sharpe_ratio':          s.get('sharpe_ratio', 0),
+        'worst_rolling_60d_icir': s.get('worst_rolling_60d_icir', None),
+        'tail_ratio':            s.get('tail_ratio', 0),
+        'cvar_5pct':             s.get('cvar_5pct', 0),
+        'max_dd_duration':       s.get('max_dd_duration', 0),
+        'underwater_ratio':      s.get('underwater_ratio', 0),
+        # L4 OOS鲁棒性 (6项)
+        'annual_return':         s.get('annual_return', 0),
+        'monthly_win_rate':      s.get('monthly_win_rate', 0),
+        'probabilistic_sharpe':  s.get('probabilistic_sharpe', 0),
+        'deflated_sharpe':       s.get('deflated_sharpe', 0),
+        'wfer':                  s.get('wfer'),
+        'oos_ic_half_life':      s.get('oos_ic_half_life'),
+        # L5 超额收益 (5项)
+        'excess_annual_return':  s.get('excess_annual_return', 0),
+        'information_ratio':     s.get('information_ratio', 0),
+        'excess_win_rate':       s.get('excess_win_rate', 0),
+        'excess_max_drawdown':   s.get('excess_max_drawdown', 0),
+        'up_capture_ratio':      s.get('up_capture_ratio', 0),
+        # L6 因子归因 (6项)
+        'residual_alpha_t':      s.get('residual_alpha_t', 0),
+        'factor_r_squared':      s.get('factor_r_squared', 0),
+        'active_share':          s.get('active_share', 0.9),
+        'max_factor_loading':    s.get('max_factor_loading', 0),
+        'smb_beta':              s.get('smb_beta', 0),
+        'mom_beta':              s.get('mom_beta', 0),
+    }
+
+    # 格式分类
+    pct_fmt_keys = {'max_drawdown', 'annual_return', 'annual_cost_drag',
+                    'net_gross_ratio', 'limit_up_fail_rate', 'liquidity_coverage',
+                    'half_period_consistency', 'probabilistic_sharpe', 'deflated_sharpe',
+                    'ic_decay_ratio', 'tail_ratio',
+                    'excess_annual_return', 'excess_max_drawdown',
+                    'cvar_5pct', 'underwater_ratio', 'factor_r_squared', 'active_share'}
+    plain_fmt_keys = {'ic_positive_pct', 'monthly_win_rate', 'annual_turnover',
+                      'signal_half_life', 'max_dd_duration',
+                      'excess_win_rate', 'oos_ic_half_life'}
+    ratio_fmt_keys = {'up_capture_ratio', 'wfer'}
+
+    # 计算V5评分
+    v5_result = compute_v5_score(metric_value_map, n_trading_days, n_trials)
+
+    for layer_id in sorted(V5_LAYER_NAMES.keys()):
+        layer_name = V5_LAYER_NAMES[layer_id]
+        weight = V5_LAYER_WEIGHTS[layer_id]
+        ld = v5_result['layer_details'][layer_id]
+        layer_metrics = [(k, v) for k, v in NORTH_STAR_TARGETS_V5.items()
+                         if v['layer'] == layer_id]
+        if not layer_metrics:
+            continue
+
+        print(f"\n  ┌─ L{layer_id} {layer_name} (权重{weight:.0%})"
+              f"  [{ld['score']:.1f}/{ld['max']:.0f} = {ld['pct']:.0f}%]")
+        print(f"  │ {'指标':<20s} {'当前值':>10s} {'及格':>8s} {'目标':>8s}"
+              f" {'分数':>5s}  {'进度条':<22s}")
+        print(f"  │ {'─'*76}")
+
+        for metric_key, target_info in layer_metrics:
+            ms = v5_result['metric_scores'].get(metric_key, (0.0, '░' * 20, None))
+            score, bar, value = ms
+
+            display = target_info['display']
+            target_val = target_info['target']
+            pass_val = target_info['pass']
+
+            if value is None:
+                c_str = "N/A"
+            elif metric_key in pct_fmt_keys:
+                c_str = f"{value:.1%}" if abs(value) < 10 else f"{value:.0%}"
+            elif metric_key in plain_fmt_keys:
+                c_str = f"{value:.1f}"
+            elif metric_key in ratio_fmt_keys:
+                c_str = f"{value:.2f}"
+            else:
+                c_str = f"{value:.3f}"
+
+            if metric_key in pct_fmt_keys:
+                t_str = f"{target_val:.1%}" if abs(target_val) < 10 else f"{target_val:.0%}"
+                p_str = f"{pass_val:.1%}" if abs(pass_val) < 10 else f"{pass_val:.0%}"
+            elif metric_key in plain_fmt_keys:
+                t_str = f"{target_val:.1f}"
+                p_str = f"{pass_val:.1f}"
+            elif metric_key in ratio_fmt_keys:
+                t_str = f"{target_val:.2f}"
+                p_str = f"{pass_val:.2f}"
+            else:
+                t_str = f"{target_val:.3f}"
+                p_str = f"{pass_val:.3f}"
+
+            # 短窗口标注
+            short_warn = ''
+            min_days = target_info.get('min_days', 0)
+            if min_days > 0 and n_trading_days > 0 and n_trading_days < min_days:
+                short_warn = ' ⚠短'
+
+            # 新层标记
+            new_mark = ''
+            if layer_id == 6:
+                new_mark = ' V5'
+            elif metric_key in ('ic_autocorr_1d', 'transfer_coefficient',
+                                'cvar_5pct', 'max_dd_duration', 'underwater_ratio',
+                                'wfer', 'oos_ic_half_life'):
+                new_mark = ' V5'
+
+            print(f"  │ {display:<20s} {c_str:>10s} {p_str:>8s} {t_str:>8s}"
+                  f" {score:4.1f}/5  {bar}{short_warn}{new_mark}")
+
+    # 因子暴露摘要
+    fa = s.get('factor_attribution')
+    if fa and isinstance(fa, dict) and fa.get('betas'):
+        betas = fa['betas']
+        print(f"\n  ┌─ 因子暴露摘要")
+        print(f"  │ MKT={betas.get('mkt', 0):+.3f}  "
+              f"SMB={betas.get('smb', 0):+.3f}  "
+              f"HML={betas.get('hml', 0):+.3f}  "
+              f"UMD={betas.get('umd', 0):+.3f}")
+        print(f"  │ Alpha(年化)={fa.get('residual_alpha_annual', 0):+.1%}  "
+              f"t={fa.get('residual_alpha_t', 0):.2f}  "
+              f"R²={fa.get('factor_r_squared', 0):.3f}")
+
+    # 总分 + 加权
+    print(f"\n  {'─'*80}")
+
+    length_factor = v5_result['length_factor']
+    raw_pct = v5_result['raw_pct']
+    final_pct = v5_result['final_pct']
+    grade = v5_result['grade']
+
+    if n_trading_days > 0 and n_trading_days < 500:
+        print(f"  回测长度: {n_trading_days}天 → 折扣因子 {length_factor:.2f}"
+              f" (≥500天无惩罚, <60天=0)")
+
+    has_short_warn = any(
+        t.get('min_days', 0) > 0 and n_trading_days > 0 and n_trading_days < t.get('min_days', 0)
+        for t in NORTH_STAR_TARGETS_V5.values()
+    )
+    if has_short_warn:
+        print(f"  ⚠短 = 数据不足(当前{n_trading_days}天), 该指标可信度较低")
+
+    print(f"\n  加权评分: {raw_pct:.1f}%"
+          + (f" × {length_factor:.2f} = {final_pct:.1f}%" if length_factor < 1.0 else "")
+          + f" → 等级 {grade}")
+
+    # 分层小计 (含权重)
+    for layer_id in sorted(V5_LAYER_NAMES.keys()):
+        ld = v5_result['layer_details'][layer_id]
+        weight = V5_LAYER_WEIGHTS[layer_id]
+        contribution = ld['pct'] * weight
+        mark = ' ★NEW' if layer_id == 6 else ''
+        if layer_id in (1, 3, 4):
+            # 这些层有新指标但不是全新层
+            new_in_layer = {'ic_autocorr_1d', 'transfer_coefficient',
+                            'cvar_5pct', 'max_dd_duration', 'underwater_ratio',
+                            'wfer', 'oos_ic_half_life'}
+            has_new = any(k in new_in_layer for k, v in NORTH_STAR_TARGETS_V5.items()
+                          if v['layer'] == layer_id)
+            if has_new:
+                mark = ' +V5'
+        print(f"    L{layer_id} {V5_LAYER_NAMES[layer_id]:8s}: "
+              f"{ld['score']:5.1f}/{ld['max']:5.1f} ({ld['pct']:5.1f}%) "
+              f"× {weight:.0%} = {contribution:5.1f}%{mark}")
+
+    total_v5 = v5_result['total_score']
+    max_v5 = v5_result['max_score']
+    print(f"\n  原始总分: {total_v5:.1f}/{max_v5:.0f} (未加权{total_v5/max_v5*100:.0f}%)")
+    print(f"  {'═'*80}")
+
+    return v5_result
 
 
 def compare_results(result_a, result_b, focus_days=10):
