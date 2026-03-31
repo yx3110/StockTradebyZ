@@ -78,7 +78,7 @@ class FinancialMetrics:
             # 检查是否单调递增
             is_monotonic = all(returns[i] <= returns[i+1] for i in range(len(returns)-1))
             return is_monotonic, returns
-        except:
+        except Exception:
             return False, []
 
 
@@ -139,7 +139,7 @@ class ImprovedV391Trainer:
                 features_dict = json.loads(row['features_json'])
                 features_list.append(features_dict)
                 valid_rows.append(row)
-            except:
+            except Exception:
                 continue
 
             if (idx + 1) % 50000 == 0:

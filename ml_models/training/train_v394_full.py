@@ -72,7 +72,7 @@ def load_merged_features():
             features['trade_date'] = row['trade_date']
             features['label'] = row['label_5d']
             features_list.append(features)
-        except:
+        except Exception:
             continue
 
     v39_features = pd.DataFrame(features_list)

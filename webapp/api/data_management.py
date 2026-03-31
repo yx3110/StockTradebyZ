@@ -562,7 +562,7 @@ def _get_database_stats(db_path: str) -> Dict[str, Any]:
                 count_cursor = conn.execute(f"SELECT COUNT(*) FROM {table}")
                 count = count_cursor.fetchone()[0]
                 stats['tables'][table] = {'count': count}
-            except:
+            except Exception:
                 pass
 
         # 证券数量
@@ -571,7 +571,7 @@ def _get_database_stats(db_path: str) -> Dict[str, Any]:
                 "SELECT COUNT(*) FROM securities WHERE is_active = 1"
             )
             stats['active_securities'] = cursor.fetchone()[0]
-        except:
+        except Exception:
             stats['active_securities'] = 0
 
         # 日期范围
@@ -584,7 +584,7 @@ def _get_database_stats(db_path: str) -> Dict[str, Any]:
                 'start': row[0],
                 'end': row[1]
             }
-        except:
+        except Exception:
             stats['date_range'] = None
 
     except Exception as e:

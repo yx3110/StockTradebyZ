@@ -435,7 +435,7 @@ class V395MultiTargetTrainer:
                     features['label_5d'] = row['label_5d']
                     features['label_10d'] = row['label_10d']
                     features_list.append(features)
-                except:
+                except Exception:
                     continue
             df_features = pd.DataFrame(features_list)
         logger.info(f"  解析成功: {len(df_features):,}")
@@ -4187,7 +4187,7 @@ class V471Trainer(V44Trainer):
         from datetime import datetime as dt_cls, timedelta as td_cls
         try:
             ext_start = (dt_cls.strptime(date_min, '%Y-%m-%d') - td_cls(days=40)).strftime('%Y-%m-%d')
-        except:
+        except Exception:
             ext_start = (dt_cls.strptime(date_min, '%Y%m%d') - td_cls(days=40)).strftime('%Y%m%d')
 
         df_ohlcv = pd.read_sql(ohlcv_query, conn, params=[ext_start, date_max])

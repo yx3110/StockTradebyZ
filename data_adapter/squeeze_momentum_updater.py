@@ -30,7 +30,6 @@ except ImportError:
     SqueezeMomentumCalculator = None
 
 # 设置日志
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class SqueezeMomentumUpdater:

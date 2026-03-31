@@ -1178,7 +1178,7 @@ class V39FeatureCacheUpdaterOptimized:
             for cache_id, code, trade_date, features_json in batch:
                 try:
                     features = json.loads(features_json)
-                except:
+                except Exception:
                     continue
 
                 # 检查是否需要修复 (NaN 或 0 表示之前用的是NULL列)

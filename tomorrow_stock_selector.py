@@ -1291,16 +1291,16 @@ class TomorrowStockSelector:
             current_price = stock_data.iloc[-1]['close']
             past_price = stock_data.iloc[-(periods+1)]['close']
             return ((current_price - past_price) / past_price * 100) if past_price > 0 else 0.0
-        except:
+        except Exception:
             return 0.0
-            
+
     def _calculate_avg_volume(self, stock_data: pd.DataFrame, periods: int) -> float:
         """计算指定周期的平均成交量"""
         try:
             if len(stock_data) < periods:
                 return stock_data['volume'].mean() if not stock_data.empty else 0
             return stock_data.tail(periods)['volume'].mean()
-        except:
+        except Exception:
             return 0.0
     
     def _calculate_signal_strength(self, indicators: dict, volatility: float) -> float:

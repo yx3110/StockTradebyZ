@@ -266,7 +266,7 @@ class V394OptimizedEnsembleTrainer:
                 features['stock_relative_liquidity'] = row['stock_relative_liquidity']
                 features['market_cap_quality_score'] = row['market_cap_quality_score']
                 features_list.append(features)
-            except:
+            except Exception:
                 continue
 
         result_df = pd.DataFrame(features_list)

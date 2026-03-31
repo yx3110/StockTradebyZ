@@ -60,7 +60,7 @@ for idx, row in tqdm(df_cache.iterrows(), total=len(df_cache), desc="解析进�
         features = json.loads(row['features_json'])
         features_list.append(features)
         labels_list.append(row['label_5d'])
-    except:
+    except Exception:
         continue
 
 # 转换为DataFrame
