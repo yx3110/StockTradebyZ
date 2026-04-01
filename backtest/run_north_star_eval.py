@@ -154,7 +154,7 @@ def _inject_wf_summary(result, wf_summary_path, focus_days):
         return
 
     from backtest.north_star_metrics import compute_wfer, compute_oos_ic_half_life
-    from backtest.backtest_report_based import _print_scorecard_v5
+    from backtest.backtest_report_based import _print_scorecard_v5, _print_scorecard_v51
 
     wfer = compute_wfer(wf_data)
     oos_hl = compute_oos_ic_half_life(wf_data)
@@ -163,20 +163,20 @@ def _inject_wf_summary(result, wf_summary_path, focus_days):
     if focus_days in summary:
         summary[focus_days]['wfer'] = wfer
         summary[focus_days]['oos_ic_half_life'] = oos_hl
-        print(f"\n  V5 WF摘要注入: WFER={wfer}, OOS IC半衰期={oos_hl}")
-        # 重新打印V5评分卡 (含WFER+OOS IC半衰期)
+        print(f"\n  WF摘要注入: WFER={wfer}, OOS IC半衰期={oos_hl}")
+        # 重新打印V5和V5.1评分卡 (含WFER+OOS IC半衰期)
         s = summary[focus_days]
         n_reports = len(result.get('summary', {}).get(focus_days, {}).get('dates', []))
         if n_reports == 0:
-            # 用reports总数作为交易日数
             n_reports = len([k for k in summary.keys() if isinstance(k, int) and k > 0])
-            # fallback: 从daily_results推断
             dr = result.get('daily_results')
             if dr is not None and hasattr(dr, '__len__'):
                 dates_col = dr['date'].unique() if 'date' in (dr.columns if hasattr(dr, 'columns') else []) else []
                 n_reports = len(dates_col) if len(dates_col) > 0 else n_reports
         _print_scorecard_v5(s, result.get('label', ''), focus_days,
                             n_trading_days=n_reports)
+        _print_scorecard_v51(s, result.get('label', ''), focus_days,
+                             n_trading_days=n_reports)
 
 
 def run_backtest(report_dir, label, top_n=20, benchmark='000905.SH', focus_days=10,
