@@ -1957,6 +1957,28 @@ class V43Trainer(V395MultiTargetTrainer):
         icir = mean_ic / std_ic if std_ic > 1e-8 else 0.0
         return mean_ic, icir
 
+    def _calculate_monthly_ic(self, pred, y, dates):
+        """计算按月分组的平均IC (用于OOS IC半衰期估算)"""
+        unique_dates = np.unique(dates)
+        month_ics = {}  # {YYYY-MM: [daily_ic_values]}
+        for d in unique_dates:
+            mask = dates == d
+            if mask.sum() < 10:
+                continue
+            ic, _ = spearmanr(pred[mask], y[mask])
+            if np.isnan(ic):
+                continue
+            ds = str(d)
+            if '-' in ds:
+                month_key = ds[:7]        # YYYY-MM-DD → YYYY-MM
+            elif len(ds) >= 8:
+                month_key = ds[:4] + '-' + ds[4:6]  # YYYYMMDD → YYYY-MM
+            else:
+                month_key = ds[:6]        # fallback
+            month_ics.setdefault(month_key, []).append(ic)
+        sorted_months = sorted(month_ics.keys())
+        return [float(np.mean(month_ics[m])) for m in sorted_months]
+
     def walk_forward_train(self, start_date: str = None, end_date: str = None,
                             purge_days: int = 15, min_train_days: int = 720,
                             val_days: int = 120, test_days: int = 120,
@@ -6930,10 +6952,23 @@ class V475Trainer(V473Trainer):
                     except Exception:
                         pred_test[name] = model.predict(X_test_w)
 
+                # OOS IC/ICIR
                 ensemble_pred = self.ensemble_predict(pred_test, weights)
                 ic, icir = self._calculate_daily_ic(ensemble_pred, y_te, test_dates_w)
-                window_metrics[target_key] = {'ic': ic, 'icir': icir}
-                logger.info(f"  {target_key}: IC={ic:.4f}, ICIR={icir:.4f}")
+
+                # IS IC/ICIR (用于WFER计算)
+                ensemble_pred_train = self.ensemble_predict(pred_train, weights)
+                is_ic, is_icir = self._calculate_daily_ic(ensemble_pred_train, y_tr, train_dates_w)
+
+                # OOS月度IC (用于IC半衰期计算)
+                oos_monthly_ic = self._calculate_monthly_ic(ensemble_pred, y_te, test_dates_w)
+
+                window_metrics[target_key] = {
+                    'ic': ic, 'icir': icir,
+                    'is_ic': is_ic, 'is_icir': is_icir,
+                    'oos_monthly_ic': oos_monthly_ic,
+                }
+                logger.info(f"  {target_key}: OOS IC={ic:.4f}, ICIR={icir:.4f} | IS IC={is_ic:.4f}, ICIR={is_icir:.4f}")
 
                 del models, pred_train, pred_val, pred_test
                 gc.collect()
@@ -6949,6 +6984,8 @@ class V475Trainer(V473Trainer):
         for target_key in ['3d', '5d', '10d', '15d']:
             ics = [m[target_key]['ic'] for m in wf_metrics if target_key in m]
             icirs = [m[target_key]['icir'] for m in wf_metrics if target_key in m]
+            is_icirs = [m[target_key].get('is_icir', 0) for m in wf_metrics if target_key in m]
+            oos_monthly_ics = [m[target_key].get('oos_monthly_ic', []) for m in wf_metrics if target_key in m]
             if ics:
                 summary = {
                     'mean_ic': float(np.mean(ics)),
@@ -6956,6 +6993,10 @@ class V475Trainer(V473Trainer):
                     'mean_icir': float(np.mean(icirs)),
                     'std_icir': float(np.std(icirs)),
                     'n_windows': len(ics),
+                    # 用于WFER和OOS IC半衰期
+                    'is_icir_per_window': [float(v) for v in is_icirs],
+                    'oos_icir_per_window': [float(v) for v in icirs],
+                    'oos_monthly_ics': oos_monthly_ics,
                 }
                 logger.info(f"  {target_key}: IC={summary['mean_ic']:.4f}+-{summary['std_ic']:.4f}, "
                              f"ICIR={summary['mean_icir']:.4f}+-{summary['std_icir']:.4f}")
@@ -9684,7 +9725,7 @@ class V4902Trainer(V4901Trainer):
 
     TARGET_SHARPE_BLEND = {
         'label_3d':  0.25,   # 0.10 → 0.25
-        'label_5d':  0.25,   # 0.25 → 保持原值 (0.45时5d IC为负)
+        'label_5d':  0.45,   # 回退到0.45 (0.25未改善5d IC, 确认是数据特征非blend问题)
         'label_10d': 0.50,   # 0.35 → 0.50
         'label_15d': 0.50,   # 0.35 → 0.50
     }
@@ -9702,30 +9743,36 @@ class V4902Trainer(V4901Trainer):
         return weights
 
     @staticmethod
-    def _extract_wf_summary(history: dict) -> dict:
-        """从训练history中提取WF摘要 (IS/OOS Sharpe per window per target)"""
-        summary = {'windows': [], 'targets': {}}
-        windows = history.get('walk_forward_windows', [])
-        for i, w in enumerate(windows):
-            win_info = {
-                'window': i,
-                'train_end': w.get('train_end', ''),
-                'test_end': w.get('test_end', ''),
+    def _extract_wf_summary(history: dict, focus_target: str = '10d') -> dict:
+        """从训练history中提取WF摘要, 输出compute_wfer/compute_oos_ic_half_life所需格式.
+
+        输出顶层字段 (对应focus_target):
+          - is_sharpe: 每个WF窗口的IS ICIR (WFER分子)
+          - oos_sharpe: 每个WF窗口的OOS ICIR (WFER分母)
+          - oos_monthly_ics: 每个WF窗口的月度OOS IC列表 (IC半衰期)
+          - targets: 所有目标的详细数据
+        """
+        # wf_summary存储在history的多个可能位置
+        wf_data = (history.get('summary', {}).get('walk_forward_summary', {})
+                   or history.get('walk_forward_summary', {}))
+
+        summary = {'targets': {}}
+        for tgt_key in ['3d', '5d', '10d', '15d']:
+            tgt_data = wf_data.get(tgt_key, {})
+            summary['targets'][f'label_{tgt_key}'] = {
+                'is_sharpe': tgt_data.get('is_icir_per_window', []),
+                'oos_sharpe': tgt_data.get('oos_icir_per_window', []),
+                'oos_monthly_ics': tgt_data.get('oos_monthly_ics', []),
+                'mean_ic': tgt_data.get('mean_ic'),
+                'mean_icir': tgt_data.get('mean_icir'),
+                'n_windows': tgt_data.get('n_windows', 0),
             }
-            summary['windows'].append(win_info)
-            for tgt in ['label_3d', 'label_5d', 'label_10d', 'label_15d']:
-                if tgt not in summary['targets']:
-                    summary['targets'][tgt] = {'is_sharpe': [], 'oos_sharpe': [], 'oos_ic': [], 'oos_icir': []}
-                metrics = w.get('metrics', {}).get(tgt, {})
-                summary['targets'][tgt]['is_sharpe'].append(metrics.get('is_sharpe', None))
-                summary['targets'][tgt]['oos_sharpe'].append(metrics.get('oos_sharpe', None))
-                summary['targets'][tgt]['oos_ic'].append(metrics.get('oos_ic', None))
-                summary['targets'][tgt]['oos_icir'].append(metrics.get('oos_icir', None))
-        # 计算均值
-        for tgt, vals in summary['targets'].items():
-            for k in ['is_sharpe', 'oos_sharpe', 'oos_ic', 'oos_icir']:
-                valid = [v for v in vals[k] if v is not None]
-                vals[f'{k}_mean'] = float(np.mean(valid)) if valid else None
+
+        # 顶层字段: 用focus_target填充 (compute_wfer/compute_oos_ic_half_life直接读取)
+        focus_data = summary['targets'].get(f'label_{focus_target}', {})
+        summary['is_sharpe'] = focus_data.get('is_sharpe', [])
+        summary['oos_sharpe'] = focus_data.get('oos_sharpe', [])
+        summary['oos_monthly_ics'] = focus_data.get('oos_monthly_ics', [])
         return summary
 
     def walk_forward_train(self, start_date=None, end_date=None,

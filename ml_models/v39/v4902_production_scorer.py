@@ -27,8 +27,8 @@ DB_PATH = PROJECT_ROOT / 'data_adapter' / 'stock_data.db'
 
 # V4902 门控阈值 (覆盖V490模块级常量)
 V4902_GATE_DONT_BUY = 0.35
-CVAR_PENALTY_THRESHOLD = 0.03   # 20日CVaR>3% → 降权
-CVAR_PENALTY_FACTOR = 0.5       # 降权50%
+CVAR_PENALTY_THRESHOLD = 0.05   # 20日CVaR>5% → 降权 (3%/50%验证过激进)
+CVAR_PENALTY_FACTOR = 0.7       # 降权30%
 
 
 class V4902ProductionScorer(V4901ProductionScorer):
@@ -65,8 +65,11 @@ class V4902ProductionScorer(V4901ProductionScorer):
             self._comp_thresholds = None
 
     def predict_scores(self, stock_codes: List[str], date: str) -> Dict[str, Dict]:
-        """V4902: V4901 pipeline + CVaR止损降权 + 动态推荐校准"""
-        # 调用V4901 pipeline (内部: V490门控 + V485基础预测 + Q95 + composite排序)
+        """V4902: V4901 pipeline + 推荐校准 + CVaR排序降权
+
+        推荐基于原始composite绝对阈值(回测校准), CVaR只影响score排名。
+        """
+        # V4901 pipeline: 门控 + 基础预测 + Q95 + composite排序 + 推荐
         results = super().predict_scores(stock_codes, date)
 
         # 门控升级: V4902用更严的阈值
@@ -75,7 +78,22 @@ class V4902ProductionScorer(V4901ProductionScorer):
             for code, data in results.items():
                 data['gate_regime'] = 'dont_buy'
 
-        # CVaR止损降权
+        # 用V4902校准的阈值重新设置推荐 (基于原始composite, CVaR之前)
+        self._recalibrate_recommendations(results)
+
+        # 未评分股票 → 推到排名底部
+        unscored = 0
+        for code, data in results.items():
+            p10 = data.get('pred_10d', 0) or 0
+            p15 = data.get('pred_15d', 0) or 0
+            if abs(p10) < 1e-9 and abs(p15) < 1e-9:
+                data['composite'] = -999.0
+                data['rank_score'] = -999.0
+                unscored += 1
+        if unscored > 0:
+            logger.info(f"  未评分股票: {unscored} 只 (推至底部)")
+
+        # CVaR止损降权 — 只影响rank_score排序, 不改recommendation
         recent_returns = self._load_recent_returns(stock_codes, date)
         penalized = 0
         for code, data in results.items():
@@ -84,81 +102,47 @@ class V4902ProductionScorer(V4901ProductionScorer):
                 if len(ret_series) >= 20:
                     cvar = self._compute_cvar_simple(ret_series)
                     if cvar > CVAR_PENALTY_THRESHOLD:
-                        data['composite'] = data.get('composite', 0) * CVAR_PENALTY_FACTOR
                         data['rank_score'] = data.get('rank_score', 0) * CVAR_PENALTY_FACTOR
                         data['cvar_penalty'] = True
                         penalized += 1
-
         if penalized > 0:
-            logger.info(f"  CVaR降权: {penalized}/{len(results)} 只股票")
+            logger.info(f"  CVaR排序降权: {penalized}/{len(results)} 只股票")
 
-        # 重新用composite百分位排名 → score (0-100)
-        all_comp = [(code, data.get('composite', 0)) for code, data in results.items()]
-        if all_comp:
-            sorted_comp = sorted(all_comp, key=lambda x: x[1])
-            n = len(sorted_comp)
-            for rank_i, (code, _) in enumerate(sorted_comp):
+        # 重新用rank_score百分位排名 → score (0-100)
+        all_rs = [(code, data.get('rank_score', 0)) for code, data in results.items()]
+        if all_rs:
+            sorted_rs = sorted(all_rs, key=lambda x: x[1])
+            n = len(sorted_rs)
+            for rank_i, (code, _) in enumerate(sorted_rs):
                 results[code]['score'] = round(rank_i / max(n - 1, 1) * 100, 1)
-
-        # 重新校准推荐: 基于降权后composite的绝对阈值 + 百分位兜底
-        self._recalibrate_recommendations(results)
 
         return results
 
     def _recalibrate_recommendations(self, results: Dict[str, Dict]):
-        """降权后重新校准推荐 — 绝对阈值优先，百分位兜底
-
-        排除未评分股票(pred_10d=0 AND pred_15d=0)，避免零分股票被错误推荐。
-        """
+        """降权后重新校准推荐 — 纯绝对阈值 (回测校准)"""
         th = self._comp_thresholds or {}
-        th_strong = th.get('strong_buy')
-        th_buy = th.get('buy')
-        th_cautious = th.get('cautious')
+        th_strong = th.get('strong_buy', 999)
+        th_buy = th.get('buy', 999)
+        th_cautious = th.get('cautious', 999)
+        th_hold = th.get('hold', 999)
 
-        # 区分已评分/未评分股票
-        scored_codes = []
         for code, data in results.items():
+            # 未评分股票 → 观望
             p10 = data.get('pred_10d', 0) or 0
             p15 = data.get('pred_15d', 0) or 0
-            if abs(p10) > 1e-9 or abs(p15) > 1e-9:
-                scored_codes.append(code)
+            if abs(p10) < 1e-9 and abs(p15) < 1e-9:
+                data['recommendation'] = '观望'
+                continue
+
+            comp = data.get('composite', 0)
+            if comp >= th_strong:
+                data['recommendation'] = '强烈买入'
+            elif comp >= th_buy:
+                data['recommendation'] = '买入'
+            elif comp >= th_cautious:
+                data['recommendation'] = '谨慎买入'
             else:
-                data['recommendation'] = '观望'  # 未评分 → 观望
-
-        if not scored_codes:
-            return
-
-        scored_composites = [results[c].get('composite', 0) for c in scored_codes]
-
-        # 检查绝对阈值是否合理: 至少要有2只stock达到strong_buy
-        strong_count = sum(1 for c in scored_composites if th_strong and c >= th_strong)
-
-        if th_strong and strong_count >= 2:
-            for code in scored_codes:
-                comp = results[code].get('composite', 0)
-                if comp >= th_strong:
-                    results[code]['recommendation'] = '强烈买入'
-                elif th_buy and comp >= th_buy:
-                    results[code]['recommendation'] = '买入'
-                elif th_cautious and comp >= th_cautious:
-                    results[code]['recommendation'] = '谨慎买入'
-                else:
-                    results[code]['recommendation'] = '观望'
-        else:
-            # 绝对阈值失效 → 用百分位兜底 (仅在已评分股票中排名)
-            logger.info(f"  绝对阈值失效(strong_buy仅{strong_count}只), 切换百分位推荐(已评分{len(scored_codes)}只)")
-            sorted_scored = sorted(scored_codes, key=lambda c: results[c].get('composite', 0), reverse=True)
-            n = len(sorted_scored)
-            for rank_i, code in enumerate(sorted_scored):
-                pct = rank_i / max(n - 1, 1) * 100  # 0=最好, 100=最差
-                if pct <= 1.0:       # top 1%
-                    results[code]['recommendation'] = '强烈买入'
-                elif pct <= 3.0:     # top 3%
-                    results[code]['recommendation'] = '买入'
-                elif pct <= 10.0:    # top 10%
-                    results[code]['recommendation'] = '谨慎买入'
-                else:
-                    results[code]['recommendation'] = '观望'
+                data['recommendation'] = '观望'
 
     def _load_recent_returns(self, stock_codes: List[str], date: str) -> Dict[str, np.ndarray]:
         """加载各股票近20日的price_change_pct"""
