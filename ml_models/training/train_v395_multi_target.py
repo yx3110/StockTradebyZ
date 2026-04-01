@@ -9873,20 +9873,21 @@ class V493Trainer(V4901Trainer):
 
     # 13个低IC/高冗余特征 (在V4.8.1的PRUNE_FEATURES基础上额外裁剪)
     V493_EXTRA_PRUNE = [
-        'overnight_ret_20d',       # 与return_1d高相关, IC低
-        'vol_price_div',           # 量价背离, IC不稳定
-        'price_acceleration',      # 与momentum重叠
-        'turnover_vol_20d',        # 换手波动, 噪声大
-        'squeeze_mom_calc',        # 与macd_dif/dea高相关
-        'vwap_dev_20d',            # VWAP偏离, 与price position重叠
-        'intraday_ret_20d',        # 日内收益和, 噪声大
-        'vol_concentration',       # HHI集中度, IC低
-        'atr_percentile',          # ATR历史百分位, 与atr_14_pct冗余
-        'price_pos_volatility',    # 与gk_vol_20d高相关
-        'industry_mom_rank',       # 行业排名, 数据质量不稳定
-        'abnormal_turnover',       # 与turnover_rate冗余
-        'brain_roll_spread',       # 依赖外部cache, 常为0
+        'dv_ttm',                  # 股息率, 与PB冗余, 重要性~0
+        'max_pct_change_5d',       # 被atr_percentile覆盖, 重要性~0
+        'cci_14',                  # 被squeeze_mom覆盖, 重要性~0
+        'macd_hist',               # 被macd_dif/dea覆盖, 重要性~0
+        'brain_roll_spread',       # V4.8.4 BRAIN因子, 无贡献
+        'vol_price_div',           # V4.8.1, 无贡献
+        'return_skewness_proxy',   # 重要性~0
+        'return_10d',              # 被return_20d覆盖
+        'ma10_ratio',              # 被ma20_ratio覆盖
+        'return_1d',               # 噪声太大
+        'price_acceleration',      # 重要性~0
+        'max_ret_20d',             # 重要性~0
+        'avg_pct_change_5d',       # 重要性~0
     ]
+    # NOTE: atr_percentile (17.6%重要性) 保留! 用feature_fraction_bynode=0.5限制浓度
 
     # 3个BRAIN代理因子 (纯特征工程, 无外部依赖)
     V493_BRAIN_FACTORS = [
