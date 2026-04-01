@@ -10174,6 +10174,14 @@ class V493Trainer(V4901Trainer):
     ]
     # NOTE: atr_percentile (17.6%重要性) 保留! 用feature_fraction_bynode=0.5限制浓度
 
+    # 5d Sharpe-Blend修复: 0.25→0.00 (截面std做sharpe在5d窗口不稳定, 导致IS IC为负)
+    TARGET_SHARPE_BLEND = {
+        'label_3d':  0.10,   # V4901原值, 不变
+        'label_5d':  0.00,   # FIX: was 0.25, 截面sharpe corrupts 5d labels
+        'label_10d': 0.35,   # V4901原值, 不变
+        'label_15d': 0.35,   # V4901原值, 不变
+    }
+
     # 3个BRAIN代理因子 (纯特征工程, 无外部依赖)
     V493_BRAIN_FACTORS = [
         'brain_vol_clustering',    # 短/长波动率比: 聚集度↑=波动率regime shift
