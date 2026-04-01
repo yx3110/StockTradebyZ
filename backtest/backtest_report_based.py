@@ -1819,16 +1819,18 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
                 else pd.Series(dtype=float)),
         })
 
-        # ── V5.1 新增指标 ──
-        if len(period_ret_series) >= 200:
-            _hurst = compute_hurst_exponent(period_ret_series)
+        # ── V5.1 新增指标 (用完整日级收益, 非period采样) ──
+        _daily_ret = sub.set_index('date')['avg_top_return'].sort_index()
+        _n_daily = len(_daily_ret)
+        if _n_daily >= 200:
+            _hurst = compute_hurst_exponent(_daily_ret)
             summary[days]['hurst_deviation'] = abs(_hurst - 0.60)
-        if len(period_ret_series) >= 200 and not benchmark_daily_ret.empty:
-            _rtdd = compute_regime_transition_dd(period_ret_series, benchmark_daily_ret)
+        if _n_daily >= 200 and not benchmark_daily_ret.empty:
+            _rtdd = compute_regime_transition_dd(_daily_ret, benchmark_daily_ret)
             if _rtdd is not None:
                 summary[days]['regime_transition_dd'] = _rtdd
-        if len(period_ret_series) >= 320:
-            _pbo = compute_cscv_pbo(period_ret_series, max_combinations=500)
+        if _n_daily >= 320:
+            _pbo = compute_cscv_pbo(_daily_ret, max_combinations=500)
             if _pbo is not None:
                 summary[days]['cscv_pbo'] = _pbo
         summary[days].setdefault('effective_n_corr', float(top_n))
