@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """
-V4.9.0.2 production scorer — V4901底座 + 风控增强 + 换手优化
+V4.9.0.2 production scorer — V4901底座 + 自有模型 + 风控增强
 
 与V4901的区别:
   - 使用V4902自己训练的模型 (v4902_multi_target_*.pkl)
+  - 使用V4902自己的推荐阈值 (v4902/recommendation_thresholds.json)
   - Market gate 0.30→0.35 (弱市更早减仓)
-  - 个股CVaR止损降权 (近20日CVaR@5% > 5%的股票composite×0.7)
+  - 个股CVaR止损降权 (近20日CVaR@5% > 阈值 → composite降权)
+  - 降权后重新校准推荐 (基于降权后composite的相对排名)
 """
 
+import json
 import numpy as np
 import pandas as pd
 import sqlite3
@@ -24,8 +27,8 @@ DB_PATH = PROJECT_ROOT / 'data_adapter' / 'stock_data.db'
 
 # V4902 门控阈值 (覆盖V490模块级常量)
 V4902_GATE_DONT_BUY = 0.35
-CVAR_PENALTY_THRESHOLD = 0.03   # 20日CVaR>3% → 降权 (was 5%)
-CVAR_PENALTY_FACTOR = 0.5       # 降权50% (was 30%)
+CVAR_PENALTY_THRESHOLD = 0.03   # 20日CVaR>3% → 降权
+CVAR_PENALTY_FACTOR = 0.5       # 降权50%
 
 
 class V4902ProductionScorer(V4901ProductionScorer):
@@ -34,6 +37,8 @@ class V4902ProductionScorer(V4901ProductionScorer):
     def __init__(self, model_type: str = 'small_data'):
         self._v4902_model_dir = PROJECT_ROOT / 'ml_models' / 'trained_models' / 'v4902'
         super().__init__(model_type=model_type)
+        # 覆盖V4901的阈值，加载V4902自己的
+        self._load_v4902_thresholds()
 
     def _load_models(self):
         """加载v4902模型, fallback到v4901→v490→v485"""
@@ -48,12 +53,23 @@ class V4902ProductionScorer(V4901ProductionScorer):
         logger.warning("  V4902模型未找到, fallback到V4901")
         super()._load_models()
 
+    def _load_v4902_thresholds(self):
+        """加载V4902自己的推荐阈值，覆盖V4901的"""
+        th_path = self._v4902_model_dir / 'recommendation_thresholds.json'
+        if th_path.exists():
+            with open(th_path) as f:
+                self._comp_thresholds = json.load(f)
+            logger.info(f"  V4902 composite阈值: strong_buy≥{self._comp_thresholds.get('strong_buy', 'N/A')}")
+        else:
+            logger.info("  V4902阈值文件不存在，使用动态百分位推荐")
+            self._comp_thresholds = None
+
     def predict_scores(self, stock_codes: List[str], date: str) -> Dict[str, Dict]:
-        """V4902: V4901 pipeline + CVaR止损降权 + 更严门控"""
-        # 调用V4901 pipeline (内部调V490→V485)
+        """V4902: V4901 pipeline + CVaR止损降权 + 动态推荐校准"""
+        # 调用V4901 pipeline (内部: V490门控 + V485基础预测 + Q95 + composite排序)
         results = super().predict_scores(stock_codes, date)
 
-        # 门控升级: 覆盖V490的regime判断
+        # 门控升级: V4902用更严的阈值
         confidence = getattr(self, '_last_gate_confidence', 1.0)
         if confidence < V4902_GATE_DONT_BUY:
             for code, data in results.items():
@@ -84,7 +100,65 @@ class V4902ProductionScorer(V4901ProductionScorer):
             for rank_i, (code, _) in enumerate(sorted_comp):
                 results[code]['score'] = round(rank_i / max(n - 1, 1) * 100, 1)
 
+        # 重新校准推荐: 基于降权后composite的绝对阈值 + 百分位兜底
+        self._recalibrate_recommendations(results)
+
         return results
+
+    def _recalibrate_recommendations(self, results: Dict[str, Dict]):
+        """降权后重新校准推荐 — 绝对阈值优先，百分位兜底
+
+        排除未评分股票(pred_10d=0 AND pred_15d=0)，避免零分股票被错误推荐。
+        """
+        th = self._comp_thresholds or {}
+        th_strong = th.get('strong_buy')
+        th_buy = th.get('buy')
+        th_cautious = th.get('cautious')
+
+        # 区分已评分/未评分股票
+        scored_codes = []
+        for code, data in results.items():
+            p10 = data.get('pred_10d', 0) or 0
+            p15 = data.get('pred_15d', 0) or 0
+            if abs(p10) > 1e-9 or abs(p15) > 1e-9:
+                scored_codes.append(code)
+            else:
+                data['recommendation'] = '观望'  # 未评分 → 观望
+
+        if not scored_codes:
+            return
+
+        scored_composites = [results[c].get('composite', 0) for c in scored_codes]
+
+        # 检查绝对阈值是否合理: 至少要有2只stock达到strong_buy
+        strong_count = sum(1 for c in scored_composites if th_strong and c >= th_strong)
+
+        if th_strong and strong_count >= 2:
+            for code in scored_codes:
+                comp = results[code].get('composite', 0)
+                if comp >= th_strong:
+                    results[code]['recommendation'] = '强烈买入'
+                elif th_buy and comp >= th_buy:
+                    results[code]['recommendation'] = '买入'
+                elif th_cautious and comp >= th_cautious:
+                    results[code]['recommendation'] = '谨慎买入'
+                else:
+                    results[code]['recommendation'] = '观望'
+        else:
+            # 绝对阈值失效 → 用百分位兜底 (仅在已评分股票中排名)
+            logger.info(f"  绝对阈值失效(strong_buy仅{strong_count}只), 切换百分位推荐(已评分{len(scored_codes)}只)")
+            sorted_scored = sorted(scored_codes, key=lambda c: results[c].get('composite', 0), reverse=True)
+            n = len(sorted_scored)
+            for rank_i, code in enumerate(sorted_scored):
+                pct = rank_i / max(n - 1, 1) * 100  # 0=最好, 100=最差
+                if pct <= 1.0:       # top 1%
+                    results[code]['recommendation'] = '强烈买入'
+                elif pct <= 3.0:     # top 3%
+                    results[code]['recommendation'] = '买入'
+                elif pct <= 10.0:    # top 10%
+                    results[code]['recommendation'] = '谨慎买入'
+                else:
+                    results[code]['recommendation'] = '观望'
 
     def _load_recent_returns(self, stock_codes: List[str], date: str) -> Dict[str, np.ndarray]:
         """加载各股票近20日的price_change_pct"""
@@ -96,7 +170,6 @@ class V4902ProductionScorer(V4901ProductionScorer):
 
         # strip交易所后缀 (000001.SZ → 000001)
         codes_stripped = [c.split('.')[0] if '.' in c else c for c in stock_codes]
-        # 建反向映射
         strip_to_orig = {}
         for orig, stripped in zip(stock_codes, codes_stripped):
             strip_to_orig[stripped] = orig
@@ -118,7 +191,6 @@ class V4902ProductionScorer(V4901ProductionScorer):
             for code, group in df.groupby('code'):
                 returns = group['price_change_pct'].head(20).values.astype(float)
                 if len(returns) >= 10:
-                    # 映射回原始代码 (可能带后缀)
                     orig_code = strip_to_orig.get(code, code)
                     result[orig_code] = returns
             return result
