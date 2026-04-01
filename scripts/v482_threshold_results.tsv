@@ -1,0 +1,3 @@
+iteration	commit	metric	status	description
+0	baseline	0.704570	baseline	strong_buy=0.010 buy=0.007 max_per_day=10 (PF capped at 10)
+1	acc08283	1.448558	keep	strong_buy=0.009 max_per_day=5 (coverage 7%, 10d WR=70.9%)

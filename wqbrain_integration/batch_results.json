@@ -1,0 +1,147 @@
+[
+  {
+    "name": "5d_reversal",
+    "desc": "5日反转",
+    "alpha_id": "kqXWq6gK",
+    "sharpe": 1.16,
+    "fitness": 0.69,
+    "turnover": 0.3739,
+    "returns": 0.133,
+    "drawdown": 0.1158,
+    "grade": "INFERIOR",
+    "is_pass": false
+  },
+  {
+    "name": "3d_reversal",
+    "desc": "3日反转",
+    "alpha_id": "e7KV7X0N",
+    "sharpe": 1.45,
+    "fitness": 0.86,
+    "turnover": 0.4832,
+    "returns": 0.1686,
+    "drawdown": 0.0784,
+    "grade": "INFERIOR",
+    "is_pass": false
+  },
+  {
+    "name": "momentum_decay10",
+    "desc": "10日衰减动量",
+    "alpha_id": "KP65l3ZE",
+    "sharpe": -1.06,
+    "fitness": -0.69,
+    "turnover": 0.2846,
+    "returns": -0.1201,
+    "drawdown": 0.6839,
+    "grade": "INFERIOR",
+    "is_pass": false
+  },
+  {
+    "name": "volume_surprise",
+    "desc": "量比排名",
+    "alpha_id": "O0kM0eYR",
+    "sharpe": 0.75,
+    "fitness": 0.21,
+    "turnover": 0.4435,
+    "returns": 0.0361,
+    "drawdown": 0.1134,
+    "grade": "INFERIOR",
+    "is_pass": false
+  },
+  {
+    "name": "volume_reversal",
+    "desc": "5日量价反转",
+    "alpha_id": "XgLvmLY0",
+    "sharpe": 0.59,
+    "fitness": 0.13,
+    "turnover": 0.4384,
+    "returns": 0.0207,
+    "drawdown": 0.0709,
+    "grade": "INFERIOR",
+    "is_pass": false
+  },
+  {
+    "name": "vol_price_diverge",
+    "desc": "量价背离",
+    "alpha_id": "589Ana7n",
+    "sharpe": 0.37,
+    "fitness": 0.07,
+    "turnover": 0.4146,
+    "returns": 0.0134,
+    "drawdown": 0.0779,
+    "grade": "INFERIOR",
+    "is_pass": false
+  },
+  {
+    "name": "vol_ratio",
+    "desc": "短/长波动率比(反)",
+    "sharpe": 0,
+    "fitness": 0,
+    "grade": "ERROR"
+  },
+  {
+    "name": "intraday_intensity",
+    "desc": "日内强度",
+    "sharpe": 0,
+    "fitness": 0,
+    "grade": "ERROR"
+  },
+  {
+    "name": "ma20_reversion",
+    "desc": "MA20均值回归",
+    "alpha_id": "88rE5z3X",
+    "sharpe": 0.71,
+    "fitness": 0.46,
+    "turnover": 0.1989,
+    "returns": 0.0846,
+    "drawdown": 0.1461,
+    "grade": "INFERIOR",
+    "is_pass": false
+  },
+  {
+    "name": "price_position",
+    "desc": "20日位置(反)",
+    "sharpe": 0,
+    "fitness": 0,
+    "grade": "ERROR"
+  },
+  {
+    "name": "amihud",
+    "desc": "Amihud非流动性(反)",
+    "sharpe": 0,
+    "fitness": 0,
+    "grade": "ERROR"
+  },
+  {
+    "name": "combo_reversal_vol",
+    "desc": "反转+量能+均线回归",
+    "alpha_id": "E5b85G10",
+    "sharpe": 1.43,
+    "fitness": 0.89,
+    "turnover": 0.4003,
+    "returns": 0.1543,
+    "drawdown": 0.0907,
+    "grade": "INFERIOR",
+    "is_pass": false
+  },
+  {
+    "name": "combo_momentum_quality",
+    "desc": "动量+低波+日内强度",
+    "sharpe": 0,
+    "fitness": 0,
+    "grade": "ERROR"
+  },
+  {
+    "name": "combo_contrarian",
+    "desc": "短反转+放量+低位",
+    "sharpe": 0,
+    "fitness": 0,
+    "grade": "ERROR"
+  },
+  {
+    "name": "combo_vol_structure",
+    "desc": "量价反转+背离+日内强度",
+    "sharpe": 0,
+    "fitness": 0,
+    "grade": "ERROR"
+  }
+]

@@ -43,7 +43,7 @@ logger = logging.getLogger("tomorrow_selector")
 DEPRECATED_VERSIONS = {'v2', 'v3', 'v3.1', 'v3.2', 'v3.3', 'v3.4', 'v3.41',
                        'v3.5', 'v3.51', 'v3.52', 'v3.53', 'v3.6', 'v3.7',
                        'v3.8', 'v3.81', 'v3.94', 'v4'}
-ACTIVE_VERSIONS = {'v3.9', 'v3.95', 'v3.96', 'v4.0', 'v4.2', 'v4.3', 'v4.4', 'v4.4.2', 'v4.5', 'v4.6', 'v4.7.1', 'v4.7.2', 'v4.7.3', 'v4.7.4', 'v4.7.5', 'v4.7.6', 'v4.7.7', 'v4.7.8', 'v4.7.9', 'v4.8.0', 'v4.8.1', 'v4.8.2', 'v4.8.4', 'v4.8.5', 'v4.8.6', 'v4.8.7', 'v4.8.8', 'v4.9.0', 'v5.0'}
+ACTIVE_VERSIONS = {'v3.9', 'v3.95', 'v3.96', 'v4.0', 'v4.2', 'v4.3', 'v4.4', 'v4.4.2', 'v4.5', 'v4.6', 'v4.7.1', 'v4.7.2', 'v4.7.3', 'v4.7.4', 'v4.7.5', 'v4.7.6', 'v4.7.7', 'v4.7.8', 'v4.7.9', 'v4.8.0', 'v4.8.1', 'v4.8.2', 'v4.8.4', 'v4.8.5', 'v4.8.6', 'v4.8.7', 'v4.8.8', 'v4.9.0', 'v4.9.0.1', 'v4.9.1', 'v5.0'}
 
 class TomorrowStockSelector:
     """明日股票选择器"""
@@ -99,6 +99,11 @@ class TomorrowStockSelector:
             self.scoring_engine_v44 = V490ProductionScorer(model_type='small_data')
             self.v44_batch_cache = {}
             logger.info("🔬 已初始化V4.9.0评分系统 (Q95+头部加权+truncation=10)")
+        elif scoring_version == "v4.9.0.1":
+            from ml_models.v39.v4901_production_scorer import V4901ProductionScorer
+            self.scoring_engine_v44 = V4901ProductionScorer(model_type='small_data')
+            self.v44_batch_cache = {}
+            logger.info("🔬 已初始化V4.9.0.1评分系统 (去头尾加权+composite排序)")
         elif scoring_version == "v4.8.7":
             from ml_models.v39.v487_production_scorer import V487ProductionScorer
             self.scoring_engine_v44 = V487ProductionScorer(model_type='small_data')
@@ -111,6 +116,13 @@ class TomorrowStockSelector:
             from ml_models.v39.strategy_based_return_predictor import StrategyBasedReturnPredictor
             self.strategy_return_predictor = StrategyBasedReturnPredictor()
             logger.info("V4.8.6 (64 features + RRF ensemble, 头部区分度优化)")
+        elif scoring_version == "v4.9.1":
+            from ml_models.v39.v491_production_scorer import V491ProductionScorer
+            self.scoring_engine_v44 = V491ProductionScorer(model_type='small_data')
+            self.v44_batch_cache = {}
+            from ml_models.v39.strategy_based_return_predictor import StrategyBasedReturnPredictor
+            self.strategy_return_predictor = StrategyBasedReturnPredictor()
+            logger.info("🛡️ V4.9.1 (超额标签+市场门控+排名平滑, 基于V4.8.5)")
         elif scoring_version == "v4.8.5":
             from ml_models.v39.v485_production_scorer import V485ProductionScorer
             self.scoring_engine_v44 = V485ProductionScorer(model_type='small_data')
@@ -1756,6 +1768,32 @@ class TomorrowStockSelector:
     def generate_investment_recommendation(self, stock_info: Dict[str, Any]) -> Dict[str, str]:
         """生成投资建议 - 基于优化后评分系统生成买入/持有/卖出建议"""
         try:
+            # 🔧 V4.9.0/V4.9.0.1/V4.9.1: 直接使用scorer的动态投资建议
+            if hasattr(self, 'scoring_version') and self.scoring_version in ("v4.9.0", "v4.9.0.1", "v4.9.1"):
+                stock_code = stock_info.get('stock_code', '')
+                cached = self.v44_batch_cache.get(stock_code, {})
+                if cached:
+                    rec = cached.get('recommendation', '观望')
+                    fs = cached.get('score', 50.0)
+                    return {
+                        'recommendation': rec,
+                        'confidence': 'high' if fs >= 90 else 'medium' if fs >= 71 else 'low',
+                        'technical_rating': f"Q95={cached.get('q95_pred_10d',0):.3f}",
+                        'risk_rating': '低' if fs >= 90 else '中等' if fs >= 71 else '偏高',
+                        'score': fs,
+                        'final_score': fs,
+                        'pred_3d': cached.get('pred_3d', 0),
+                        'pred_5d': cached.get('pred_5d', 0),
+                        'pred_10d': cached.get('pred_10d', 0),
+                        'pred_15d': cached.get('pred_15d', 0),
+                        'rank_score': cached.get('rank_score', 0),
+                        'predicted_return_5d': cached.get('pred_5d', 0),
+                        'overall_quality': 0.85,
+                        'quality_score': 0.85,
+                        'confidence_score': 0.85,
+                        'risk_level': '低' if fs >= 90 else '中等',
+                    }
+
             # 🔧 V3.81版本直接使用已计算的投资建议，不重新计算
             if hasattr(self, 'scoring_version') and self.scoring_version == "v3.81":
                 # V3.81版本已经在批处理阶段计算了投资建议
@@ -2086,7 +2124,7 @@ class TomorrowStockSelector:
             if trade_date is None:
                 trade_date = datetime.now().strftime('%Y-%m-%d')
 
-            if self.scoring_version in ("v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.4", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.7.9", "v4.8.0", "v4.8.1", "v4.8.2", "v4.8.4", "v4.8.5", "v4.8.6", "v4.8.7", "v4.8.8", "v5.0"):
+            if self.scoring_version in ("v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.4", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.7.9", "v4.8.0", "v4.8.1", "v4.8.2", "v4.8.4", "v4.8.5", "v4.8.6", "v4.8.7", "v4.8.8", "v4.9.0", "v4.9.0.1", "v4.9.1", "v5.0"):
                 # V4.4+: V4.3信号+增强模块
                 try:
                     if stock_code in self.v44_batch_cache:
@@ -3460,7 +3498,7 @@ class TomorrowStockSelector:
         stock_with_scores = []
 
         # 🚀 V4.4/V4.4.2批量评分预计算
-        if hasattr(self, 'scoring_version') and self.scoring_version in ("v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.4", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.7.9", "v4.8.0", "v4.8.1", "v4.8.2", "v4.8.4", "v4.8.5", "v4.8.6", "v4.8.7", "v4.8.8", "v5.0") and all_stocks:
+        if hasattr(self, 'scoring_version') and self.scoring_version in ("v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.4", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.7.9", "v4.8.0", "v4.8.1", "v4.8.2", "v4.8.4", "v4.8.5", "v4.8.6", "v4.8.7", "v4.8.8", "v4.9.0", "v4.9.0.1", "v4.9.1", "v5.0") and all_stocks:
             if self.v44_batch_cache:
                 logger.info(f"✅ V4.4使用预填充缓存：{len(self.v44_batch_cache)}只股票")
             else:
@@ -3652,11 +3690,45 @@ class TomorrowStockSelector:
                     _p10 = stock_info.get('pred_10d', 0) or 0
                     _p15 = stock_info.get('pred_15d', 0) or 0
                     # V4.6/V4.7.x scorer 使用 0.6*10d + 0.4*15d composite
-                    if hasattr(self, 'scoring_version') and self.scoring_version in (
+                    if hasattr(self, 'scoring_version') and self.scoring_version in ('v4.9.0', 'v4.9.1'):
+                        # V4.9.0/V4.9.1: Q95 head_rank排序 (score=100→head_rank=1, 71→head_rank=30)
+                        hr_score = stock_info.get('final_score', 0)
+                        stock_info['composite'] = hr_score if hr_score >= 71 else _p10 * 0.6 + _p15 * 0.4
+                    elif hasattr(self, 'scoring_version') and self.scoring_version in (
                         'v4.6', 'v4.7', 'v4.7.1', 'v4.7.2', 'v4.7.3', 'v4.7.4', 'v4.7.5', 'v4.7.6', 'v4.7.7', 'v4.7.8', 'v4.7.9', 'v4.8.0', 'v4.8.1', 'v4.8.2'):
                         stock_info['composite'] = _p10 * 0.6 + _p15 * 0.4
                     else:
                         stock_info['composite'] = _p3 * 0.1 + _p5 * 0.2 + _p10 * 0.4 + _p15 * 0.3
+
+                # 🎯 V4.9.0/V4.9.1: 基于Q95绝对值动态投资建议 (弱市自动减少强买数量)
+                if hasattr(self, 'scoring_version') and self.scoring_version in ('v4.9.0', 'v4.9.1'):
+                    stock_code = stock_info.get('stock_code', '')
+                    if stock_code in self.v44_batch_cache:
+                        cached = self.v44_batch_cache[stock_code]
+                        stock_info['recommendation'] = cached.get('recommendation', '观望')
+                        stock_info['head_rank'] = cached.get('head_rank', 9999)
+                        stock_info['in_head_pool'] = cached.get('in_head_pool', False)
+                        stock_info['q95_pred_10d'] = cached.get('q95_pred_10d', 0)
+                        stock_info['gate_confidence'] = cached.get('gate_confidence')
+                        stock_info['gate_regime'] = cached.get('gate_regime', 'normal')
+                        # score用head_rank覆盖值(排序用), composite保留真实预测值(显示用)
+                        stock_info['score'] = cached.get('score', 0)
+                        p10 = cached.get('pred_10d', 0)
+                        p15 = cached.get('pred_15d', 0)
+                        stock_info['composite'] = 0.6 * p10 + 0.4 * p15
+
+                # 🎯 V4.9.0.1: composite排序, 从scorer获取recommendation和Q95字段
+                if hasattr(self, 'scoring_version') and self.scoring_version == 'v4.9.0.1':
+                    stock_code = stock_info.get('stock_code', '')
+                    if stock_code in self.v44_batch_cache:
+                        cached = self.v44_batch_cache[stock_code]
+                        stock_info['recommendation'] = cached.get('recommendation', '观望')
+                        stock_info['composite'] = cached.get('composite', 0)
+                        stock_info['q95_pred_10d'] = cached.get('q95_pred_10d', 0)
+                        stock_info['head_rank'] = cached.get('head_rank', 9999)
+                        stock_info['in_head_pool'] = cached.get('in_head_pool', False)
+                        stock_info['gate_confidence'] = cached.get('gate_confidence')
+                        stock_info['gate_regime'] = cached.get('gate_regime', 'normal')
 
                 # 🎯 V3.95: 使用策略驱动预测器重新计算预测收益（基于12,655历史样本统计）
                 # 注意：必须在 generate_investment_recommendation 之后执行，因为它会覆盖 predicted_return_5d
@@ -3771,10 +3843,13 @@ class TomorrowStockSelector:
                 return 1
 
         # 按composite排序 (与recommendation阈值一致，回测验证最可靠)
+        # V4.9.0: 用final_score排序 (已被Q95 head_rank覆盖: score=100→head_rank=1)
         def composite_sort_key(x):
             has_error = 'error' in x.get('factor_scores', {}) or x.get('confidence_score', 1) == 0
             if has_error:
                 return (0, 0)
+            if hasattr(self, 'scoring_version') and self.scoring_version in ('v4.9.0', 'v4.9.1'):
+                return (1, x.get('score', 0))
             return (1, x.get('composite', 0))
         stock_with_scores.sort(key=composite_sort_key, reverse=True)
         
@@ -4534,131 +4609,169 @@ class TomorrowStockSelector:
             }
 
         # ======== 模型信号维度 (25%) ========
-        # 使用composite(rank_score)而非绝对score, 适配V4.6+全局分位数评分
         if all_stocks_with_scores and len(all_stocks_with_scores) > 0:
             composites = []
             scores_list = []
+            q95_values = []
+            head_pool_stocks = []
+            gate_conf = None
             recs = {'强烈买入': 0, '买入': 0, '谨慎买入': 0, '观望': 0}
 
             for s in all_stocks_with_scores:
-                # 优先用composite/rank_score (V4.6+), 回退到score
                 comp = s.get('composite', s.get('rank_score', None))
                 if comp is not None and comp != 0:
                     composites.append(comp)
                 sc = s.get('score', 0)
                 if sc > 0:
                     scores_list.append(sc)
+                # V490/V491 head_rank fields
+                q95 = s.get('q95_pred_10d')
+                if q95 is not None and q95 != 0:
+                    q95_values.append(q95)
+                if s.get('in_head_pool'):
+                    head_pool_stocks.append(s)
+                if gate_conf is None and s.get('gate_confidence') is not None:
+                    gate_conf = s.get('gate_confidence')
                 rec = s.get('recommendation', '观望')
                 if rec in recs:
                     recs[rec] += 1
 
-            model_score = 50
             signals = []
 
-            # 优先用composite (model-agnostic), 回退到score (旧版本)
-            use_composite = len(composites) > 100
-            signal_values = composites if use_composite else scores_list
+            # ========================================================
+            # 模型信号 = 选股信心×40% + 模型择时×60%
+            # 选股信心: Top10 Q95强度 + Head Pool厚度 (截面排名质量)
+            # 模型择时: GateV2 + 全市场pred均值 + 强买比例 (方向性判断)
+            # ========================================================
 
-            if signal_values:
-                total_n = len(signal_values)
-                arr_sig = np.array(signal_values)
+            # --- 子维度1: 选股信心 (0-100) ---
+            pick_score = 50
+            pick_signals = []
 
-                if use_composite:
-                    # === Composite模式 (V4.6+): 基于rank_score分布 ===
-                    median_comp = np.median(arr_sig)
-                    p90_comp = np.percentile(arr_sig, 90)
-                    p95_comp = np.percentile(arr_sig, 95)
-                    p99_comp = np.percentile(arr_sig, 99)
-                    top10_avg = np.mean(sorted(arr_sig)[-10:])
+            use_headrank = len(q95_values) >= 10
+            use_composite = not use_headrank and len(composites) > 100
 
-                    # Top10 composite强度 (校准: P99≈0.012, 强信号日>0.015)
-                    if top10_avg > 0.016:
-                        model_score += 20
-                        signals.append(f'Top10信号极强({top10_avg:.4f})')
-                    elif top10_avg > 0.012:
-                        model_score += 12
-                        signals.append(f'Top10信号强({top10_avg:.4f})')
-                    elif top10_avg > 0.009:
-                        model_score += 5
-                        signals.append(f'Top10正常({top10_avg:.4f})')
-                    elif top10_avg > 0.006:
-                        model_score -= 3
-                        signals.append(f'Top10偏弱({top10_avg:.4f})')
-                    else:
-                        model_score -= 10
-                        signals.append(f'Top10信号弱({top10_avg:.4f})')
+            if use_headrank:
+                arr_q95 = np.array(q95_values)
+                top10_q95 = np.mean(sorted(arr_q95)[-10:])
+                head_count = len(head_pool_stocks)
 
-                    # P90尾部厚度 (好日子: P90高, 说明很多高分股)
-                    if p90_comp > 0.008:
-                        model_score += 8
-                    elif p90_comp > 0.005:
-                        model_score += 3
-                    elif p90_comp < 0.002:
-                        model_score -= 8
-                        signals.append(f'高分稀疏(P90={p90_comp:.4f})')
-
-                    # 正收益预测占比 (composite > 0)
-                    pos_ratio = np.mean(arr_sig > 0)
-                    if pos_ratio > 0.65:
-                        model_score += 8
-                        signals.append(f'{pos_ratio:.0%}正预测')
-                    elif pos_ratio > 0.50:
-                        model_score += 3
-                    elif pos_ratio < 0.30:
-                        model_score -= 10
-                        signals.append(f'仅{pos_ratio:.0%}正预测')
-                    elif pos_ratio < 0.40:
-                        model_score -= 5
-
+                # Top10 Q95强度
+                if top10_q95 > 0.17:
+                    pick_score += 25
+                    pick_signals.append(f'Q95极强({top10_q95:.4f})')
+                elif top10_q95 > 0.15:
+                    pick_score += 18
+                    pick_signals.append(f'Q95强({top10_q95:.4f})')
+                elif top10_q95 > 0.13:
+                    pick_score += 8
+                    pick_signals.append(f'Q95正常({top10_q95:.4f})')
+                elif top10_q95 > 0.10:
+                    pick_signals.append(f'Q95偏弱({top10_q95:.4f})')
                 else:
-                    # === Score模式 (旧版本): 基于0-100分数, 用相对百分位 ===
-                    median_score = np.median(arr_sig)
-                    p90_score = np.percentile(arr_sig, 90)
-                    top10_avg = np.mean(sorted(arr_sig)[-10:])
-                    high_ratio = np.mean(arr_sig > p90_score * 0.85)
+                    pick_score -= 15
+                    pick_signals.append(f'Q95弱({top10_q95:.4f})')
 
-                    # 相对中位数 (用自身P50比较, 不用绝对阈值)
-                    if median_score > 55:
-                        model_score += 10
-                        signals.append(f'中位数{median_score:.1f}(偏高)')
-                    elif median_score > 40:
-                        model_score += 3
-                    elif median_score < 20:
-                        model_score -= 10
-                        signals.append(f'中位数{median_score:.1f}(偏低)')
+                # Head Pool厚度
+                if head_count >= 25:
+                    pick_score += 10
+                    pick_signals.append(f'头部池{head_count}只')
+                elif head_count >= 15:
+                    pick_score += 5
+                elif head_count > 0:
+                    pick_score -= 5
+                else:
+                    pick_score -= 15
 
-                    # Top10均分
-                    if top10_avg > 90:
-                        model_score += 10
-                        signals.append(f'Top10均分{top10_avg:.0f}')
-                    elif top10_avg > 80:
-                        model_score += 5
-                    elif top10_avg < 65:
-                        model_score -= 8
+                # Head Pool内Q95均值
+                if head_pool_stocks:
+                    head_q95s = [v for v in (s.get('q95_pred_10d', 0) for s in head_pool_stocks) if v > 0]
+                    if head_q95s and np.mean(head_q95s) > 0.15:
+                        pick_score += 5
 
-                    # 高分股占比
-                    if high_ratio > 0.12:
-                        model_score += 8
-                    elif high_ratio < 0.03:
-                        model_score -= 8
+            elif use_composite:
+                arr_sig = np.array(composites)
+                top10_avg = np.mean(sorted(arr_sig)[-10:])
+                if top10_avg > 0.016:
+                    pick_score += 25
+                    pick_signals.append(f'Top10极强({top10_avg:.4f})')
+                elif top10_avg > 0.012:
+                    pick_score += 15
+                    pick_signals.append(f'Top10强({top10_avg:.4f})')
+                elif top10_avg > 0.009:
+                    pick_score += 5
+                elif top10_avg > 0.006:
+                    pick_score -= 5
+                else:
+                    pick_score -= 15
+                    pick_signals.append(f'Top10弱({top10_avg:.4f})')
 
-            # 推荐分布 (对所有模型版本通用)
+            elif scores_list:
+                arr_sig = np.array(scores_list)
+                top10_avg = np.mean(sorted(arr_sig)[-10:])
+                if top10_avg > 90:
+                    pick_score += 20
+                elif top10_avg > 80:
+                    pick_score += 10
+                elif top10_avg < 65:
+                    pick_score -= 10
+
+            pick_score = max(0, min(100, pick_score))
+
+            # --- 子维度2: 模型择时 (0-100) ---
+            timing_score = 50
+            timing_signals = []
+
+            # 信号源1: GateV2 confidence
+            if gate_conf is not None:
+                if gate_conf >= 0.65:
+                    timing_score += 20
+                    timing_signals.append(f'门控{gate_conf:.0%}(看多)')
+                elif gate_conf >= 0.45:
+                    timing_signals.append(f'门控{gate_conf:.0%}(中性)')
+                else:
+                    timing_score -= 20
+                    timing_signals.append(f'门控{gate_conf:.0%}(看空)')
+
+            # 信号源2: 全市场pred_10d均值 (负值=模型整体看空)
+            if composites:
+                market_pred_mean = np.mean(composites)
+            elif use_headrank and q95_values:
+                market_pred_mean = np.median(q95_values)
+            else:
+                market_pred_mean = 0
+            if market_pred_mean > 0.001:
+                timing_score += 15
+                timing_signals.append(f'全市场预测偏多({market_pred_mean:.4f})')
+            elif market_pred_mean > -0.002:
+                timing_signals.append(f'全市场预测中性({market_pred_mean:.4f})')
+            else:
+                timing_score -= 15
+                timing_signals.append(f'全市场预测偏空({market_pred_mean:.4f})')
+
+            # 信号源3: 强买/买入数量 vs 历史均值 (强买~60/天, 买入~140/天)
             strong_buy_n = recs['强烈买入']
             buy_n = recs['买入']
-            total_rec = sum(recs.values())
-            if total_rec > 0:
-                bullish_ratio = (strong_buy_n + buy_n) / total_rec
-                if strong_buy_n > 30:
-                    model_score += 10
-                    signals.append(f'强买{strong_buy_n}只')
-                elif strong_buy_n > 5:
-                    model_score += 5
-                    signals.append(f'强买{strong_buy_n}只')
-                elif strong_buy_n == 0 and buy_n < 10:
-                    model_score -= 8
-                    signals.append(f'仅买入{buy_n}只')
-                else:
-                    signals.append(f'强买{strong_buy_n}/买入{buy_n}只')
+            rec_total = strong_buy_n + buy_n
+            # 历史均值: 强买60+买入140=200只/天
+            HIST_REC_AVG = 200
+            if rec_total > HIST_REC_AVG * 1.2:
+                timing_score += 15
+                timing_signals.append(f'推荐{rec_total}只(高于均值)')
+            elif rec_total > HIST_REC_AVG * 0.8:
+                timing_signals.append(f'推荐{rec_total}只(正常)')
+            elif rec_total > HIST_REC_AVG * 0.5:
+                timing_score -= 10
+                timing_signals.append(f'推荐{rec_total}只(偏少)')
+            else:
+                timing_score -= 15
+                timing_signals.append(f'推荐仅{rec_total}只(显著偏少)')
+
+            timing_score = max(0, min(100, timing_score))
+
+            # --- 合并: 选股信心×40% + 模型择时×60% ---
+            model_score = int(pick_score * 0.4 + timing_score * 0.6)
+            signals = [f'选股{pick_score}'] + pick_signals + [f'择时{timing_score}'] + timing_signals
 
             results['model_signal'] = {
                 'score': max(0, min(100, model_score)),
@@ -5120,7 +5233,11 @@ class TomorrowStockSelector:
         elif hasattr(self, 'scoring_version') and self.scoring_version == "v3.5":
             report += "| 排名 | 股票代码 | 股票名称 | 选中策略 | 量化评分 | 投资建议 | 技术 | 基本 | 表现 | 市场 | 知行 | 知行信号 |\n"
             report += "|------|----------|----------|----------|----------|----------|------|------|------|------|------|----------|\n"
-        elif hasattr(self, 'scoring_version') and self.scoring_version in ["v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.4", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.7.9", "v4.8.0", "v4.8.1", "v4.8.2", "v4.8.4", "v4.8.5", "v4.8.6", "v4.8.7", "v4.8.8", "v5.0"]:
+        elif hasattr(self, 'scoring_version') and self.scoring_version in ("v4.9.0", "v4.9.1"):
+            # V4.9.0/V4.9.1: Q95 Widen-then-Concentrate
+            report += "| 排名 | 股票代码 | 股票名称 | 选中策略 | Q95预测 | 投资建议 | 预测10d | 收盘价 | 买入价 | 止损价 | 目标价 | 仓位 |\n"
+            report += "|------|----------|----------|----------|---------|----------|---------|--------|--------|--------|--------|------|\n"
+        elif hasattr(self, 'scoring_version') and self.scoring_version in ["v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.4", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.7.9", "v4.8.0", "v4.8.1", "v4.8.2", "v4.8.4", "v4.8.5", "v4.8.6", "v4.8.7", "v4.8.8", "v4.9.0.1", "v5.0"]:
             # V4.4+ 多目标预测 - 按composite排序，展示composite+各周期预测
             report += "| 排名 | 股票代码 | 股票名称 | 选中策略 | Composite | 投资建议 | 预测10d | 收盘价 | 买入价 | 止损价 | 目标价 | 仓位 |\n"
             report += "|------|----------|----------|----------|-----------|----------|---------|--------|--------|--------|--------|------|\n"
@@ -5176,6 +5293,7 @@ class TomorrowStockSelector:
             show_indices = set(range(len(stocks_data)))
 
         # V4.4+: 按排名覆盖投资建议 (回测验证: top8 alpha最强)
+        # V4.9.0: 跳过硬编码覆盖，保留Q95动态推荐（弱市0强买，强市多强买）
         if hasattr(self, 'scoring_version') and self.scoring_version in ["v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.4", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.7.9", "v4.8.0", "v4.8.1", "v4.8.2", "v4.8.4", "v4.8.5", "v4.8.6", "v4.8.7", "v4.8.8", "v5.0"]:
             for rank_i, s in enumerate(stocks_data):
                 if rank_i < 8:
@@ -5251,7 +5369,7 @@ class TomorrowStockSelector:
             factor_scores = stock.get('factor_scores', {})
             
             # 根据评分系统版本处理不同的因子评分
-            if hasattr(self, 'scoring_version') and self.scoring_version in ["v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.4", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.7.9", "v4.8.0", "v4.8.1", "v4.8.2", "v4.8.4", "v4.8.5", "v4.8.6", "v4.8.7", "v4.8.8", "v5.0"]:
+            if hasattr(self, 'scoring_version') and self.scoring_version in ["v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.4", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.7.9", "v4.8.0", "v4.8.1", "v4.8.2", "v4.8.4", "v4.8.5", "v4.8.6", "v4.8.7", "v4.8.8", "v4.9.0", "v4.9.0.1", "v4.9.1", "v5.0"]:
                 # V4.4+ 多目标预测字段 (推荐阈值已校准到post-isotonic尺度)
                 pred_3d = stock.get('pred_3d', 0.0)
                 predicted_return = stock.get('predicted_return_5d', stock.get('pred_5d', 0.0))
@@ -5401,7 +5519,18 @@ class TomorrowStockSelector:
                 market_regime_score = 0  # v2/v3没有市场环境分
             
             # 根据评分系统版本输出不同格式
-            if hasattr(self, 'scoring_version') and self.scoring_version in ["v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.4", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.7.9", "v4.8.0", "v4.8.1", "v4.8.2", "v4.8.4", "v4.8.5", "v4.8.6", "v4.8.7", "v4.8.8", "v5.0"]:
+            if hasattr(self, 'scoring_version') and self.scoring_version in ("v4.9.0", "v4.9.1"):
+                # V4.9.0/V4.9.1: Q95 Widen-then-Concentrate — 显示Q95值和head_rank
+                q95_val = stock.get('q95_pred_10d', 0)
+                hr = stock.get('head_rank', '-')
+                close_price = stock.get('close_price', 0)
+                buy_price = stock.get('suggested_buy_price', 0)
+                stop_loss = stock.get('stop_loss_price', 0)
+                target = stock.get('take_profit_price', 0)
+                pos_pct = stock.get('position_pct', 0)
+                pos_str = f"{pos_pct}%" if pos_pct > 0 else "—"
+                report += f"| {i+1} | {stock_code} | {stock_name} | {strategies_str} | {q95_val:.4f} | {recommendation} | {pred_10d*100:+.2f}% | {close_price:.2f} | {buy_price:.2f} | {stop_loss:.2f} | {target:.2f} | {pos_str} |\n"
+            elif hasattr(self, 'scoring_version') and self.scoring_version in ["v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.4", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.7.9", "v4.8.0", "v4.8.1", "v4.8.2", "v4.8.4", "v4.8.5", "v4.8.6", "v4.8.7", "v4.8.8", "v4.9.0.1", "v5.0"]:
                 # V4.4+ 多目标预测 - composite排序
                 composite_val = stock.get('composite', 0)
                 close_price = stock.get('close_price', 0)
@@ -5826,6 +5955,10 @@ def main(target_date: str = None, scoring_version: str = "v3", stocks_only: bool
         report_dir = Path("reports/daily_selection_v4.7.1")
     elif scoring_version == "v4.8.8":
         report_dir = Path("reports/daily_selection_v4.8.8")
+    elif scoring_version == "v4.9.1":
+        report_dir = Path("reports/daily_selection_v4.9.1")
+    elif scoring_version == "v4.9.0.1":
+        report_dir = Path("reports/daily_selection_v4.9.0.1")
     elif scoring_version == "v4.9.0":
         report_dir = Path("reports/daily_selection_v4.9.0")
     elif scoring_version == "v4.8.7":
@@ -5952,9 +6085,9 @@ if __name__ == "__main__":
                        choices=['v2', 'v3', 'v3.1', 'v3.2', 'v3.3', 'v3.4', 'v3.41',
                                 'v3.5', 'v3.51', 'v3.52', 'v3.53', 'v3.6', 'v3.7',
                                 'v3.8', 'v3.81', 'v3.9', 'v3.94', 'v3.95', 'v3.96',
-                                'v4', 'v4.0', 'v4.2', 'v4.3', 'v4.4', 'v4.4.2', 'v4.5', 'v4.6', 'v4.7.1', 'v4.7.2', 'v4.7.3', 'v4.7.5', 'v4.7.6', 'v4.7.7', 'v4.7.8', 'v4.7.9', 'v4.8', 'v4.8.0', 'v4.8.1', 'v4.8.2', 'v4.8.4', 'v4.8.5', 'v4.8.6', 'v4.8.7', 'v4.8.8', 'v5.0'],
-                       default='v4.8.7',
-                       help='评分版本 (默认v4.8.5)。'
+                                'v4', 'v4.0', 'v4.2', 'v4.3', 'v4.4', 'v4.4.2', 'v4.5', 'v4.6', 'v4.7.1', 'v4.7.2', 'v4.7.3', 'v4.7.5', 'v4.7.6', 'v4.7.7', 'v4.7.8', 'v4.7.9', 'v4.8', 'v4.8.0', 'v4.8.1', 'v4.8.2', 'v4.8.4', 'v4.8.5', 'v4.8.6', 'v4.8.7', 'v4.8.8', 'v4.9.0', 'v4.9.0.1', 'v4.9.1', 'v5.0'],
+                       default='v4.9.0.1',
+                       help='评分版本 (默认v4.9.0.1, 生产推荐, 配合focus_days=15+EMA0.7+CPPI(8,20)+SF30 → V4=92.8%% S级)。'
                             '活跃版本: v3.9(生产A级), v3.96(Robust Z-Score,ICIR>0.2), '
                             'v4.3(Walk-Forward+强正则), v4.4(V4.3+6增强模块), '
                             'v4.4.2(V4.4+三层组合风控), '
@@ -5967,11 +6100,14 @@ if __name__ == "__main__":
                        help='只考虑A股股票，不包括ETF基金等')
     parser.add_argument('--skip-strategies', action='store_true',
                        help='跳过8大量化策略筛选，直接对全市场所有股票进行ML评分')
-    parser.add_argument('--full-market', action='store_true',
-                       help='全市场ML评分+策略标注模式：对全市场所有股票ML评分，同时运行策略并在报告中标注')
+    parser.add_argument('--full-market', action='store_true', default=True,
+                       help='全市场ML评分+策略标注模式（默认开启）')
+    parser.add_argument('--no-full-market', action='store_true',
+                       help='关闭全市场模式，仅对策略选中的股票评分')
 
     args = parser.parse_args()
 
+    full_market = args.full_market and not args.no_full_market
     main(target_date=args.date, scoring_version=args.scoring_version,
          stocks_only=args.stocks_only, skip_strategies=args.skip_strategies,
-         full_market=args.full_market)
+         full_market=full_market)

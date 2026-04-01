@@ -589,8 +589,8 @@ class V481ProductionScorer(V476ProductionScorer):
                 except Exception:
                     continue
 
-            # Rescale rank models to regression scale
-            regression_names = [n for n in preds if n not in ('lgb_rank', 'lgb_listnet')]
+            # Rescale rank models to regression scale (exclude quantile models from stats)
+            regression_names = [n for n in preds if n not in ('lgb_rank', 'lgb_listnet', 'lgb_q95')]
             rank_names = [n for n in preds if n in ('lgb_rank', 'lgb_listnet')]
             if regression_names and rank_names:
                 reg_means = [np.mean(preds[n]) for n in regression_names]
@@ -604,9 +604,14 @@ class V481ProductionScorer(V476ProductionScorer):
             # Save per-model predictions before averaging
             self._per_model_preds[target] = dict(preds)
 
+            # Exclude quantile models from composite (they serve Stage 2 only)
+            COMPOSITE_EXCLUDE = ('lgb_q95',)
+
             target_w = self.weights.get(f'label_{target}', {})
             success_count = len(preds)
             for name, pred in preds.items():
+                if name in COMPOSITE_EXCLUDE:
+                    continue
                 weight = target_w.get(name, 0.2)
                 target_pred += weight * pred
                 total_weight += weight

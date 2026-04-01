@@ -1,0 +1,37 @@
+[
+  {
+    "name": "vol_ratio",
+    "sharpe": 0,
+    "grade": "ERROR"
+  },
+  {
+    "name": "intraday_intensity",
+    "sharpe": 0,
+    "grade": "ERROR"
+  },
+  {
+    "name": "price_position",
+    "sharpe": 0,
+    "grade": "ERROR"
+  },
+  {
+    "name": "amihud",
+    "sharpe": 0,
+    "grade": "ERROR"
+  },
+  {
+    "name": "combo_momentum_quality",
+    "sharpe": 0,
+    "grade": "ERROR"
+  },
+  {
+    "name": "combo_contrarian",
+    "sharpe": 0,
+    "grade": "ERROR"
+  },
+  {
+    "name": "combo_vol_structure",
+    "sharpe": 0,
+    "grade": "ERROR"
+  }
+]

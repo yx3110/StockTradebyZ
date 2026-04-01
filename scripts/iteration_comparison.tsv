@@ -1,0 +1,14 @@
+timestamp	variant	level	duration	gate	ic_10d	icir_10d	mini_ns	ns_200d	ns_full	grade
+2026-03-26 16:14:11	e2e_test	L1	271.1	FAIL	0.0000	0.000				
+2026-03-26 18:50:40	v1_baseline_all	L1	84.2	FAIL	0.0000	0.000				
+2026-03-26 18:51:45	v2_no_market	L1	64.7	FAIL	0.0000	0.000				
+2026-03-26 18:53:24	v3_no_fundamental	L1	99.0	FAIL	0.0000	0.000				
+2026-03-26 18:55:21	v4_big_leaves	L1	116.8	PASS	0.0000	0.000				
+2026-03-26 18:55:52	v4_big_leaves	L2	30.8	FAIL	-0.0451	-0.556	40			C
+2026-03-26 18:57:28	v5_slim_momentum	L1	96.6	PASS	0.0000	0.000				
+2026-03-26 18:57:53	v5_slim_momentum	L2	24.1	FAIL	-0.0188	-0.212	35			C
+2026-03-26 18:59:24	v6_big_leaves_slim	L1	91.7	FAIL	0.0000	0.000				
+2026-03-26 19:57:47	v4_big_leaves	L3	0.0	FAIL	0.0000	0.000		0		D
+2026-03-26 21:58:03	v4_big_leaves	L3	0.0	FAIL	0.0000	0.000		0		D
+2026-03-27 03:52:35	v4_big_leaves	L3	21208.9	FAIL	0.1280	0.980		55		B
+2026-03-27 15:14:17	v485_big_leaves	L3	5268.2	FAIL	0.1464	1.138		58		B

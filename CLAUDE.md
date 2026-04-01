@@ -64,9 +64,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 # Individual components
 python3 fetch_data/quick_daily_update.py --date 20250930  # Complete data update (30-45 sec)
   # 🆕 Includes: Market quotes, market indices, daily basic, financial indicators, technical indicators
-python3 tomorrow_stock_selector.py 2025-09-30                          # Stock selection (默认v3.9)
-python3 tomorrow_stock_selector.py 2025-09-30 --scoring-version v3.9   # v3.9 生产A级 (推荐)
-python3 tomorrow_stock_selector.py 2025-09-30 --scoring-version v3.95  # v3.95 多目标预测 (最新)
+python3 tomorrow_stock_selector.py 2025-09-30                             # Stock selection (默认v4.9.0.1)
+python3 tomorrow_stock_selector.py 2025-09-30 --scoring-version v4.9.0.1  # 🏆 生产推荐 V4=92.8% S级
+python3 tomorrow_stock_selector.py 2025-09-30 --scoring-version v3.9      # v3.9 旧版
+# 生产回测评估:
+python3 backtest/run_north_star_eval.py --production
 python3 ai_enhanced_daily_report.py --date 2025-09-30     # 🆕 AI enhancement with market analysis
 python3 trading_advisor.py                                # Trading advice
 
@@ -408,21 +410,27 @@ AI analysis configuration and weights
    - 四大筛选条件：涨幅>4% + 上影线控制 + 1.5倍放量 + 贴近知行短期线
 
 ### ML Scoring Systems (活跃版本)
-1. **V3.9 Production Scorer** (生产A级):
+1. **🏆 V4.9.0.1 Production** (生产推荐, 北极星V4=92.8% S级):
+   - 61特征, Q95 Widen-then-Concentrate头部精筛
+   - LightGBM + XGBoost + CatBoost + RF + HGB + LambdaRank(trunc=10) Ensemble
+   - 推理: EMA平滑(alpha=0.7) + 市场门控(GateV2, AUC=0.714)
+   - 组合: Top10 + Focus15d + Ret0.2 + CPPI(8,20) + SF30
+   - 性能: 年化124.5%, Sharpe=3.14, MaxDD=-6.4%, 超额胜率68.6%
+   - Scorer: `ml_models/v39/v492_production_scorer.py` (V490+EMA) 或 `v490_production_scorer.py`
+   - 配置: `production_config.json`
+   - 回测: `python3 backtest/run_north_star_eval.py --production`
+
+2. **V3.9 Production Scorer** (旧版):
    - 42个增强特征 + 17个扩展财务指标
-   - LightGBM + XGBoost + CatBoost + RandomForest Ensemble
    - 训练脚本: `ml_models/training/train_v390_from_cache.py`
 
-2. **V3.95 Multi-Target Predictor** (多目标预测):
-   - 同时预测3天、5天、10天收益
-   - 市场状态特征 + 滚动训练窗口
-   - 训练脚本: `ml_models/training/train_v395_multi_target.py`
-
-### Risk Management
-- **Position Sizing**: Max 10% per stock
-- **Stop Loss**: 8% default
-- **Portfolio Limits**: Max 10 holdings
-- **Cash Reserve**: 5% minimum
+### Risk Management (生产配置)
+- **Position Sizing**: Max 10% per stock, Top 10持仓
+- **Holding Period**: 15日调仓 (focus_days=15)
+- **CPPI**: floor=8%, multiplier=20 (MaxDD=-6.4%)
+- **Score Floor**: 30分以下不入选
+- **Retention**: 20%持仓保留加分 (降低换手)
+- **EMA Smoothing**: alpha=0.7 (换手32x)
 
 ## 🛠️ Development Guidelines
 
