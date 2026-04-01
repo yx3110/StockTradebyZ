@@ -9684,7 +9684,7 @@ class V4902Trainer(V4901Trainer):
 
     TARGET_SHARPE_BLEND = {
         'label_3d':  0.25,   # 0.10 → 0.25
-        'label_5d':  0.45,   # 0.25 → 0.45
+        'label_5d':  0.25,   # 0.25 → 保持原值 (0.45时5d IC为负)
         'label_10d': 0.50,   # 0.35 → 0.50
         'label_15d': 0.50,   # 0.35 → 0.50
     }
