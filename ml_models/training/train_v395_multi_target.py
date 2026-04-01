@@ -21,6 +21,9 @@ import numpy as np
 import pandas as pd
 import sqlite3
 import json
+import hashlib
+import os
+import multiprocessing as mp
 from datetime import datetime, timedelta
 import logging
 from pathlib import Path
@@ -62,6 +65,118 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 DB_PATH = str(PROJECT_ROOT / 'data_adapter' / 'stock_data.db')
+
+# ===== Parallel WF: 共享数据 + Worker函数 (multiprocessing fork) =====
+_wf_shared = {}
+
+
+def _wf_window_worker(wi):
+    """Process a single WF window in a forked subprocess.
+
+    Reads from module-level _wf_shared (populated before fork, inherited via COW).
+    Returns (wi, window_metrics_dict).
+    """
+    import gc as _gc
+
+    d = _wf_shared
+    trainer = d['trainer']
+    X, y_3d, y_5d, y_10d, y_15d = d['X'], d['y_3d'], d['y_5d'], d['y_10d'], d['y_15d']
+    dates, df = d['dates'], d['df']
+    w = d['windows'][wi]
+    n_windows = len(d['windows'])
+
+    np.random.seed(42 + wi)
+    logger.info(f"\n{'='*50}")
+    logger.info(f"[并行] Walk-Forward 窗口 {wi+1}/{n_windows}")
+    logger.info(f"{'='*50}")
+
+    train_mask = dates <= w['train_end']
+    val_mask = (dates >= w['val_start']) & (dates <= w['val_end'])
+    test_mask = (dates >= w['test_start']) & (dates <= w['test_end'])
+
+    X_train_w, X_val_w, X_test_w = X[train_mask].copy(), X[val_mask].copy(), X[test_mask].copy()
+    y_3d_tr, y_3d_va, y_3d_te = y_3d[train_mask].copy(), y_3d[val_mask].copy(), y_3d[test_mask].copy()
+    y_5d_tr, y_5d_va, y_5d_te = y_5d[train_mask].copy(), y_5d[val_mask].copy(), y_5d[test_mask].copy()
+    y_10d_tr, y_10d_va, y_10d_te = y_10d[train_mask].copy(), y_10d[val_mask].copy(), y_10d[test_mask].copy()
+    y_15d_tr, y_15d_va, y_15d_te = y_15d[train_mask].copy(), y_15d[val_mask].copy(), y_15d[test_mask].copy()
+    test_dates_w = dates[test_mask]
+    train_dates_w = dates[train_mask]
+    val_dates_w = dates[val_mask]
+
+    # Winsorize features (train bounds only)
+    X_train_w, wf_bounds = trainer.winsorize_features(X_train_w)
+    trainer._apply_bounds(X_val_w, wf_bounds)
+    trainer._apply_bounds(X_test_w, wf_bounds)
+
+    # Label winsorization (train stats only)
+    for y_tr_w, y_va_w, y_te_w in [(y_3d_tr, y_3d_va, y_3d_te),
+                                     (y_5d_tr, y_5d_va, y_5d_te),
+                                     (y_10d_tr, y_10d_va, y_10d_te),
+                                     (y_15d_tr, y_15d_va, y_15d_te)]:
+        lo = np.percentile(y_tr_w, 1)
+        hi = np.percentile(y_tr_w, 99)
+        y_tr_w[:] = np.clip(y_tr_w, lo, hi)
+        y_va_w[:] = np.clip(y_va_w, lo, hi)
+        y_te_w[:] = np.clip(y_te_w, lo, hi)
+
+    # Sharpe-Blend (each process has its own trainer copy via fork COW)
+    trainer.train_dates = train_dates_w
+    trainer.val_dates = val_dates_w
+    logger.info(f"  [W{wi+1}] Sharpe-Blend (blend={trainer.sharpe_label_blend:.0%})")
+    for y_tr_w, y_va_w, y_te_w, name in [(y_3d_tr, y_3d_va, y_3d_te, 'label_3d'),
+                                            (y_5d_tr, y_5d_va, y_5d_te, 'label_5d'),
+                                            (y_10d_tr, y_10d_va, y_10d_te, 'label_10d'),
+                                            (y_15d_tr, y_15d_va, y_15d_te, 'label_15d')]:
+        trainer._apply_sharpe_blend(y_tr_w, y_va_w, y_te_w,
+                                      train_dates_w, val_dates_w, test_dates_w, name)
+
+    logger.info(f"  [W{wi+1}] train={X_train_w.shape[0]:,}, val={X_val_w.shape[0]:,}, test={X_test_w.shape[0]:,}")
+
+    targets_w = [
+        ('3d', y_3d_tr, y_3d_va, y_3d_te),
+        ('5d', y_5d_tr, y_5d_va, y_5d_te),
+        ('10d', y_10d_tr, y_10d_va, y_10d_te),
+        ('15d', y_15d_tr, y_15d_va, y_15d_te),
+    ]
+
+    window_metrics = {}
+    df_train_w = df[train_mask]
+
+    for target_key, y_tr, y_va, y_te in targets_w:
+        sample_w = trainer.compute_sample_weights(df_train_w, y_tr)
+        models, pred_train, pred_val = trainer.train_single_target_models(
+            X_train_w, X_val_w, y_tr, y_va, f"label_{target_key}",
+            sample_weights_train=sample_w)
+        weights, _ = trainer.calculate_ensemble_weights(pred_val, y_va)
+
+        pred_test = {}
+        for name, model in models.items():
+            if name == 'xgb':
+                pred_test[name] = model.predict(xgb.DMatrix(X_test_w))
+            else:
+                pred_test[name] = model.predict(X_test_w)
+
+        ensemble_pred = trainer.ensemble_predict(pred_test, weights)
+        ic, icir = trainer._calculate_daily_ic(ensemble_pred, y_te, test_dates_w)
+
+        # IS IC/ICIR + OOS月度IC (V475+需要)
+        ensemble_pred_train = trainer.ensemble_predict(pred_train, weights)
+        is_ic, is_icir = trainer._calculate_daily_ic(ensemble_pred_train, y_tr, train_dates_w)
+        oos_monthly_ic = []
+        if hasattr(trainer, '_calculate_monthly_ic'):
+            oos_monthly_ic = trainer._calculate_monthly_ic(ensemble_pred, y_te, test_dates_w)
+
+        window_metrics[target_key] = {
+            'ic': ic, 'icir': icir,
+            'is_ic': is_ic, 'is_icir': is_icir,
+            'oos_monthly_ic': oos_monthly_ic,
+        }
+        logger.info(f"  [W{wi+1}] {target_key}: OOS IC={ic:.4f}, ICIR={icir:.4f} | IS IC={is_ic:.4f}, ICIR={is_icir:.4f}")
+
+        del models, pred_train, pred_val, pred_test
+        _gc.collect()
+
+    return (wi, window_metrics)
 
 
 class MarketStateCalculator:
@@ -565,6 +680,61 @@ class V395MultiTargetTrainer:
         logger.info(f"  标签Winsorization和Sharpe融合将在train/val/test分割后执行(防止数据泄漏)")
 
         return df_features
+
+    # ===== 数据缓存: load_data + prepare_features 结果缓存为joblib文件 =====
+    def _compute_cache_key(self, start_date, end_date):
+        """基于类名+日期范围+DB修改时间生成缓存key"""
+        db_mtime = os.path.getmtime(self.db_path) if os.path.exists(self.db_path) else 0
+        key_str = f"{self.__class__.__name__}_{start_date}_{end_date}_{db_mtime:.0f}"
+        return hashlib.md5(key_str.encode()).hexdigest()[:12]
+
+    def _load_with_cache(self, start_date, end_date):
+        """带缓存的数据加载: 首次从SQLite加载并缓存, 后续直接读缓存
+
+        Returns:
+            (X, y_3d, y_5d, y_10d, y_15d, df, feature_names)
+        """
+        cache_dir = PROJECT_ROOT / 'ml_models' / 'trained_models' / 'cache'
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        cache_key = self._compute_cache_key(start_date, end_date)
+        cache_path = cache_dir / f'data_{cache_key}.joblib'
+
+        if cache_path.exists():
+            logger.info(f"  📦 从缓存加载训练数据: {cache_path.name}")
+            t0 = datetime.now()
+            cached = joblib.load(cache_path)
+            dt = (datetime.now() - t0).total_seconds()
+            X = cached['X']
+            y_3d = cached['y_3d']
+            y_5d = cached['y_5d']
+            y_10d = cached['y_10d']
+            y_15d = cached['y_15d']
+            df = cached['df']
+            self.feature_names = cached['feature_names']
+            # 恢复 market_calculator 状态
+            if 'market_features' in cached:
+                self.market_calculator.market_features = cached['market_features']
+            logger.info(f"  📦 缓存加载完成: {len(X):,} 样本, {X.shape[1]} 特征, 耗时 {dt:.1f}s")
+            return X, y_3d, y_5d, y_10d, y_15d, df
+
+        # 首次: 正常加载
+        logger.info("  首次加载, 完成后将缓存数据...")
+        df = self.load_data(start_date, end_date)
+        X, y_3d, y_5d, y_10d, y_15d, df = self.prepare_features(df)
+
+        # 保存缓存
+        t0 = datetime.now()
+        cached = {
+            'X': X, 'y_3d': y_3d, 'y_5d': y_5d, 'y_10d': y_10d, 'y_15d': y_15d,
+            'df': df, 'feature_names': self.feature_names,
+            'market_features': getattr(self.market_calculator, 'market_features', None),
+        }
+        joblib.dump(cached, cache_path, compress=3)
+        dt = (datetime.now() - t0).total_seconds()
+        size_mb = cache_path.stat().st_size / 1024 / 1024
+        logger.info(f"  💾 缓存已保存: {cache_path.name} ({size_mb:.0f} MB, 压缩耗时 {dt:.1f}s)")
+
+        return X, y_3d, y_5d, y_10d, y_15d, df
 
     def winsorize_features(self, X: np.ndarray, lower_pct: float = 1, upper_pct: float = 99) -> tuple:
         """
@@ -4649,9 +4819,13 @@ class V471Trainer(V44Trainer):
         logger.info(f"  目标权重: {self.target_weights}")
         logger.info(f"  Sharpe融合: {self.sharpe_label_blend} [Bug 2修复: 将在每个窗口执行]")
 
-        # 1. 一次性加载全量数据
-        df = self.load_data(start_date, end_date)
-        X, y_3d, y_5d, y_10d, y_15d, df = self.prepare_features(df)
+        # 1. 一次性加载全量数据 (支持joblib缓存加速)
+        use_cache = getattr(self, '_use_data_cache', True)
+        if use_cache:
+            X, y_3d, y_5d, y_10d, y_15d, df = self._load_with_cache(start_date, end_date)
+        else:
+            df = self.load_data(start_date, end_date)
+            X, y_3d, y_5d, y_10d, y_15d, df = self.prepare_features(df)
 
         dates = df['trade_date'].values
         unique_dates = np.sort(np.unique(dates))
@@ -4691,93 +4865,116 @@ class V471Trainer(V44Trainer):
             logger.info(f"    窗口 {i+1}: train<='{w['train_end']}', val={w['val_start']}~{w['val_end']}, "
                          f"test={w['test_start']}~{w['test_end']}")
 
-        # 3. 对每个窗口训练+评估
-        wf_metrics = []
-        import gc
+        # 3. 对每个窗口训练+评估 (支持并行)
+        n_parallel = getattr(self, '_parallel_wf_workers', 1)
+        n_parallel = min(n_parallel, len(windows))
 
-        for wi, w in enumerate(windows):
-            logger.info(f"\n{'='*50}")
-            logger.info(f"Walk-Forward 窗口 {wi+1}/{len(windows)}")
-            logger.info(f"{'='*50}")
+        if n_parallel > 1:
+            # ===== 并行模式: multiprocessing fork =====
+            logger.info(f"  🚀 并行WF: {n_parallel} 进程处理 {len(windows)} 个窗口")
+            global _wf_shared
+            _wf_shared = {
+                'trainer': self, 'X': X, 'y_3d': y_3d, 'y_5d': y_5d,
+                'y_10d': y_10d, 'y_15d': y_15d, 'dates': dates, 'df': df,
+                'windows': windows,
+            }
+            try:
+                ctx = mp.get_context('fork')
+                with ctx.Pool(processes=n_parallel) as pool:
+                    results = pool.map(_wf_window_worker, range(len(windows)))
+                # 按窗口序号排序并提取metrics
+                results.sort(key=lambda x: x[0])
+                wf_metrics = [r[1] for r in results]
+            finally:
+                _wf_shared = {}  # 释放共享引用
+        else:
+            # ===== 串行模式 (默认) =====
+            wf_metrics = []
+            import gc
 
-            train_mask = dates <= w['train_end']
-            val_mask = (dates >= w['val_start']) & (dates <= w['val_end'])
-            test_mask = (dates >= w['test_start']) & (dates <= w['test_end'])
+            for wi, w in enumerate(windows):
+                logger.info(f"\n{'='*50}")
+                logger.info(f"Walk-Forward 窗口 {wi+1}/{len(windows)}")
+                logger.info(f"{'='*50}")
 
-            X_train_w, X_val_w, X_test_w = X[train_mask].copy(), X[val_mask].copy(), X[test_mask].copy()
-            y_3d_tr, y_3d_va, y_3d_te = y_3d[train_mask].copy(), y_3d[val_mask].copy(), y_3d[test_mask].copy()
-            y_5d_tr, y_5d_va, y_5d_te = y_5d[train_mask].copy(), y_5d[val_mask].copy(), y_5d[test_mask].copy()
-            y_10d_tr, y_10d_va, y_10d_te = y_10d[train_mask].copy(), y_10d[val_mask].copy(), y_10d[test_mask].copy()
-            y_15d_tr, y_15d_va, y_15d_te = y_15d[train_mask].copy(), y_15d[val_mask].copy(), y_15d[test_mask].copy()
-            test_dates_w = dates[test_mask]
-            train_dates_w = dates[train_mask]
-            val_dates_w = dates[val_mask]
+                train_mask = dates <= w['train_end']
+                val_mask = (dates >= w['val_start']) & (dates <= w['val_end'])
+                test_mask = (dates >= w['test_start']) & (dates <= w['test_end'])
 
-            # Walk-Forward: 特征Winsorization (仅用窗口内训练集)
-            X_train_w, wf_bounds = self.winsorize_features(X_train_w)
-            self._apply_bounds(X_val_w, wf_bounds)
-            self._apply_bounds(X_test_w, wf_bounds)
+                X_train_w, X_val_w, X_test_w = X[train_mask].copy(), X[val_mask].copy(), X[test_mask].copy()
+                y_3d_tr, y_3d_va, y_3d_te = y_3d[train_mask].copy(), y_3d[val_mask].copy(), y_3d[test_mask].copy()
+                y_5d_tr, y_5d_va, y_5d_te = y_5d[train_mask].copy(), y_5d[val_mask].copy(), y_5d[test_mask].copy()
+                y_10d_tr, y_10d_va, y_10d_te = y_10d[train_mask].copy(), y_10d[val_mask].copy(), y_10d[test_mask].copy()
+                y_15d_tr, y_15d_va, y_15d_te = y_15d[train_mask].copy(), y_15d[val_mask].copy(), y_15d[test_mask].copy()
+                test_dates_w = dates[test_mask]
+                train_dates_w = dates[train_mask]
+                val_dates_w = dates[val_mask]
 
-            # Walk-Forward: 标签Winsorization (仅用训练集统计量)
-            for y_tr_w, y_va_w, y_te_w in [(y_3d_tr, y_3d_va, y_3d_te),
-                                             (y_5d_tr, y_5d_va, y_5d_te),
-                                             (y_10d_tr, y_10d_va, y_10d_te),
-                                             (y_15d_tr, y_15d_va, y_15d_te)]:
-                lo = np.percentile(y_tr_w, 1)
-                hi = np.percentile(y_tr_w, 99)
-                y_tr_w[:] = np.clip(y_tr_w, lo, hi)
-                y_va_w[:] = np.clip(y_va_w, lo, hi)
-                y_te_w[:] = np.clip(y_te_w, lo, hi)
+                # Walk-Forward: 特征Winsorization (仅用窗口内训练集)
+                X_train_w, wf_bounds = self.winsorize_features(X_train_w)
+                self._apply_bounds(X_val_w, wf_bounds)
+                self._apply_bounds(X_test_w, wf_bounds)
 
-            # Bug 2修复: 在WF窗口内应用Sharpe-Blend
-            logger.info(f"  [Bug 2修复] 应用Sharpe-Blend (blend={self.sharpe_label_blend:.0%})")
-            for y_tr_w, y_va_w, y_te_w, name in [(y_3d_tr, y_3d_va, y_3d_te, 'label_3d'),
-                                                    (y_5d_tr, y_5d_va, y_5d_te, 'label_5d'),
-                                                    (y_10d_tr, y_10d_va, y_10d_te, 'label_10d'),
-                                                    (y_15d_tr, y_15d_va, y_15d_te, 'label_15d')]:
-                self._apply_sharpe_blend(y_tr_w, y_va_w, y_te_w,
-                                          train_dates_w, val_dates_w, test_dates_w, name)
+                # Walk-Forward: 标签Winsorization (仅用训练集统计量)
+                for y_tr_w, y_va_w, y_te_w in [(y_3d_tr, y_3d_va, y_3d_te),
+                                                 (y_5d_tr, y_5d_va, y_5d_te),
+                                                 (y_10d_tr, y_10d_va, y_10d_te),
+                                                 (y_15d_tr, y_15d_va, y_15d_te)]:
+                    lo = np.percentile(y_tr_w, 1)
+                    hi = np.percentile(y_tr_w, 99)
+                    y_tr_w[:] = np.clip(y_tr_w, lo, hi)
+                    y_va_w[:] = np.clip(y_va_w, lo, hi)
+                    y_te_w[:] = np.clip(y_te_w, lo, hi)
 
-            logger.info(f"  train={X_train_w.shape[0]:,}, val={X_val_w.shape[0]:,}, test={X_test_w.shape[0]:,}")
+                # Bug 2修复: 在WF窗口内应用Sharpe-Blend
+                logger.info(f"  [Bug 2修复] 应用Sharpe-Blend (blend={self.sharpe_label_blend:.0%})")
+                for y_tr_w, y_va_w, y_te_w, name in [(y_3d_tr, y_3d_va, y_3d_te, 'label_3d'),
+                                                        (y_5d_tr, y_5d_va, y_5d_te, 'label_5d'),
+                                                        (y_10d_tr, y_10d_va, y_10d_te, 'label_10d'),
+                                                        (y_15d_tr, y_15d_va, y_15d_te, 'label_15d')]:
+                    self._apply_sharpe_blend(y_tr_w, y_va_w, y_te_w,
+                                              train_dates_w, val_dates_w, test_dates_w, name)
 
-            self.val_dates = dates[val_mask]
-            self.train_dates = dates[train_mask]
+                logger.info(f"  train={X_train_w.shape[0]:,}, val={X_val_w.shape[0]:,}, test={X_test_w.shape[0]:,}")
 
-            # 训练 4 目标
-            targets_w = [
-                ('3d', y_3d_tr, y_3d_va, y_3d_te),
-                ('5d', y_5d_tr, y_5d_va, y_5d_te),
-                ('10d', y_10d_tr, y_10d_va, y_10d_te),
-                ('15d', y_15d_tr, y_15d_va, y_15d_te),
-            ]
+                self.val_dates = dates[val_mask]
+                self.train_dates = dates[train_mask]
 
-            window_metrics = {}
-            df_train_w = df[train_mask]
+                # 训练 4 目标
+                targets_w = [
+                    ('3d', y_3d_tr, y_3d_va, y_3d_te),
+                    ('5d', y_5d_tr, y_5d_va, y_5d_te),
+                    ('10d', y_10d_tr, y_10d_va, y_10d_te),
+                    ('15d', y_15d_tr, y_15d_va, y_15d_te),
+                ]
 
-            for target_key, y_tr, y_va, y_te in targets_w:
-                sample_w = self.compute_sample_weights(df_train_w, y_tr)
-                models, pred_train, pred_val = self.train_single_target_models(
-                    X_train_w, X_val_w, y_tr, y_va, f"label_{target_key}",
-                    sample_weights_train=sample_w)
-                weights, _ = self.calculate_ensemble_weights(pred_val, y_va)
+                window_metrics = {}
+                df_train_w = df[train_mask]
 
-                # Test set prediction
-                pred_test = {}
-                for name, model in models.items():
-                    if name == 'xgb':
-                        pred_test[name] = model.predict(xgb.DMatrix(X_test_w))
-                    else:
-                        pred_test[name] = model.predict(X_test_w)
+                for target_key, y_tr, y_va, y_te in targets_w:
+                    sample_w = self.compute_sample_weights(df_train_w, y_tr)
+                    models, pred_train, pred_val = self.train_single_target_models(
+                        X_train_w, X_val_w, y_tr, y_va, f"label_{target_key}",
+                        sample_weights_train=sample_w)
+                    weights, _ = self.calculate_ensemble_weights(pred_val, y_va)
 
-                ensemble_pred = self.ensemble_predict(pred_test, weights)
-                ic, icir = self._calculate_daily_ic(ensemble_pred, y_te, test_dates_w)
-                window_metrics[target_key] = {'ic': ic, 'icir': icir}
-                logger.info(f"  {target_key}: IC={ic:.4f}, ICIR={icir:.4f}")
+                    # Test set prediction
+                    pred_test = {}
+                    for name, model in models.items():
+                        if name == 'xgb':
+                            pred_test[name] = model.predict(xgb.DMatrix(X_test_w))
+                        else:
+                            pred_test[name] = model.predict(X_test_w)
 
-                del models, pred_train, pred_val, pred_test
-                gc.collect()
+                    ensemble_pred = self.ensemble_predict(pred_test, weights)
+                    ic, icir = self._calculate_daily_ic(ensemble_pred, y_te, test_dates_w)
+                    window_metrics[target_key] = {'ic': ic, 'icir': icir}
+                    logger.info(f"  {target_key}: IC={ic:.4f}, ICIR={icir:.4f}")
 
-            wf_metrics.append(window_metrics)
+                    del models, pred_train, pred_val, pred_test
+                    gc.collect()
+
+                wf_metrics.append(window_metrics)
 
         # 4. Walk-Forward 汇总
         logger.info("\n" + "=" * 60)
@@ -6826,6 +7023,13 @@ class V475Trainer(V473Trainer):
                             val_days: int = 120, test_days: int = 120,
                             step_days: int = 90):
         """V4.7.5 Walk-Forward 训练 — V4.7.3 + 特征裁剪 + 自适应目标权重"""
+        # fast-check: 覆盖WF参数为紧凑窗口
+        if getattr(self, '_fast_check', False):
+            min_train_days = getattr(self, '_fast_check_min_train', min_train_days)
+            val_days = getattr(self, '_fast_check_val_days', val_days)
+            test_days = getattr(self, '_fast_check_test_days', test_days)
+            step_days = getattr(self, '_fast_check_step_days', step_days)
+
         start_time = datetime.now()
         logger.info("=" * 60)
         logger.info("V4.7.5 Walk-Forward 训练 (V4.7.3 + 特征裁剪 + 自适应目标权重)")
@@ -6840,9 +7044,13 @@ class V475Trainer(V473Trainer):
         logger.info(f"  新增Layer2A: 特征裁剪 {self.PRUNE_FEATURES[:5]}...")
         logger.info(f"  新增Layer3: OOS-ICIR自适应目标权重")
 
-        # 1. 一次性加载全量数据 (V4.7.3: 精简特征)
-        df = self.load_data(start_date, end_date)
-        X, y_3d, y_5d, y_10d, y_15d, df = self.prepare_features(df)
+        # 1. 一次性加载全量数据 (支持joblib缓存加速)
+        use_cache = getattr(self, '_use_data_cache', True)
+        if use_cache:
+            X, y_3d, y_5d, y_10d, y_15d, df = self._load_with_cache(start_date, end_date)
+        else:
+            df = self.load_data(start_date, end_date)
+            X, y_3d, y_5d, y_10d, y_15d, df = self.prepare_features(df)
 
         dates = df['trade_date'].values
         unique_dates = np.sort(np.unique(dates))
@@ -6878,102 +7086,124 @@ class V475Trainer(V473Trainer):
             logger.info(f"    窗口 {i+1}: train<='{w['train_end']}', val={w['val_start']}~{w['val_end']}, "
                          f"test={w['test_start']}~{w['test_end']}")
 
-        # 3. 对每个窗口训练+评估
-        wf_metrics = []
-        import gc
+        # 3. 对每个窗口训练+评估 (支持并行)
+        n_parallel = getattr(self, '_parallel_wf_workers', 1)
+        n_parallel = min(n_parallel, len(windows)) if windows else 1
 
-        for wi, w in enumerate(windows):
-            logger.info(f"\n{'='*50}")
-            logger.info(f"Walk-Forward 窗口 {wi+1}/{len(windows)}")
-            logger.info(f"{'='*50}")
+        if n_parallel > 1:
+            # ===== 并行模式: multiprocessing fork =====
+            logger.info(f"  🚀 并行WF: {n_parallel} 进程处理 {len(windows)} 个窗口")
+            global _wf_shared
+            _wf_shared = {
+                'trainer': self, 'X': X, 'y_3d': y_3d, 'y_5d': y_5d,
+                'y_10d': y_10d, 'y_15d': y_15d, 'dates': dates, 'df': df,
+                'windows': windows,
+            }
+            try:
+                ctx = mp.get_context('fork')
+                with ctx.Pool(processes=n_parallel) as pool:
+                    results = pool.map(_wf_window_worker, range(len(windows)))
+                results.sort(key=lambda x: x[0])
+                wf_metrics = [r[1] for r in results]
+            finally:
+                _wf_shared = {}
+        else:
+            # ===== 串行模式 (默认) =====
+            wf_metrics = []
+            import gc
 
-            train_mask = dates <= w['train_end']
-            val_mask = (dates >= w['val_start']) & (dates <= w['val_end'])
-            test_mask = (dates >= w['test_start']) & (dates <= w['test_end'])
+            for wi, w in enumerate(windows):
+                logger.info(f"\n{'='*50}")
+                logger.info(f"Walk-Forward 窗口 {wi+1}/{len(windows)}")
+                logger.info(f"{'='*50}")
 
-            X_train_w, X_val_w, X_test_w = X[train_mask].copy(), X[val_mask].copy(), X[test_mask].copy()
-            y_3d_tr, y_3d_va, y_3d_te = y_3d[train_mask].copy(), y_3d[val_mask].copy(), y_3d[test_mask].copy()
-            y_5d_tr, y_5d_va, y_5d_te = y_5d[train_mask].copy(), y_5d[val_mask].copy(), y_5d[test_mask].copy()
-            y_10d_tr, y_10d_va, y_10d_te = y_10d[train_mask].copy(), y_10d[val_mask].copy(), y_10d[test_mask].copy()
-            y_15d_tr, y_15d_va, y_15d_te = y_15d[train_mask].copy(), y_15d[val_mask].copy(), y_15d[test_mask].copy()
-            test_dates_w = dates[test_mask]
-            train_dates_w = dates[train_mask]
-            val_dates_w = dates[val_mask]
+                train_mask = dates <= w['train_end']
+                val_mask = (dates >= w['val_start']) & (dates <= w['val_end'])
+                test_mask = (dates >= w['test_start']) & (dates <= w['test_end'])
 
-            # Winsorization
-            X_train_w, wf_bounds = self.winsorize_features(X_train_w)
-            self._apply_bounds(X_val_w, wf_bounds)
-            self._apply_bounds(X_test_w, wf_bounds)
+                X_train_w, X_val_w, X_test_w = X[train_mask].copy(), X[val_mask].copy(), X[test_mask].copy()
+                y_3d_tr, y_3d_va, y_3d_te = y_3d[train_mask].copy(), y_3d[val_mask].copy(), y_3d[test_mask].copy()
+                y_5d_tr, y_5d_va, y_5d_te = y_5d[train_mask].copy(), y_5d[val_mask].copy(), y_5d[test_mask].copy()
+                y_10d_tr, y_10d_va, y_10d_te = y_10d[train_mask].copy(), y_10d[val_mask].copy(), y_10d[test_mask].copy()
+                y_15d_tr, y_15d_va, y_15d_te = y_15d[train_mask].copy(), y_15d[val_mask].copy(), y_15d[test_mask].copy()
+                test_dates_w = dates[test_mask]
+                train_dates_w = dates[train_mask]
+                val_dates_w = dates[val_mask]
 
-            for y_tr_w, y_va_w, y_te_w in [(y_3d_tr, y_3d_va, y_3d_te),
-                                             (y_5d_tr, y_5d_va, y_5d_te),
-                                             (y_10d_tr, y_10d_va, y_10d_te),
-                                             (y_15d_tr, y_15d_va, y_15d_te)]:
-                lo = np.percentile(y_tr_w, 1)
-                hi = np.percentile(y_tr_w, 99)
-                y_tr_w[:] = np.clip(y_tr_w, lo, hi)
-                y_va_w[:] = np.clip(y_va_w, lo, hi)
-                y_te_w[:] = np.clip(y_te_w, lo, hi)
+                # Winsorization
+                X_train_w, wf_bounds = self.winsorize_features(X_train_w)
+                self._apply_bounds(X_val_w, wf_bounds)
+                self._apply_bounds(X_test_w, wf_bounds)
 
-            # Sharpe-Blend
-            self.train_dates = train_dates_w
-            self.val_dates = val_dates_w
-            for target_key, y_tr_w, y_va_w, y_te_w in [
-                ('label_3d', y_3d_tr, y_3d_va, y_3d_te),
-                ('label_5d', y_5d_tr, y_5d_va, y_5d_te),
-                ('label_10d', y_10d_tr, y_10d_va, y_10d_te),
-                ('label_15d', y_15d_tr, y_15d_va, y_15d_te),
-            ]:
-                self._apply_sharpe_blend(y_tr_w, y_va_w, y_te_w,
-                                          train_dates_w, val_dates_w, test_dates_w,
-                                          target_key)
+                for y_tr_w, y_va_w, y_te_w in [(y_3d_tr, y_3d_va, y_3d_te),
+                                                 (y_5d_tr, y_5d_va, y_5d_te),
+                                                 (y_10d_tr, y_10d_va, y_10d_te),
+                                                 (y_15d_tr, y_15d_va, y_15d_te)]:
+                    lo = np.percentile(y_tr_w, 1)
+                    hi = np.percentile(y_tr_w, 99)
+                    y_tr_w[:] = np.clip(y_tr_w, lo, hi)
+                    y_va_w[:] = np.clip(y_va_w, lo, hi)
+                    y_te_w[:] = np.clip(y_te_w, lo, hi)
 
-            # 训练4目标
-            window_metrics = {}
-            for target_key, y_tr, y_va, y_te in [
-                ('3d', y_3d_tr, y_3d_va, y_3d_te),
-                ('5d', y_5d_tr, y_5d_va, y_5d_te),
-                ('10d', y_10d_tr, y_10d_va, y_10d_te),
-                ('15d', y_15d_tr, y_15d_va, y_15d_te),
-            ]:
-                sample_w = self.compute_sample_weights(df[train_mask], y_tr)
-                models, pred_train, pred_val = self.train_single_target_models(
-                    X_train_w, X_val_w, y_tr, y_va, f"label_{target_key}",
-                    sample_weights_train=sample_w)
-                weights, rmses = self.calculate_ensemble_weights(pred_val, y_va)
+                # Sharpe-Blend
+                self.train_dates = train_dates_w
+                self.val_dates = val_dates_w
+                for target_key, y_tr_w, y_va_w, y_te_w in [
+                    ('label_3d', y_3d_tr, y_3d_va, y_3d_te),
+                    ('label_5d', y_5d_tr, y_5d_va, y_5d_te),
+                    ('label_10d', y_10d_tr, y_10d_va, y_10d_te),
+                    ('label_15d', y_15d_tr, y_15d_va, y_15d_te),
+                ]:
+                    self._apply_sharpe_blend(y_tr_w, y_va_w, y_te_w,
+                                              train_dates_w, val_dates_w, test_dates_w,
+                                              target_key)
 
-                pred_test = {}
-                for name, model in models.items():
-                    try:
-                        if name == 'xgb':
-                            pred_test[name] = model.predict(xgb.DMatrix(X_test_w))
-                        else:
+                # 训练4目标
+                window_metrics = {}
+                for target_key, y_tr, y_va, y_te in [
+                    ('3d', y_3d_tr, y_3d_va, y_3d_te),
+                    ('5d', y_5d_tr, y_5d_va, y_5d_te),
+                    ('10d', y_10d_tr, y_10d_va, y_10d_te),
+                    ('15d', y_15d_tr, y_15d_va, y_15d_te),
+                ]:
+                    sample_w = self.compute_sample_weights(df[train_mask], y_tr)
+                    models, pred_train, pred_val = self.train_single_target_models(
+                        X_train_w, X_val_w, y_tr, y_va, f"label_{target_key}",
+                        sample_weights_train=sample_w)
+                    weights, rmses = self.calculate_ensemble_weights(pred_val, y_va)
+
+                    pred_test = {}
+                    for name, model in models.items():
+                        try:
+                            if name == 'xgb':
+                                pred_test[name] = model.predict(xgb.DMatrix(X_test_w))
+                            else:
+                                pred_test[name] = model.predict(X_test_w)
+                        except Exception:
                             pred_test[name] = model.predict(X_test_w)
-                    except Exception:
-                        pred_test[name] = model.predict(X_test_w)
 
-                # OOS IC/ICIR
-                ensemble_pred = self.ensemble_predict(pred_test, weights)
-                ic, icir = self._calculate_daily_ic(ensemble_pred, y_te, test_dates_w)
+                    # OOS IC/ICIR
+                    ensemble_pred = self.ensemble_predict(pred_test, weights)
+                    ic, icir = self._calculate_daily_ic(ensemble_pred, y_te, test_dates_w)
 
-                # IS IC/ICIR (用于WFER计算)
-                ensemble_pred_train = self.ensemble_predict(pred_train, weights)
-                is_ic, is_icir = self._calculate_daily_ic(ensemble_pred_train, y_tr, train_dates_w)
+                    # IS IC/ICIR (用于WFER计算)
+                    ensemble_pred_train = self.ensemble_predict(pred_train, weights)
+                    is_ic, is_icir = self._calculate_daily_ic(ensemble_pred_train, y_tr, train_dates_w)
 
-                # OOS月度IC (用于IC半衰期计算)
-                oos_monthly_ic = self._calculate_monthly_ic(ensemble_pred, y_te, test_dates_w)
+                    # OOS月度IC (用于IC半衰期计算)
+                    oos_monthly_ic = self._calculate_monthly_ic(ensemble_pred, y_te, test_dates_w)
 
-                window_metrics[target_key] = {
-                    'ic': ic, 'icir': icir,
-                    'is_ic': is_ic, 'is_icir': is_icir,
-                    'oos_monthly_ic': oos_monthly_ic,
-                }
-                logger.info(f"  {target_key}: OOS IC={ic:.4f}, ICIR={icir:.4f} | IS IC={is_ic:.4f}, ICIR={is_icir:.4f}")
+                    window_metrics[target_key] = {
+                        'ic': ic, 'icir': icir,
+                        'is_ic': is_ic, 'is_icir': is_icir,
+                        'oos_monthly_ic': oos_monthly_ic,
+                    }
+                    logger.info(f"  {target_key}: OOS IC={ic:.4f}, ICIR={icir:.4f} | IS IC={is_ic:.4f}, ICIR={is_icir:.4f}")
 
-                del models, pred_train, pred_val, pred_test
-                gc.collect()
+                    del models, pred_train, pred_val, pred_test
+                    gc.collect()
 
-            wf_metrics.append(window_metrics)
+                wf_metrics.append(window_metrics)
 
         # 4. Walk-Forward 汇总
         logger.info("\n" + "=" * 60)
@@ -9731,6 +9961,61 @@ class V4902Trainer(V4901Trainer):
     }
 
     DOWNSIDE_WEIGHT = 1.5  # 负收益样本权重乘数
+
+    def train_single_target_models(self, X_train, X_val, y_train, y_val, target_name: str,
+                                    sample_weights_train=None):
+        """V4.9.0.2: fast-check时只训练LGB+XGB (跳过CB/RF/HGB/Rank/Q95, 4x加速)"""
+        if not getattr(self, '_fast_check', False):
+            return super().train_single_target_models(
+                X_train, X_val, y_train, y_val, target_name,
+                sample_weights_train=sample_weights_train)
+
+        import gc as _gc
+        max_rounds = getattr(self, '_fast_check_max_boost_round', 200)
+        models = {}
+        pred_train = {}
+        pred_val = {}
+
+        # 1. LightGBM only (Huber)
+        num_leaves = getattr(self, '_cli_num_leaves', 15)
+        huber_delta = float(np.median(np.abs(y_train - np.median(y_train)))) * 1.5
+        lgb_params = {
+            'objective': 'huber', 'huber_delta': huber_delta, 'metric': 'huber',
+            'num_leaves': num_leaves, 'learning_rate': 0.05,
+            'feature_fraction': 0.6, 'bagging_fraction': 0.7, 'bagging_freq': 5,
+            'reg_alpha': 0.5, 'reg_lambda': 3.0, 'min_data_in_leaf': 200,
+            'verbose': -1,
+        }
+        lgb_ds = lgb.Dataset(X_train, label=y_train, weight=sample_weights_train, free_raw_data=True)
+        lgb_val = lgb.Dataset(X_val, label=y_val, reference=lgb_ds, free_raw_data=True)
+        lgb_model = lgb.train(lgb_params, lgb_ds, num_boost_round=max_rounds,
+                               valid_sets=[lgb_ds, lgb_val],
+                               callbacks=[lgb.early_stopping(15), lgb.log_evaluation(0)])
+        models['lgb'] = lgb_model
+        pred_train['lgb'] = lgb_model.predict(X_train)
+        pred_val['lgb'] = lgb_model.predict(X_val)
+        del lgb_ds, lgb_val; _gc.collect()
+
+        # 2. XGBoost only
+        xgb_params = {
+            'objective': 'reg:squarederror', 'eval_metric': 'rmse',
+            'max_depth': 6, 'learning_rate': 0.05,
+            'subsample': 0.7, 'colsample_bytree': 0.6,
+            'reg_alpha': 0.5, 'reg_lambda': 3.0, 'verbosity': 0,
+        }
+        dtrain = xgb.DMatrix(X_train, label=y_train, weight=sample_weights_train)
+        dval = xgb.DMatrix(X_val, label=y_val)
+        xgb_model = xgb.train(xgb_params, dtrain, num_boost_round=max_rounds,
+                               evals=[(dval, 'val')], early_stopping_rounds=15,
+                               verbose_eval=False)
+        models['xgb'] = xgb_model
+        pred_train['xgb'] = xgb_model.predict(dtrain)
+        pred_val['xgb'] = xgb_model.predict(dval)
+        del dtrain, dval; _gc.collect()
+
+        logger.info(f"  [FAST] {target_name}: LGB iter={lgb_model.best_iteration}, "
+                     f"XGB iter={xgb_model.best_iteration}")
+        return models, pred_train, pred_val
 
     def compute_sample_weights(self, df: pd.DataFrame, y: np.ndarray) -> np.ndarray:
         """V4.9.0.2: V4.8.5权重 + 下行加权×1.5"""
@@ -13090,6 +13375,10 @@ def main():
                         help='逗号分隔的特征黑名单,训练时从PRUNE_FEATURES排除 (如: atr_percentile,gk_vol_20d)')
     parser.add_argument('--head-weight', type=float, default=0,
                         help='头部加权倍数 (0=不加权, 3.0=top-1%%样本权重×3)')
+    parser.add_argument('--parallel-wf', type=int, default=1,
+                        help='并行WF窗口数 (1=串行, 3-4=推荐, 使用multiprocessing fork)')
+    parser.add_argument('--no-cache', action='store_true',
+                        help='禁用训练数据joblib缓存 (首次加载或数据变更后自动重建)')
     args = parser.parse_args()
 
     # BRAIN 因子标志 — 适用于所有 Trainer 版本
@@ -13101,22 +13390,37 @@ def main():
         logger.info("[FAST-CHECK 模式] 快速方向验证 (不保存模型)")
         logger.info("=" * 60)
         if args.start_date == '2020-01-01':  # 只在用户没手动设置时覆盖
-            args.start_date = '2022-01-01'
-            logger.info(f"  auto: start_date → {args.start_date} (减少数据量)")
+            args.start_date = '2023-06-01'
+            logger.info(f"  auto: start_date → {args.start_date} (减少数据量, ~650天)")
         if args.num_leaves is None:
             args.num_leaves = 15
             logger.info(f"  auto: num_leaves → 15 (浅树加速)")
         args.skip_wf = False  # fast-check 需要WF, 不能skip
         logger.info(f"  auto: max_windows → 2 (只验证最近2个窗口)")
+        logger.info(f"  auto: min_train=300d, val=60d, test=60d, step=60d (紧凑窗口)")
+        logger.info(f"  auto: num_boost_round → 200 (快速收敛)")
         logger.info(f"  auto: 不保存模型文件")
         logger.info("")
 
     # Apply CLI hyperparameter overrides to any trainer
     def _apply_overrides(trainer_obj):
+        # 数据缓存和并行WF
+        if args.no_cache:
+            trainer_obj._use_data_cache = False
+            logger.info("  CLI override: 禁用数据缓存")
+        if args.parallel_wf > 1:
+            trainer_obj._parallel_wf_workers = args.parallel_wf
+            logger.info(f"  CLI override: parallel_wf={args.parallel_wf} 进程")
+
         # fast-check 模式设置
         if args.fast_check:
             trainer_obj._fast_check = True
             trainer_obj._fast_check_max_windows = 2
+            trainer_obj._fast_check_min_train = 300
+            trainer_obj._fast_check_val_days = 60
+            trainer_obj._fast_check_test_days = 60
+            trainer_obj._fast_check_step_days = 60
+            trainer_obj._fast_check_max_boost_round = 200
 
         if args.num_leaves is not None:
             trainer_obj._cli_num_leaves = args.num_leaves
