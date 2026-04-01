@@ -9856,6 +9856,281 @@ class V4902Trainer(V4901Trainer):
         return model_data, history
 
 
+class V493Trainer(V4901Trainer):
+    """V4.9.3 训练器 — V4.9.0.1底座 + 特征精选 + 3个BRAIN代理因子 + 集成权重收缩
+
+    底座: V4.9.0.1 (V4.8.5 + Q95 + LambdaRank trunc=10, 无头尾加权)
+    改进:
+    1. 特征精选: 13个低IC/高冗余特征裁剪 (61 - 13 = 48)
+    2. 3个BRAIN代理因子 (从已有特征计算, 无外部依赖):
+       - brain_vol_clustering: 短期波动率集中度 (vol_10d / vol_20d)
+       - brain_tail_risk: 尾部风险近似 (max_ret_20d / gk_vol_20d)
+       - brain_ret_autocorr: 收益自相关近似 (return_1d * return_3d_lag)
+    3. LGB feature_fraction 0.6→0.5 (迫使树探索不同特征子集)
+    4. 集成权重收缩: clip [0.10, 0.35] + shrinkage 0.3 toward 等权 (防止单模型主导)
+    最终特征: 48 - 13 + 3 = ~51 特征 (视实际可用)
+    """
+
+    # 13个低IC/高冗余特征 (在V4.8.1的PRUNE_FEATURES基础上额外裁剪)
+    V493_EXTRA_PRUNE = [
+        'overnight_ret_20d',       # 与return_1d高相关, IC低
+        'vol_price_div',           # 量价背离, IC不稳定
+        'price_acceleration',      # 与momentum重叠
+        'turnover_vol_20d',        # 换手波动, 噪声大
+        'squeeze_mom_calc',        # 与macd_dif/dea高相关
+        'vwap_dev_20d',            # VWAP偏离, 与price position重叠
+        'intraday_ret_20d',        # 日内收益和, 噪声大
+        'vol_concentration',       # HHI集中度, IC低
+        'atr_percentile',          # ATR历史百分位, 与atr_14_pct冗余
+        'price_pos_volatility',    # 与gk_vol_20d高相关
+        'industry_mom_rank',       # 行业排名, 数据质量不稳定
+        'abnormal_turnover',       # 与turnover_rate冗余
+        'brain_roll_spread',       # 依赖外部cache, 常为0
+    ]
+
+    # 3个BRAIN代理因子 (纯特征工程, 无外部依赖)
+    V493_BRAIN_FACTORS = [
+        'brain_vol_clustering',    # 短/长波动率比: 聚集度↑=波动率regime shift
+        'brain_tail_risk',         # 尾部风险: max单日涨幅 / GK波动率
+        'brain_ret_autocorr',      # 收益自相关: return_1d × lagged return proxy
+    ]
+
+    def prepare_features(self, df: pd.DataFrame) -> tuple:
+        """V4.9.3: V4.9.0.1特征 + 额外裁剪13个 + 添加3个BRAIN代理因子"""
+        # 调用父类prepare_features (V4901→V490→V485→V484→V481→V475)
+        X, y_3d, y_5d, y_10d, y_15d, df_out = super().prepare_features(df)
+
+        # Step 1: 裁剪13个额外特征
+        if self.feature_names:
+            keep_indices = []
+            pruned_names = []
+            for i, name in enumerate(self.feature_names):
+                if name in self.V493_EXTRA_PRUNE:
+                    pruned_names.append(name)
+                else:
+                    keep_indices.append(i)
+
+            if pruned_names and len(keep_indices) < len(self.feature_names):
+                X = X[:, keep_indices]
+                self.feature_names = [self.feature_names[i] for i in keep_indices]
+                logger.info(f"  V4.9.3: 额外裁剪 {len(pruned_names)} 特征 "
+                            f"({len(self.feature_names)} 剩余)")
+                logger.info(f"    裁剪: {pruned_names[:8]}{'...' if len(pruned_names) > 8 else ''}")
+
+        # Step 2: 计算3个BRAIN代理因子 (从已有特征/df_out列中合成)
+        n_added = 0
+
+        # brain_vol_clustering: volatility_10d / volatility_20d
+        # 这两列在v39_feature_cache中应该可用
+        if 'gk_vol_20d' in df_out.columns and 'atr_14_pct' in df_out.columns:
+            # gk_vol_20d = GK波动率, atr_14_pct = ATR/close → 近似短期波动率
+            gk = df_out['gk_vol_20d'].values.astype(float)
+            atr = df_out['atr_14_pct'].values.astype(float)
+            # vol_clustering = atr(短期proxy) / gk(长期proxy), 越大=波动加速
+            denom = np.where(np.abs(gk) > 1e-8, gk, 1e-8)
+            brain_vc = atr / denom
+            brain_vc = np.clip(np.nan_to_num(brain_vc, nan=1.0), 0.0, 10.0)
+            X = np.column_stack([X, brain_vc])
+            self.feature_names.append('brain_vol_clustering')
+            n_added += 1
+        elif 'market_volatility_10d' in df_out.columns and 'market_volatility_20d' in df_out.columns:
+            # fallback: 用市场波动率比
+            v10 = df_out['market_volatility_10d'].values.astype(float)
+            v20 = df_out['market_volatility_20d'].values.astype(float)
+            denom = np.where(np.abs(v20) > 1e-8, v20, 1e-8)
+            brain_vc = v10 / denom
+            brain_vc = np.clip(np.nan_to_num(brain_vc, nan=1.0), 0.0, 10.0)
+            X = np.column_stack([X, brain_vc])
+            self.feature_names.append('brain_vol_clustering')
+            n_added += 1
+
+        # brain_tail_risk: max_ret_20d / gk_vol_20d
+        if 'max_ret_20d' in df_out.columns and 'gk_vol_20d' in df_out.columns:
+            maxr = df_out['max_ret_20d'].values.astype(float)
+            gk = df_out['gk_vol_20d'].values.astype(float)
+            denom = np.where(np.abs(gk) > 1e-8, gk, 1e-8)
+            brain_tr = maxr / denom
+            brain_tr = np.clip(np.nan_to_num(brain_tr, nan=0.0), -10.0, 10.0)
+            X = np.column_stack([X, brain_tr])
+            self.feature_names.append('brain_tail_risk')
+            n_added += 1
+
+        # brain_ret_autocorr: return_1d × return_skewness_proxy (自相关近似)
+        ret1d_col = 'return_1d' if 'return_1d' in df_out.columns else None
+        skew_col = 'return_skewness_proxy' if 'return_skewness_proxy' in df_out.columns else None
+        if ret1d_col and skew_col:
+            r1d = df_out[ret1d_col].values.astype(float)
+            rsk = df_out[skew_col].values.astype(float)
+            # 交互项: 正自相关=趋势持续, 负=反转
+            brain_ac = r1d * rsk
+            brain_ac = np.clip(np.nan_to_num(brain_ac, nan=0.0), -10.0, 10.0)
+            X = np.column_stack([X, brain_ac])
+            self.feature_names.append('brain_ret_autocorr')
+            n_added += 1
+
+        logger.info(f"  V4.9.3: 添加 {n_added}/{len(self.V493_BRAIN_FACTORS)} 个BRAIN代理因子")
+        logger.info(f"  V4.9.3: 最终特征数 = {X.shape[1]}")
+        return X, y_3d, y_5d, y_10d, y_15d, df_out
+
+    def train_single_target_models(self, X_train, X_val, y_train, y_val, target_name: str,
+                                    sample_weights_train=None):
+        """V4.9.3: 父类模型 + LGB feature_fraction 0.5 重训 (迫使探索不同特征组合)"""
+        import gc
+
+        # 父类训练全部模型 (lgb, xgb, cb, rf, hgb, lgb_rank, lgb_q95)
+        models, pred_train, pred_val = super().train_single_target_models(
+            X_train, X_val, y_train, y_val, target_name,
+            sample_weights_train=sample_weights_train)
+
+        # 重训LGB: feature_fraction 0.6→0.5 (增加特征多样性)
+        try:
+            lgb_params_v493 = {
+                'objective': 'regression',
+                'metric': 'rmse',
+                'boosting_type': 'gbdt',
+                'num_leaves': 31,
+                'learning_rate': 0.02,
+                'feature_fraction': 0.5,       # 0.6→0.5 (V4.9.3核心改动)
+                'bagging_fraction': 0.7,
+                'bagging_freq': 5,
+                'reg_alpha': 0.5,
+                'reg_lambda': 3.0,
+                'min_data_in_leaf': 200,
+                'min_gain_to_split': 0.01,
+                'path_smooth': 5.0,
+                'verbose': -1,
+            }
+            # CLI overrides
+            if hasattr(self, '_cli_num_leaves'):
+                lgb_params_v493['num_leaves'] = self._cli_num_leaves
+            if hasattr(self, '_cli_min_data_in_leaf'):
+                lgb_params_v493['min_data_in_leaf'] = self._cli_min_data_in_leaf
+
+            lgb_train = lgb.Dataset(X_train, label=y_train,
+                                    weight=sample_weights_train, free_raw_data=True)
+            lgb_val = lgb.Dataset(X_val, label=y_val, reference=lgb_train, free_raw_data=True)
+
+            lgb_model_v493 = lgb.train(
+                lgb_params_v493, lgb_train,
+                num_boost_round=1000,
+                valid_sets=[lgb_train, lgb_val],
+                callbacks=[lgb.early_stopping(30), lgb.log_evaluation(0)]
+            )
+            models['lgb'] = lgb_model_v493  # overwrite parent's lgb
+            pred_train['lgb'] = lgb_model_v493.predict(X_train)
+            pred_val['lgb'] = lgb_model_v493.predict(X_val)
+            logger.info(f"    V4.9.3 LGB retrained ({target_name}): "
+                        f"feat_frac=0.5, best_iter={lgb_model_v493.best_iteration}")
+            del lgb_train, lgb_val
+            gc.collect()
+        except Exception as e:
+            logger.warning(f"    V4.9.3 LGB重训失败, 保留父类版: {e}")
+
+        return models, pred_train, pred_val
+
+    def calculate_ensemble_weights(self, predictions_val: dict, y_val) -> dict:
+        """V4.9.3: IC加权 + clip [0.10, 0.35] + shrinkage 0.3 toward 等权"""
+        # 先调用父类获取IC-based权重
+        weights, mean_ics = super().calculate_ensemble_weights(predictions_val, y_val)
+
+        n_models = len(weights)
+        if n_models <= 1:
+            return weights, mean_ics
+
+        equal_w = 1.0 / n_models
+        shrinkage = 0.3
+        clip_lo, clip_hi = 0.10, 0.35
+
+        # Step 1: clip
+        clipped = {k: np.clip(v, clip_lo, clip_hi) for k, v in weights.items()}
+
+        # Step 2: shrinkage toward equal weight
+        shrunk = {k: (1 - shrinkage) * v + shrinkage * equal_w for k, v in clipped.items()}
+
+        # Step 3: renormalize
+        total = sum(shrunk.values())
+        if total > 1e-8:
+            shrunk = {k: v / total for k, v in shrunk.items()}
+
+        logger.info(f"  V4.9.3 权重收缩: clip[{clip_lo},{clip_hi}] + shrinkage={shrinkage}")
+        logger.info(f"    原始: {', '.join(f'{k}={v:.3f}' for k, v in weights.items())}")
+        logger.info(f"    收缩: {', '.join(f'{k}={v:.3f}' for k, v in shrunk.items())}")
+
+        return shrunk, mean_ics
+
+    def walk_forward_train(self, start_date=None, end_date=None,
+                            purge_days=15, min_train_days=900,
+                            val_days=120, test_days=120, step_days=90):
+        """V4.9.3 Walk-Forward — 保存为v493格式"""
+        import shutil
+
+        version_tag = 'v493'
+        version_str = 'v4.9.3'
+
+        logger.info("=" * 60)
+        logger.info(f"{version_str} Walk-Forward (特征精选 + BRAIN代理 + 权重收缩)")
+        logger.info("=" * 60)
+        logger.info(f"  底座: V4.9.0.1 (V4.8.5 + Q95 + LambdaRank trunc={self.RANK_TRUNCATION})")
+        logger.info(f"  额外裁剪: {len(self.V493_EXTRA_PRUNE)} 特征")
+        logger.info(f"  BRAIN代理: {len(self.V493_BRAIN_FACTORS)} 因子")
+        logger.info(f"  LGB: feature_fraction=0.5 (from 0.6)")
+        logger.info(f"  权重: clip[0.10,0.35] + shrinkage=0.3")
+
+        # 调用V485的walk_forward (跳过V490的rename逻辑)
+        model_data, history = V485Trainer.walk_forward_train(
+            self, start_date=start_date, end_date=end_date,
+            purge_days=purge_days, min_train_days=min_train_days,
+            val_days=val_days, test_days=test_days, step_days=step_days)
+
+        # fast-check: 不保存模型, 直接返回WF指标
+        if model_data.get('fast_check'):
+            return model_data, history
+
+        # 重命名 v485 → v493
+        v485_dir = PROJECT_ROOT / 'ml_models' / 'trained_models' / 'v485'
+        out_dir = PROJECT_ROOT / 'ml_models' / 'trained_models' / version_tag
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        v485_files = sorted(v485_dir.glob('v485_*.pkl'), key=lambda f: f.stat().st_mtime)
+        if v485_files:
+            latest = v485_files[-1]
+            timestamp = latest.stem.replace('v485_multi_target_', '')
+            new_path = out_dir / f'{version_tag}_multi_target_{timestamp}.pkl'
+
+            import joblib
+            model_data['version'] = version_str
+            model_data['v493_innovations'] = {
+                'base': 'V4.9.0.1 (Q95 + LambdaRank trunc=10, no head-tail)',
+                'extra_prune': self.V493_EXTRA_PRUNE,
+                'brain_factors': self.V493_BRAIN_FACTORS,
+                'lgb_feature_fraction': 0.5,
+                'ensemble_weight_shrinkage': 0.3,
+                'ensemble_weight_clip': [0.10, 0.35],
+            }
+            joblib.dump(model_data, new_path)
+            logger.info(f"\n{version_str} model saved: {new_path}")
+
+            for aux in ['global_quantiles.npy', 'recommendation_thresholds.json']:
+                src = v485_dir / aux
+                if src.exists():
+                    shutil.copy2(str(src), str(out_dir / aux))
+
+            latest.unlink()
+            for hf in v485_dir.glob(f'training_history_{timestamp}*'):
+                hf.unlink()
+
+            import json as _json
+            history['version'] = version_str
+            history_path = out_dir / f'training_history_{timestamp}.json'
+            with open(history_path, 'w', encoding='utf-8') as f:
+                _json.dump(history, f, indent=2, ensure_ascii=False)
+            latest_path = out_dir / 'training_history_latest.json'
+            with open(latest_path, 'w', encoding='utf-8') as f:
+                _json.dump(history, f, indent=2, ensure_ascii=False)
+
+        return model_data, history
+
+
 class V486Trainer(V485Trainer):
     """V4.8.6 训练器 — V4.8.5底座 + 3个BRAIN因子 + 头部区分度优化 (61 → 64特征)
 
@@ -12797,6 +13072,8 @@ def main():
         help='V4.9.0: V4.8.5+Q95分位数+头尾20%%加权+LambdaRank trunc=10')
     parser.add_argument('--v4901', action='store_true',
         help='V4.9.0.1: V4.9.0去头尾加权(只保留Q95+trunc=10, 修复预测偏移)')
+    parser.add_argument('--v493', action='store_true',
+        help='V4.9.3: V4.9.0.1+特征精选+BRAIN代理因子+权重收缩(61→~51特征)')
     parser.add_argument('--v4902', action='store_true',
         help='V4.9.0.2: V4.9.0.1+Sharpe-Blend↑+下行加权×1.5+WF摘要')
     parser.add_argument('--v488', action='store_true', help='V4.9.0: V4.8.7+基准超额标签+熊市×2.5+单调性集成(69特征, 目标S级)')
@@ -12877,6 +13154,17 @@ def main():
         trainer.walk_forward_train(
             start_date=args.start_date, end_date=args.end_date,
             purge_days=max(args.purge_days, 15))
+    elif args.v493:
+        trainer = V493Trainer()
+        _apply_overrides(trainer)
+        if args.skip_wf:
+            trainer.train_production_only(
+                start_date=args.start_date, end_date=args.end_date,
+                purge_days=max(args.purge_days, 15))
+        else:
+            trainer.walk_forward_train(
+                start_date=args.start_date, end_date=args.end_date,
+                purge_days=max(args.purge_days, 15))
     elif args.v4902:
         trainer = V4902Trainer()
         _apply_overrides(trainer)
