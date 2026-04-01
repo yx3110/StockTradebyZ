@@ -249,7 +249,7 @@ def score_all_stocks_from_preloaded(
         return {}
 
     # V4.8.3/V4.8.4/V4.8.5/V4.8.6: 使用 predict_scores() (需加载 brain_alpha_cache)
-    if version in ('v4.8.3', 'v4.8.4', 'v4.8.5', 'v4.8.6', 'v4.8.7', 'v4.9.0', 'v4.9.0.1', 'v4.9.0.2', 'v4.9.1', 'v4.9.2'):
+    if version in ('v4.8.3', 'v4.8.4', 'v4.8.5', 'v4.8.6', 'v4.8.7', 'v4.9.0', 'v4.9.0.1', 'v4.9.0.2', 'v4.9.1', 'v4.9.2', 'v4.9.3'):
         all_codes = features_df['code'].tolist()
         return scorer.predict_scores(all_codes, date)
 
@@ -871,7 +871,7 @@ def main():
     parser.add_argument('--output-dir', default=None,
                         help='输出目录 (default: reports/daily_selection_v{version}_fast)')
     parser.add_argument('--version', default='v3.95',
-                        choices=['v3.9', 'v3.95', 'v3.96', 'v4.3', 'v4.4', 'v4.4.2', 'v4.6', 'v4.7', 'v4.7.1', 'v4.7.2', 'v4.7.3', 'v4.7.4', 'v4.7.5', 'v4.7.6', 'v4.7.7', 'v4.7.8', 'v4.7.9', 'v4.8.0', 'v4.8.1', 'v4.8.2', 'v4.8.3', 'v4.8.4', 'v4.8.5', 'v4.8.6', 'v4.8.7', 'v4.8.8', 'v4.9.0', 'v4.9.0.1', 'v4.9.0.2', 'v4.9.1', 'v4.9.2', 'v5.0', 'alpha158'],
+                        choices=['v3.9', 'v3.95', 'v3.96', 'v4.3', 'v4.4', 'v4.4.2', 'v4.6', 'v4.7', 'v4.7.1', 'v4.7.2', 'v4.7.3', 'v4.7.4', 'v4.7.5', 'v4.7.6', 'v4.7.7', 'v4.7.8', 'v4.7.9', 'v4.8.0', 'v4.8.1', 'v4.8.2', 'v4.8.3', 'v4.8.4', 'v4.8.5', 'v4.8.6', 'v4.8.7', 'v4.8.8', 'v4.9.0', 'v4.9.0.1', 'v4.9.0.2', 'v4.9.1', 'v4.9.2', 'v4.9.3', 'v5.0', 'alpha158'],
                         help='评分版本 (default: v3.95)')
     parser.add_argument('--force', action='store_true',
                         help='强制覆盖已有报告')
@@ -956,6 +956,9 @@ def main():
     elif args.version == 'v3.96':
         from ml_models.v39.v396_production_scorer import V396ProductionScorer
         scorer = V396ProductionScorer(model_type='small_data')
+    elif args.version == 'v4.9.3':
+        from ml_models.v39.v493_production_scorer import V493ProductionScorer
+        scorer = V493ProductionScorer(model_type='small_data')
     elif args.version == 'v4.9.2':
         from ml_models.v39.v492_production_scorer import V492ProductionScorer
         scorer = V492ProductionScorer(model_type='small_data', smooth_alpha=0.6)
