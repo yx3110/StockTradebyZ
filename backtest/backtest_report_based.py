@@ -32,11 +32,27 @@ import os
 import sqlite3
 import argparse
 import json
+import functools
 import numpy as np
 import pandas as pd
 from datetime import datetime
 from pathlib import Path
 from scipy.stats import spearmanr
+
+# 涨停阈值常量 (基于涨跌幅限制的95%作为检测线)
+LIMIT_UP_THRESHOLD_GEM_STAR = 0.195   # 创业板(30x)/科创板(688x) 20%涨跌停
+LIMIT_UP_THRESHOLD_BSE = 0.295        # 北交所(8x) 30%涨跌停
+LIMIT_UP_THRESHOLD_MAIN = 0.095       # 主板 10%涨跌停
+
+
+def _get_limit_up_threshold(code: str) -> float:
+    """根据股票代码前缀返回涨停检测阈值"""
+    if code.startswith('30') or code.startswith('688'):
+        return LIMIT_UP_THRESHOLD_GEM_STAR
+    elif code.startswith('8'):
+        return LIMIT_UP_THRESHOLD_BSE
+    return LIMIT_UP_THRESHOLD_MAIN
+
 
 try:
     from core.config import PROJECT_ROOT as _PROJECT_ROOT_PATH, get_db_path
@@ -461,13 +477,7 @@ def batch_get_all_future_returns(report_dates, holding_days_list=None):
         code, trade_date, open_price, pct = row.code, row.trade_date, getattr(row, 'open'), row.price_change_pct
         # 涨停检测
         if pct is not None and not (isinstance(pct, float) and np.isnan(pct)):
-            if code.startswith('30') or code.startswith('688'):
-                threshold = 0.195
-            elif code.startswith('8'):
-                threshold = 0.295
-            else:
-                threshold = 0.095
-            if pct >= threshold:
+            if pct >= _get_limit_up_threshold(code):
                 limit_up_by_date.setdefault(trade_date, set()).add(code)
                 continue
         buy_prices_by_date.setdefault(trade_date, {})[code] = open_price
@@ -529,13 +539,7 @@ def get_future_returns(codes, buy_date, holding_days_list=None):
     for row in rows:
         code, open_price, pct = row[0], row[1], row[2]
         if pct is not None:
-            if code.startswith('30') or code.startswith('688'):
-                threshold = 0.195  # 创业板/科创板 20%
-            elif code.startswith('8'):
-                threshold = 0.295  # 北交所 30%
-            else:
-                threshold = 0.095  # 主板 10%
-            if pct >= threshold:
+            if pct >= _get_limit_up_threshold(code):
                 limit_up_codes.add(code)
                 continue  # 涨停股无法买入
         if open_price and open_price > 0:
@@ -778,14 +782,9 @@ def _load_market_return_20d_bulk(dates):
     return result
 
 
-_industry_map_cache = None
-
-
+@functools.lru_cache(maxsize=1)
 def _load_industry_map_bulk():
     """批量加载行业映射"""
-    global _industry_map_cache
-    if _industry_map_cache is not None:
-        return _industry_map_cache
     conn = sqlite3.connect(DB_PATH)
     try:
         rows = conn.execute(
@@ -793,8 +792,7 @@ def _load_industry_map_bulk():
         ).fetchall()
     finally:
         conn.close()
-    _industry_map_cache = {code: (ind or '未知') for code, ind in rows}
-    return _industry_map_cache
+    return {code: (ind or '未知') for code, ind in rows}
 
 
 # ═══════════════════════════════════════════════════

@@ -20,16 +20,12 @@ import logging
 import sqlite3
 from typing import Dict, List, Optional
 
-try:
-    from core.config import get_db_path as _get_db_path
-    _DEFAULT_DB_PATH = str(_get_db_path())
-except ImportError:
-    _DEFAULT_DB_PATH = str(Path(__file__).parent.parent.parent / 'data_adapter' / 'stock_data.db')
+from .base_scorer import BaseScorerMixin, DEFAULT_DB_PATH as _DEFAULT_DB_PATH
 
 logger = logging.getLogger(__name__)
 
 
-class V390ProductionScorer:
+class V390ProductionScorer(BaseScorerMixin):
     """V3.9.0生产版评分系统"""
 
     def __init__(self, model_path: str = None, db_path: str = None):
@@ -1007,62 +1003,8 @@ class V390ProductionScorer:
 
         return results
 
-    def _convert_prediction_to_score(self, prediction: float) -> float:
-        """
-        将5日收益率预测转换为0-100评分
-
-        预测值分布: -10% ~ +10%
-        映射到: 0 ~ 100分
-        """
-        # 截断到-15% ~ +15%
-        prediction = np.clip(prediction, -0.15, 0.15)
-
-        # 线性映射
-        # -15% → 0分
-        #   0% → 50分
-        # +15% → 100分
-        score = (prediction + 0.15) / 0.30 * 100
-
-        return np.clip(score, 0, 100)
-
-    def _calculate_confidence(self, features: pd.DataFrame, prediction: float) -> float:
-        """
-        计算预测置信度
-
-        基于特征质量和预测强度
-        """
-        # 特征缺失率
-        missing_rate = features.isna().sum().sum() / (features.shape[0] * features.shape[1])
-        feature_quality = 1.0 - missing_rate
-
-        # 预测强度 (离0越远置信度越高)
-        prediction_strength = min(abs(prediction) / 0.10, 1.0)
-
-        # 综合置信度
-        confidence = (feature_quality * 0.4 + prediction_strength * 0.6)
-
-        return np.clip(confidence, 0.3, 0.95)
-
-    def _get_recommendation(self, score: float) -> str:
-        """根据评分给出投资建议
-
-        阈值基于411,666个样本的实际分布优化 (2024-06-01 至 2025-11-22):
-        - 分数范围: 36.7 - 72.5
-        - 平均值: 54.5, 标准差: 2.6
-        - 99.99%分位: 67.49
-        """
-        if score >= 65:      # TOP 0.12% (480/411666), 极罕见
-            return "强烈买入"
-        elif score >= 62:    # TOP 0.74% (3035/411666)
-            return "买入"
-        elif score >= 60:    # TOP 1.6% (6612/411666)
-            return "谨慎买入"
-        elif score >= 57:    # TOP 14.6% (59984/411666)
-            return "持有观望"
-        elif score >= 54:    # 略低于平均 (mean=54.5)
-            return "谨慎卖出"
-        else:                # 低于平均水平
-            return "卖出"
+    # _convert_prediction_to_score, _calculate_confidence, _get_recommendation
+    # 继承自 BaseScorerMixin (默认阈值: 65/62/60/57/54)
 
     def _fallback_score(self, code: str, trade_date: str) -> Optional[Dict]:
         """

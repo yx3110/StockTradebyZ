@@ -27,6 +27,8 @@ import logging
 import sqlite3
 from typing import Dict, List, Optional
 
+from .base_scorer import BaseScorerMixin, DEFAULT_DB_PATH as _DEFAULT_DB_PATH
+
 logger = logging.getLogger(__name__)
 
 # V390EnhancedFeatureMLSystem用于实时特征计算（延迟初始化避免循环导入）
@@ -41,8 +43,17 @@ def _get_v390_system():
     return _v390_system_instance
 
 
-class V394ProductionScorer:
+class V394ProductionScorer(BaseScorerMixin):
     """V3.9.4生产版评分系统 - 带活跃市值特征"""
+
+    # V3.9.4优化阈值 (基于IC=0.1363, Top20胜率=56.43%)
+    _recommendation_thresholds = {
+        '强烈买入': 68,
+        '买入': 64,
+        '谨慎买入': 60,
+        '持有观望': 55,
+        '谨慎卖出': 50,
+    }
 
     def __init__(self, model_path: str = None, db_path: str = None):
         """
@@ -79,7 +90,7 @@ class V394ProductionScorer:
 
         # 数据库路径 - 使用绝对路径
         if db_path is None:
-            db_path = str(self.project_root / 'data_adapter' / 'stock_data.db')
+            db_path = _DEFAULT_DB_PATH
         self.db_path = db_path
 
         logger.info("V3.9.4生产版评分系统初始化完成")
@@ -453,56 +464,8 @@ class V394ProductionScorer:
 
         return results
 
-    def _convert_prediction_to_score(self, prediction: float) -> float:
-        """
-        将5日收益率预测转换为0-100评分
-
-        预测值分布: -10% ~ +10%
-        映射到: 0 ~ 100分
-        """
-        # 截断到-15% ~ +15%
-        prediction = np.clip(prediction, -0.15, 0.15)
-
-        # 线性映射
-        score = (prediction + 0.15) / 0.30 * 100
-
-        return np.clip(score, 0, 100)
-
-    def _calculate_confidence(self, features: pd.DataFrame, prediction: float) -> float:
-        """
-        计算预测置信度
-
-        基于特征质量和预测强度
-        """
-        # 特征缺失率
-        missing_rate = features.isna().sum().sum() / (features.shape[0] * features.shape[1])
-        feature_quality = 1.0 - missing_rate
-
-        # 预测强度 (离0越远置信度越高)
-        prediction_strength = min(abs(prediction) / 0.10, 1.0)
-
-        # 综合置信度
-        confidence = (feature_quality * 0.4 + prediction_strength * 0.6)
-
-        return np.clip(confidence, 0.3, 0.95)
-
-    def _get_recommendation(self, score: float) -> str:
-        """根据评分给出投资建议
-
-        V3.9.4优化阈值 (基于IC=0.1363, Top20胜率=56.43%)
-        """
-        if score >= 68:
-            return "强烈买入"
-        elif score >= 64:
-            return "买入"
-        elif score >= 60:
-            return "谨慎买入"
-        elif score >= 55:
-            return "持有观望"
-        elif score >= 50:
-            return "谨慎卖出"
-        else:
-            return "卖出"
+    # _convert_prediction_to_score, _calculate_confidence, _get_recommendation
+    # 继承自 BaseScorerMixin (阈值: 68/64/60/55/50, 见类属性 _recommendation_thresholds)
 
 
 # 测试代码
