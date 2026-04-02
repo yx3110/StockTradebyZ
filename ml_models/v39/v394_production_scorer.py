@@ -27,7 +27,10 @@ import logging
 import sqlite3
 from typing import Dict, List, Optional
 
-from .base_scorer import BaseScorerMixin, DEFAULT_DB_PATH as _DEFAULT_DB_PATH
+try:
+    from .base_scorer import BaseScorerMixin, DEFAULT_DB_PATH as _DEFAULT_DB_PATH
+except ImportError:
+    from base_scorer import BaseScorerMixin, DEFAULT_DB_PATH as _DEFAULT_DB_PATH
 
 logger = logging.getLogger(__name__)
 

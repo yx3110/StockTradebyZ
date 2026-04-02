@@ -1317,6 +1317,8 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
                     top_returns.append(future_returns[c][key])
                 elif c not in future_returns:
                     top_returns.append(-0.10)  # 退市惩罚
+                else:
+                    top_returns.append(0.0)  # 有数据但缺该周期收益,视为停牌(0%)
             bottom_returns = [future_returns.get(c, {}).get(key, 0) for c in bottom_codes
                              if key in future_returns.get(c, {})]
 

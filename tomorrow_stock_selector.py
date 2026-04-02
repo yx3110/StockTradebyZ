@@ -1728,7 +1728,7 @@ class TomorrowStockSelector:
                         JOIN securities s ON dq.security_id = s.id
                         WHERE s.code = ? AND dq.trade_date <= ?
                         ORDER BY dq.trade_date DESC LIMIT 80
-                    """, conn, params=[code, analysis_date.replace('-', '')])
+                    """, conn, params=[code, analysis_date])
                 else:
                     df = pd.read_sql_query("""
                         SELECT dq.trade_date, dq.high, dq.low, dq.close

@@ -703,6 +703,8 @@ def compute_transaction_costs(turnover_per_rebal: float,
     cost_per_rebalance = turnover_per_rebal * round_trip_cost
 
     # 年化调仓次数
+    if holding_days <= 0:
+        holding_days = 1
     annual_rebalances = 252 / holding_days
 
     # 年化成本拖累
@@ -1999,8 +2001,9 @@ class NorthStarEvaluator:
         # 交易成本
         if daily_returns is not None and len(daily_returns) > 0:
             turnover = report['layer2_portfolio'].get('avg_turnover', 0.5)
+            gross_annual = report['layer3_risk'].get('annual_return', 0)
             report['layer4_pnl'] = compute_transaction_costs(
-                daily_returns, turnover, holding_days
+                turnover, holding_days, gross_annual
             )
 
         return report
