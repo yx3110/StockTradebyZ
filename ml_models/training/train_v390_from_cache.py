@@ -116,9 +116,21 @@ class V390CachedTrainer:
         logger.info(f"✅ 特征列数: {X.shape[1]}")
         logger.info(f"✅ 日期范围: {dates[0]} ~ {dates[-1]}")
 
-        # 处理缺失值
+        # 检测并处理不一致的feature keys (不同时期cache可能有不同字段)
+        # 只保留所有样本都有的特征,避免部分时期用0代替缺失特征
         if X.isnull().any().any():
-            logger.warning("⚠️  检测到缺失值，使用0填充")
+            # 计算每列的缺失率
+            missing_pct = X.isnull().mean()
+            # 丢弃缺失率>5%的列 (这些列在某些时期不可用)
+            bad_cols = missing_pct[missing_pct > 0.05].index.tolist()
+            if bad_cols:
+                logger.warning(f"⚠️  丢弃{len(bad_cols)}个不一致特征 (部分时期缺失>5%): {bad_cols}")
+                X = X.drop(columns=bad_cols)
+
+        # 处理残留缺失值 (丢弃不一致列后应极少)
+        if X.isnull().any().any():
+            residual_null = X.isnull().sum().sum()
+            logger.warning(f"⚠️  残留{residual_null}个缺失值，使用0填充")
             X = X.fillna(0)
 
         return X, y, dates

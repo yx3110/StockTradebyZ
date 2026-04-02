@@ -551,8 +551,8 @@ class V500UnifiedTrainer:
         logger.info(f"  HistGradientBoosting ({target_name})...")
         hgb_model = HistGradientBoostingRegressor(
             max_iter=500, learning_rate=0.05, max_depth=6, max_leaf_nodes=31,
-            l2_regularization=0.1, early_stopping=True, validation_fraction=0.1,
-            n_iter_no_change=50, random_state=42, verbose=0
+            l2_regularization=0.1, early_stopping=False,
+            random_state=42, verbose=0
         )
         hgb_model.fit(X_train, y_train)
         models['hgb'] = hgb_model

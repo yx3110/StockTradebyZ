@@ -1103,9 +1103,7 @@ class V395MultiTargetTrainer:
             max_depth=6,
             max_leaf_nodes=31,
             l2_regularization=0.1,
-            early_stopping=True,
-            validation_fraction=0.1,
-            n_iter_no_change=50,
+            early_stopping=False,
             random_state=42,
             verbose=0
         )
@@ -1938,8 +1936,10 @@ class V43Trainer(V395MultiTargetTrainer):
         y_10d = df['label_10d'].values
         y_15d = df['label_15d'].values
 
-        # Per-feature winsorization
-        X, self.winsorize_bounds = self.winsorize_features(X)
+        # [修复] 不在此处winsorize全量数据 — 会用train+val+test计算bounds导致数据泄露
+        # 改为在walk_forward_train()的每个窗口中用train-only数据计算bounds
+        self.winsorize_bounds = None
+        logger.info("  [修复] 跳过全量Winsorization, 将在WF窗口内train-only计算bounds")
 
         return X, y_3d, y_5d, y_10d, y_15d, df
 
@@ -2112,9 +2112,7 @@ class V43Trainer(V395MultiTargetTrainer):
             max_leaf_nodes=20,
             l2_regularization=5.0,
             min_samples_leaf=500,
-            early_stopping=True,
-            validation_fraction=0.1,
-            n_iter_no_change=30,
+            early_stopping=False,
             random_state=42,
             verbose=0,
         )
@@ -2726,7 +2724,7 @@ class V44Trainer(V43Trainer):
     def walk_forward_train(self, start_date: str = None, end_date: str = None,
                             purge_days: int = 15, min_train_days: int = 900,
                             val_days: int = 120, test_days: int = 120,
-                            step_days: int = 90):
+                            step_days: int = 120):
         """V4.4 Walk-Forward 训练 — 增强版
 
         vs V4.3:
@@ -3313,7 +3311,7 @@ class V46Trainer(V44Trainer):
     def walk_forward_train(self, start_date: str = None, end_date: str = None,
                             purge_days: int = 15, min_train_days: int = 900,
                             val_days: int = 120, test_days: int = 120,
-                            step_days: int = 90):
+                            step_days: int = 120):
         """V4.6 Walk-Forward 训练 — V4.4底座 + ICIR权重 + Combined Isotonic + Meta-Learner"""
         start_time = datetime.now()
         logger.info("=" * 60)
@@ -3800,7 +3798,7 @@ class V47Trainer(V46Trainer):
 
     def walk_forward_train(self, start_date=None, end_date=None,
                             purge_days=15, min_train_days=900,
-                            val_days=120, test_days=120, step_days=90):
+                            val_days=120, test_days=120, step_days=120):
         """V4.7 Walk-Forward — 设置train_dates + V4.6流程"""
         start_time = datetime.now()
         logger.info("=" * 60)
@@ -4850,7 +4848,7 @@ class V471Trainer(V44Trainer):
     def walk_forward_train(self, start_date: str = None, end_date: str = None,
                             purge_days: int = 15, min_train_days: int = 900,
                             val_days: int = 120, test_days: int = 120,
-                            step_days: int = 90):
+                            step_days: int = 120):
         """V4.7.1 Walk-Forward 训练 — Bug修复 + 增强特征 + LambdaRank
 
         vs V4.4:
@@ -5330,7 +5328,7 @@ class V472Trainer(V471Trainer):
     def walk_forward_train(self, start_date: str = None, end_date: str = None,
                             purge_days: int = 15, min_train_days: int = 900,
                             val_days: int = 120, test_days: int = 120,
-                            step_days: int = 90):
+                            step_days: int = 120):
         """V4.7.2 Walk-Forward 训练 — V4.7.1底座 + V4.6后处理管线
 
         vs V4.7.1:
@@ -5915,9 +5913,7 @@ class V473Trainer(V472Trainer):
             max_leaf_nodes=47,          # 20→47 (约31的1.5倍)
             l2_regularization=3.0,      # 5.0→3.0
             min_samples_leaf=200,       # 500→200
-            early_stopping=True,
-            validation_fraction=0.1,
-            n_iter_no_change=30,
+            early_stopping=False,
             random_state=42,
             verbose=0,
         )
@@ -6019,7 +6015,7 @@ class V473Trainer(V472Trainer):
     def walk_forward_train(self, start_date: str = None, end_date: str = None,
                             purge_days: int = 15, min_train_days: int = 900,
                             val_days: int = 120, test_days: int = 120,
-                            step_days: int = 90):
+                            step_days: int = 120):
         """V4.7.3 Walk-Forward 训练 — V4.7.2底座, 去掉Meta-Learner/Combined Isotonic
 
         保留: ICIR权重优化 + Bear Specialist + Per-target Isotonic
@@ -6595,7 +6591,7 @@ class V474Trainer(V473Trainer):
     def walk_forward_train(self, start_date: str = None, end_date: str = None,
                             purge_days: int = 15, min_train_days: int = 900,
                             val_days: int = 120, test_days: int = 120,
-                            step_days: int = 90):
+                            step_days: int = 120):
         """V4.7.4 Walk-Forward 训练 — V4.7.3简化管线 + 选择性V4.8增强
 
         差异点(vs V4.7.3):
@@ -7071,7 +7067,7 @@ class V475Trainer(V473Trainer):
     def walk_forward_train(self, start_date: str = None, end_date: str = None,
                             purge_days: int = 15, min_train_days: int = 900,
                             val_days: int = 120, test_days: int = 120,
-                            step_days: int = 90):
+                            step_days: int = 120):
         """V4.7.5 Walk-Forward 训练 — V4.7.3 + 特征裁剪 + 自适应目标权重"""
         # fast-check: 覆盖WF参数为紧凑窗口
         if getattr(self, '_fast_check', False):
@@ -7621,7 +7617,7 @@ class V476Trainer(V475Trainer):
     def walk_forward_train(self, start_date: str = None, end_date: str = None,
                             purge_days: int = 15, min_train_days: int = 900,
                             val_days: int = 120, test_days: int = 120,
-                            step_days: int = 90):
+                            step_days: int = 120):
         """V4.7.6 Walk-Forward 训练 — V4.7.5 + Top-K聚焦样本权重"""
         start_time = datetime.now()
         logger.info("=" * 60)
@@ -8191,8 +8187,7 @@ class V477Trainer(V475Trainer):
         hgb_model = HistGradientBoostingRegressor(
             max_iter=1000, learning_rate=0.02, max_depth=6,
             max_leaf_nodes=47, l2_regularization=3.0,
-            min_samples_leaf=200, early_stopping=True,
-            validation_fraction=0.1, n_iter_no_change=30,
+            min_samples_leaf=200, early_stopping=False,
             random_state=42, verbose=0,
         )
         hgb_model.fit(X_train, y_train, sample_weight=sample_weights_train)
@@ -8309,7 +8304,7 @@ class V477Trainer(V475Trainer):
     def walk_forward_train(self, start_date: str = None, end_date: str = None,
                             purge_days: int = 15, min_train_days: int = 900,
                             val_days: int = 120, test_days: int = 120,
-                            step_days: int = 90):
+                            step_days: int = 120):
         """V4.7.7 Walk-Forward — 调用V4.7.5 WF, 然后将模型重新保存为v477"""
         import shutil
 
@@ -8426,7 +8421,7 @@ class V478Trainer(V477Trainer):
 
     def walk_forward_train(self, start_date=None, end_date=None,
                             purge_days=15, min_train_days=900,
-                            val_days=120, test_days=120, step_days=90):
+                            val_days=120, test_days=120, step_days=120):
         """V4.7.8 Walk-Forward — Huber+DART(V4.7.7) + 365d衰减(V4.7.5)"""
         import shutil
 
@@ -8543,7 +8538,7 @@ class V479Trainer(V477Trainer):
 
     def walk_forward_train(self, start_date=None, end_date=None,
                             purge_days=15, min_train_days=900,
-                            val_days=120, test_days=120, step_days=90):
+                            val_days=120, test_days=120, step_days=120):
         """V4.7.9 Walk-Forward — Huber+DART + 240d衰减 + 头部加权"""
         import shutil
 
@@ -8652,7 +8647,7 @@ class V480Trainer(V475Trainer):
 
     def walk_forward_train(self, start_date=None, end_date=None,
                             purge_days=15, min_train_days=900,
-                            val_days=120, test_days=120, step_days=90):
+                            val_days=120, test_days=120, step_days=120):
         """V4.8.0 Walk-Forward — 270d时间衰减"""
         logger.info("=" * 60)
         logger.info("V4.8.0 Walk-Forward 训练 (270d时间衰减, 目标ic_decay_ratio提升)")
@@ -9006,7 +9001,7 @@ class V481Trainer(V475Trainer):
     def walk_forward_train(self, start_date: str = None, end_date: str = None,
                             purge_days: int = 15, min_train_days: int = 900,
                             val_days: int = 120, test_days: int = 120,
-                            step_days: int = 90):
+                            step_days: int = 120):
         """V4.8.1 Walk-Forward — V4.7.5 + 15新因子"""
         import shutil
 
@@ -9172,7 +9167,7 @@ class V484Trainer(V481Trainer):
     def walk_forward_train(self, start_date: str = None, end_date: str = None,
                             purge_days: int = 15, min_train_days: int = 900,
                             val_days: int = 120, test_days: int = 120,
-                            step_days: int = 90):
+                            step_days: int = 120):
         """V4.8.4 Walk-Forward — V4.8.1 + brain_roll_spread"""
         import shutil
 
@@ -9587,7 +9582,7 @@ class V485Trainer(V484Trainer):
     def walk_forward_train(self, start_date: str = None, end_date: str = None,
                             purge_days: int = 15, min_train_days: int = 900,
                             val_days: int = 120, test_days: int = 120,
-                            step_days: int = 90):
+                            step_days: int = 120):
         """V4.8.5 Walk-Forward — V4.8.4 + ETF训练数据"""
         import shutil
 
@@ -9849,7 +9844,7 @@ class V490Trainer(V485Trainer):
     def walk_forward_train(self, start_date: str = None, end_date: str = None,
                             purge_days: int = 15, min_train_days: int = 900,
                             val_days: int = 120, test_days: int = 120,
-                            step_days: int = 90):
+                            step_days: int = 120):
         """V4.9.0 Walk-Forward — V4.8.5 + Q95分位数 + 头尾加权 + LambdaRank trunc=10"""
         import shutil
 
@@ -9946,7 +9941,7 @@ class V4901Trainer(V490Trainer):
 
     def walk_forward_train(self, start_date=None, end_date=None,
                             purge_days=15, min_train_days=900,
-                            val_days=120, test_days=120, step_days=90):
+                            val_days=120, test_days=120, step_days=120):
         """V4.9.0.1 Walk-Forward — 保存为v4901格式"""
         import shutil
 
@@ -10132,7 +10127,7 @@ class V4902Trainer(V4901Trainer):
 
     def walk_forward_train(self, start_date=None, end_date=None,
                             purge_days=15, min_train_days=900,
-                            val_days=120, test_days=120, step_days=90):
+                            val_days=120, test_days=120, step_days=120):
         """V4.9.0.2 Walk-Forward — 保存为v4902格式 + WF摘要JSON"""
         import shutil
 
@@ -10437,7 +10432,7 @@ class V493Trainer(V4901Trainer):
 
     def walk_forward_train(self, start_date=None, end_date=None,
                             purge_days=15, min_train_days=900,
-                            val_days=120, test_days=120, step_days=90):
+                            val_days=120, test_days=120, step_days=120):
         """V4.9.3 Walk-Forward — 保存为v493格式"""
         import shutil
 
@@ -10547,7 +10542,7 @@ class V493ATrainer(V4901Trainer):
         return X, y_3d, y_5d, y_10d, y_15d, df_out
 
     def walk_forward_train(self, start_date=None, end_date=None, purge_days=15,
-                            min_train_days=900, val_days=120, test_days=120, step_days=90):
+                            min_train_days=900, val_days=120, test_days=120, step_days=120):
         import shutil, json as _json, joblib
 
         version_tag = 'v493a'
@@ -10664,7 +10659,7 @@ class V493BTrainer(V4901Trainer):
         return X, y_3d, y_5d, y_10d, y_15d, df_out
 
     def walk_forward_train(self, start_date=None, end_date=None, purge_days=15,
-                            min_train_days=900, val_days=120, test_days=120, step_days=90):
+                            min_train_days=900, val_days=120, test_days=120, step_days=120):
         import shutil, json as _json, joblib
 
         version_tag = 'v493b'
@@ -10796,7 +10791,7 @@ class V493CTrainer(V4901Trainer):
         return shrunk, mean_ics
 
     def walk_forward_train(self, start_date=None, end_date=None, purge_days=15,
-                            min_train_days=900, val_days=120, test_days=120, step_days=90):
+                            min_train_days=900, val_days=120, test_days=120, step_days=120):
         import shutil, json as _json, joblib
 
         version_tag = 'v493c'
@@ -11151,7 +11146,7 @@ class V486Trainer(V485Trainer):
     def walk_forward_train(self, start_date: str = None, end_date: str = None,
                             purge_days: int = 15, min_train_days: int = 900,
                             val_days: int = 120, test_days: int = 120,
-                            step_days: int = 90):
+                            step_days: int = 120):
         """V4.8.7 Walk-Forward — V4.8.5 + 3 BRAIN + 5 V482 + YetiRank + RRF"""
         import shutil
 
@@ -11457,7 +11452,7 @@ class V492Trainer(V485Trainer):
     def walk_forward_train(self, start_date: str = None, end_date: str = None,
                             purge_days: int = 15, min_train_days: int = 900,
                             val_days: int = 120, test_days: int = 120,
-                            step_days: int = 60):
+                            step_days: int = 120):
         """V4.9.2 Walk-Forward — step=60d + 时间加权集成"""
         import shutil
 
@@ -11822,7 +11817,7 @@ class V491Trainer(V485Trainer):
     def walk_forward_train(self, start_date: str = None, end_date: str = None,
                             purge_days: int = 15, min_train_days: int = 900,
                             val_days: int = 120, test_days: int = 120,
-                            step_days: int = 90):
+                            step_days: int = 120):
         """V4.9.1 Walk-Forward — V4.8.5底座 + 超额标签 + 市场门控 + 排名平滑"""
         import shutil
 
@@ -12080,7 +12075,7 @@ class V488Trainer(V486Trainer):
     def walk_forward_train(self, start_date: str = None, end_date: str = None,
                             purge_days: int = 15, min_train_days: int = 900,
                             val_days: int = 120, test_days: int = 120,
-                            step_days: int = 90):
+                            step_days: int = 120):
         """V4.9.0 Walk-Forward — V4.8.7底座 + 超额标签 + 熊市加权 + 单调性集成"""
         import shutil
 
@@ -12589,7 +12584,7 @@ class V482Trainer(V481Trainer):
     def walk_forward_train(self, start_date: str = None, end_date: str = None,
                             purge_days: int = 15, min_train_days: int = 900,
                             val_days: int = 120, test_days: int = 120,
-                            step_days: int = 90):
+                            step_days: int = 120):
         """V4.8.2 Walk-Forward — V4.8.1 + 21新因子"""
         import shutil
 
@@ -12790,7 +12785,7 @@ class V483Trainer(V482Trainer):
     def walk_forward_train(self, start_date: str = None, end_date: str = None,
                             purge_days: int = 15, min_train_days: int = 900,
                             val_days: int = 120, test_days: int = 120,
-                            step_days: int = 90):
+                            step_days: int = 120):
         """V4.8.3 Walk-Forward — V4.8.2 + 29 BRAIN因子"""
         import shutil
 
@@ -13289,7 +13284,7 @@ class V48Trainer(V472Trainer):
     def walk_forward_train(self, start_date: str = None, end_date: str = None,
                             purge_days: int = 15, min_train_days: int = 900,
                             val_days: int = 120, test_days: int = 120,
-                            step_days: int = 90):
+                            step_days: int = 120):
         """V4.8 Walk-Forward 训练 — V4.7.2底座 + ListNet + 财务质量 + 置信度
 
         继承V4.7.2:
