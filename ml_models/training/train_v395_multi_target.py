@@ -10207,6 +10207,13 @@ class V493Trainer(V4901Trainer):
             if pruned_names and len(keep_indices) < len(self.feature_names):
                 X = X[:, keep_indices]
                 self.feature_names = [self.feature_names[i] for i in keep_indices]
+                # 同步更新macro/stock特征列表 (修复AttributeError)
+                if hasattr(self, 'macro_feature_cols'):
+                    self.macro_feature_cols = [c for c in self.macro_feature_cols
+                                               if c not in pruned_names]
+                if hasattr(self, 'stock_feature_cols'):
+                    self.stock_feature_cols = [c for c in self.stock_feature_cols
+                                               if c not in pruned_names]
                 logger.info(f"  V4.9.3: 额外裁剪 {len(pruned_names)} 特征 "
                             f"({len(self.feature_names)} 剩余)")
                 logger.info(f"    裁剪: {pruned_names[:8]}{'...' if len(pruned_names) > 8 else ''}")
