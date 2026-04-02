@@ -962,12 +962,13 @@ class V395MultiTargetTrainer:
                     scale = orig_std / sharpe_std
                 else:
                     scale = 1.0
-                # 对训练集应用融合
-                y_tr[:] = (1 - self.sharpe_label_blend) * y_tr + self.sharpe_label_blend * sharpe_tr * scale
-
                 # 对val/test用训练集的mean daily_vol (防止数据泄漏)
+                # 注意: 必须在修改y_tr之前计算,否则用的是blended后的vol
                 mean_daily_vol_train = np.mean([np.std(y_tr[train_dates_arr == d])
                     for d in unique_train_dates if (train_dates_arr == d).sum() > 1])
+
+                # 对训练集应用融合
+                y_tr[:] = (1 - self.sharpe_label_blend) * y_tr + self.sharpe_label_blend * sharpe_tr * scale
                 mean_daily_vol_train = max(mean_daily_vol_train, 1e-6)
 
                 for y_set, dates_set in [(y_va, self.val_dates), (y_te, self.test_dates)]:
@@ -4697,12 +4698,13 @@ class V471Trainer(V44Trainer):
         sharpe_std = np.std(sharpe_tr)
         scale = orig_std / sharpe_std if sharpe_std > 1e-8 else 1.0
 
-        # 对训练集应用融合
-        y_tr[:] = (1 - blend) * y_tr + blend * sharpe_tr * scale
-
         # 对val/test用训练集的mean daily_vol (防止数据泄漏)
+        # 注意: 必须在修改y_tr之前计算,否则用的是blended后的vol
         mean_daily_vol_train = np.mean([np.std(y_tr[train_dates == d])
             for d in unique_train_dates if (train_dates == d).sum() > 1])
+
+        # 对训练集应用融合
+        y_tr[:] = (1 - blend) * y_tr + blend * sharpe_tr * scale
         mean_daily_vol_train = max(mean_daily_vol_train, 1e-6)
 
         for y_set, dates_set in [(y_va, val_dates), (y_te, test_dates)]:

@@ -134,122 +134,123 @@ class V500UnifiedTrainer:
         logger.info("=" * 80)
 
         conn = sqlite3.connect(self.db_path)
+        try:
+            # --- Step 1: 加载 v39 基础特征 ---
+            date_filter = ""
+            date_params = []
+            if start_date:
+                date_filter += " AND v.trade_date >= ?"
+                date_params.append(start_date)
+            if end_date:
+                date_filter += " AND v.trade_date <= ?"
+                date_params.append(end_date)
 
-        # --- Step 1: 加载 v39 基础特征 ---
-        date_filter = ""
-        date_params = []
-        if start_date:
-            date_filter += " AND v.trade_date >= ?"
-            date_params.append(start_date)
-        if end_date:
-            date_filter += " AND v.trade_date <= ?"
-            date_params.append(end_date)
+            query_v39 = f"""
+            SELECT
+                v.code, v.trade_date, v.features_json,
+                v.label_3d, v.label_5d, v.label_10d,
+                v.market_return_20d, v.market_return_10d, v.market_return_5d,
+                v.market_volatility_20d, v.market_volatility_10d,
+                v.market_up_ratio_20d, v.market_up_ratio_10d,
+                v.market_drawdown_20d, v.market_volume_ratio,
+                v.market_position_20d, v.market_momentum_20d, v.market_momentum_5d
+            FROM v39_feature_cache v
+            JOIN securities s ON v.code = s.code
+            JOIN daily_quotes q ON q.security_id = s.id AND q.trade_date = v.trade_date
+            WHERE v.label_3d IS NOT NULL
+              AND v.label_5d IS NOT NULL
+              AND v.label_10d IS NOT NULL
+              AND q.volume > 0
+              AND v.code IN (
+                  SELECT s2.code FROM daily_quotes q2
+                  JOIN securities s2 ON q2.security_id = s2.id
+                  WHERE s2.type = 'A股'
+                  GROUP BY s2.code
+                  HAVING COUNT(*) >= 30
+              )
+              {date_filter}
+            ORDER BY v.trade_date, v.code
+            """
 
-        query_v39 = f"""
-        SELECT
-            v.code, v.trade_date, v.features_json,
-            v.label_3d, v.label_5d, v.label_10d,
-            v.market_return_20d, v.market_return_10d, v.market_return_5d,
-            v.market_volatility_20d, v.market_volatility_10d,
-            v.market_up_ratio_20d, v.market_up_ratio_10d,
-            v.market_drawdown_20d, v.market_volume_ratio,
-            v.market_position_20d, v.market_momentum_20d, v.market_momentum_5d
-        FROM v39_feature_cache v
-        JOIN securities s ON v.code = s.code
-        JOIN daily_quotes q ON q.security_id = s.id AND q.trade_date = v.trade_date
-        WHERE v.label_3d IS NOT NULL
-          AND v.label_5d IS NOT NULL
-          AND v.label_10d IS NOT NULL
-          AND q.volume > 0
-          AND v.code IN (
-              SELECT s2.code FROM daily_quotes q2
-              JOIN securities s2 ON q2.security_id = s2.id
-              WHERE s2.type = 'A股'
-              GROUP BY s2.code
-              HAVING COUNT(*) >= 30
-          )
-          {date_filter}
-        ORDER BY v.trade_date, v.code
-        """
+            df_v39 = pd.read_sql(query_v39, conn, params=date_params if date_params else None)
+            logger.info(f"  v39 记录: {len(df_v39):,}")
 
-        df_v39 = pd.read_sql(query_v39, conn, params=date_params if date_params else None)
-        logger.info(f"  v39 记录: {len(df_v39):,}")
+            # 解析 v39 features_json
+            v39_features_list = []
+            for idx, row in tqdm(df_v39.iterrows(), total=len(df_v39), desc="解析v39特征"):
+                try:
+                    features = json.loads(row['features_json'])
+                    features['code'] = row['code']
+                    features['trade_date'] = row['trade_date']
+                    features['label_3d'] = row['label_3d']
+                    features['label_5d'] = row['label_5d']
+                    features['label_10d'] = row['label_10d']
+                    # Add market features from columns
+                    for mc in MACRO_FEATURE_NAMES:
+                        if mc in row.index and pd.notna(row[mc]):
+                            features[mc] = row[mc]
+                    v39_features_list.append(features)
+                except Exception:
+                    continue
 
-        # 解析 v39 features_json
-        v39_features_list = []
-        for idx, row in tqdm(df_v39.iterrows(), total=len(df_v39), desc="解析v39特征"):
-            try:
-                features = json.loads(row['features_json'])
-                features['code'] = row['code']
-                features['trade_date'] = row['trade_date']
-                features['label_3d'] = row['label_3d']
-                features['label_5d'] = row['label_5d']
-                features['label_10d'] = row['label_10d']
-                # Add market features from columns
-                for mc in MACRO_FEATURE_NAMES:
-                    if mc in row.index and pd.notna(row[mc]):
-                        features[mc] = row[mc]
-                v39_features_list.append(features)
-            except Exception:
-                continue
+            df = pd.DataFrame(v39_features_list)
+            logger.info(f"  v39 解析成功: {len(df):,}, {len(df.columns)} 列")
 
-        df = pd.DataFrame(v39_features_list)
-        logger.info(f"  v39 解析成功: {len(df):,}, {len(df.columns)} 列")
+            # --- Step 2: 加载 v40 精选特征 ---
+            logger.info(f"  加载 v40 精选特征 ({len(self.v40_features)} 个)...")
 
-        # --- Step 2: 加载 v40 精选特征 ---
-        logger.info(f"  加载 v40 精选特征 ({len(self.v40_features)} 个)...")
+            # v40 的日期范围 (可能比 v39 短)
+            v40_date_filter = ""
+            v40_params = []
+            if start_date:
+                v40_date_filter += " AND trade_date >= ?"
+                v40_params.append(start_date)
+            if end_date:
+                v40_date_filter += " AND trade_date <= ?"
+                v40_params.append(end_date)
 
-        # v40 的日期范围 (可能比 v39 短)
-        v40_date_filter = ""
-        v40_params = []
-        if start_date:
-            v40_date_filter += " AND trade_date >= ?"
-            v40_params.append(start_date)
-        if end_date:
-            v40_date_filter += " AND trade_date <= ?"
-            v40_params.append(end_date)
+            query_v40 = f"""
+            SELECT code, trade_date, features_json
+            FROM v40_feature_cache
+            WHERE 1=1 {v40_date_filter}
+            """
+            df_v40_raw = pd.read_sql(query_v40, conn, params=v40_params if v40_params else None)
+            logger.info(f"  v40 记录: {len(df_v40_raw):,}")
 
-        query_v40 = f"""
-        SELECT code, trade_date, features_json
-        FROM v40_feature_cache
-        WHERE 1=1 {v40_date_filter}
-        """
-        df_v40_raw = pd.read_sql(query_v40, conn, params=v40_params if v40_params else None)
-        logger.info(f"  v40 记录: {len(df_v40_raw):,}")
+            # 解析 v40 并提取精选特征
+            v40_records = []
+            for _, row in tqdm(df_v40_raw.iterrows(), total=len(df_v40_raw), desc="解析v40特征"):
+                try:
+                    v40_all = json.loads(row['features_json'])
+                    record = {'code': row['code'], 'trade_date': row['trade_date']}
+                    for feat in self.v40_features:
+                        record[f'v40_{feat}'] = v40_all.get(feat, np.nan)
+                    v40_records.append(record)
+                except Exception:
+                    continue
 
-        # 解析 v40 并提取精选特征
-        v40_records = []
-        for _, row in tqdm(df_v40_raw.iterrows(), total=len(df_v40_raw), desc="解析v40特征"):
-            try:
-                v40_all = json.loads(row['features_json'])
-                record = {'code': row['code'], 'trade_date': row['trade_date']}
-                for feat in self.v40_features:
-                    record[f'v40_{feat}'] = v40_all.get(feat, np.nan)
-                v40_records.append(record)
-            except Exception:
-                continue
+            df_v40 = pd.DataFrame(v40_records)
+            logger.info(f"  v40 解析成功: {len(df_v40):,}")
 
-        df_v40 = pd.DataFrame(v40_records)
-        logger.info(f"  v40 解析成功: {len(df_v40):,}")
+            # --- Step 3: JOIN v39 + v40 ---
+            before_merge = len(df)
+            df = df.merge(df_v40, on=['code', 'trade_date'], how='inner')
+            logger.info(f"  v39+v40 JOIN: {before_merge:,} → {len(df):,} (inner join)")
 
-        # --- Step 3: JOIN v39 + v40 ---
-        before_merge = len(df)
-        df = df.merge(df_v40, on=['code', 'trade_date'], how='inner')
-        logger.info(f"  v39+v40 JOIN: {before_merge:,} → {len(df):,} (inner join)")
-
-        # --- Step 4: 加载 daily_basic ---
-        logger.info("  加载 daily_basic 额外特征...")
-        date_min = df['trade_date'].min()
-        date_max = df['trade_date'].max()
-        query_basic = """
-        SELECT s.code, db.trade_date,
-               db.pe_ttm, db.pb, db.ps_ttm, db.turnover_rate, db.circ_mv
-        FROM daily_basic db
-        JOIN securities s ON db.security_id = s.id
-        WHERE db.trade_date >= ? AND db.trade_date <= ?
-        """
-        df_basic = pd.read_sql(query_basic, conn, params=[date_min, date_max])
-        conn.close()
+            # --- Step 4: 加载 daily_basic ---
+            logger.info("  加载 daily_basic 额外特征...")
+            date_min = df['trade_date'].min()
+            date_max = df['trade_date'].max()
+            query_basic = """
+            SELECT s.code, db.trade_date,
+                   db.pe_ttm, db.pb, db.ps_ttm, db.turnover_rate, db.circ_mv
+            FROM daily_basic db
+            JOIN securities s ON db.security_id = s.id
+            WHERE db.trade_date >= ? AND db.trade_date <= ?
+            """
+            df_basic = pd.read_sql(query_basic, conn, params=[date_min, date_max])
+        finally:
+            conn.close()
         logger.info(f"  daily_basic 记录: {len(df_basic):,}")
 
         df = df.merge(df_basic, on=['code', 'trade_date'], how='left')
@@ -258,6 +259,8 @@ class V500UnifiedTrainer:
         for col in ['pe_ttm', 'pb', 'ps_ttm', 'turnover_rate', 'log_market_cap']:
             missing = df[col].isnull().sum()
             if missing > 0:
+                df[col] = df.groupby('trade_date')[col].transform(lambda x: x.fillna(x.median()))
+                # Fallback for dates where ALL values are NaN
                 df[col] = df[col].fillna(df[col].median())
 
         # --- Step 5 (optional): 加载 GRU neural embeddings ---
@@ -335,7 +338,7 @@ class V500UnifiedTrainer:
         logger.info("V5.0 特征准备: 分层归一化")
         logger.info("=" * 80)
 
-        exclude_cols = {'code', 'trade_date', 'label_3d', 'label_5d', 'label_10d', 'label_15d'}
+        exclude_cols = {'code', 'trade_date', 'label_3d', 'label_5d', 'label_10d', 'label_15d', 'sw_l1_code'}
         feature_cols = [c for c in df.columns if c not in exclude_cols]
 
         # 分类特征

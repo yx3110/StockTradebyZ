@@ -209,6 +209,9 @@ class L1FastTrainer:
         test_dates_with_purge = sorted_dates[i85 + purge_days:]
         test_dates_valid = [d for d in test_dates_with_purge]
 
+        if len(val_dates_no_overlap) < 5 or len(test_dates_valid) < 5:
+            raise ValueError(f"Purge gap too large: val has {len(val_dates_no_overlap)} dates, test has {len(test_dates_valid)} dates. Need at least 5 each.")
+
         train_df = df[df['trade_date'] <= train_end_date].copy()
         val_df = df[df['trade_date'].isin(val_dates_no_overlap)].copy()
         test_df = df[df['trade_date'].isin(test_dates_valid)].copy()
@@ -293,8 +296,10 @@ class L1FastTrainer:
             callbacks=callbacks,
         )
 
+        _best_mae = model.best_score.get('valid_0', {}).get('l1', None)
+        _mae_str = f"{_best_mae:.4f}" if isinstance(_best_mae, (int, float)) else "N/A"
         print(f"[L1] {target}: best_iter={model.best_iteration}, "
-              f"best_val_mae={model.best_score.get('valid_0', {}).get('l1', 'N/A'):.4f}")
+              f"best_val_mae={_mae_str}")
 
         return model
 

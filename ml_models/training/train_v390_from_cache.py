@@ -311,7 +311,10 @@ class V390CachedTrainer:
         full_model = {
             'base_models': self.models,
             'meta_model': self.meta_model,
-            'timestamp': timestamp
+            'timestamp': timestamp,
+            'feature_names': self.feature_names,
+            'n_features': len(self.feature_names),
+            'version': 'v3.9.0'
         }
         full_path = f"{output_path}/v390_full_system_{timestamp}.pkl"
         with open(full_path, 'wb') as f:
@@ -399,7 +402,8 @@ class V390CachedTrainer:
         self.train_meta_model(X_val, y_val, X_test, y_test)
 
         # 5. 输出特征重要性
-        self._log_feature_importance(X_train.columns.tolist())
+        self.feature_names = X_train.columns.tolist()
+        self._log_feature_importance(self.feature_names)
 
         # 6. 保存模型
         model_path = self.save_model()
