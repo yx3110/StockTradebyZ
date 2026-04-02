@@ -1712,20 +1712,32 @@ class TomorrowStockSelector:
 
         code = stock_info.get('stock_code', '')
         env_score = getattr(self, '_cached_env_score', 50.0)
+        analysis_date = stock_info.get('analysis_date', '')
 
-        # 获取近80日K线
+        # 获取分析日期前80日K线 (避免look-ahead bias)
         try:
             import sqlite3
             import numpy as np
             db_path = Path(__file__).parent / 'data_adapter' / 'stock_data.db'
             conn = sqlite3.connect(str(db_path))
-            df = pd.read_sql_query("""
-                SELECT dq.trade_date, dq.high, dq.low, dq.close
-                FROM daily_quotes dq
-                JOIN securities s ON dq.security_id = s.id
-                WHERE s.code = ? ORDER BY dq.trade_date DESC LIMIT 80
-            """, conn, params=[code])
-            conn.close()
+            try:
+                if analysis_date:
+                    df = pd.read_sql_query("""
+                        SELECT dq.trade_date, dq.high, dq.low, dq.close
+                        FROM daily_quotes dq
+                        JOIN securities s ON dq.security_id = s.id
+                        WHERE s.code = ? AND dq.trade_date <= ?
+                        ORDER BY dq.trade_date DESC LIMIT 80
+                    """, conn, params=[code, analysis_date.replace('-', '')])
+                else:
+                    df = pd.read_sql_query("""
+                        SELECT dq.trade_date, dq.high, dq.low, dq.close
+                        FROM daily_quotes dq
+                        JOIN securities s ON dq.security_id = s.id
+                        WHERE s.code = ? ORDER BY dq.trade_date DESC LIMIT 80
+                    """, conn, params=[code])
+            finally:
+                conn.close()
             if df is None or len(df) < 20:
                 return stock_info
             df = df.sort_values('trade_date')

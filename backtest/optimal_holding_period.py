@@ -24,79 +24,86 @@ SCORE_CACHE = os.path.join(PROJECT_ROOT, 'backtest', '.v475_score_cache.pkl')
 
 def get_trading_dates(start_date, end_date):
     conn = sqlite3.connect(DB_PATH)
-    dates = [r[0] for r in conn.execute(
-        "SELECT DISTINCT trade_date FROM v39_feature_cache WHERE trade_date >= ? AND trade_date <= ? ORDER BY trade_date",
-        (start_date, end_date)).fetchall()]
-    conn.close()
+    try:
+        dates = [r[0] for r in conn.execute(
+            "SELECT DISTINCT trade_date FROM v39_feature_cache WHERE trade_date >= ? AND trade_date <= ? ORDER BY trade_date",
+            (start_date, end_date)).fetchall()]
+    finally:
+        conn.close()
     return dates
 
 
 def get_all_trading_dates():
     conn = sqlite3.connect(DB_PATH)
-    dates = [r[0] for r in conn.execute(
-        "SELECT DISTINCT trade_date FROM daily_quotes ORDER BY trade_date").fetchall()]
-    conn.close()
+    try:
+        dates = [r[0] for r in conn.execute(
+            "SELECT DISTINCT trade_date FROM daily_quotes ORDER BY trade_date").fetchall()]
+    finally:
+        conn.close()
     return dates
 
 
 def preload_features(dates):
     result = {}
     conn = sqlite3.connect(DB_PATH)
-    for i in range(0, len(dates), 50):
-        chunk = dates[i:i+50]
-        ph = ','.join(['?'] * len(chunk))
-        df = pd.read_sql_query(f"""
-            SELECT code, trade_date, features_json,
-                   market_return_20d, market_return_10d, market_return_5d,
-                   market_volatility_20d, market_volatility_10d,
-                   market_up_ratio_20d, market_up_ratio_10d,
-                   market_drawdown_20d, market_volume_ratio,
-                   market_position_20d, market_momentum_20d, market_momentum_5d
-            FROM v39_feature_cache WHERE trade_date IN ({ph})
-        """, conn, params=chunk)
-        if df.empty:
-            continue
-        parsed = df['features_json'].apply(json.loads)
-        features_all = pd.DataFrame(parsed.tolist())
-        features_all['code'] = df['code'].values
-        features_all['trade_date'] = df['trade_date'].values
-        for col in [c for c in df.columns if c.startswith('market_')]:
-            features_all[col] = df[col].values
-        for date, group in features_all.groupby('trade_date'):
-            result[date] = group.drop(columns=['trade_date']).reset_index(drop=True)
-    conn.close()
+    try:
+        for i in range(0, len(dates), 50):
+            chunk = dates[i:i+50]
+            ph = ','.join(['?'] * len(chunk))
+            df = pd.read_sql_query(f"""
+                SELECT code, trade_date, features_json,
+                       market_return_20d, market_return_10d, market_return_5d,
+                       market_volatility_20d, market_volatility_10d,
+                       market_up_ratio_20d, market_up_ratio_10d,
+                       market_drawdown_20d, market_volume_ratio,
+                       market_position_20d, market_momentum_20d, market_momentum_5d
+                FROM v39_feature_cache WHERE trade_date IN ({ph})
+            """, conn, params=chunk)
+            if df.empty:
+                continue
+            parsed = df['features_json'].apply(json.loads)
+            features_all = pd.DataFrame(parsed.tolist())
+            features_all['code'] = df['code'].values
+            features_all['trade_date'] = df['trade_date'].values
+            for col in [c for c in df.columns if c.startswith('market_')]:
+                features_all[col] = df[col].values
+            for date, group in features_all.groupby('trade_date'):
+                result[date] = group.drop(columns=['trade_date']).reset_index(drop=True)
+    finally:
+        conn.close()
     return result
 
 
 def preload_forward_returns_multi(dates, all_trade_dates, hold_days_list):
     """一次性加载所有持仓天数的forward returns"""
     conn = sqlite3.connect(DB_PATH)
-    date_to_idx = {d: i for i, d in enumerate(all_trade_dates)}
-    result = {hd: {} for hd in hold_days_list}
+    try:
+        date_to_idx = {d: i for i, d in enumerate(all_trade_dates)}
+        result = {hd: {} for hd in hold_days_list}
 
-    for date in dates:
-        idx = date_to_idx.get(date)
-        if idx is None:
-            continue
-        buy_idx = idx + 1  # T+1买入
-
-        for hd in hold_days_list:
-            sell_idx = buy_idx + hd
-            if sell_idx >= len(all_trade_dates):
+        for date in dates:
+            idx = date_to_idx.get(date)
+            if idx is None:
                 continue
-            buy_date = all_trade_dates[buy_idx]
-            sell_date = all_trade_dates[sell_idx]
-            rows = conn.execute("""
-                SELECT s.code, q_buy.close, q_sell.close
-                FROM daily_quotes q_buy
-                JOIN daily_quotes q_sell ON q_buy.security_id = q_sell.security_id
-                JOIN securities s ON q_buy.security_id = s.id
-                WHERE q_buy.trade_date = ? AND q_sell.trade_date = ?
-                  AND q_buy.close > 0 AND q_sell.close > 0
-            """, (buy_date, sell_date)).fetchall()
-            result[hd][date] = {code: (sp - bp) / bp for code, bp, sp in rows}
+            buy_idx = idx + 1  # T+1买入
 
-    conn.close()
+            for hd in hold_days_list:
+                sell_idx = buy_idx + hd
+                if sell_idx >= len(all_trade_dates):
+                    continue
+                buy_date = all_trade_dates[buy_idx]
+                sell_date = all_trade_dates[sell_idx]
+                rows = conn.execute("""
+                    SELECT s.code, q_buy.close, q_sell.close
+                    FROM daily_quotes q_buy
+                    JOIN daily_quotes q_sell ON q_buy.security_id = q_sell.security_id
+                    JOIN securities s ON q_buy.security_id = s.id
+                    WHERE q_buy.trade_date = ? AND q_sell.trade_date = ?
+                      AND q_buy.close > 0 AND q_sell.close > 0
+                """, (buy_date, sell_date)).fetchall()
+                result[hd][date] = {code: (sp - bp) / bp for code, bp, sp in rows}
+    finally:
+        conn.close()
     return result
 
 
@@ -110,7 +117,7 @@ def score_all_dates(dates, features_cache):
             if cached.get('dates_hash') == hash(tuple(dates)):
                 print(f"  Using cached scores ({len(cached['scores'])} dates)")
                 return cached['scores']
-        except:
+        except Exception:
             pass
 
     from ml_models.v39.v475_production_scorer import V475ProductionScorer
@@ -136,7 +143,7 @@ def score_all_dates(dates, features_cache):
         with open(SCORE_CACHE, 'wb') as f:
             pickle.dump({'dates_hash': hash(tuple(dates)), 'scores': daily_scores}, f)
         print(f"  Scores cached to {SCORE_CACHE}")
-    except:
+    except Exception:
         pass
 
     return daily_scores

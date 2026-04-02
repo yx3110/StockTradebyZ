@@ -184,7 +184,7 @@ def calculate_features_batch(args):
                     'features': features,
                     'label_5d': future_return
                 })
-        except:
+        except Exception:
             continue
 
     return results
@@ -229,7 +229,7 @@ def run_fast_backfill(start_date, end_date, sample_stocks=None, num_workers=None
             WHERE trade_date BETWEEN ? AND ?
         """, conn, params=[start_date, end_date])
         existing = set(zip(existing_df['code'], existing_df['trade_date']))
-    except:
+    except Exception:
         pass
     conn.close()
 

@@ -111,19 +111,23 @@ class V39DataBackfill:
 
     def _get_security_id(self, ts_code: str) -> Optional[int]:
         conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute("SELECT id FROM securities WHERE code = ?", (ts_code,))
-        result = cursor.fetchone()
-        conn.close()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT id FROM securities WHERE code = ?", (ts_code,))
+            result = cursor.fetchone()
+        finally:
+            conn.close()
         return result[0] if result else None
 
     def _get_stock_list(self) -> List[str]:
         """从数据库读取活跃A股列表"""
         conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute("SELECT code FROM securities WHERE type = 'A股' AND is_active = 1")
-        stock_list = [row[0] for row in cursor.fetchall()]
-        conn.close()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT code FROM securities WHERE type = 'A股' AND is_active = 1")
+            stock_list = [row[0] for row in cursor.fetchall()]
+        finally:
+            conn.close()
         logger.info(f"从数据库读取到 {len(stock_list)} 只股票")
         return stock_list
 
@@ -149,28 +153,30 @@ class V39DataBackfill:
         logger.info(f"获取到 {len(df)} 只A股")
 
         conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
+        try:
+            cursor = conn.cursor()
 
-        for _, row in df.iterrows():
-            try:
-                ts_code = row['ts_code']
-                exchange = ts_code.split('.')[1]
+            for _, row in df.iterrows():
+                try:
+                    ts_code = row['ts_code']
+                    exchange = ts_code.split('.')[1]
 
-                cursor.execute("SELECT id FROM securities WHERE code = ?", (ts_code,))
-                if cursor.fetchone():
-                    continue
+                    cursor.execute("SELECT id FROM securities WHERE code = ?", (ts_code,))
+                    if cursor.fetchone():
+                        continue
 
-                cursor.execute("""
-                    INSERT INTO securities (code, name, type, exchange, industry, list_date, is_active)
-                    VALUES (?, ?, 'A股', ?, ?, ?, 1)
-                """, (ts_code, row['name'], exchange, row.get('industry'), row.get('list_date')))
-                self.stats['securities_added'] += 1
+                    cursor.execute("""
+                        INSERT INTO securities (code, name, type, exchange, industry, list_date, is_active)
+                        VALUES (?, ?, 'A股', ?, ?, ?, 1)
+                    """, (ts_code, row['name'], exchange, row.get('industry'), row.get('list_date')))
+                    self.stats['securities_added'] += 1
 
-            except Exception as e:
-                logger.error(f"插入证券失败 ({row['ts_code']}): {e}")
+                except Exception as e:
+                    logger.error(f"插入证券失败 ({row['ts_code']}): {e}")
 
-        conn.commit()
-        conn.close()
+            conn.commit()
+        finally:
+            conn.close()
         logger.info(f"新增 {self.stats['securities_added']} 只股票到数据库")
         return df['ts_code'].tolist()
 
@@ -202,41 +208,43 @@ class V39DataBackfill:
                 return result
 
             conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
+            try:
+                cursor = conn.cursor()
 
-            for _, row in df.iterrows():
-                try:
-                    trade_date = pd.to_datetime(row['trade_date'], format='%Y%m%d').strftime('%Y-%m-%d')
+                for _, row in df.iterrows():
+                    try:
+                        trade_date = pd.to_datetime(row['trade_date'], format='%Y%m%d').strftime('%Y-%m-%d')
 
-                    cursor.execute("""
-                        SELECT COUNT(*) FROM daily_basic
-                        WHERE security_id = ? AND trade_date = ?
-                    """, (security_id, trade_date))
+                        cursor.execute("""
+                            SELECT COUNT(*) FROM daily_basic
+                            WHERE security_id = ? AND trade_date = ?
+                        """, (security_id, trade_date))
 
-                    if cursor.fetchone()[0] > 0:
-                        continue
+                        if cursor.fetchone()[0] > 0:
+                            continue
 
-                    cursor.execute("""
-                        INSERT INTO daily_basic
-                        (security_id, trade_date, close, turnover_rate, turnover_rate_f, volume_ratio,
-                         pe, pe_ttm, pb, ps, ps_ttm, dv_ratio, dv_ttm,
-                         total_share, float_share, free_share, total_mv, circ_mv)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (
-                        security_id, trade_date,
-                        row.get('close'), row.get('turnover_rate'), row.get('turnover_rate_f'),
-                        row.get('volume_ratio'), row.get('pe'), row.get('pe_ttm'),
-                        row.get('pb'), row.get('ps'), row.get('ps_ttm'),
-                        row.get('dv_ratio'), row.get('dv_ttm'),
-                        row.get('total_share'), row.get('float_share'), row.get('free_share'),
-                        row.get('total_mv'), row.get('circ_mv')
-                    ))
-                    result['count'] += 1
-                except Exception as e:
-                    logger.debug(f"插入daily_basic失败 ({ts_code}, {trade_date}): {e}")
+                        cursor.execute("""
+                            INSERT INTO daily_basic
+                            (security_id, trade_date, close, turnover_rate, turnover_rate_f, volume_ratio,
+                             pe, pe_ttm, pb, ps, ps_ttm, dv_ratio, dv_ttm,
+                             total_share, float_share, free_share, total_mv, circ_mv)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """, (
+                            security_id, trade_date,
+                            row.get('close'), row.get('turnover_rate'), row.get('turnover_rate_f'),
+                            row.get('volume_ratio'), row.get('pe'), row.get('pe_ttm'),
+                            row.get('pb'), row.get('ps'), row.get('ps_ttm'),
+                            row.get('dv_ratio'), row.get('dv_ttm'),
+                            row.get('total_share'), row.get('float_share'), row.get('free_share'),
+                            row.get('total_mv'), row.get('circ_mv')
+                        ))
+                        result['count'] += 1
+                    except Exception as e:
+                        logger.debug(f"插入daily_basic失败 ({ts_code}, {trade_date}): {e}")
 
-            conn.commit()
-            conn.close()
+                conn.commit()
+            finally:
+                conn.close()
             result['success'] = True
 
         except Exception as e:
@@ -271,43 +279,45 @@ class V39DataBackfill:
                 return result
 
             conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
+            try:
+                cursor = conn.cursor()
 
-            for _, row in df.iterrows():
-                try:
-                    ann_date = pd.to_datetime(row['ann_date'], format='%Y%m%d').strftime('%Y-%m-%d')
-                    end_date_fmt = pd.to_datetime(row['end_date'], format='%Y%m%d').strftime('%Y-%m-%d')
+                for _, row in df.iterrows():
+                    try:
+                        ann_date = pd.to_datetime(row['ann_date'], format='%Y%m%d').strftime('%Y-%m-%d')
+                        end_date_fmt = pd.to_datetime(row['end_date'], format='%Y%m%d').strftime('%Y-%m-%d')
 
-                    cursor.execute("""
-                        SELECT COUNT(*) FROM financial_indicator
-                        WHERE security_id = ? AND end_date = ?
-                    """, (security_id, end_date_fmt))
+                        cursor.execute("""
+                            SELECT COUNT(*) FROM financial_indicator
+                            WHERE security_id = ? AND end_date = ?
+                        """, (security_id, end_date_fmt))
 
-                    if cursor.fetchone()[0] > 0:
-                        continue
+                        if cursor.fetchone()[0] > 0:
+                            continue
 
-                    cursor.execute("""
-                        INSERT INTO financial_indicator
-                        (security_id, ann_date, end_date, eps, dt_eps, roe, roe_waa, roe_dt, roa,
-                         grossprofit_margin, netprofit_margin, profit_to_gr, ocf_to_profit,
-                         debt_to_assets, current_ratio, quick_ratio, ar_turn, ca_turn, fa_turn, assets_turn)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (
-                        security_id, ann_date, end_date_fmt,
-                        row.get('eps'), row.get('dt_eps'), row.get('roe'),
-                        row.get('roe_waa'), row.get('roe_dt'), row.get('roa'),
-                        row.get('grossprofit_margin'), row.get('netprofit_margin'),
-                        row.get('profit_to_gr'), row.get('ocf_to_profit'),
-                        row.get('debt_to_assets'), row.get('current_ratio'),
-                        row.get('quick_ratio'), row.get('ar_turn'), row.get('ca_turn'),
-                        row.get('fa_turn'), row.get('assets_turn')
-                    ))
-                    result['count'] += 1
-                except Exception as e:
-                    logger.debug(f"插入financial_indicator失败 ({ts_code}): {e}")
+                        cursor.execute("""
+                            INSERT INTO financial_indicator
+                            (security_id, ann_date, end_date, eps, dt_eps, roe, roe_waa, roe_dt, roa,
+                             grossprofit_margin, netprofit_margin, profit_to_gr, ocf_to_profit,
+                             debt_to_assets, current_ratio, quick_ratio, ar_turn, ca_turn, fa_turn, assets_turn)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """, (
+                            security_id, ann_date, end_date_fmt,
+                            row.get('eps'), row.get('dt_eps'), row.get('roe'),
+                            row.get('roe_waa'), row.get('roe_dt'), row.get('roa'),
+                            row.get('grossprofit_margin'), row.get('netprofit_margin'),
+                            row.get('profit_to_gr'), row.get('ocf_to_profit'),
+                            row.get('debt_to_assets'), row.get('current_ratio'),
+                            row.get('quick_ratio'), row.get('ar_turn'), row.get('ca_turn'),
+                            row.get('fa_turn'), row.get('assets_turn')
+                        ))
+                        result['count'] += 1
+                    except Exception as e:
+                        logger.debug(f"插入financial_indicator失败 ({ts_code}): {e}")
 
-            conn.commit()
-            conn.close()
+                conn.commit()
+            finally:
+                conn.close()
             result['success'] = True
 
         except Exception as e:
@@ -416,50 +426,52 @@ class V39DataBackfill:
         logger.info(f"获取到 {len(df)} 条daily_basic数据")
 
         conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
+        try:
+            cursor = conn.cursor()
 
-        cursor.execute('SELECT code, id FROM securities')
-        security_map = {row[0]: row[1] for row in cursor.fetchall()}
+            cursor.execute('SELECT code, id FROM securities')
+            security_map = {row[0]: row[1] for row in cursor.fetchall()}
 
-        insert_count = 0
-        formatted_date = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
+            insert_count = 0
+            formatted_date = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
 
-        for _, row in df.iterrows():
-            ts_code = row['ts_code']
-            if ts_code not in security_map:
-                continue
-
-            security_id = security_map[ts_code]
-            try:
-                cursor.execute("""
-                    SELECT COUNT(*) FROM daily_basic
-                    WHERE security_id = ? AND trade_date = ?
-                """, (security_id, formatted_date))
-
-                if cursor.fetchone()[0] > 0:
+            for _, row in df.iterrows():
+                ts_code = row['ts_code']
+                if ts_code not in security_map:
                     continue
 
-                cursor.execute("""
-                    INSERT INTO daily_basic
-                    (security_id, trade_date, close, turnover_rate, turnover_rate_f,
-                     volume_ratio, pe, pe_ttm, pb, ps, ps_ttm, dv_ratio, dv_ttm,
-                     total_share, float_share, free_share, total_mv, circ_mv)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    security_id, formatted_date, row.get('close'),
-                    row.get('turnover_rate'), row.get('turnover_rate_f'),
-                    row.get('volume_ratio'), row.get('pe'), row.get('pe_ttm'),
-                    row.get('pb'), row.get('ps'), row.get('ps_ttm'),
-                    row.get('dv_ratio'), row.get('dv_ttm'),
-                    row.get('total_share'), row.get('float_share'), row.get('free_share'),
-                    row.get('total_mv'), row.get('circ_mv')
-                ))
-                insert_count += 1
-            except Exception as e:
-                logger.debug(f"插入daily_basic失败 {ts_code}: {e}")
+                security_id = security_map[ts_code]
+                try:
+                    cursor.execute("""
+                        SELECT COUNT(*) FROM daily_basic
+                        WHERE security_id = ? AND trade_date = ?
+                    """, (security_id, formatted_date))
 
-        conn.commit()
-        conn.close()
+                    if cursor.fetchone()[0] > 0:
+                        continue
+
+                    cursor.execute("""
+                        INSERT INTO daily_basic
+                        (security_id, trade_date, close, turnover_rate, turnover_rate_f,
+                         volume_ratio, pe, pe_ttm, pb, ps, ps_ttm, dv_ratio, dv_ttm,
+                         total_share, float_share, free_share, total_mv, circ_mv)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (
+                        security_id, formatted_date, row.get('close'),
+                        row.get('turnover_rate'), row.get('turnover_rate_f'),
+                        row.get('volume_ratio'), row.get('pe'), row.get('pe_ttm'),
+                        row.get('pb'), row.get('ps'), row.get('ps_ttm'),
+                        row.get('dv_ratio'), row.get('dv_ttm'),
+                        row.get('total_share'), row.get('float_share'), row.get('free_share'),
+                        row.get('total_mv'), row.get('circ_mv')
+                    ))
+                    insert_count += 1
+                except Exception as e:
+                    logger.debug(f"插入daily_basic失败 {ts_code}: {e}")
+
+            conn.commit()
+        finally:
+            conn.close()
         logger.info(f"daily_basic更新完成: 新增 {insert_count}")
         return insert_count
 
@@ -472,84 +484,85 @@ class V39DataBackfill:
         start_date_str = start_date.strftime('%Y%m%d')
 
         conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
+        try:
+            cursor = conn.cursor()
 
-        cursor.execute("SELECT code FROM securities WHERE type = 'A股' AND is_active = 1")
-        stock_codes = [row[0] for row in cursor.fetchall()]
+            cursor.execute("SELECT code FROM securities WHERE type = 'A股' AND is_active = 1")
+            stock_codes = [row[0] for row in cursor.fetchall()]
 
-        cursor.execute('SELECT code, id FROM securities')
-        security_map = {row[0]: row[1] for row in cursor.fetchall()}
+            cursor.execute('SELECT code, id FROM securities')
+            security_map = {row[0]: row[1] for row in cursor.fetchall()}
 
-        insert_count = 0
-        error_count = 0
+            insert_count = 0
+            error_count = 0
 
-        batch_size = 50
-        for i in range(0, len(stock_codes), batch_size):
-            batch_codes = stock_codes[i:i + batch_size]
+            batch_size = 50
+            for i in range(0, len(stock_codes), batch_size):
+                batch_codes = stock_codes[i:i + batch_size]
 
-            for ts_code in batch_codes:
-                try:
-                    time.sleep(0.2)
+                for ts_code in batch_codes:
+                    try:
+                        time.sleep(0.2)
 
-                    df = self.pro.fina_indicator(
-                        ts_code=ts_code,
-                        start_date=start_date_str,
-                        end_date=date_str,
-                        fields='ts_code,ann_date,end_date,eps,dt_eps,roe,roe_waa,roe_dt,roa,'
-                               'grossprofit_margin,netprofit_margin,profit_to_gr,ocf_to_profit,'
-                               'debt_to_assets,current_ratio,quick_ratio,ar_turn,ca_turn,fa_turn,assets_turn'
-                    )
+                        df = self.pro.fina_indicator(
+                            ts_code=ts_code,
+                            start_date=start_date_str,
+                            end_date=date_str,
+                            fields='ts_code,ann_date,end_date,eps,dt_eps,roe,roe_waa,roe_dt,roa,'
+                                   'grossprofit_margin,netprofit_margin,profit_to_gr,ocf_to_profit,'
+                                   'debt_to_assets,current_ratio,quick_ratio,ar_turn,ca_turn,fa_turn,assets_turn'
+                        )
 
-                    if df.empty:
-                        continue
+                        if df.empty:
+                            continue
 
-                    security_id = security_map.get(ts_code)
-                    if not security_id:
-                        continue
+                        security_id = security_map.get(ts_code)
+                        if not security_id:
+                            continue
 
-                    for _, row in df.iterrows():
-                        try:
-                            ann_date = pd.to_datetime(row['ann_date'], format='%Y%m%d').strftime('%Y-%m-%d')
-                            end_date_fmt = pd.to_datetime(row['end_date'], format='%Y%m%d').strftime('%Y-%m-%d')
+                        for _, row in df.iterrows():
+                            try:
+                                ann_date = pd.to_datetime(row['ann_date'], format='%Y%m%d').strftime('%Y-%m-%d')
+                                end_date_fmt = pd.to_datetime(row['end_date'], format='%Y%m%d').strftime('%Y-%m-%d')
 
-                            cursor.execute("""
-                                SELECT COUNT(*) FROM financial_indicator
-                                WHERE security_id = ? AND end_date = ?
-                            """, (security_id, end_date_fmt))
+                                cursor.execute("""
+                                    SELECT COUNT(*) FROM financial_indicator
+                                    WHERE security_id = ? AND end_date = ?
+                                """, (security_id, end_date_fmt))
 
-                            if cursor.fetchone()[0] > 0:
-                                continue
+                                if cursor.fetchone()[0] > 0:
+                                    continue
 
-                            cursor.execute("""
-                                INSERT INTO financial_indicator
-                                (security_id, ann_date, end_date, eps, dt_eps, roe, roe_waa, roe_dt, roa,
-                                 grossprofit_margin, netprofit_margin, profit_to_gr, ocf_to_profit,
-                                 debt_to_assets, current_ratio, quick_ratio, ar_turn, ca_turn, fa_turn, assets_turn)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                            """, (
-                                security_id, ann_date, end_date_fmt,
-                                row.get('eps'), row.get('dt_eps'), row.get('roe'),
-                                row.get('roe_waa'), row.get('roe_dt'), row.get('roa'),
-                                row.get('grossprofit_margin'), row.get('netprofit_margin'),
-                                row.get('profit_to_gr'), row.get('ocf_to_profit'),
-                                row.get('debt_to_assets'), row.get('current_ratio'),
-                                row.get('quick_ratio'), row.get('ar_turn'), row.get('ca_turn'),
-                                row.get('fa_turn'), row.get('assets_turn')
-                            ))
-                            insert_count += 1
-                        except Exception as e:
-                            logger.debug(f"插入financial_indicator失败 {ts_code}: {e}")
+                                cursor.execute("""
+                                    INSERT INTO financial_indicator
+                                    (security_id, ann_date, end_date, eps, dt_eps, roe, roe_waa, roe_dt, roa,
+                                     grossprofit_margin, netprofit_margin, profit_to_gr, ocf_to_profit,
+                                     debt_to_assets, current_ratio, quick_ratio, ar_turn, ca_turn, fa_turn, assets_turn)
+                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                """, (
+                                    security_id, ann_date, end_date_fmt,
+                                    row.get('eps'), row.get('dt_eps'), row.get('roe'),
+                                    row.get('roe_waa'), row.get('roe_dt'), row.get('roa'),
+                                    row.get('grossprofit_margin'), row.get('netprofit_margin'),
+                                    row.get('profit_to_gr'), row.get('ocf_to_profit'),
+                                    row.get('debt_to_assets'), row.get('current_ratio'),
+                                    row.get('quick_ratio'), row.get('ar_turn'), row.get('ca_turn'),
+                                    row.get('fa_turn'), row.get('assets_turn')
+                                ))
+                                insert_count += 1
+                            except Exception as e:
+                                logger.debug(f"插入financial_indicator失败 {ts_code}: {e}")
 
-                except Exception as e:
-                    error_count += 1
-                    if error_count <= 5:
-                        logger.error(f"获取{ts_code}财务数据失败: {e}")
+                    except Exception as e:
+                        error_count += 1
+                        if error_count <= 5:
+                            logger.error(f"获取{ts_code}财务数据失败: {e}")
 
-            conn.commit()
-            if (i + batch_size) % 500 == 0:
-                logger.info(f"进度: {min(i + batch_size, len(stock_codes))}/{len(stock_codes)}")
-
-        conn.close()
+                conn.commit()
+                if (i + batch_size) % 500 == 0:
+                    logger.info(f"进度: {min(i + batch_size, len(stock_codes))}/{len(stock_codes)}")
+        finally:
+            conn.close()
         logger.info(f"financial_indicator更新完成: 新增 {insert_count}, 错误 {error_count}")
         return insert_count
 

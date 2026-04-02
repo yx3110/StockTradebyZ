@@ -273,7 +273,7 @@ class FullV39FeatureComputer:
                             mkt = market_basic[col].dropna()
                             if len(mkt) > 0:
                                 features[feat] = (mkt < val).sum() / len(mkt)
-        except:
+        except Exception:
             pass
         return features
 
@@ -299,7 +299,7 @@ class FullV39FeatureComputer:
                     limit_up = day_quotes['is_limit_up'].sum()
                     features['limit_up_count'] = min(limit_up / 100.0, 1.0)
                     features['concept_heat_index'] = limit_up / len(day_quotes) if len(day_quotes) > 0 else 0
-        except:
+        except Exception:
             pass
         return features
 
@@ -326,7 +326,7 @@ class FullV39FeatureComputer:
                     avg_turnover = day_basic['turnover_rate'].mean()
                     if pd.notna(avg_turnover) and avg_turnover > 0:
                         features['market_attention_score'] = float(stock_turnover) / float(avg_turnover)
-        except:
+        except Exception:
             pass
         return features
 
@@ -356,7 +356,7 @@ class FullV39FeatureComputer:
                             circ_mv_yi = stock_circ_mv / 10000
                             if circ_mv_yi > 0:
                                 features['market_cap_quality_score'] = 1 / (1 + np.exp(-(np.log(circ_mv_yi) - np.log(50)) / 0.8))
-        except:
+        except Exception:
             pass
         return features
 
@@ -409,7 +409,7 @@ class FullV39FeatureComputer:
             minus_di = 100 * pd.Series(minus_dm).ewm(span=period, adjust=False).mean().values / (atr + 1e-10)
             dx = 100 * np.abs(plus_di - minus_di) / (plus_di + minus_di + 1e-10)
             return pd.Series(dx).ewm(span=period, adjust=False).mean().iloc[-1]
-        except:
+        except Exception:
             return np.nan
 
     def _calc_aroon(self, high, low, period=25):
@@ -421,7 +421,7 @@ class FullV39FeatureComputer:
             up = ((period - periods_since_high) / period) * 100
             down = ((period - periods_since_low) / period) * 100
             return {'up': up, 'down': down, 'oscillator': up - down}
-        except:
+        except Exception:
             return {'up': np.nan, 'down': np.nan, 'oscillator': np.nan}
 
     def _calc_ichimoku(self, high, low, close):
@@ -438,7 +438,7 @@ class FullV39FeatureComputer:
                 'span_a': (p - span_a.iloc[-1]) / p if pd.notna(span_a.iloc[-1]) else 0,
                 'span_b': (p - span_b.iloc[-1]) / p if pd.notna(span_b.iloc[-1]) else 0
             }
-        except:
+        except Exception:
             return {'conversion': 0, 'base': 0, 'span_a': 0, 'span_b': 0}
 
     def _calc_supertrend(self, high, low, close, period=10, mult=3):
@@ -454,7 +454,7 @@ class FullV39FeatureComputer:
                 elif close[i] < lower[i-1]: trend[i], st[i] = -1, upper[i]
                 else: trend[i] = trend[i-1]; st[i] = max(lower[i], st[i-1]) if trend[i] == 1 else min(upper[i], st[i-1])
             return {'value': (close[-1] - st[-1]) / close[-1], 'signal': float(trend[-1])}
-        except:
+        except Exception:
             return {'value': np.nan, 'signal': np.nan}
 
     def _calc_williams_r(self, high, low, close, period=14):
@@ -462,7 +462,7 @@ class FullV39FeatureComputer:
             h, l = pd.Series(high), pd.Series(low)
             hh, ll = h.rolling(period).max().iloc[-1], l.rolling(period).min().iloc[-1]
             return -100 * (hh - close[-1]) / (hh - ll + 1e-10)
-        except:
+        except Exception:
             return np.nan
 
     def _calc_smi(self, high, low, close, period=14, smooth=3):
@@ -474,7 +474,7 @@ class FullV39FeatureComputer:
             rs = (hh - ll).ewm(span=smooth).mean().ewm(span=smooth).mean()
             smi = 100 * ds / (rs / 2 + 1e-10)
             return {'smi': smi.iloc[-1], 'signal': smi.ewm(span=smooth).mean().iloc[-1]}
-        except:
+        except Exception:
             return {'smi': np.nan, 'signal': np.nan}
 
     def _calc_tsi(self, close, lp=25, sp=13, sigp=7):
@@ -485,28 +485,28 @@ class FullV39FeatureComputer:
             ds_abs = pc.abs().ewm(span=lp).mean().ewm(span=sp).mean()
             tsi = 100 * ds / (ds_abs + 1e-10)
             return {'tsi': tsi.iloc[-1], 'signal': tsi.ewm(span=sigp).mean().iloc[-1]}
-        except:
+        except Exception:
             return {'tsi': np.nan, 'signal': np.nan}
 
     def _calc_ad_line(self, high, low, close, volume):
         try:
             mfm = ((close - low) - (high - close)) / (high - low + 1e-10)
             return np.cumsum(mfm * volume)
-        except:
+        except Exception:
             return np.array([0])
 
     def _calc_cmf(self, high, low, close, volume, period=20):
         try:
             mfm = ((close - low) - (high - close)) / (high - low + 1e-10)
             return pd.Series(mfm * volume).rolling(period).sum().iloc[-1] / (pd.Series(volume).rolling(period).sum().iloc[-1] + 1e-10)
-        except:
+        except Exception:
             return np.nan
 
     def _calc_vwap_deviation(self, close, volume):
         try:
             vwap = (close * volume).sum() / (volume.sum() + 1e-10)
             return (close[-1] - vwap) / vwap
-        except:
+        except Exception:
             return np.nan
 
     def _estimate_large_order_flow(self, close, volume, threshold=1.5):
@@ -516,7 +516,7 @@ class FullV39FeatureComputer:
             vol_avg = np.mean(volume[-20:]) if len(volume) >= 20 else np.mean(volume)
             large_vol = volume[-period:] > vol_avg * threshold
             return (np.sum((pc > 0) & large_vol) - np.sum((pc < 0) & large_vol)) / period
-        except:
+        except Exception:
             return np.nan
 
     def _calc_bb_width(self, close, period=20):
@@ -524,7 +524,7 @@ class FullV39FeatureComputer:
             c = pd.Series(close)
             sma, std = c.rolling(period).mean(), c.rolling(period).std()
             return (4 * std / (sma + 1e-10)).iloc[-1]
-        except:
+        except Exception:
             return np.nan
 
     def _calc_kc_width(self, high, low, close, period=20, mult=2):
@@ -533,14 +533,14 @@ class FullV39FeatureComputer:
             tr = np.maximum(high[1:] - low[1:], np.maximum(np.abs(high[1:] - close[:-1]), np.abs(low[1:] - close[:-1])))
             atr = pd.Series(tr).rolling(period).mean().iloc[-1]
             return (2 * mult * atr) / (ema.iloc[-1] + 1e-10)
-        except:
+        except Exception:
             return np.nan
 
     def _calc_atr_percent(self, high, low, close, period=14):
         try:
             tr = np.maximum(high[1:] - low[1:], np.maximum(np.abs(high[1:] - close[:-1]), np.abs(low[1:] - close[:-1])))
             return pd.Series(tr).rolling(period).mean().iloc[-1] / close[-1]
-        except:
+        except Exception:
             return np.nan
 
     def _calc_volatility_percentile(self, close, period=60):
@@ -550,7 +550,7 @@ class FullV39FeatureComputer:
             if len(vol) < period:
                 return 0.5
             return (vol.iloc[-period:] < vol.iloc[-1]).sum() / period
-        except:
+        except Exception:
             return 0.5
 
 
@@ -578,7 +578,7 @@ def worker_compute_day(trade_date):
             features['trade_date'] = trade_date
             features['label_5d'] = label
             results.append(features)
-        except:
+        except Exception:
             continue
     return results
 

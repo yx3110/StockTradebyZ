@@ -16,6 +16,7 @@ import numpy as np
 import pandas as pd
 import sqlite3
 import logging
+from datetime import datetime as dt_cls, timedelta as td_cls
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -66,7 +67,6 @@ def _compute_v492_factors_for_date(codes: list, date: str, db_path: str) -> pd.D
     conn = sqlite3.connect(db_path)
 
     # 需要252天历史 (for high_52w_ratio)
-    from datetime import datetime as dt_cls, timedelta as td_cls
     try:
         dt = dt_cls.strptime(date, '%Y-%m-%d')
     except ValueError:
@@ -82,8 +82,7 @@ def _compute_v492_factors_for_date(codes: list, date: str, db_path: str) -> pd.D
         code_map[stripped] = c
 
     # 全A股OHLCV查询 (比5000+ IN更快) — 只取最近30天用于因子计算
-    from datetime import timedelta as td_cls2
-    short_lookback = (dt - td_cls2(days=40)).strftime('%Y-%m-%d')
+    short_lookback = (dt - td_cls(days=40)).strftime('%Y-%m-%d')
     # 252天lookback只用于high_52w_ratio, 用单独查询
     query = """
     SELECT s.code, q.trade_date, q.open, q.high, q.low, q.close,
@@ -119,8 +118,7 @@ def _compute_v492_factors_for_date(codes: list, date: str, db_path: str) -> pd.D
     df_tr = df_tr[df_tr['code'].isin(codes_stripped)].copy()
 
     # 全市场平均收益 (for residual_momentum) — 只取近30天加速查询
-    from datetime import timedelta as td_cls2
-    mkt_start = (dt - td_cls2(days=40)).strftime('%Y-%m-%d')
+    mkt_start = (dt - td_cls(days=40)).strftime('%Y-%m-%d')
     mkt_query = """
     SELECT q.trade_date, AVG(q.price_change_pct) as mkt_ret
     FROM daily_quotes q JOIN securities s ON q.security_id = s.id

@@ -171,25 +171,27 @@ class TradingAdvisor:
         """从SQLite数据库获取股票最新价格和名称"""
         try:
             conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            
-            query = """
-            SELECT close, name, trade_date 
-            FROM latest_quotes 
-            WHERE code = ?
-            """
-            
-            cursor.execute(query, (stock_code,))
-            result = cursor.fetchone()
-            conn.close()
-            
+            try:
+                cursor = conn.cursor()
+
+                query = """
+                SELECT close, name, trade_date
+                FROM latest_quotes
+                WHERE code = ?
+                """
+
+                cursor.execute(query, (stock_code,))
+                result = cursor.fetchone()
+            finally:
+                conn.close()
+
             if result:
-                price, name, trade_date = result
+                price, name, _trade_date = result
                 return float(price), name
             else:
                 print(f"警告: 未找到股票 {stock_code} 的价格数据")
                 return 0.0, ""
-                
+
         except Exception as e:
             print(f"获取股票 {stock_code} 价格时出错: {e}")
             return 0.0, ""

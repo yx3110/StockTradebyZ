@@ -354,7 +354,7 @@ class CompleteV39FeatureComputer:
                         if pd.notna(v):
                             mkt = mb[col].dropna()
                             if len(mkt) > 0: features[feat] = (mkt < v).sum() / len(mkt)
-        except:
+        except Exception:
             pass
         return features
 
@@ -397,7 +397,7 @@ class CompleteV39FeatureComputer:
                 if len(db) > 0 and pd.notna(st):
                     at = db['turnover_rate'].mean()
                     if pd.notna(at) and at > 0: features['market_attention_score'] = float(st) / float(at)
-        except:
+        except Exception:
             pass
         return features
 
@@ -422,7 +422,7 @@ class CompleteV39FeatureComputer:
                             if mamv > 0: features['stock_relative_liquidity'] = np.tanh(samv / mamv / 2)
                             cmvy = scmv / 10000
                             if cmvy > 0: features['market_cap_quality_score'] = 1 / (1 + np.exp(-(np.log(cmvy) - np.log(50)) / 0.8))
-        except:
+        except Exception:
             pass
         return features
 
@@ -458,7 +458,7 @@ def worker_compute_day(trade_date):
             features['trade_date'] = trade_date
             features['label_5d'] = label
             results.append(features)
-        except:
+        except Exception:
             continue
     return results
 

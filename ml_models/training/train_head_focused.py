@@ -297,7 +297,7 @@ def main():
             w = tw.get(name, 0.2)
             mse_ensemble_pred += w * p
             total_w += w
-        except: pass
+        except Exception: pass
     if total_w > 0:
         mse_ensemble_pred /= total_w
 

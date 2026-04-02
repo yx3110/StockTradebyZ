@@ -61,7 +61,7 @@ def compute_single_sample(args):
         feature_dict['label_5d'] = label
 
         return feature_dict
-    except:
+    except Exception:
         return None
 
 def get_missing_samples(start_date, end_date, sample_stocks=None):
@@ -101,7 +101,7 @@ def get_missing_samples(start_date, end_date, sample_stocks=None):
             WHERE trade_date BETWEEN ? AND ?
         """, conn, params=[start_date, end_date])
         existing = set(zip(existing_df['code'], existing_df['trade_date']))
-    except:
+    except Exception:
         pass
 
     conn.close()
