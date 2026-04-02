@@ -57,6 +57,12 @@ class TomorrowStockSelector:
         self.stocks_only = stocks_only  # 是否只考虑股票，不包括ETF基金
         self.skip_strategies = skip_strategies  # 跳过策略筛选，全市场ML评分
 
+        # V2 optimizer
+        self.optimizer_version = kwargs.get('optimizer_version', 'v1')
+        if self.optimizer_version == 'v2':
+            from portfolio_optimizer import PortfolioOptimizer
+            self.portfolio_optimizer = PortfolioOptimizer(params_path=kwargs.get('optimizer_params_path'))
+
         # Deprecation warning for old versions
         if scoring_version in DEPRECATED_VERSIONS:
             import warnings
@@ -1603,6 +1609,10 @@ class TomorrowStockSelector:
         - Sharpe: 7.246, 胜率: 56.4%, 交易笔数: 6563
         - vs 旧参数: composite 436→20420 (+4580%)
         """
+        # V2 optimizer: 使用portfolio_optimizer模块
+        if getattr(self, 'optimizer_version', 'v1') == 'v2' and hasattr(self, 'portfolio_optimizer'):
+            return self._enhance_prices_with_optimizer_v2(stock_info)
+
         close = stock_info.get('close_price', 0)
         if close <= 0:
             return stock_info
@@ -1692,6 +1702,43 @@ class TomorrowStockSelector:
         # 仓位建议
         stock_info['position_pct'] = self._suggest_position_size(stock_info)
 
+        return stock_info
+
+    def _enhance_prices_with_optimizer_v2(self, stock_info: dict) -> dict:
+        """V2: 使用portfolio_optimizer计算自适应价格"""
+        close = stock_info.get('close_price', 0)
+        if close <= 0:
+            return stock_info
+
+        code = stock_info.get('stock_code', '')
+        env_score = getattr(self, '_cached_env_score', 50.0)
+
+        # 获取近80日K线
+        try:
+            import sqlite3
+            import numpy as np
+            db_path = Path(__file__).parent / 'data_adapter' / 'stock_data.db'
+            conn = sqlite3.connect(str(db_path))
+            df = pd.read_sql_query("""
+                SELECT dq.trade_date, dq.high, dq.low, dq.close
+                FROM daily_quotes dq
+                JOIN securities s ON dq.security_id = s.id
+                WHERE s.code = ? ORDER BY dq.trade_date DESC LIMIT 80
+            """, conn, params=[code])
+            conn.close()
+            if df is None or len(df) < 20:
+                return stock_info
+            df = df.sort_values('trade_date')
+            highs = df['high'].values
+            lows = df['low'].values
+            closes = df['close'].values
+        except Exception as e:
+            logger.debug(f"V2 optimizer获取K线失败 {code}: {e}")
+            return stock_info
+
+        stock_info = self.portfolio_optimizer.compute_prices(
+            stock_info, highs, lows, closes, env_score)
+        stock_info['position_pct'] = stock_info.get('position_pct', 5)
         return stock_info
 
     def _suggest_position_size(self, stock_info: dict) -> int:
@@ -3787,7 +3834,13 @@ class TomorrowStockSelector:
             progress_interval = 500 if len(all_stocks) > 500 else 10
             if i % progress_interval == 0:
                 logger.info(f"已计算 {i}/{len(all_stocks)} 只股票的评分...")
-        
+
+        # V2: 批量信号筛选+仓位分配
+        if getattr(self, 'optimizer_version', 'v1') == 'v2' and hasattr(self, 'portfolio_optimizer'):
+            env_score = getattr(self, '_cached_env_score', 50.0)
+            stock_with_scores = self.portfolio_optimizer.filter_and_allocate(
+                stock_with_scores, env_score)
+
         # 过滤 *ST退市风险股/涨停板/停牌股 (T+1不可买入)
         # 注意: 普通ST保留(有些假ST股质量不错)，只剔除*ST(退市风险警示)
         if stock_with_scores and target_date is not None:
@@ -5173,6 +5226,7 @@ class TomorrowStockSelector:
             env_result = self.analyze_trading_environment(target_date, stocks_data_for_env)
             env_section = self._format_trading_environment(env_result)
             analysis['trading_environment'] = env_result  # 保存供后续使用
+            self._cached_env_score = env_result.get('total_score', 50.0)
         except Exception as e:
             logger.warning(f"交易环境监测失败: {e}")
 
@@ -5706,7 +5760,7 @@ class TomorrowStockSelector:
 # is_trading_day 已提取到 core.trading_calendar 模块
 from core.trading_calendar import is_trading_day
 
-def main(target_date: str = None, scoring_version: str = "v3", stocks_only: bool = False, skip_strategies: bool = False, full_market: bool = False):
+def main(target_date: str = None, scoring_version: str = "v3", stocks_only: bool = False, skip_strategies: bool = False, full_market: bool = False, optimizer_version: str = 'v1', optimizer_params_path: str = None):
     """主函数
 
     Args:
@@ -5737,7 +5791,8 @@ def main(target_date: str = None, scoring_version: str = "v3", stocks_only: bool
         logger.info(f"=== 最新日期股票选股分析开始 (评分版本: {scoring_version}) ===")
     
     # 创建选股器，传入评分版本和股票筛选选项
-    selector = TomorrowStockSelector(scoring_version=scoring_version, stocks_only=stocks_only, skip_strategies=skip_strategies)
+    selector = TomorrowStockSelector(scoring_version=scoring_version, stocks_only=stocks_only, skip_strategies=skip_strategies,
+                                     optimizer_version=optimizer_version, optimizer_params_path=optimizer_params_path)
     
     # 获取分析日期
     if target_date:
@@ -6120,10 +6175,15 @@ if __name__ == "__main__":
                        help='全市场ML评分+策略标注模式（默认开启）')
     parser.add_argument('--no-full-market', action='store_true',
                        help='关闭全市场模式，仅对策略选中的股票评分')
+    parser.add_argument('--optimizer', choices=['v1', 'v2'], default='v1',
+                       help='价格/仓位优化器版本: v1=现有逻辑(默认), v2=自适应价格+风险预算')
+    parser.add_argument('--optimizer-params', default=None,
+                       help='v2优化器参数文件路径 (默认optimizer_params.json)')
 
     args = parser.parse_args()
 
     full_market = args.full_market and not args.no_full_market
     main(target_date=args.date, scoring_version=args.scoring_version,
          stocks_only=args.stocks_only, skip_strategies=args.skip_strategies,
-         full_market=full_market)
+         full_market=full_market, optimizer_version=getattr(args, 'optimizer', 'v1'),
+         optimizer_params_path=getattr(args, 'optimizer_params', None))
