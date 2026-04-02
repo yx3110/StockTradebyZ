@@ -1,0 +1,37 @@
+{
+  "_comment": "Default initial params — to be calibrated via grid search",
+  "entry": {
+    "atr_discount_mult": 0.5,
+    "support_discount_mult": 0.3,
+    "ml_bullish_threshold": 0.005,
+    "ml_bullish_mult": 0.5,
+    "ml_bearish_mult": 1.5,
+    "max_discount": 0.03
+  },
+  "stop": {
+    "atr_multiplier": 2.0,
+    "env_mult_bullish": 0.85,
+    "env_mult_bearish": 1.2,
+    "min_stop_pct": 0.03,
+    "max_stop_main": 0.10,
+    "max_stop_wide": 0.15
+  },
+  "target": {
+    "min_rr_ratio": 2.0,
+    "target_clip_min": 0.03,
+    "target_clip_max": 0.15
+  },
+  "filter": {
+    "composite_cutoff": 0,
+    "min_n": 3,
+    "max_n_bull": 20,
+    "max_n_bear": 5
+  },
+  "trailing": {
+    "trailing_trigger_pct": 0.6,
+    "trailing_fallback_pct": 0.4
+  },
+  "hold": {
+    "max_hold_days": 15
+  }
+}
