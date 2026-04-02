@@ -3847,11 +3847,19 @@ class TomorrowStockSelector:
             if i % progress_interval == 0:
                 logger.info(f"已计算 {i}/{len(all_stocks)} 只股票的评分...")
 
-        # V2: 批量信号筛选+仓位分配
+        # V2: 批量信号筛选+仓位分配 (只标记仓位, 不砍列表)
         if getattr(self, 'optimizer_version', 'v1') == 'v2' and hasattr(self, 'portfolio_optimizer'):
             env_score = getattr(self, '_cached_env_score', 50.0)
-            stock_with_scores = self.portfolio_optimizer.filter_and_allocate(
-                stock_with_scores, env_score)
+            selected = self.portfolio_optimizer.filter_and_allocate(
+                list(stock_with_scores), env_score)
+            # 用selected的仓位回写到stock_with_scores, 未选中的仓位=0
+            selected_codes = {s.get('stock_code', ''): s.get('position_pct', 0) for s in selected}
+            for s in stock_with_scores:
+                code = s.get('stock_code', '')
+                if code in selected_codes:
+                    s['position_pct'] = selected_codes[code]
+                else:
+                    s['position_pct'] = 0
 
         # 过滤 *ST退市风险股/涨停板/停牌股 (T+1不可买入)
         # 注意: 普通ST保留(有些假ST股质量不错)，只剔除*ST(退市风险警示)
