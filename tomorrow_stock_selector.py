@@ -5306,9 +5306,13 @@ class TomorrowStockSelector:
             report += "| 排名 | 股票代码 | 股票名称 | 选中策略 | Q95预测 | 投资建议 | 预测10d | 收盘价 | 买入价 | 止损价 | 目标价 | 仓位 |\n"
             report += "|------|----------|----------|----------|---------|----------|---------|--------|--------|--------|--------|------|\n"
         elif hasattr(self, 'scoring_version') and self.scoring_version in ["v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.4", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.7.9", "v4.8.0", "v4.8.1", "v4.8.2", "v4.8.4", "v4.8.5", "v4.8.6", "v4.8.7", "v4.8.8", "v4.9.0.1", "v4.9.0.2", "v5.0"]:
-            # V4.4+ 多目标预测 - 按composite排序，展示composite+各周期预测
-            report += "| 排名 | 股票代码 | 股票名称 | 选中策略 | Composite | 投资建议 | 预测10d | 收盘价 | 买入价 | 止损价 | 目标价 | 仓位 |\n"
-            report += "|------|----------|----------|----------|-----------|----------|---------|--------|--------|--------|--------|------|\n"
+            # V4.4+ 多目标预测 - 按composite排序
+            if getattr(self, 'optimizer_version', 'v1') == 'v2':
+                report += "| 排名 | 股票代码 | 股票名称 | 选中策略 | Composite | 投资建议 | 预测10d | 收盘价 | 买入价 | 止损价 | 目标价 | 仓位 | 止损% | R:R | ATR% |\n"
+                report += "|------|----------|----------|----------|-----------|----------|---------|--------|--------|--------|--------|------|-------|-----|------|\n"
+            else:
+                report += "| 排名 | 股票代码 | 股票名称 | 选中策略 | Composite | 投资建议 | 预测10d | 收盘价 | 买入价 | 止损价 | 目标价 | 仓位 |\n"
+                report += "|------|----------|----------|----------|-----------|----------|---------|--------|--------|--------|--------|------|\n"
         elif hasattr(self, 'scoring_version') and self.scoring_version in ["v3.9", "v3.94", "v3.95", "v3.96", "v4.0", "v4.2", "v4.3"]:
             # 🏆 V3.9.x Production Model - 简化表头
             report += "| 排名 | 股票代码 | 股票名称 | 选中策略 | 综合评分 | 投资建议 | 预测5d | 收盘价 | 买入价 | 止损价 | 目标价 | 仓位 |\n"
@@ -5607,7 +5611,13 @@ class TomorrowStockSelector:
                 target = stock.get('take_profit_price', 0)
                 pos_pct = stock.get('position_pct', 0)
                 pos_str = f"{pos_pct}%" if pos_pct > 0 else "—"
-                report += f"| {i+1} | {stock_code} | {stock_name} | {strategies_str} | {composite_val:.6f} | {recommendation} | {pred_10d*100:+.2f}% | {close_price:.2f} | {buy_price:.2f} | {stop_loss:.2f} | {target:.2f} | {pos_str} |\n"
+                if getattr(self, 'optimizer_version', 'v1') == 'v2':
+                    stop_pct_val = stock.get('risk_pct', 0)
+                    rr_val = stock.get('risk_reward_ratio', 0)
+                    atr_pct_val = stock.get('atr_pct', 0) * 100
+                    report += f"| {i+1} | {stock_code} | {stock_name} | {strategies_str} | {composite_val:.6f} | {recommendation} | {pred_10d*100:+.2f}% | {close_price:.2f} | {buy_price:.2f} | {stop_loss:.2f} | {target:.2f} | {pos_str} | {stop_pct_val:.1f}% | {rr_val:.1f} | {atr_pct_val:.1f}% |\n"
+                else:
+                    report += f"| {i+1} | {stock_code} | {stock_name} | {strategies_str} | {composite_val:.6f} | {recommendation} | {pred_10d*100:+.2f}% | {close_price:.2f} | {buy_price:.2f} | {stop_loss:.2f} | {target:.2f} | {pos_str} |\n"
             elif hasattr(self, 'scoring_version') and self.scoring_version in ["v3.9", "v3.94", "v3.95", "v3.96", "v4.0", "v4.2", "v4.3"]:
                 # 🏆 V3.9.x Production Model
                 predicted_return_pct = predicted_return * 100  # 转换为百分比
