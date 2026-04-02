@@ -61,10 +61,15 @@ class TestScoreMetricV5:
         score = score_metric_v5(0.015, t)
         assert 0 < score < 1.0
 
-    def test_zero_returns_zero(self):
+    def test_zero_below_pass_gets_fractional_score(self):
         from backtest.north_star_metrics import score_metric_v5
         t = {'pass': 0.03, 'ok': 0.04, 'good': 0.05, 'great': 0.06, 'target': 0.08, 'direction': 'higher'}
-        assert score_metric_v5(0.0, t) == 0.0
+        # value=0 is below pass=0.03 but within extrapolation range → fractional score (0 < s < 1)
+        s = score_metric_v5(0.0, t)
+        assert 0 < s < 1.0, f"0.0 below pass should get fractional score, got {s}"
+        # NaN and None should return exactly 0.0
+        assert score_metric_v5(None, t) == 0.0
+        assert score_metric_v5(float('nan'), t) == 0.0
 
     def test_midpoint_interpolation(self):
         from backtest.north_star_metrics import score_metric_v5

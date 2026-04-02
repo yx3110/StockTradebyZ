@@ -2573,7 +2573,7 @@ def score_metric_v5(value: float, target_info: dict) -> float:
     direction='higher': breakpoints ascending, value>=target → 5.0
     direction='lower': breakpoints descending (pass>ok>...>target), value<=target → 5.0
     """
-    if value is None:
+    if value is None or (isinstance(value, (float, np.floating)) and np.isnan(value)):
         return 0.0
 
     direction = target_info.get('direction', 'higher')
@@ -2591,18 +2591,17 @@ def score_metric_v5(value: float, target_info: dict) -> float:
         if value <= bp_raw[-1]:  # target (smallest)
             return 5.0
         if value > bp_raw[0]:  # worse than pass (largest)
-            worst = bp_raw[0] * 2
-            if worst <= bp_raw[0]:
-                worst = bp_raw[0] + abs(bp_raw[0])
-            return float(np.interp(value, [bp_raw[0], worst], [1.0, 0.0]))
+            worst = bp_raw[0] + max(abs(bp_raw[0] - bp_raw[-1]), abs(bp_raw[0]) * 0.5 + 1e-8)
+            return float(np.clip(np.interp(value, [bp_raw[0], worst], [1.0, 0.0]), 0.0, 1.0))
         return float(np.interp(value, bp_values, scores))
     else:
         if value >= bp_raw[-1]:
             return 5.0
-        if value <= 0:
-            return 0.0
         if value < bp_raw[0]:
-            return float(np.interp(value, [0, bp_raw[0]], [0.0, 1.0]))
+            # 低于pass: 外推到0分 (用pass-target的跨度作为外推范围)
+            range_span = max(abs(bp_raw[-1] - bp_raw[0]), 1e-8)
+            floor = bp_raw[0] - range_span
+            return float(np.clip(np.interp(value, [floor, bp_raw[0]], [0.0, 1.0]), 0.0, 1.0))
         return float(np.interp(value, bp_raw, [1.0, 2.0, 3.0, 4.0, 5.0]))
 
 
@@ -2726,11 +2725,8 @@ def compute_factor_attribution(portfolio_returns: pd.Series,
 
     common = portfolio_returns.index.intersection(factor_returns.index)
     if len(common) < 30:
-        n = min(len(portfolio_returns), len(factor_returns))
-        if n < 30:
-            return default
-        y = portfolio_returns.values[:n] - risk_free_rate / 252
-        X = factor_returns[['MKT', 'SMB', 'HML', 'UMD']].values[:n]
+        # 日期索引不匹配且重叠不足30天,无法做有意义的因子回归
+        return default
     else:
         y = portfolio_returns.loc[common].values - risk_free_rate / 252
         X = factor_returns.loc[common, ['MKT', 'SMB', 'HML', 'UMD']].values
@@ -2957,7 +2953,7 @@ def compute_backtest_length_factor_v5(n_days: int, min_days: int = 500) -> float
     """V5回测长度折扣: log曲线, 比V4更严格. <60天直接拒绝."""
     if n_days >= min_days:
         return 1.0
-    if n_days < 60:
+    if n_days <= 60:
         return 0.0
     return np.log(n_days / 60) / np.log(min_days / 60)
 
@@ -3244,10 +3240,11 @@ def compute_strategy_capacity(picks_with_volume: pd.DataFrame,
         daily_vols = np.full(len(adv_values), 0.025)
     else:
         daily_vols = daily_vols.values
-    daily_trade_frac = avg_turnover
+    # avg_turnover是年化换手率(如30=30x/year), 转为每次调仓换手率
+    daily_trade_frac = avg_turnover / 252 if avg_turnover > 1 else avg_turnover
 
     def total_impact_cost(aum_yuan):
-        position_value = aum_yuan / max(n_positions, len(adv_values))
+        position_value = aum_yuan / max(n_positions, 1)
         total_impact = 0.0
         for i in range(len(adv_values)):
             adv = adv_values[i]

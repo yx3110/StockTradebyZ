@@ -1317,8 +1317,7 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
                     top_returns.append(future_returns[c][key])
                 elif c not in future_returns:
                     top_returns.append(-0.10)  # 退市惩罚
-                else:
-                    top_returns.append(0.0)  # 有数据但缺该周期收益,视为停牌(0%)
+                # else: 股票有部分数据但缺该周期(买入日接近数据尾部), 跳过不计入
             bottom_returns = [future_returns.get(c, {}).get(key, 0) for c in bottom_codes
                              if key in future_returns.get(c, {})]
 
@@ -1874,6 +1873,14 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
                         _vol_df, assumed_aum_mn=100, n_positions=top_n)
         except Exception as _e:
             logger.debug(f"Capacity metrics: {_e}")
+
+        # V5/V5.1: 确保所有可选metric有合理默认值 (避免None→0分)
+        summary[days].setdefault('bear_icir', 0)
+        summary[days].setdefault('cscv_pbo', 0.5)
+        summary[days].setdefault('participation_rate_p90', 0.05)
+        summary[days].setdefault('strategy_capacity_mn', 0)
+        summary[days].setdefault('hurst_deviation', 0.15)
+        summary[days].setdefault('regime_transition_dd', 2.0)
 
         north_star[days] = summary[days]
 
