@@ -101,57 +101,106 @@ def precompute_features(report_dir: str, start_date: str, end_date: str) -> dict
         else:
             env_scores[date] = 50.0
 
-    # 核心: 预计算每个(code, date)的技术特征
+    # 核心: 向量化预计算技术特征 (避免per-stock kline切片)
+    # Step 1: 用reset_index把MultiIndex展开为普通列
+    print("  向量化计算ATR/MA/支撑/阻力...", flush=True)
+    kline_flat = kline_quotes.reset_index()  # columns: code, trade_date, open, high, low, close
+
+    # Step 2: 按code分组, 计算rolling指标
+    def _compute_rolling_features(group):
+        """对单只股票计算所有rolling指标"""
+        g = group.sort_values('trade_date')
+        n = len(g)
+        result = pd.DataFrame(index=g.index)
+        result['trade_date'] = g['trade_date'].values
+        result['close'] = g['close'].values
+
+        # ATR(20): True Range的20日均值
+        prev_close = g['close'].shift(1)
+        tr = pd.concat([
+            g['high'] - g['low'],
+            (g['high'] - prev_close).abs(),
+            (g['low'] - prev_close).abs(),
+        ], axis=1).max(axis=1)
+        result['atr_20'] = tr.rolling(20, min_periods=20).mean()
+
+        # Rolling 20d low (support候选)
+        result['low_20'] = g['low'].rolling(20, min_periods=20).min()
+        # MA20, MA60
+        result['ma20'] = g['close'].rolling(20, min_periods=20).mean()
+        result['ma60'] = g['close'].rolling(60, min_periods=20).mean()
+        # Rolling 20d high (resistance候选)
+        result['high_20'] = g['high'].rolling(20, min_periods=20).max()
+
+        return result
+
+    # 并行计算 (groupby apply)
+    rolled = kline_flat.groupby('code', group_keys=False).apply(_compute_rolling_features)
+    rolled['code'] = kline_flat['code'].values
+
+    # 建立 (code, trade_date) → 特征的快速查找
+    rolled_indexed = rolled.set_index(['code', 'trade_date'])
+    print(f"  Rolling指标计算完成: {len(rolled_indexed)} 行", flush=True)
+
+    # Step 3: 组装features dict (只查lookup, 不切kline)
     features = {}
     n_computed = 0
 
+    # 收集所有需要的(code, date)对
+    needed_pairs = []
+    pair_info = {}  # (code, date) → pred_10d, composite
     for date in dates:
         stocks = reports[date]
         if not stocks:
             continue
-
         for s in stocks:
             code = s.get('code', '')
-            if not code:
-                continue
-
-            try:
-                kline = kline_quotes.loc[code]
-                mask = kline.index <= date
-                kline_before = kline[mask].tail(80)
-                if len(kline_before) < 20:
-                    continue
-
-                highs = kline_before['high'].values
-                lows = kline_before['low'].values
-                closes = kline_before['close'].values
-                close = closes[-1]
-
-                atr = compute_atr(highs, lows, closes, period=20)
-                support = compute_support(highs, lows, closes)
-                resistance = compute_resistance(highs, closes)
-
-                is_wide = code.startswith('30') or code.startswith('688')
-
-                features[(code, date)] = {
-                    'atr': atr,
-                    'atr_pct': atr / close if close > 0 else 0.03,
-                    'support': support,
-                    'resistance': resistance,
-                    'close': close,
+            if code:
+                needed_pairs.append((code, date))
+                pair_info[(code, date)] = {
                     'pred_10d': s.get('pred_10d', 0) or 0,
-                    'is_wide': is_wide,
                     'composite': s.get('rank_score', s.get('score', 0)),
                 }
-                n_computed += 1
-            except (KeyError, IndexError):
-                continue
 
-        if len(features) % 10000 == 0 and len(features) > 0:
-            print(f"  已计算: {len(features)} 条特征...")
+    # 批量查找
+    for code, date in needed_pairs:
+        try:
+            row = rolled_indexed.loc[(code, date)]
+        except KeyError:
+            continue
+
+        close = row['close']
+        atr = row['atr_20']
+        if pd.isna(atr) or pd.isna(close) or close <= 0:
+            continue
+
+        # 计算支撑位
+        low_20 = row['low_20']
+        ma20 = row['ma20']
+        ma60 = row['ma60'] if not pd.isna(row['ma60']) else ma20
+        candidates_sup = [c for c in [low_20, ma20, ma60] if not pd.isna(c) and c < close * 0.995]
+        support = max(candidates_sup) if candidates_sup else close * 0.97
+
+        # 计算阻力位
+        high_20 = row['high_20']
+        candidates_res = [c for c in [high_20, ma20, ma60] if not pd.isna(c) and c > close * 1.005]
+        resistance = min(candidates_res) if candidates_res else close * 1.08
+
+        info = pair_info[(code, date)]
+        features[(code, date)] = {
+            'atr': float(atr),
+            'atr_pct': float(atr / close),
+            'support': float(support),
+            'resistance': float(resistance),
+            'close': float(close),
+            'pred_10d': info['pred_10d'],
+            'is_wide': code.startswith('30') or code.startswith('688'),
+            'composite': info['composite'],
+        }
+        n_computed += 1
 
     elapsed = time.time() - t0
-    print(f"  预计算完成: {n_computed} 条特征, {elapsed:.1f}秒")
+    print(f"  预计算完成: {n_computed} 条特征, {elapsed:.1f}秒", flush=True)
 
     return {
         'reports': reports,
