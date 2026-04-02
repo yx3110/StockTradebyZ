@@ -10506,6 +10506,337 @@ class V493Trainer(V4901Trainer):
         return model_data, history
 
 
+class V493ATrainer(V4901Trainer):
+    """消融实验A: 仅删13特征 (61->48), 无BRAIN因子, 无浓度对策
+
+    隔离V4.9.3的特征裁剪效果。与V4901基线相比:
+    - 有: 裁剪13个低IC/高冗余特征
+    - 无: 3个BRAIN代理因子
+    - 无: LGB feature_fraction=0.5 重训
+    - 无: 权重clip/shrinkage
+    """
+
+    V493A_EXTRA_PRUNE = [
+        'dv_ttm', 'max_pct_change_5d', 'cci_14', 'macd_hist',
+        'brain_roll_spread', 'vol_price_div', 'return_skewness_proxy',
+        'return_10d', 'ma10_ratio', 'return_1d',
+        'price_acceleration', 'max_ret_20d', 'avg_pct_change_5d',
+    ]
+
+    def prepare_features(self, df):
+        X, y_3d, y_5d, y_10d, y_15d, df_out = super().prepare_features(df)
+        # 确保macro/stock属性存在 (防止保存model_data时AttributeError)
+        if not hasattr(self, 'macro_feature_cols'):
+            self.macro_feature_cols = []
+        if not hasattr(self, 'stock_feature_cols'):
+            self.stock_feature_cols = list(self.feature_names) if self.feature_names else []
+        # 裁剪13个特征
+        if self.feature_names:
+            keep = [i for i, n in enumerate(self.feature_names) if n not in self.V493A_EXTRA_PRUNE]
+            pruned = [n for n in self.feature_names if n in self.V493A_EXTRA_PRUNE]
+            if pruned:
+                X = X[:, keep]
+                self.feature_names = [self.feature_names[i] for i in keep]
+                if hasattr(self, 'macro_feature_cols'):
+                    self.macro_feature_cols = [c for c in self.macro_feature_cols if c not in pruned]
+                if hasattr(self, 'stock_feature_cols'):
+                    self.stock_feature_cols = [c for c in self.stock_feature_cols if c not in pruned]
+                logger.info(f"  [Ablation-A] 裁剪 {len(pruned)} 特征 → {len(self.feature_names)} 剩余")
+        return X, y_3d, y_5d, y_10d, y_15d, df_out
+
+    def walk_forward_train(self, start_date=None, end_date=None, purge_days=15,
+                            min_train_days=900, val_days=120, test_days=120, step_days=90):
+        import shutil, json as _json, joblib
+
+        version_tag = 'v493a'
+        logger.info("=" * 60)
+        logger.info(f"[Ablation-A] 仅删13特征 (61→48), 无BRAIN, 无浓度对策")
+        logger.info("=" * 60)
+
+        model_data, history = V485Trainer.walk_forward_train(
+            self, start_date=start_date, end_date=end_date,
+            purge_days=purge_days, min_train_days=min_train_days,
+            val_days=val_days, test_days=test_days, step_days=step_days)
+
+        if model_data.get('fast_check'):
+            return model_data, history
+
+        v485_dir = PROJECT_ROOT / 'ml_models' / 'trained_models' / 'v485'
+        out_dir = PROJECT_ROOT / 'ml_models' / 'trained_models' / version_tag
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        v485_files = sorted(v485_dir.glob('v485_*.pkl'), key=lambda f: f.stat().st_mtime)
+        if v485_files:
+            latest = v485_files[-1]
+            timestamp = latest.stem.replace('v485_multi_target_', '')
+            new_path = out_dir / f'{version_tag}_multi_target_{timestamp}.pkl'
+            model_data['version'] = 'ablation-A'
+            model_data['ablation'] = 'prune_only'
+            model_data['ablation_desc'] = '仅删13特征 (61→48), 无BRAIN, 无浓度对策'
+            joblib.dump(model_data, new_path)
+            logger.info(f"\n[Ablation-A] saved: {new_path}")
+            for aux in ['global_quantiles.npy', 'recommendation_thresholds.json']:
+                src = v485_dir / aux
+                if src.exists():
+                    shutil.copy2(str(src), str(out_dir / aux))
+            latest.unlink()
+            history['version'] = 'ablation-A'
+            with open(out_dir / f'training_history_{timestamp}.json', 'w') as f:
+                _json.dump(history, f, indent=2, ensure_ascii=False)
+            with open(out_dir / 'training_history_latest.json', 'w') as f:
+                _json.dump(history, f, indent=2, ensure_ascii=False)
+        return model_data, history
+
+
+class V493BTrainer(V4901Trainer):
+    """消融实验B: 仅加3个BRAIN代理因子 (61->64), 无裁剪, 无浓度对策
+
+    隔离V4.9.3的BRAIN因子效果。与V4901基线相比:
+    - 无: 特征裁剪
+    - 有: 3个BRAIN代理因子 (brain_vol_clustering, brain_tail_risk, brain_ret_autocorr)
+    - 无: LGB feature_fraction=0.5 重训
+    - 无: 权重clip/shrinkage
+    """
+
+    V493B_BRAIN_FACTORS = [
+        'brain_vol_clustering',
+        'brain_tail_risk',
+        'brain_ret_autocorr',
+    ]
+
+    def prepare_features(self, df):
+        X, y_3d, y_5d, y_10d, y_15d, df_out = super().prepare_features(df)
+        # 确保macro/stock属性存在
+        if not hasattr(self, 'macro_feature_cols'):
+            self.macro_feature_cols = []
+        if not hasattr(self, 'stock_feature_cols'):
+            self.stock_feature_cols = list(self.feature_names) if self.feature_names else []
+
+        # 添加3个BRAIN代理因子 (从V493Trainer复制逻辑)
+        n_added = 0
+
+        # brain_vol_clustering: atr_14_pct / gk_vol_20d
+        if 'gk_vol_20d' in df_out.columns and 'atr_14_pct' in df_out.columns:
+            gk = df_out['gk_vol_20d'].values.astype(float)
+            atr = df_out['atr_14_pct'].values.astype(float)
+            denom = np.where(np.abs(gk) > 1e-8, gk, 1e-8)
+            brain_vc = atr / denom
+            brain_vc = np.clip(np.nan_to_num(brain_vc, nan=1.0), 0.0, 10.0)
+            X = np.column_stack([X, brain_vc])
+            self.feature_names.append('brain_vol_clustering')
+            n_added += 1
+        elif 'market_volatility_10d' in df_out.columns and 'market_volatility_20d' in df_out.columns:
+            v10 = df_out['market_volatility_10d'].values.astype(float)
+            v20 = df_out['market_volatility_20d'].values.astype(float)
+            denom = np.where(np.abs(v20) > 1e-8, v20, 1e-8)
+            brain_vc = v10 / denom
+            brain_vc = np.clip(np.nan_to_num(brain_vc, nan=1.0), 0.0, 10.0)
+            X = np.column_stack([X, brain_vc])
+            self.feature_names.append('brain_vol_clustering')
+            n_added += 1
+
+        # brain_tail_risk: max_ret_20d / gk_vol_20d
+        if 'max_ret_20d' in df_out.columns and 'gk_vol_20d' in df_out.columns:
+            maxr = df_out['max_ret_20d'].values.astype(float)
+            gk = df_out['gk_vol_20d'].values.astype(float)
+            denom = np.where(np.abs(gk) > 1e-8, gk, 1e-8)
+            brain_tr = maxr / denom
+            brain_tr = np.clip(np.nan_to_num(brain_tr, nan=0.0), -10.0, 10.0)
+            X = np.column_stack([X, brain_tr])
+            self.feature_names.append('brain_tail_risk')
+            n_added += 1
+
+        # brain_ret_autocorr: return_1d * return_skewness_proxy
+        ret1d_col = 'return_1d' if 'return_1d' in df_out.columns else None
+        skew_col = 'return_skewness_proxy' if 'return_skewness_proxy' in df_out.columns else None
+        if ret1d_col and skew_col:
+            r1d = df_out[ret1d_col].values.astype(float)
+            rsk = df_out[skew_col].values.astype(float)
+            brain_ac = r1d * rsk
+            brain_ac = np.clip(np.nan_to_num(brain_ac, nan=0.0), -10.0, 10.0)
+            X = np.column_stack([X, brain_ac])
+            self.feature_names.append('brain_ret_autocorr')
+            n_added += 1
+
+        logger.info(f"  [Ablation-B] 添加 {n_added}/{len(self.V493B_BRAIN_FACTORS)} BRAIN代理因子, 最终 {X.shape[1]} 特征")
+        return X, y_3d, y_5d, y_10d, y_15d, df_out
+
+    def walk_forward_train(self, start_date=None, end_date=None, purge_days=15,
+                            min_train_days=900, val_days=120, test_days=120, step_days=90):
+        import shutil, json as _json, joblib
+
+        version_tag = 'v493b'
+        logger.info("=" * 60)
+        logger.info(f"[Ablation-B] 仅加3个BRAIN代理因子 (61→64), 无裁剪, 无浓度对策")
+        logger.info("=" * 60)
+
+        model_data, history = V485Trainer.walk_forward_train(
+            self, start_date=start_date, end_date=end_date,
+            purge_days=purge_days, min_train_days=min_train_days,
+            val_days=val_days, test_days=test_days, step_days=step_days)
+
+        if model_data.get('fast_check'):
+            return model_data, history
+
+        v485_dir = PROJECT_ROOT / 'ml_models' / 'trained_models' / 'v485'
+        out_dir = PROJECT_ROOT / 'ml_models' / 'trained_models' / version_tag
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        v485_files = sorted(v485_dir.glob('v485_*.pkl'), key=lambda f: f.stat().st_mtime)
+        if v485_files:
+            latest = v485_files[-1]
+            timestamp = latest.stem.replace('v485_multi_target_', '')
+            new_path = out_dir / f'{version_tag}_multi_target_{timestamp}.pkl'
+            model_data['version'] = 'ablation-B'
+            model_data['ablation'] = 'brain_only'
+            model_data['ablation_desc'] = '仅加3个BRAIN代理因子 (61→64), 无裁剪, 无浓度对策'
+            joblib.dump(model_data, new_path)
+            logger.info(f"\n[Ablation-B] saved: {new_path}")
+            for aux in ['global_quantiles.npy', 'recommendation_thresholds.json']:
+                src = v485_dir / aux
+                if src.exists():
+                    shutil.copy2(str(src), str(out_dir / aux))
+            latest.unlink()
+            history['version'] = 'ablation-B'
+            with open(out_dir / f'training_history_{timestamp}.json', 'w') as f:
+                _json.dump(history, f, indent=2, ensure_ascii=False)
+            with open(out_dir / 'training_history_latest.json', 'w') as f:
+                _json.dump(history, f, indent=2, ensure_ascii=False)
+        return model_data, history
+
+
+class V493CTrainer(V4901Trainer):
+    """消融实验C: 仅浓度对策 (权重clip/shrinkage + LGB feat_frac=0.5), 保持61特征
+
+    隔离V4.9.3的集成权重收缩效果。与V4901基线相比:
+    - 无: 特征裁剪
+    - 无: BRAIN代理因子
+    - 有: LGB feature_fraction 0.6→0.5 重训
+    - 有: 权重clip [0.10, 0.35] + shrinkage 0.3
+    """
+
+    def train_single_target_models(self, X_train, X_val, y_train, y_val, target_name: str,
+                                    sample_weights_train=None):
+        """V493C: 父类模型 + LGB feature_fraction=0.5 重训"""
+        import gc
+
+        models, pred_train, pred_val = super().train_single_target_models(
+            X_train, X_val, y_train, y_val, target_name,
+            sample_weights_train=sample_weights_train)
+
+        # 重训LGB: feature_fraction 0.6→0.5 (与V493相同)
+        try:
+            lgb_params_v493c = {
+                'objective': 'regression',
+                'metric': 'rmse',
+                'boosting_type': 'gbdt',
+                'num_leaves': 31,
+                'learning_rate': 0.02,
+                'feature_fraction': 0.5,
+                'bagging_fraction': 0.7,
+                'bagging_freq': 5,
+                'reg_alpha': 0.5,
+                'reg_lambda': 3.0,
+                'min_data_in_leaf': 200,
+                'min_gain_to_split': 0.01,
+                'path_smooth': 5.0,
+                'verbose': -1,
+            }
+            if hasattr(self, '_cli_num_leaves'):
+                lgb_params_v493c['num_leaves'] = self._cli_num_leaves
+            if hasattr(self, '_cli_min_data_in_leaf'):
+                lgb_params_v493c['min_data_in_leaf'] = self._cli_min_data_in_leaf
+
+            lgb_train = lgb.Dataset(X_train, label=y_train,
+                                    weight=sample_weights_train, free_raw_data=True)
+            lgb_val = lgb.Dataset(X_val, label=y_val, reference=lgb_train, free_raw_data=True)
+
+            lgb_model_v493c = lgb.train(
+                lgb_params_v493c, lgb_train,
+                num_boost_round=1000,
+                valid_sets=[lgb_train, lgb_val],
+                callbacks=[lgb.early_stopping(30), lgb.log_evaluation(0)]
+            )
+            models['lgb'] = lgb_model_v493c
+            pred_train['lgb'] = lgb_model_v493c.predict(X_train)
+            pred_val['lgb'] = lgb_model_v493c.predict(X_val)
+            logger.info(f"    [Ablation-C] LGB retrained ({target_name}): "
+                        f"feat_frac=0.5, best_iter={lgb_model_v493c.best_iteration}")
+            del lgb_train, lgb_val
+            gc.collect()
+        except Exception as e:
+            logger.warning(f"    [Ablation-C] LGB重训失败, 保留父类版: {e}")
+
+        return models, pred_train, pred_val
+
+    def calculate_ensemble_weights(self, predictions_val: dict, y_val) -> dict:
+        """V493C: IC加权 + clip [0.10, 0.35] + shrinkage 0.3 toward 等权"""
+        weights, mean_ics = super().calculate_ensemble_weights(predictions_val, y_val)
+
+        n_models = len(weights)
+        if n_models <= 1:
+            return weights, mean_ics
+
+        equal_w = 1.0 / n_models
+        shrinkage = 0.3
+        clip_lo, clip_hi = 0.10, 0.35
+
+        clipped = {k: np.clip(v, clip_lo, clip_hi) for k, v in weights.items()}
+        shrunk = {k: (1 - shrinkage) * v + shrinkage * equal_w for k, v in clipped.items()}
+        total = sum(shrunk.values())
+        if total > 1e-8:
+            shrunk = {k: v / total for k, v in shrunk.items()}
+
+        logger.info(f"  [Ablation-C] 权重收缩: clip[{clip_lo},{clip_hi}] + shrinkage={shrinkage}")
+        logger.info(f"    原始: {', '.join(f'{k}={v:.3f}' for k, v in weights.items())}")
+        logger.info(f"    收缩: {', '.join(f'{k}={v:.3f}' for k, v in shrunk.items())}")
+
+        return shrunk, mean_ics
+
+    def walk_forward_train(self, start_date=None, end_date=None, purge_days=15,
+                            min_train_days=900, val_days=120, test_days=120, step_days=90):
+        import shutil, json as _json, joblib
+
+        version_tag = 'v493c'
+        logger.info("=" * 60)
+        logger.info(f"[Ablation-C] 仅浓度对策 (权重clip/shrinkage + LGB feat_frac=0.5), 保持61特征")
+        logger.info("=" * 60)
+
+        model_data, history = V485Trainer.walk_forward_train(
+            self, start_date=start_date, end_date=end_date,
+            purge_days=purge_days, min_train_days=min_train_days,
+            val_days=val_days, test_days=test_days, step_days=step_days)
+
+        if model_data.get('fast_check'):
+            return model_data, history
+
+        v485_dir = PROJECT_ROOT / 'ml_models' / 'trained_models' / 'v485'
+        out_dir = PROJECT_ROOT / 'ml_models' / 'trained_models' / version_tag
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        v485_files = sorted(v485_dir.glob('v485_*.pkl'), key=lambda f: f.stat().st_mtime)
+        if v485_files:
+            latest = v485_files[-1]
+            timestamp = latest.stem.replace('v485_multi_target_', '')
+            new_path = out_dir / f'{version_tag}_multi_target_{timestamp}.pkl'
+            model_data['version'] = 'ablation-C'
+            model_data['ablation'] = 'concentration_fix_only'
+            model_data['ablation_desc'] = '仅浓度对策 (权重clip/shrinkage + LGB feat_frac=0.5), 保持61特征'
+            joblib.dump(model_data, new_path)
+            logger.info(f"\n[Ablation-C] saved: {new_path}")
+            for aux in ['global_quantiles.npy', 'recommendation_thresholds.json']:
+                src = v485_dir / aux
+                if src.exists():
+                    shutil.copy2(str(src), str(out_dir / aux))
+            latest.unlink()
+            history['version'] = 'ablation-C'
+            with open(out_dir / f'training_history_{timestamp}.json', 'w') as f:
+                _json.dump(history, f, indent=2, ensure_ascii=False)
+            with open(out_dir / 'training_history_latest.json', 'w') as f:
+                _json.dump(history, f, indent=2, ensure_ascii=False)
+        return model_data, history
+
+
 class V486Trainer(V485Trainer):
     """V4.8.6 训练器 — V4.8.5底座 + 3个BRAIN因子 + 头部区分度优化 (61 → 64特征)
 
@@ -13449,6 +13780,12 @@ def main():
         help='V4.9.0.1: V4.9.0去头尾加权(只保留Q95+trunc=10, 修复预测偏移)')
     parser.add_argument('--v493', action='store_true',
         help='V4.9.3: V4.9.0.1+特征精选+BRAIN代理因子+权重收缩(61→~51特征)')
+    parser.add_argument('--v493a', action='store_true',
+        help='消融A: 仅删13特征(61→48), 无BRAIN, 无浓度对策')
+    parser.add_argument('--v493b', action='store_true',
+        help='消融B: 仅加3个BRAIN因子(61→64), 无裁剪, 无浓度对策')
+    parser.add_argument('--v493c', action='store_true',
+        help='消融C: 仅浓度对策(权重clip/shrinkage+LGB feat_frac=0.5), 保持61特征')
     parser.add_argument('--v4902', action='store_true',
         help='V4.9.0.2: V4.9.0.1+Sharpe-Blend↑+下行加权×1.5+WF摘要')
     parser.add_argument('--v488', action='store_true', help='V4.9.0: V4.8.7+基准超额标签+熊市×2.5+单调性集成(69特征, 目标S级)')
@@ -13550,6 +13887,39 @@ def main():
             purge_days=max(args.purge_days, 15))
     elif args.v493:
         trainer = V493Trainer()
+        _apply_overrides(trainer)
+        if args.skip_wf:
+            trainer.train_production_only(
+                start_date=args.start_date, end_date=args.end_date,
+                purge_days=max(args.purge_days, 15))
+        else:
+            trainer.walk_forward_train(
+                start_date=args.start_date, end_date=args.end_date,
+                purge_days=max(args.purge_days, 15))
+    elif args.v493a:
+        trainer = V493ATrainer()
+        _apply_overrides(trainer)
+        if args.skip_wf:
+            trainer.train_production_only(
+                start_date=args.start_date, end_date=args.end_date,
+                purge_days=max(args.purge_days, 15))
+        else:
+            trainer.walk_forward_train(
+                start_date=args.start_date, end_date=args.end_date,
+                purge_days=max(args.purge_days, 15))
+    elif args.v493b:
+        trainer = V493BTrainer()
+        _apply_overrides(trainer)
+        if args.skip_wf:
+            trainer.train_production_only(
+                start_date=args.start_date, end_date=args.end_date,
+                purge_days=max(args.purge_days, 15))
+        else:
+            trainer.walk_forward_train(
+                start_date=args.start_date, end_date=args.end_date,
+                purge_days=max(args.purge_days, 15))
+    elif args.v493c:
+        trainer = V493CTrainer()
         _apply_overrides(trainer)
         if args.skip_wf:
             trainer.train_production_only(

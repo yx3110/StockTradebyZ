@@ -51,6 +51,9 @@ from .v487_production_scorer import V487ProductionScorer
 from .alpha158_production_scorer import Alpha158ProductionScorer
 from .v4902_production_scorer import V4902ProductionScorer
 from .v493_production_scorer import V493ProductionScorer
+from .v493a_production_scorer import V493AProductionScorer
+from .v493b_production_scorer import V493BProductionScorer
+from .v493c_production_scorer import V493CProductionScorer
 
 # 补全缺失的 scorer 导入
 from .v395_production_scorer import V395ProductionScorer
@@ -90,4 +93,7 @@ __all__ = [
     'Alpha158ProductionScorer',
     'V4902ProductionScorer',
     'V493ProductionScorer',
+    'V493AProductionScorer',
+    'V493BProductionScorer',
+    'V493CProductionScorer',
 ]
