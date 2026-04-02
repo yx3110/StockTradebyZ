@@ -6197,8 +6197,8 @@ if __name__ == "__main__":
                        help='全市场ML评分+策略标注模式（默认开启）')
     parser.add_argument('--no-full-market', action='store_true',
                        help='关闭全市场模式，仅对策略选中的股票评分')
-    parser.add_argument('--optimizer', choices=['v1', 'v2'], default='v1',
-                       help='价格/仓位优化器版本: v1=现有逻辑(默认), v2=自适应价格+风险预算')
+    parser.add_argument('--optimizer', choices=['v1', 'v2'], default='v2',
+                       help='价格/仓位优化器版本: v1=旧逻辑, v2=自适应价格+风险预算(默认)')
     parser.add_argument('--optimizer-params', default=None,
                        help='v2优化器参数文件路径 (默认optimizer_params.json)')
 
