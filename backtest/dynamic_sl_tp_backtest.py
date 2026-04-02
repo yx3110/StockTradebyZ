@@ -111,6 +111,59 @@ def simulate_trade_with_trailing(
             'exit_price': exit_price, 'exit_date': exit_date}
 
 
+def preload_backtest_data(report_dir: str, start_date: str = None,
+                          end_date: str = None) -> dict:
+    """预加载回测数据, 供网格搜索时复用 (避免每次重新加载3M+行)"""
+    from backtest.backtest_report_based import load_reports
+    from backtest.backtest_stop_target_direct import preload_all_quotes
+
+    reports = load_reports(report_dir, rank_field='composite')
+    dates = sorted(reports.keys())
+    if start_date:
+        dates = [d for d in dates if d >= start_date]
+    if end_date:
+        dates = [d for d in dates if d <= end_date]
+
+    if not dates:
+        return {}
+
+    print(f"  预加载回测数据: {len(dates)}天, {dates[0]} -> {dates[-1]}")
+    all_quotes = preload_all_quotes(dates[0], '2026-12-31')
+
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    lookback_dates = [r[0] for r in conn.execute("""
+        SELECT DISTINCT trade_date FROM daily_quotes
+        WHERE trade_date <= ? ORDER BY trade_date DESC LIMIT 80
+    """, (dates[0],)).fetchall()]
+    lookback_start = lookback_dates[-1] if lookback_dates else dates[0]
+    conn.close()
+
+    kline_quotes = preload_all_quotes(lookback_start, '2026-12-31')
+
+    # 预加载env_scores
+    env_scores = {}
+    for date in dates:
+        json_path = Path(report_dir) / f"analysis_data_{date.replace('-','')}.json"
+        if json_path.exists():
+            try:
+                with open(json_path) as f:
+                    data = json.load(f)
+                te = data.get('trading_environment', {})
+                env_scores[date] = te.get('total_score', 50.0)
+            except Exception:
+                env_scores[date] = 50.0
+        else:
+            env_scores[date] = 50.0
+
+    return {
+        'reports': reports,
+        'dates': dates,
+        'all_quotes': all_quotes,
+        'kline_quotes': kline_quotes,
+        'env_scores': env_scores,
+    }
+
+
 def run_portfolio_backtest(
     report_dir: str,
     params: dict,
@@ -119,6 +172,8 @@ def run_portfolio_backtest(
     end_date: str = None,
     use_optimizer: bool = True,
     label: str = 'Optimized',
+    preloaded_data: dict = None,
+    quiet: bool = False,
 ) -> dict:
     """
     组合级别回测: 读取报告 → 计算价格 → 模拟交易 → 聚合收益
@@ -129,6 +184,9 @@ def run_portfolio_backtest(
         benchmark_codes: 基准指数列表, 默认 ['000300.SH', '932000.CSI']
         use_optimizer: True=新逻辑, False=旧逻辑(对照组)
         label: 回测标签
+        preloaded_data: 预加载的数据缓存 {reports, dates, all_quotes, kline_quotes, env_scores}
+                       用于网格搜索时避免重复加载
+        quiet: 静默模式 (减少打印)
 
     Returns:
         {
@@ -141,41 +199,50 @@ def run_portfolio_backtest(
     if benchmark_codes is None:
         benchmark_codes = ['000300.SH', '932000.CSI']
 
-    # 导入现有基础设施
-    from backtest.backtest_report_based import load_reports
-    from backtest.backtest_stop_target_direct import preload_all_quotes
+    if preloaded_data:
+        reports = preloaded_data['reports']
+        dates = preloaded_data['dates']
+        all_quotes = preloaded_data['all_quotes']
+        kline_quotes = preloaded_data['kline_quotes']
+    else:
+        # 导入现有基础设施
+        from backtest.backtest_report_based import load_reports
+        from backtest.backtest_stop_target_direct import preload_all_quotes
 
-    # 加载报告
-    reports = load_reports(report_dir, rank_field='composite')
-    dates = sorted(reports.keys())
-    if start_date:
-        dates = [d for d in dates if d >= start_date]
-    if end_date:
-        dates = [d for d in dates if d <= end_date]
+        # 加载报告
+        reports = load_reports(report_dir, rank_field='composite')
+        dates = sorted(reports.keys())
+        if start_date:
+            dates = [d for d in dates if d >= start_date]
+        if end_date:
+            dates = [d for d in dates if d <= end_date]
+
+        if not dates:
+            print(f"  无可用报告: {report_dir}")
+            return {}
+
+        # 预加载日线数据 — 需要报告期+持仓期的数据
+        all_quotes = preload_all_quotes(dates[0], '2026-12-31')
+
+        # 预加载60日K线用于ATR/支撑/阻力计算
+        conn = sqlite3.connect(DB_PATH, timeout=30)
+        lookback_dates = [r[0] for r in conn.execute("""
+            SELECT DISTINCT trade_date FROM daily_quotes
+            WHERE trade_date <= ? ORDER BY trade_date DESC LIMIT 80
+        """, (dates[0],)).fetchall()]
+        lookback_start = lookback_dates[-1] if lookback_dates else dates[0]
+        conn.close()
+
+        kline_quotes = preload_all_quotes(lookback_start, '2026-12-31')
 
     if not dates:
-        print(f"  无可用报告: {report_dir}")
         return {}
 
-    print(f"\n{'='*60}")
-    print(f"  回测: {label}")
-    print(f"  报告: {len(dates)}天, {dates[0]} -> {dates[-1]}")
-    print(f"  模式: {'新Optimizer' if use_optimizer else '旧逻辑'}")
-
-    # 预加载日线数据 — 需要报告期+持仓期的数据
-    all_quotes = preload_all_quotes(dates[0], '2026-12-31')
-
-    # 预加载60日K线用于ATR/支撑/阻力计算
-    conn = sqlite3.connect(DB_PATH, timeout=30)
-    # 找到start_date前80个交易日
-    lookback_dates = [r[0] for r in conn.execute("""
-        SELECT DISTINCT trade_date FROM daily_quotes
-        WHERE trade_date <= ? ORDER BY trade_date DESC LIMIT 80
-    """, (dates[0],)).fetchall()]
-    lookback_start = lookback_dates[-1] if lookback_dates else dates[0]
-    conn.close()
-
-    kline_quotes = preload_all_quotes(lookback_start, '2026-12-31')
+    if not quiet:
+        print(f"\n{'='*60}")
+        print(f"  回测: {label}")
+        print(f"  报告: {len(dates)}天, {dates[0]} -> {dates[-1]}")
+        print(f"  模式: {'新Optimizer' if use_optimizer else '旧逻辑'}")
 
     # 导入PortfolioOptimizer
     if use_optimizer:
@@ -296,15 +363,16 @@ def run_portfolio_backtest(
     # 退出统计
     exit_stats = trades_df['outcome'].value_counts(normalize=True).to_dict()
 
-    print(f"\n  交易笔数: {len(all_trades)}")
-    print(f"  年化收益: {metrics.get('annual_return', 0):.1%}")
-    print(f"  Sharpe: {metrics.get('sharpe', 0):.3f}")
-    print(f"  MaxDD: {metrics.get('max_drawdown', 0):.1%}")
-    for bc in benchmark_codes:
-        print(f"  超额({bc}): {metrics.get(f'excess_{bc}', 0):.1%}")
-    print(f"  止损率: {exit_stats.get('stop_loss', 0):.1%}")
-    print(f"  止盈率: {exit_stats.get('take_profit', 0):.1%}")
-    print(f"  到期率: {exit_stats.get('max_hold', 0):.1%}")
+    if not quiet:
+        print(f"\n  交易笔数: {len(all_trades)}")
+        print(f"  年化收益: {metrics.get('annual_return', 0):.1%}")
+        print(f"  Sharpe: {metrics.get('sharpe', 0):.3f}")
+        print(f"  MaxDD: {metrics.get('max_drawdown', 0):.1%}")
+        for bc in benchmark_codes:
+            print(f"  超额({bc}): {metrics.get(f'excess_{bc}', 0):.1%}")
+        print(f"  止损率: {exit_stats.get('stop_loss', 0):.1%}")
+        print(f"  止盈率: {exit_stats.get('take_profit', 0):.1%}")
+        print(f"  到期率: {exit_stats.get('max_hold', 0):.1%}")
 
     return {
         'label': label,

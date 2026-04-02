@@ -21,38 +21,39 @@ sys.path.insert(0, PROJECT_ROOT)
 os.chdir(PROJECT_ROOT)
 
 from portfolio_optimizer import load_params
-from backtest.dynamic_sl_tp_backtest import run_portfolio_backtest
+from backtest.dynamic_sl_tp_backtest import run_portfolio_backtest, preload_backtest_data
 
 
 # ============================================================
 # 搜索网格定义
 # ============================================================
 SEARCH_GRIDS = {
+    # 粗搜网格: 每组控制在 50-200 组合内, 保证可在合理时间完成
     'stop': {
-        'stop.atr_multiplier': [1.0, 1.5, 2.0, 2.5, 3.0],
-        'stop.env_mult_bullish': [0.7, 0.85, 1.0],
-        'stop.env_mult_bearish': [1.0, 1.2, 1.5],
-        'stop.min_stop_pct': [0.02, 0.03, 0.04],
-        'stop.max_stop_main': [0.08, 0.10, 0.12],
-        'stop.max_stop_wide': [0.12, 0.15, 0.18],
-    },
+        # 最关键: ATR倍数决定止损宽窄 (5值)
+        'stop.atr_multiplier': [1.5, 2.0, 2.5, 3.0, 4.0],
+        # 环境调节 (固定中间值, 减少维度)
+        'stop.env_mult_bullish': [0.85, 1.0],
+        'stop.env_mult_bearish': [1.0, 1.3],
+        # 硬限制 (3值)
+        'stop.min_stop_pct': [0.02, 0.03, 0.05],
+        'stop.max_stop_main': [0.08, 0.10, 0.15],
+    },  # 5×2×2×3×3 = 180 组合
     'target': {
         'target.min_rr_ratio': [1.5, 2.0, 2.5, 3.0],
         'target.target_clip_min': [0.02, 0.03, 0.05],
         'target.target_clip_max': [0.10, 0.15, 0.20],
-    },
+    },  # 4×3×3 = 36 组合
     'entry': {
-        'entry.atr_discount_mult': [0.1, 0.3, 0.5, 0.7, 1.0],
-        'entry.support_discount_mult': [0.1, 0.2, 0.3, 0.5],
-        'entry.ml_bullish_threshold': [0.002, 0.005, 0.01],
-        'entry.ml_bullish_mult': [0.3, 0.5, 0.7],
-        'entry.ml_bearish_mult': [1.2, 1.5, 2.0],
-        'entry.max_discount': [0.02, 0.03, 0.05],
-    },
+        'entry.atr_discount_mult': [0.0, 0.3, 0.5, 1.0],
+        'entry.support_discount_mult': [0.0, 0.2, 0.5],
+        'entry.ml_bullish_mult': [0.3, 0.5, 1.0],
+        'entry.ml_bearish_mult': [1.0, 1.5, 2.0],
+    },  # 4×3×3×3 = 108 组合
     'filter': {
-        'filter.composite_cutoff': [0, 0.0001, 0.0005, 0.001],
-        'filter.min_n': [3, 5, 8],
-        'filter.max_n_bull': [10, 15, 20, 30],
+        'filter.composite_cutoff': [0, 0.0005, 0.001],
+        'filter.min_n': [3, 5, 10],
+        'filter.max_n_bull': [10, 15, 20],
         'filter.max_n_bear': [3, 5, 8],
     },
     'trailing': {
@@ -82,9 +83,13 @@ def objective(metrics: dict) -> float:
 
 def calibrate_group(group_name: str, grid: dict, base_params: dict,
                     report_dir: str, is_dates: Tuple[str, str],
-                    oos_dates: Tuple[str, str]) -> Tuple[dict, list]:
+                    oos_dates: Tuple[str, str],
+                    is_data: dict = None, oos_data: dict = None) -> Tuple[dict, list]:
     """
     对一组参数做网格搜索
+
+    Args:
+        is_data/oos_data: 预加载的回测数据 (避免每次重新加载)
 
     Returns: (best_params, search_log)
     """
@@ -107,6 +112,7 @@ def calibrate_group(group_name: str, grid: dict, base_params: dict,
             report_dir, params,
             start_date=is_dates[0], end_date=is_dates[1],
             label=f'{group_name}_{i}',
+            preloaded_data=is_data, quiet=True,
         )
         elapsed = time.time() - t0
 
@@ -152,6 +158,7 @@ def calibrate_group(group_name: str, grid: dict, base_params: dict,
             report_dir, params,
             start_date=oos_dates[0], end_date=oos_dates[1],
             label=f'{group_name}_OOS_{j}',
+            preloaded_data=oos_data, quiet=True,
         )
         if not oos_result:
             continue
@@ -207,6 +214,12 @@ def main():
     if args.phase != 'all':
         phases = [args.phase]
 
+    # 预加载数据 (一次加载, 所有phase复用)
+    print("预加载IS期数据...")
+    is_data = preload_backtest_data(args.report_dir, args.is_start, args.is_end)
+    print("预加载OOS期数据...")
+    oos_data = preload_backtest_data(args.report_dir, args.oos_start, args.oos_end)
+
     all_logs = {}
     for phase in phases:
         if phase not in SEARCH_GRIDS:
@@ -214,6 +227,7 @@ def main():
         base_params, logs = calibrate_group(
             phase, SEARCH_GRIDS[phase], base_params,
             args.report_dir, is_dates, oos_dates,
+            is_data=is_data, oos_data=oos_data,
         )
         all_logs[phase] = logs
 
