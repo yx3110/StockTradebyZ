@@ -70,6 +70,36 @@ DB_PATH = str(PROJECT_ROOT / 'data_adapter' / 'stock_data.db')
 _wf_shared = {}
 
 
+def _train_prod_target_worker(target_idx):
+    """Train a single production target in a forked subprocess.
+
+    Reads from module-level _prod_shared (populated before fork).
+    Returns (target_key, models, weights, rmses, y_va).
+    """
+    import gc as _gc
+    d = _prod_shared
+    trainer = d['trainer']
+    X_train_f, X_val_f = d['X_train_f'], d['X_val_f']
+    df_train_f = d['df_train_f']
+    target_key, y_tr, y_va = d['targets'][target_idx]
+
+    np.random.seed(42 + target_idx)
+    logger.info(f"  [并行] 训练生产模型目标: {target_key}")
+
+    sample_w = trainer.compute_sample_weights(df_train_f, y_tr)
+    models, pred_train, pred_val = trainer.train_single_target_models(
+        X_train_f, X_val_f, y_tr, y_va, f"label_{target_key}",
+        sample_weights_train=sample_w)
+    weights, rmses = trainer.calculate_ensemble_weights(pred_val, y_va)
+
+    logger.info(f"  [并行] {target_key} 完成: {len(models)} 模型")
+    _gc.collect()
+    return (target_key, models, weights, rmses, y_va)
+
+
+_prod_shared = {}
+
+
 def _wf_window_worker(wi):
     """Process a single WF window in a forked subprocess.
 
@@ -7307,14 +7337,34 @@ class V475Trainer(V473Trainer):
                                       train_dates_f, val_dates_f, np.array([]),
                                       f"label_{target_key}")
 
-        for target_key, y_tr, y_va in targets_final:
-            sample_w = self.compute_sample_weights(df_train_f, y_tr)
-            models, pred_train, pred_val = self.train_single_target_models(
-                X_train_f, X_val_f, y_tr, y_va, f"label_{target_key}",
-                sample_weights_train=sample_w)
-            weights, rmses = self.calculate_ensemble_weights(pred_val, y_va)
-            all_results[target_key] = {'models': models, 'weights': weights, 'rmses': rmses}
-            y_val_dict[target_key] = y_va
+        n_parallel_prod = getattr(self, '_parallel_wf_workers', 1)
+        if n_parallel_prod > 1:
+            # ===== 并行训练4个目标 =====
+            logger.info(f"  🚀 并行训练 4 个生产目标 (fork, {min(4, n_parallel_prod)} 进程)")
+            global _prod_shared
+            _prod_shared = {
+                'trainer': self, 'X_train_f': X_train_f, 'X_val_f': X_val_f,
+                'df_train_f': df_train_f, 'targets': targets_final,
+            }
+            try:
+                ctx = mp.get_context('fork')
+                with ctx.Pool(processes=min(4, n_parallel_prod)) as pool:
+                    results = pool.map(_train_prod_target_worker, range(len(targets_final)))
+                for target_key, models, weights, rmses, y_va in results:
+                    all_results[target_key] = {'models': models, 'weights': weights, 'rmses': rmses}
+                    y_val_dict[target_key] = y_va
+            finally:
+                _prod_shared = {}
+        else:
+            # ===== 串行训练 =====
+            for target_key, y_tr, y_va in targets_final:
+                sample_w = self.compute_sample_weights(df_train_f, y_tr)
+                models, pred_train, pred_val = self.train_single_target_models(
+                    X_train_f, X_val_f, y_tr, y_va, f"label_{target_key}",
+                    sample_weights_train=sample_w)
+                weights, rmses = self.calculate_ensemble_weights(pred_val, y_va)
+                all_results[target_key] = {'models': models, 'weights': weights, 'rmses': rmses}
+                y_val_dict[target_key] = y_va
 
         # 6. Bear specialist
         logger.info("\n" + "=" * 60)
@@ -10193,6 +10243,12 @@ class V493Trainer(V4901Trainer):
         """V4.9.3: V4.9.0.1特征 + 额外裁剪13个 + 添加3个BRAIN代理因子"""
         # 调用父类prepare_features (V4901→V490→V485→V484→V481→V475)
         X, y_3d, y_5d, y_10d, y_15d, df_out = super().prepare_features(df)
+
+        # 确保macro/stock属性存在 (防止保存model_data时AttributeError)
+        if not hasattr(self, 'macro_feature_cols'):
+            self.macro_feature_cols = []
+        if not hasattr(self, 'stock_feature_cols'):
+            self.stock_feature_cols = list(self.feature_names) if self.feature_names else []
 
         # Step 1: 裁剪13个额外特征
         if self.feature_names:
