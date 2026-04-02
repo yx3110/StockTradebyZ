@@ -744,6 +744,22 @@ class V395MultiTargetTrainer:
             # 恢复 market_calculator 状态
             if 'market_features' in cached:
                 self.market_calculator.market_features = cached['market_features']
+            # 恢复 macro/stock 特征分层 (prepare_features中设置, 缓存路径跳过了prepare_features)
+            if 'macro_feature_cols' in cached and 'stock_feature_cols' in cached:
+                self.macro_feature_cols = cached['macro_feature_cols']
+                self.stock_feature_cols = cached['stock_feature_cols']
+            else:
+                # 旧缓存兼容: 从feature_names重建
+                macro_feature_names = [
+                    'market_return_20d', 'market_return_10d', 'market_return_5d',
+                    'market_volatility_20d', 'market_volatility_10d',
+                    'market_up_ratio_20d', 'market_up_ratio_10d',
+                    'market_drawdown_20d', 'market_volume_ratio',
+                    'market_position_20d', 'market_momentum_20d', 'market_momentum_5d',
+                    'northbound_flow_5d'
+                ]
+                self.macro_feature_cols = [c for c in macro_feature_names if c in self.feature_names]
+                self.stock_feature_cols = [c for c in self.feature_names if c not in self.macro_feature_cols]
             logger.info(f"  📦 缓存加载完成: {len(X):,} 样本, {X.shape[1]} 特征, 耗时 {dt:.1f}s")
             return X, y_3d, y_5d, y_10d, y_15d, df
 
@@ -758,6 +774,8 @@ class V395MultiTargetTrainer:
             'X': X, 'y_3d': y_3d, 'y_5d': y_5d, 'y_10d': y_10d, 'y_15d': y_15d,
             'df': df, 'feature_names': self.feature_names,
             'market_features': getattr(self.market_calculator, 'market_features', None),
+            'macro_feature_cols': getattr(self, 'macro_feature_cols', []),
+            'stock_feature_cols': getattr(self, 'stock_feature_cols', []),
         }
         joblib.dump(cached, cache_path, compress=3)
         dt = (datetime.now() - t0).total_seconds()
