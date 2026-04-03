@@ -901,7 +901,10 @@ def validate_scores(scores_df, n_samples=5):
 
         for dt in sample_dates:
             env = selector.analyze_trading_environment(pd.Timestamp(dt))
-            batch_row = scores_df[scores_df['trade_date'] == dt].iloc[0]
+            _filtered = scores_df[scores_df['trade_date'] == dt]
+            if _filtered.empty:
+                continue
+            batch_row = _filtered.iloc[0]
 
             for dim in ['trend', 'momentum', 'volume', 'breadth', 'volatility']:
                 orig = env['dimensions'][dim]['score']

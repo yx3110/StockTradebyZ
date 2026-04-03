@@ -367,9 +367,7 @@ class Alpha158Trainer:
             max_depth=6,
             max_leaf_nodes=31,
             l2_regularization=0.1,
-            early_stopping=True,
-            validation_fraction=0.1,
-            n_iter_no_change=50,
+            early_stopping=False,
             random_state=42,
             verbose=0
         )

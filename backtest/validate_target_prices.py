@@ -324,27 +324,27 @@ def run_validation(report_dir: str, top_n: int = 20, hold_days: int = 10,
         return
 
     conn = sqlite3.connect(str(DB_PATH))
+    try:
+        report_files = sorted(report_path.glob("选股分析报告_*.md"))
+        print(f"找到 {len(report_files)} 份报告")
 
-    report_files = sorted(report_path.glob("选股分析报告_*.md"))
-    print(f"找到 {len(report_files)} 份报告")
+        all_results = []
+        skipped = 0
 
-    all_results = []
-    skipped = 0
+        for rf in report_files:
+            report_data = parse_report(rf)
+            if not report_data['date'] or not report_data['stocks']:
+                skipped += 1
+                continue
 
-    for rf in report_files:
-        report_data = parse_report(rf)
-        if not report_data['date'] or not report_data['stocks']:
-            skipped += 1
-            continue
+            stocks = report_data['stocks'][:top_n]
 
-        stocks = report_data['stocks'][:top_n]
-
-        for stock in stocks:
-            result = validate_single_stock(conn, stock, report_data['date'], hold_days)
-            if result:
-                all_results.append(result)
-
-    conn.close()
+            for stock in stocks:
+                result = validate_single_stock(conn, stock, report_data['date'], hold_days)
+                if result:
+                    all_results.append(result)
+    finally:
+        conn.close()
 
     if not all_results:
         print("没有有效的验证结果")

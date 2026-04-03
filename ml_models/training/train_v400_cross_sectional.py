@@ -782,9 +782,7 @@ class V400CrossSectionalTrainer:
                 max_depth=depth,
                 min_samples_leaf=min_child,
                 l2_regularization=reg_l,
-                early_stopping=True,
-                n_iter_no_change=50,
-                validation_fraction=0.1,
+                early_stopping=False,
                 random_state=42,
             )
 

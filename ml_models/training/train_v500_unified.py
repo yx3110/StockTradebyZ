@@ -282,18 +282,17 @@ class V500UnifiedTrainer:
         logger.info("  标签 winsorization 将在 train/test split 后执行(防泄漏)")
 
         # --- Step 8: 缺失值处理 ---
-        # 市场特征 ffill
+        # 市场特征 ffill (按股票分组，避免跨股票边界泄漏)
         market_cols = [c for c in MACRO_FEATURE_NAMES if c in df.columns]
-        df = df.sort_values('trade_date')
-        df[market_cols] = df[market_cols].ffill()
+        df = df.sort_values(['code', 'trade_date'])
+        df[market_cols] = df.groupby('code')[market_cols].ffill()
         df = df.dropna(subset=market_cols)
 
         # v40 特征: 缺失填0
         v40_cols = [c for c in df.columns if c.startswith('v40_')]
         df[v40_cols] = df[v40_cols].fillna(0)
 
-        # 其他缺失填0
-        df = df.fillna(0)
+        # 注意: 不做blanket fillna(0), 让 prepare_features 的 robust z-score 自行处理 NaN
 
         logger.info(f"\n  最终数据集: {len(df):,} 样本, {len(df.columns)} 列")
         logger.info(f"  日期范围: {df['trade_date'].min()} ~ {df['trade_date'].max()}")
