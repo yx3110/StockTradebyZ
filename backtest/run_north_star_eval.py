@@ -185,7 +185,8 @@ def run_backtest(report_dir, label, top_n=20, benchmark='000905.SH', focus_days=
                  vol_target=0.0, cppi_floor=0.0, cppi_multiplier=3.0,
                  sector_diversify=0, rank_field='auto', hold_buffer=0,
                  rerank_dir=None, rerank_pool=100, cache=None,
-                 ema_alpha=0.0, wf_summary_path=None):
+                 ema_alpha=0.0, wf_summary_path=None,
+                 min_market_cap=0.0):
     """运行单个模型的回测
 
     Args:
@@ -232,6 +233,7 @@ def run_backtest(report_dir, label, top_n=20, benchmark='000905.SH', focus_days=
         rerank_reports=rerank_reports, rerank_pool=rerank_pool,
         cache=cache,
         ema_alpha=ema_alpha,
+        min_market_cap=min_market_cap,
     )
 
     # V5: 注入WF训练摘要 (WFER + OOS IC半衰期)
@@ -602,8 +604,10 @@ def main():
                         help='行业分散: 单行业最多N只 (0=关闭, 推荐2)')
     parser.add_argument('--ema-alpha', type=float, default=0.0,
                         help='EMA预测平滑alpha (0=关闭, 0.7=生产推荐)')
+    parser.add_argument('--min-market-cap', type=float, default=0.0,
+                        help='最低市值过滤(亿元, 0=不过滤, 推荐30)')
     parser.add_argument('--production', action='store_true',
-                        help='生产配置: V4901 + EMA0.7 + Ret0.2 + CPPI(8,20) + SF30 + Focus15 = 92.8%% S级')
+                        help='V5.1生产配置: V4901 + Top15 + MC30亿 + Focus18 + Ret0.25 + CPPI(8,20) + SF30')
     parser.add_argument('--rank-field', type=str, default='composite',
                         help='排名字段: composite=多周期融合(与选股一致,默认), auto=优先pred_10d, score=全局百分位')
     parser.add_argument('--hold-buffer', type=float, default=0,
@@ -622,21 +626,22 @@ def main():
     # --production: 生产配置覆盖
     if args.production:
         args.report_dir = args.report_dir or 'reports/daily_selection_v4901'
-        args.label = args.label if args.label != 'v3.95' else 'V4901-PROD'
-        args.top_n = 10
-        args.focus_days = 15
-        args.retention_bonus = 0.2
+        args.label = args.label if args.label != 'v3.95' else 'V4901-V51'
+        args.top_n = 15             # WAS 10: expand for L7 capacity
+        args.focus_days = 18        # WAS 15: reduce turnover for L2
+        args.retention_bonus = 0.25 # WAS 0.2: further reduce turnover
         args.cppi_floor = 0.08
         args.cppi_multiplier = 20
         args.score_floor = 30
         args.ema_alpha = 0.7
         args.backtest = True
+        args.min_market_cap = 30    # NEW: 30亿 market cap floor for L7
         # V5 WF摘要 (WFER + OOS IC半衰期)
         _wf_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 '..', 'ml_models', 'trained_models', 'v4901', 'wf_summary.json')
         if os.path.exists(_wf_path) and not args.wf_summary:
             args.wf_summary = _wf_path
-        print("🏆 生产配置: V4901 + EMA0.7 + Ret0.2 + CPPI(8,20) + SF30 + Focus15 = 92.8% S级")
+        print("🏆 V5.1优化: V4901 + Top15 + MC30亿 + Focus18 + Ret0.25 + CPPI(8,20) + SF30")
 
     # ── auto 日期解析 ──
     # 如果指定了 --report-dir 且日期为 auto，从报告目录自动检测
@@ -690,7 +695,8 @@ def main():
                                   args.sector_diversify, args.rank_field,
                                   args.hold_buffer, cache=cache,
                                   ema_alpha=args.ema_alpha,
-                                  wf_summary_path=args.wf_summary)
+                                  wf_summary_path=args.wf_summary,
+                                  min_market_cap=getattr(args, 'min_market_cap', 0.0))
         else:
             # 默认回测v3.95 RobustZScore
             default_dir = str(PROJECT_ROOT / 'reports' / 'daily_selection_v3.95_robust_zscore')
@@ -702,7 +708,8 @@ def main():
                                   args.sector_diversify, args.rank_field,
                                   args.hold_buffer, cache=cache,
                                   ema_alpha=args.ema_alpha,
-                                  wf_summary_path=args.wf_summary)
+                                  wf_summary_path=args.wf_summary,
+                                  min_market_cap=getattr(args, 'min_market_cap', 0.0))
 
     if args.regime_analysis:
         report_dir = args.report_dir or str(

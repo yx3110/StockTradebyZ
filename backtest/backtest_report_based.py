@@ -916,7 +916,8 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
                         cache=None,
                         gate_dont_buy=0.30, gate_reduce=0.50,
                         drawdown_brake=False,
-                        ema_alpha=0.0):
+                        ema_alpha=0.0,
+                        min_market_cap=0.0):
     """运行单个报告目录的回测（含北极星指标）
 
     Args:
@@ -961,6 +962,8 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
         print(f"  行业分散: 单行业最多{sector_diversify}只")
     if min_turnover_rate > 0:
         print(f"  流动性过滤: 换手率<{min_turnover_rate:.1f}%的股票不入选")
+    if min_market_cap > 0:
+        print(f"  市值下限: {min_market_cap:.0f}亿")
     if replace_threshold > 0:
         print(f"  替换门槛: 新股评分需超出旧持仓{replace_threshold:.0%}才替换")
     if hold_buffer > 0:
@@ -1033,12 +1036,17 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
         industry_map = _load_industry_map_bulk()
         print(f"  行业分散数据: {len(industry_map)}只行业映射")
 
-    # 预加载换手率数据 (用于流动性过滤)
+    # 预加载换手率/市值数据 (用于流动性过滤和市值过滤)
     turnover_data = {}
-    if min_turnover_rate > 0:
+    if min_turnover_rate > 0 or min_market_cap > 0:
         dates_all_tr = sorted(reports.keys())
         turnover_data = batch_load_market_cap_data(dates_all_tr)
-        print(f"  流动性过滤数据: {len(turnover_data)}天换手率数据")
+        _parts = []
+        if min_turnover_rate > 0:
+            _parts.append("换手率")
+        if min_market_cap > 0:
+            _parts.append(f"市值(>{min_market_cap:.0f}亿)")
+        print(f"  {'|'.join(_parts)}过滤数据: {len(turnover_data)}天")
 
     # 批量预加载所有日期的未来收益率 (三级缓存: 持久化磁盘 → 模块级内存 → 重新计算)
     import time as _time
@@ -1133,6 +1141,20 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
                 )
                 if low_liq_codes:
                     stocks_filtered = [s for s in stocks if s['code'] not in low_liq_codes]
+                    if len(stocks_filtered) >= top_n:
+                        stocks = stocks_filtered
+
+        # 市值过滤: 剔除市值低于min_market_cap的股票
+        if min_market_cap > 0 and turnover_data:
+            mc_df = turnover_data.get(date, pd.DataFrame())
+            if not mc_df.empty and 'total_mv' in mc_df.columns:
+                # total_mv 单位是万元, min_market_cap单位是亿元
+                threshold = min_market_cap * 1e4  # 亿→万
+                small_cap_codes = set(
+                    mc_df.loc[mc_df['total_mv'].fillna(0) < threshold, 'code']
+                )
+                if small_cap_codes:
+                    stocks_filtered = [s for s in stocks if s['code'] not in small_cap_codes]
                     if len(stocks_filtered) >= top_n:
                         stocks = stocks_filtered
 
