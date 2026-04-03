@@ -2196,11 +2196,91 @@ class V43Trainer(V395MultiTargetTrainer):
         sorted_months = sorted(month_ics.keys())
         return [float(np.mean(month_ics[m])) for m in sorted_months]
 
+    def _write_wf_test_reports(self, report_dir, window_idx, window_info,
+                                df_test, test_dates, test_preds):
+        """将WF窗口的test set预测写成analysis_data_*.json报告
+
+        Args:
+            report_dir: 输出目录
+            window_idx: 窗口编号
+            window_info: {'test_start', 'test_end', ...}
+            df_test: test period的DataFrame (含code, trade_date)
+            test_dates: test样本的日期数组
+            test_preds: {target_key: ensemble_pred array}
+        """
+        import json as _json
+        from pathlib import Path
+
+        out_dir = Path(report_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        # 加载证券名称/行业 (首次调用时缓存)
+        if not hasattr(self, '_securities_info_cache'):
+            import sqlite3
+            db_path = str(Path(__file__).resolve().parent.parent.parent / 'data_adapter' / 'stock_data.db')
+            conn = sqlite3.connect(db_path)
+            rows = conn.execute("SELECT code, name, industry FROM securities WHERE type = 'A股'").fetchall()
+            conn.close()
+            self._securities_info_cache = {r[0]: {'name': r[1] or '', 'industry': r[2] or ''} for r in rows}
+
+        codes = df_test['code'].values
+        unique_test_dates = np.sort(np.unique(test_dates))
+
+        n_reports = 0
+        for date in unique_test_dates:
+            date_mask = test_dates == date
+            date_codes = codes[date_mask]
+            date_indices = np.where(date_mask)[0]
+
+            stocks_list = []
+            for i, code in enumerate(date_codes):
+                idx = date_indices[i]
+                info = self._securities_info_cache.get(code, {'name': '', 'industry': ''})
+                entry = {
+                    'stock_code': code,
+                    'stock_name': info['name'],
+                    'industry': info['industry'],
+                    'score': 50.0,  # placeholder, 回测用pred排名不用score
+                    'pred_3d': float(test_preds['3d'][idx]) if '3d' in test_preds else 0.0,
+                    'pred_5d': float(test_preds['5d'][idx]) if '5d' in test_preds else 0.0,
+                    'pred_10d': float(test_preds['10d'][idx]) if '10d' in test_preds else 0.0,
+                    'pred_15d': float(test_preds['15d'][idx]) if '15d' in test_preds else 0.0,
+                    'selected_by_strategies': 1,
+                    'strategies': ['WF_ML'],
+                    'analysis_date': str(date),
+                }
+                entry['rank_score'] = 0.6 * entry['pred_10d'] + 0.4 * entry['pred_15d']
+                stocks_list.append(entry)
+
+            # 日期格式: YYYY-MM-DD → YYYYMMDD
+            ds = str(date).replace('-', '')[:8]
+            report = {
+                'analysis_date': str(date),
+                'scoring_version': f'wf_window_{window_idx+1}',
+                'generation_mode': 'wf_test_oos',
+                'total_scored_stocks': len(stocks_list),
+                'wf_window': window_idx + 1,
+                'wf_test_start': str(window_info['test_start']),
+                'wf_test_end': str(window_info['test_end']),
+                'all_stocks_with_scores': stocks_list,
+            }
+
+            out_path = out_dir / f'analysis_data_{ds}.json'
+            with open(out_path, 'w', encoding='utf-8') as f:
+                _json.dump(report, f, ensure_ascii=False)
+            n_reports += 1
+
+        logger.info(f"  WF窗口{window_idx+1} 生成 {n_reports} 份OOS报告 → {report_dir}")
+
     def walk_forward_train(self, start_date: str = None, end_date: str = None,
                             purge_days: int = 15, min_train_days: int = 720,
                             val_days: int = 120, test_days: int = 120,
                             step_days: int = 120):
-        """Walk-Forward 训练 + 验证"""
+        """Walk-Forward 训练 + 验证
+
+        如果 self._wf_report_dir 被设置，会在每个WF窗口的test period生成
+        analysis_data_*.json报告，适合无泄露回测。
+        """
         start_time = datetime.now()
         logger.info("=" * 60)
         logger.info("V4.3 Walk-Forward 训练")
@@ -2218,7 +2298,7 @@ class V43Trainer(V395MultiTargetTrainer):
         # 2. 定义滚动窗口
         windows = []
         cursor = min_train_days
-        while cursor + val_days + purge_days + test_days <= n_dates:
+        while cursor + val_days + 2 * purge_days + test_days <= n_dates:
             train_end_idx = cursor - 1
             val_start_idx = cursor + purge_days
             val_end_idx = val_start_idx + val_days - 1
@@ -2297,6 +2377,8 @@ class V43Trainer(V395MultiTargetTrainer):
             ]
 
             window_metrics = {}
+            _wf_rdir = getattr(self, '_wf_report_dir', None)
+            window_test_preds = {} if _wf_rdir else None
             df_train_w = df[train_mask]
 
             for target_key, y_tr, y_va, y_te in targets_w:
@@ -2319,11 +2401,22 @@ class V43Trainer(V395MultiTargetTrainer):
                 window_metrics[target_key] = {'ic': ic, 'icir': icir}
                 logger.info(f"  {target_key}: IC={ic:.4f}, ICIR={icir:.4f}")
 
+                # 保留test predictions用于WF报告生成
+                if window_test_preds is not None:
+                    window_test_preds[target_key] = ensemble_pred.copy()
+
                 # 释放模型内存
                 del models, pred_train, pred_val, pred_test
                 gc.collect()
 
             wf_metrics.append(window_metrics)
+
+            # 生成WF test period报告 (无泄露)
+            if window_test_preds:
+                self._write_wf_test_reports(
+                    _wf_rdir, wi, w,
+                    df[test_mask], test_dates_w, window_test_preds)
+                del window_test_preds
 
         # 4. Walk-Forward 汇总
         logger.info("\n" + "=" * 60)
@@ -2754,7 +2847,7 @@ class V44Trainer(V43Trainer):
         # 2. 定义滚动窗口
         windows = []
         cursor = min_train_days
-        while cursor + val_days + purge_days + test_days <= n_dates:
+        while cursor + val_days + 2 * purge_days + test_days <= n_dates:
             train_end_idx = cursor - 1
             val_start_idx = cursor + purge_days
             val_end_idx = val_start_idx + val_days - 1
@@ -3335,7 +3428,7 @@ class V46Trainer(V44Trainer):
         # 2. 定义滚动窗口
         windows = []
         cursor = min_train_days
-        while cursor + val_days + purge_days + test_days <= n_dates:
+        while cursor + val_days + 2 * purge_days + test_days <= n_dates:
             train_end_idx = cursor - 1
             val_start_idx = cursor + purge_days
             val_end_idx = val_start_idx + val_days - 1
@@ -3823,7 +3916,7 @@ class V47Trainer(V46Trainer):
         # 2. Walk-Forward windows
         windows = []
         cursor = min_train_days
-        while cursor + val_days + purge_days + test_days <= n_dates:
+        while cursor + val_days + 2 * purge_days + test_days <= n_dates:
             train_end_idx = cursor - 1
             val_start_idx = cursor + purge_days
             val_end_idx = val_start_idx + val_days - 1
@@ -4883,7 +4976,7 @@ class V471Trainer(V44Trainer):
         # 2. 定义滚动窗口
         windows = []
         cursor = min_train_days
-        while cursor + val_days + purge_days + test_days <= n_dates:
+        while cursor + val_days + 2 * purge_days + test_days <= n_dates:
             train_end_idx = cursor - 1
             val_start_idx = cursor + purge_days
             val_end_idx = val_start_idx + val_days - 1
@@ -5361,7 +5454,7 @@ class V472Trainer(V471Trainer):
         # 2. 定义滚动窗口
         windows = []
         cursor = min_train_days
-        while cursor + val_days + purge_days + test_days <= n_dates:
+        while cursor + val_days + 2 * purge_days + test_days <= n_dates:
             train_end_idx = cursor - 1
             val_start_idx = cursor + purge_days
             val_end_idx = val_start_idx + val_days - 1
@@ -6021,6 +6114,13 @@ class V473Trainer(V472Trainer):
         保留: ICIR权重优化 + Bear Specialist + Per-target Isotonic
         去除: Meta-Learner + Combined Isotonic (两层压缩破坏预测区分度)
         """
+        # fast-check: 覆盖WF参数为紧凑窗口
+        if getattr(self, '_fast_check', False):
+            min_train_days = getattr(self, '_fast_check_min_train', min_train_days)
+            val_days = getattr(self, '_fast_check_val_days', val_days)
+            test_days = getattr(self, '_fast_check_test_days', test_days)
+            step_days = getattr(self, '_fast_check_step_days', step_days)
+
         start_time = datetime.now()
         logger.info("=" * 60)
         logger.info("V4.7.3 Walk-Forward 训练 (简化管线 + 特征精简 + 放宽正则化)")
@@ -6045,7 +6145,7 @@ class V473Trainer(V472Trainer):
         # 2. 定义滚动窗口 (与V4.7.2一致: date-based)
         windows = []
         cursor = min_train_days
-        while cursor + val_days + purge_days + test_days <= n_dates:
+        while cursor + val_days + 2 * purge_days + test_days <= n_dates:
             train_end_idx = cursor - 1
             val_start_idx = cursor + purge_days
             val_end_idx = val_start_idx + val_days - 1
@@ -6600,6 +6700,13 @@ class V474Trainer(V473Trainer):
         - ICIR约束: [0.10, 0.35] (vs V4.7.3的[0.08, 0.50])
         - 其余: 完全继承V4.7.3 (无Meta-Learner, 无Combined Isotonic)
         """
+        # fast-check: 覆盖WF参数为紧凑窗口
+        if getattr(self, '_fast_check', False):
+            min_train_days = getattr(self, '_fast_check_min_train', min_train_days)
+            val_days = getattr(self, '_fast_check_val_days', val_days)
+            test_days = getattr(self, '_fast_check_test_days', test_days)
+            step_days = getattr(self, '_fast_check_step_days', step_days)
+
         start_time = datetime.now()
         logger.info("=" * 60)
         logger.info("V4.7.4 Walk-Forward 训练 (V4.7.3简化管线 + 选择性V4.8增强)")
@@ -6625,7 +6732,7 @@ class V474Trainer(V473Trainer):
         # 2. 定义滚动窗口
         windows = []
         cursor = min_train_days
-        while cursor + val_days + purge_days + test_days <= n_dates:
+        while cursor + val_days + 2 * purge_days + test_days <= n_dates:
             train_end_idx = cursor - 1
             val_start_idx = cursor + purge_days
             val_end_idx = val_start_idx + val_days - 1
@@ -7106,7 +7213,7 @@ class V475Trainer(V473Trainer):
         # 2. 定义滚动窗口
         windows = []
         cursor = min_train_days
-        while cursor + val_days + purge_days + test_days <= n_dates:
+        while cursor + val_days + 2 * purge_days + test_days <= n_dates:
             train_end_idx = cursor - 1
             val_start_idx = cursor + purge_days
             val_end_idx = val_start_idx + val_days - 1
@@ -7206,6 +7313,8 @@ class V475Trainer(V473Trainer):
 
                 # 训练4目标
                 window_metrics = {}
+                _wf_rdir = getattr(self, '_wf_report_dir', None)
+                window_test_preds = {} if _wf_rdir else None
                 for target_key, y_tr, y_va, y_te in [
                     ('3d', y_3d_tr, y_3d_va, y_3d_te),
                     ('5d', y_5d_tr, y_5d_va, y_5d_te),
@@ -7246,10 +7355,20 @@ class V475Trainer(V473Trainer):
                     }
                     logger.info(f"  {target_key}: OOS IC={ic:.4f}, ICIR={icir:.4f} | IS IC={is_ic:.4f}, ICIR={is_icir:.4f}")
 
+                    if window_test_preds is not None:
+                        window_test_preds[target_key] = ensemble_pred.copy()
+
                     del models, pred_train, pred_val, pred_test
                     gc.collect()
 
                 wf_metrics.append(window_metrics)
+
+                # 生成WF test period报告 (无泄露)
+                if window_test_preds:
+                    self._write_wf_test_reports(
+                        _wf_rdir, wi, w,
+                        df[test_mask], test_dates_w, window_test_preds)
+                    del window_test_preds
 
         # 4. Walk-Forward 汇总
         logger.info("\n" + "=" * 60)
@@ -7300,6 +7419,13 @@ class V475Trainer(V473Trainer):
 
         # Store for embedding in model
         self._adaptive_target_weights = adaptive_weights
+
+        if getattr(self, '_wf_report_dir', None):
+            from pathlib import Path
+            n_wf_reports = len(list(Path(self._wf_report_dir).glob('analysis_data_*.json')))
+            logger.info(f"\n  📊 WF OOS报告: {n_wf_reports} 份 → {self._wf_report_dir}")
+            logger.info(f"  回测命令: python3 backtest/run_north_star_eval.py --backtest "
+                         f"--report-dir {self._wf_report_dir} --label WF-OOS")
 
         # fast-check: 跳过生产模型训练和保存, 只输出WF指标
         if getattr(self, '_fast_check', False):
@@ -7646,7 +7772,7 @@ class V476Trainer(V475Trainer):
         # 2. Define walk-forward windows
         windows = []
         cursor = min_train_days
-        while cursor + val_days + purge_days + test_days <= n_dates:
+        while cursor + val_days + 2 * purge_days + test_days <= n_dates:
             train_end_idx = cursor - 1
             val_start_idx = cursor + purge_days
             val_end_idx = val_start_idx + val_days - 1
@@ -7660,6 +7786,12 @@ class V476Trainer(V475Trainer):
                 'test_end': unique_dates[test_end_idx],
             })
             cursor += step_days
+
+        # fast-check: 只取最后N个窗口
+        _max_windows = getattr(self, '_fast_check_max_windows', None)
+        if _max_windows and len(windows) > _max_windows:
+            logger.info(f"  [FAST-CHECK] 截取最后 {_max_windows}/{len(windows)} 个窗口")
+            windows = windows[-_max_windows:]
 
         logger.info(f"  Walk-Forward窗口: {len(windows)}")
         for i, w in enumerate(windows):
@@ -11480,6 +11612,10 @@ class V492Trainer(V485Trainer):
             purge_days=purge_days, min_train_days=min_train_days,
             val_days=val_days, test_days=test_days, step_days=step_days)
 
+        # fast-check: 跳过模型保存/重命名, 直接返回WF指标
+        if model_data.get('fast_check'):
+            return model_data, history
+
         # 保存到v492目录
         v485_dir = PROJECT_ROOT / 'ml_models' / 'trained_models' / 'v485'
         out_dir = PROJECT_ROOT / 'ml_models' / 'trained_models' / version_tag
@@ -12803,6 +12939,10 @@ class V483Trainer(V482Trainer):
             purge_days=purge_days, min_train_days=min_train_days,
             val_days=val_days, test_days=test_days, step_days=step_days)
 
+        # fast-check: 跳过模型保存/重命名, 直接返回WF指标
+        if model_data.get('fast_check'):
+            return model_data, history
+
         # 将模型从v482目录移到v483目录
         v482_dir = PROJECT_ROOT / 'ml_models' / 'trained_models' / 'v482'
         v483_dir = PROJECT_ROOT / 'ml_models' / 'trained_models' / 'v483'
@@ -13321,7 +13461,7 @@ class V48Trainer(V472Trainer):
         # 2. 定义滚动窗口
         windows = []
         cursor = min_train_days
-        while cursor + val_days + purge_days + test_days <= n_dates:
+        while cursor + val_days + 2 * purge_days + test_days <= n_dates:
             train_end_idx = cursor - 1
             val_start_idx = cursor + purge_days
             val_end_idx = val_start_idx + val_days - 1
@@ -13743,7 +13883,7 @@ class V48Trainer(V472Trainer):
 
 def main():
     parser = argparse.ArgumentParser(description='V3.95/V4.3/V4.4/V4.6/V4.7/V4.7.1/V4.7.2/V4.7.3/V4.7.4/V4.8/V4.8.1 多目标训练')
-    parser.add_argument('--start-date', type=str, default='2020-01-01', help='训练开始日期')
+    parser.add_argument('--start-date', type=str, default=None, help='训练开始日期 (默认: 2020-01-01, fast-check模式: 2023-06-01)')
     parser.add_argument('--end-date', type=str, default=None, help='训练结束日期')
     parser.add_argument('--purge-days', type=int, default=10, help='Purge gap天数 (应>=最大标签前瞻天数, label_10d需要10天)')
     parser.add_argument('--sharpe-blend', type=float, default=0.3, help='Sharpe标签融合比例 (0=纯收益, 0.3=推荐, 1=纯Sharpe)')
@@ -13802,6 +13942,10 @@ def main():
                         help='并行WF窗口数 (1=串行, 3-4=推荐, 使用multiprocessing fork)')
     parser.add_argument('--no-cache', action='store_true',
                         help='禁用训练数据joblib缓存 (首次加载或数据变更后自动重建)')
+    parser.add_argument('--wf-report-dir', type=str, default='auto',
+                        help='WF OOS报告输出目录 (默认auto=自动命名, none=禁用)')
+    parser.add_argument('--no-wf-reports', action='store_true',
+                        help='禁用WF OOS报告生成')
     args = parser.parse_args()
 
     # BRAIN 因子标志 — 适用于所有 Trainer 版本
@@ -13812,7 +13956,7 @@ def main():
         logger.info("=" * 60)
         logger.info("[FAST-CHECK 模式] 快速方向验证 (不保存模型)")
         logger.info("=" * 60)
-        if args.start_date == '2020-01-01':  # 只在用户没手动设置时覆盖
+        if args.start_date is None:  # 用户没手动设置时覆盖
             args.start_date = '2023-06-01'
             logger.info(f"  auto: start_date → {args.start_date} (减少数据量, ~650天)")
         if args.num_leaves is None:
@@ -13825,8 +13969,16 @@ def main():
         logger.info(f"  auto: 不保存模型文件")
         logger.info("")
 
+    # 如果用户没设置start_date且非fast-check, 用默认值
+    if args.start_date is None:
+        args.start_date = '2020-01-01'
+
     # Apply CLI hyperparameter overrides to any trainer
     def _apply_overrides(trainer_obj):
+        # WF OOS报告输出
+        if _wf_report_dir:
+            trainer_obj._wf_report_dir = _wf_report_dir
+
         # 数据缓存和并行WF
         if args.no_cache:
             trainer_obj._use_data_cache = False
@@ -13869,6 +14021,28 @@ def main():
                 trainer_obj.TARGET_SHARPE_BLEND = new_blend
                 logger.info(f"  CLI override: TARGET_SHARPE_BLEND={new_blend}")
             logger.info(f"  CLI override: sharpe_label_blend={args.sharpe_blend}")
+
+    # WF报告目录 (设为trainer属性, 所有子类自动继承)
+    # 默认开启, --no-wf-reports 或 --skip-wf 时禁用
+    _wf_report_dir = None
+    if not args.no_wf_reports and not args.skip_wf and not args.fast_check:
+        if args.wf_report_dir == 'auto':
+            # 从选择的版本推断目录名
+            _ver = 'v43'  # fallback
+            for flag in ['v4901', 'v4902', 'v493', 'v493a', 'v493b', 'v493c',
+                         'v492', 'v491', 'v490', 'v488', 'v487', 'v486',
+                         'v485', 'v484', 'v483', 'v482', 'v481', 'v480',
+                         'v479', 'v478', 'v477', 'v476', 'v475', 'v474',
+                         'v473', 'v472', 'v471', 'v47', 'v46', 'v44', 'v43']:
+                if getattr(args, flag, False):
+                    _ver = flag
+                    break
+            _wf_report_dir = str(PROJECT_ROOT / 'reports' / f'daily_selection_{_ver}_wf_oos')
+        elif args.wf_report_dir and args.wf_report_dir.lower() != 'none':
+            _wf_report_dir = args.wf_report_dir
+
+    if _wf_report_dir:
+        logger.info(f"  WF OOS报告输出: {_wf_report_dir}")
 
     if args.v492:
         trainer = V492Trainer()
@@ -14123,6 +14297,28 @@ def main():
         trainer.sharpe_label_blend = args.sharpe_blend
         trainer.use_brain_features = getattr(args, 'brain_features', False)
         trainer.train(start_date=args.start_date, end_date=args.end_date, purge_days=args.purge_days)
+
+    # ── 训练后自动北极星评估 (WF OOS报告) ──
+    if _wf_report_dir:
+        from pathlib import Path
+        wf_dir = Path(_wf_report_dir)
+        n_reports = len(list(wf_dir.glob('analysis_data_*.json'))) if wf_dir.exists() else 0
+        if n_reports > 0:
+            logger.info("\n" + "=" * 60)
+            logger.info(f"自动北极星评估: {n_reports} 份WF OOS报告")
+            logger.info("=" * 60)
+            import subprocess
+            eval_cmd = [
+                sys.executable, str(PROJECT_ROOT / 'backtest' / 'run_north_star_eval.py'),
+                '--backtest',
+                '--report-dir', str(wf_dir),
+                '--label', 'WF-OOS',
+                '--top-n', '10',
+                '--focus-days', '10',
+                '--rank-field', 'composite',
+            ]
+            logger.info(f"  命令: {' '.join(eval_cmd)}")
+            subprocess.run(eval_cmd, cwd=str(PROJECT_ROOT))
 
 
 if __name__ == '__main__':
