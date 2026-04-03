@@ -631,6 +631,11 @@ def main():
         args.score_floor = 30
         args.ema_alpha = 0.7
         args.backtest = True
+        # V5 WF摘要 (WFER + OOS IC半衰期)
+        _wf_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                '..', 'ml_models', 'trained_models', 'v4901', 'wf_summary.json')
+        if os.path.exists(_wf_path) and not args.wf_summary:
+            args.wf_summary = _wf_path
         print("🏆 生产配置: V4901 + EMA0.7 + Ret0.2 + CPPI(8,20) + SF30 + Focus15 = 92.8% S级")
 
     # ── auto 日期解析 ──
