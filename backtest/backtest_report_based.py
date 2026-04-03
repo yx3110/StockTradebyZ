@@ -857,7 +857,8 @@ def _compute_ewma_vol(daily_returns, halflife=20):
 
 
 def _compute_overlay_exposure(date, market_ewma_vol, nav, peak_nav,
-                               vol_target, cppi_floor, cppi_multiplier):
+                               vol_target, cppi_floor, cppi_multiplier,
+                               regime_damping=1.0):
     """计算组合exposure (0.05~1.0), 两个overlay取min
 
     Args:
@@ -868,6 +869,7 @@ def _compute_overlay_exposure(date, market_ewma_vol, nav, peak_nav,
         vol_target: 年化波动率目标 (0=关闭)
         cppi_floor: CPPI最大回撤容忍度 (0=关闭)
         cppi_multiplier: CPPI乘数
+        regime_damping: Regime转换阻尼系数 (1.0=不阻尼, <1.0时限制exposure)
 
     Returns:
         float: exposure in [0.05, 1.0]
@@ -901,6 +903,11 @@ def _compute_overlay_exposure(date, market_ewma_vol, nav, peak_nav,
         else:
             cppi_exposure = cppi_multiplier * cushion / nav
             exposure = min(exposure, cppi_exposure)
+
+    # Overlay C: Regime Transition Damping
+    # 市场regime快速转换时主动降低仓位, 减少转换期回撤放大
+    if regime_damping < 1.0:
+        exposure = min(exposure, regime_damping)
 
     return max(0.05, min(1.0, exposure))
 
@@ -1023,6 +1030,28 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
                   f"均值={market_ewma_vol.mean():.1%}, 当前={market_ewma_vol.iloc[-1]:.1%}")
         else:
             print(f"  ⚠️ V4.5: 无法加载市场波动率数据, overlay将不生效")
+
+    # V5.1: 预计算regime transition damping lookup
+    # 比较20d基准动量的5日变化速度, 变化过快时主动降仓
+    regime_damping_map = {}
+    if overlay_active and cppi_floor > 0 and not mkt_ret.empty:
+        mkt_ret_values = mkt_ret.values
+        mkt_ret_dates = list(mkt_ret.index)
+        n_mkt = len(mkt_ret_values)
+        for k in range(n_mkt):
+            if k < 25:
+                continue
+            # 20d cumulative return ending at k vs ending at k-5
+            bm_20d_now = float(np.sum(mkt_ret_values[k-20:k]))
+            bm_20d_prev = float(np.sum(mkt_ret_values[k-25:k-5]))
+            regime_change_speed = abs(bm_20d_now - bm_20d_prev)
+            # When speed > 5%, start damping; > 15%, limit to 30% exposure
+            if regime_change_speed > 0.05:
+                damping = max(0.3, 1.0 - (regime_change_speed - 0.05) / 0.10)
+                regime_damping_map[mkt_ret_dates[k]] = damping
+        if regime_damping_map:
+            print(f"  V5.1: Regime transition damping预计算完成, "
+                  f"{len(regime_damping_map)}天触发阻尼 (共{n_mkt}天)")
 
     # 预加载风控数据
     market_ret_20d = {}
@@ -1311,9 +1340,12 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
 
         # V4.5: 计算当日exposure
         if overlay_active:
+            # V5.1: 查找当日regime transition damping
+            rd = regime_damping_map.get(date, 1.0)
             exposure = _compute_overlay_exposure(
                 date, market_ewma_vol, nav, peak_nav,
-                vol_target, cppi_floor, cppi_multiplier)
+                vol_target, cppi_floor, cppi_multiplier,
+                regime_damping=rd)
         else:
             exposure = 1.0
 
