@@ -5305,7 +5305,14 @@ class TomorrowStockSelector:
             stocks_data = analysis.get('all_stocks_with_scores', [])
         if is_full_market:
             strategy_count = len([s for s in stocks_data if s.get('selected_by_strategies', 0) > 0])
-            report += f"*全市场 {len(stocks_data)} 只股票ML评分排名，其中 {strategy_count} 只被策略选中（策略列标注具体策略名称，\"-\" 表示仅ML评分）：*\n\n"
+            # 先计算显示数量用于说明
+            _table_n = 200
+            _extra = len([s for idx, s in enumerate(stocks_data) if s.get('selected_by_strategies', 0) > 0 and idx >= _table_n])
+            _total_show = min(_table_n, len(stocks_data)) + _extra
+            if len(stocks_data) > _table_n:
+                report += f"*全市场 {len(stocks_data)} 只股票ML评分排名，显示前 {_table_n} + {_extra} 只策略股 = {_total_show} 行，{strategy_count} 只被策略选中（\"-\" 表示仅ML评分）：*\n\n"
+            else:
+                report += f"*全市场 {len(stocks_data)} 只股票ML评分排名，其中 {strategy_count} 只被策略选中（\"-\" 表示仅ML评分）：*\n\n"
         else:
             report += f"*共有 {len(stocks_data)} 只股票被选中，以下显示所有股票的量化评分和策略信息：*\n\n"
         # 根据评分系统版本设置表头
@@ -5378,9 +5385,6 @@ class TomorrowStockSelector:
                     strategy_indices.append(idx)
                     show_indices.add(idx)
             total_show = len(show_indices)
-            if len(stocks_data) > TABLE_TOP_N:
-                extra_strategy = len(strategy_indices)
-                report += f"*（显示ML评分前 {TABLE_TOP_N} 只 + {extra_strategy} 只策略股，共 {total_show} 行。完整数据见 analysis_data JSON 文件）*\n\n"
         else:
             show_indices = set(range(len(stocks_data)))
 
