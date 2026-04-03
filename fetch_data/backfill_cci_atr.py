@@ -72,7 +72,7 @@ def compute_cci_atr_for_stock(code: str, start_date: str, end_date: str) -> list
     except Exception as e:
         try:
             conn.close()
-        except:
+        except Exception:
             pass
         return []
 

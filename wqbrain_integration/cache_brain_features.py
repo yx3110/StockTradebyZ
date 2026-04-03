@@ -43,32 +43,36 @@ logger = logging.getLogger(__name__)
 def ensure_table(db_path: str):
     """创建 brain_alpha_cache 表"""
     conn = sqlite3.connect(db_path)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS brain_alpha_cache (
-            code TEXT NOT NULL,
-            trade_date TEXT NOT NULL,
-            features_json TEXT,
-            PRIMARY KEY (code, trade_date)
-        )
-    """)
-    conn.execute("""
-        CREATE INDEX IF NOT EXISTS idx_brain_alpha_cache_date
-        ON brain_alpha_cache(trade_date)
-    """)
-    conn.commit()
-    conn.close()
+    try:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS brain_alpha_cache (
+                code TEXT NOT NULL,
+                trade_date TEXT NOT NULL,
+                features_json TEXT,
+                PRIMARY KEY (code, trade_date)
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_brain_alpha_cache_date
+            ON brain_alpha_cache(trade_date)
+        """)
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def get_trade_dates(db_path: str, start_date: str, end_date: str):
     """获取交易日列表"""
     conn = sqlite3.connect(db_path)
-    cursor = conn.execute("""
-        SELECT DISTINCT trade_date FROM daily_quotes
-        WHERE trade_date >= ? AND trade_date <= ?
-        ORDER BY trade_date
-    """, (start_date, end_date))
-    dates = [row[0] for row in cursor.fetchall()]
-    conn.close()
+    try:
+        cursor = conn.execute("""
+            SELECT DISTINCT trade_date FROM daily_quotes
+            WHERE trade_date >= ? AND trade_date <= ?
+            ORDER BY trade_date
+        """, (start_date, end_date))
+        dates = [row[0] for row in cursor.fetchall()]
+    finally:
+        conn.close()
     return dates
 
 
@@ -76,11 +80,13 @@ def get_cached_dates(db_path: str):
     """获取已缓存的日期"""
     conn = sqlite3.connect(db_path)
     try:
-        cursor = conn.execute("SELECT DISTINCT trade_date FROM brain_alpha_cache")
-        dates = set(row[0] for row in cursor.fetchall())
-    except Exception:
-        dates = set()
-    conn.close()
+        try:
+            cursor = conn.execute("SELECT DISTINCT trade_date FROM brain_alpha_cache")
+            dates = set(row[0] for row in cursor.fetchall())
+        except Exception:
+            dates = set()
+    finally:
+        conn.close()
     return dates
 
 
@@ -126,17 +132,19 @@ def batch_compute(db_path: str, start_date: str, end_date: str,
     t0 = time.time()
 
     conn = sqlite3.connect(db_path)
-    query = """
-        SELECT s.code, q.trade_date, q.open, q.high, q.low, q.close, q.volume, q.price_change_pct
-        FROM daily_quotes q
-        JOIN securities s ON q.security_id = s.id
-        WHERE s.type = 'A股'
-        AND q.trade_date >= ? AND q.trade_date <= ?
-        AND q.volume > 0
-        ORDER BY s.code, q.trade_date
-    """
-    df_all = pd.read_sql_query(query, conn, params=(data_start, end_date))
-    conn.close()
+    try:
+        query = """
+            SELECT s.code, q.trade_date, q.open, q.high, q.low, q.close, q.volume, q.price_change_pct
+            FROM daily_quotes q
+            JOIN securities s ON q.security_id = s.id
+            WHERE s.type = 'A股'
+            AND q.trade_date >= ? AND q.trade_date <= ?
+            AND q.volume > 0
+            ORDER BY s.code, q.trade_date
+        """
+        df_all = pd.read_sql_query(query, conn, params=(data_start, end_date))
+    finally:
+        conn.close()
 
     logger.info(f"加载完成: {len(df_all):,} 条, {df_all['code'].nunique()} 只股票, "
                 f"耗时 {time.time()-t0:.1f}s")

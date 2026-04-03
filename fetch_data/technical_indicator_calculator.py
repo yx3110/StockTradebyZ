@@ -640,7 +640,7 @@ class TechnicalIndicatorCalculator:
         # 更新daily_quotes表中的MA数据
         self.update_ma_in_daily_quotes(security_id, df, conn)
         
-        logger.info(f"✅ 完成 {code} ({name}) - KDJ: {indicators.get('kdj_k', 'N/A'):.2f}")
+        logger.info(f"✅ 完成 {code} ({name}) - KDJ: {indicators.get('kdj_k', 0):.2f}")
         return True
     
     def process_date_range(self, security_id: int, code: str, name: str, df: pd.DataFrame, conn) -> bool:

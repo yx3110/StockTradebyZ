@@ -271,45 +271,47 @@ class BrainFeatureImporter:
         total_records = 0
         conn = sqlite3.connect(self.db_path)
 
-        for i in range(0, len(trade_dates), batch_size):
-            batch_dates = trade_dates[i:i + batch_size]
+        try:
+            for i in range(0, len(trade_dates), batch_size):
+                batch_dates = trade_dates[i:i + batch_size]
 
-            for date in batch_dates:
-                # 检查是否已缓存
-                cursor = conn.execute(
-                    f"SELECT COUNT(*) FROM {self.cache_table} WHERE trade_date = ?",
-                    (date,)
-                )
-                if cursor.fetchone()[0] > 0:
-                    continue
-
-                # 加载数据并计算
-                stock_data = self._load_stock_data(date, lookback=60)
-                result_df = self.compute_for_date(date, stock_data)
-
-                if result_df.empty:
-                    continue
-
-                # 写入缓存
-                alpha_names = list(self.alphas.keys())
-                for _, row in result_df.iterrows():
-                    features_json = json.dumps({
-                        name: float(row.get(name, 0)) for name in alpha_names
-                    })
-                    conn.execute(
-                        f"""INSERT OR REPLACE INTO {self.cache_table}
-                            (code, trade_date, features_json)
-                            VALUES (?, ?, ?)""",
-                        (row['code'], date, features_json)
+                for date in batch_dates:
+                    # 检查是否已缓存
+                    cursor = conn.execute(
+                        f"SELECT COUNT(*) FROM {self.cache_table} WHERE trade_date = ?",
+                        (date,)
                     )
+                    if cursor.fetchone()[0] > 0:
+                        continue
 
-                total_records += len(result_df)
+                    # 加载数据并计算
+                    stock_data = self._load_stock_data(date, lookback=60)
+                    result_df = self.compute_for_date(date, stock_data)
 
-            conn.commit()
-            logger.info(f"  进度: {min(i + batch_size, len(trade_dates))}/{len(trade_dates)}, "
-                        f"累计 {total_records} 条")
+                    if result_df.empty:
+                        continue
 
-        conn.close()
+                    # 写入缓存
+                    alpha_names = list(self.alphas.keys())
+                    for _, row in result_df.iterrows():
+                        features_json = json.dumps({
+                            name: float(row.get(name, 0)) for name in alpha_names
+                        })
+                        conn.execute(
+                            f"""INSERT OR REPLACE INTO {self.cache_table}
+                                (code, trade_date, features_json)
+                                VALUES (?, ?, ?)""",
+                            (row['code'], date, features_json)
+                        )
+
+                    total_records += len(result_df)
+
+                conn.commit()
+                logger.info(f"  进度: {min(i + batch_size, len(trade_dates))}/{len(trade_dates)}, "
+                            f"累计 {total_records} 条")
+        finally:
+            conn.close()
+
         logger.info(f"缓存完成: {total_records} 条记录")
         return total_records
 
@@ -435,29 +437,31 @@ class BrainFeatureImporter:
         start_date = end_date - timedelta(days=lookback + 30)
 
         conn = sqlite3.connect(self.db_path)
-        query = """
-            SELECT s.code, q.trade_date, q.open, q.high, q.low, q.close,
-                   q.volume, q.price_change_pct
-            FROM daily_quotes q
-            JOIN securities s ON q.security_id = s.id
-            WHERE s.type = 'A股'
-            AND q.trade_date >= ? AND q.trade_date <= ?
-            ORDER BY s.code, q.trade_date
-        """
-        df = pd.read_sql_query(query, conn,
-                               params=(start_date.strftime('%Y-%m-%d'), date))
+        try:
+            query = """
+                SELECT s.code, q.trade_date, q.open, q.high, q.low, q.close,
+                       q.volume, q.price_change_pct
+                FROM daily_quotes q
+                JOIN securities s ON q.security_id = s.id
+                WHERE s.type = 'A股'
+                AND q.trade_date >= ? AND q.trade_date <= ?
+                ORDER BY s.code, q.trade_date
+            """
+            df = pd.read_sql_query(query, conn,
+                                   params=(start_date.strftime('%Y-%m-%d'), date))
 
-        # 加载估值数据 (pe, pb, ps, turnover, market_cap)
-        basic_query = """
-            SELECT s.code, db.trade_date, db.pe_ttm, db.pb, db.ps_ttm,
-                   db.turnover_rate, db.total_mv
-            FROM daily_basic db
-            JOIN securities s ON db.security_id = s.id
-            WHERE db.trade_date >= ? AND db.trade_date <= ?
-        """
-        basic_df = pd.read_sql_query(basic_query, conn,
-                                      params=(start_date.strftime('%Y-%m-%d'), date))
-        conn.close()
+            # 加载估值数据 (pe, pb, ps, turnover, market_cap)
+            basic_query = """
+                SELECT s.code, db.trade_date, db.pe_ttm, db.pb, db.ps_ttm,
+                       db.turnover_rate, db.total_mv
+                FROM daily_basic db
+                JOIN securities s ON db.security_id = s.id
+                WHERE db.trade_date >= ? AND db.trade_date <= ?
+            """
+            basic_df = pd.read_sql_query(basic_query, conn,
+                                          params=(start_date.strftime('%Y-%m-%d'), date))
+        finally:
+            conn.close()
 
         # 合并
         if not basic_df.empty:

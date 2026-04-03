@@ -214,7 +214,7 @@ def backfill_by_stock(pro, db_path, start_date='20180101', end_date='20251231', 
                                     values.append(None if pd.isna(val) else float(val))
                                 local_rows.append(tuple(values))
                         return local_rows
-                except:
+                except Exception:
                     pass
                 stats['errors'] += 1
             elif 'freq' not in err_str:

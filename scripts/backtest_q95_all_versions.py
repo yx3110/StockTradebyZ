@@ -43,7 +43,7 @@ def load_q95(vkey):
         try:
             data = joblib.load(q95_files[-1])
             return data['models'].get('10d')
-        except:
+        except Exception:
             pass
     return None
 
@@ -120,7 +120,7 @@ def main():
                     w = tw.get(name, 0.2)
                     mse_pred += w * p
                     total_w += w
-                except:
+                except Exception:
                     continue
             if total_w > 0:
                 mse_pred /= total_w

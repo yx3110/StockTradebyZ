@@ -127,7 +127,7 @@ def h2_head_ic_analysis(reports):
             ic, _ = spearmanr(p, r)
             if np.isfinite(ic):
                 global_ics.append(ic)
-        except:
+        except Exception:
             continue
 
         # Top 20% IC
@@ -138,7 +138,7 @@ def h2_head_ic_analysis(reports):
                 ic_top20, _ = spearmanr(p[mask_top20], r[mask_top20])
                 if np.isfinite(ic_top20):
                     top20_ics.append(ic_top20)
-            except:
+            except Exception:
                 pass
 
         # Top 10% IC
@@ -149,7 +149,7 @@ def h2_head_ic_analysis(reports):
                 ic_top10, _ = spearmanr(p[mask_top10], r[mask_top10])
                 if np.isfinite(ic_top10):
                     top10_ics.append(ic_top10)
-            except:
+            except Exception:
                 pass
 
         # Top 5% IC
@@ -160,7 +160,7 @@ def h2_head_ic_analysis(reports):
                 ic_top5, _ = spearmanr(p[mask_top5], r[mask_top5])
                 if np.isfinite(ic_top5):
                     top5_ics.append(ic_top5)
-            except:
+            except Exception:
                 pass
 
     conn.close()

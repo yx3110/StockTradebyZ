@@ -63,7 +63,7 @@ class V487ProductionScorer(V486ProductionScorer):
                 self._head_refiner = data['model']
                 self._head_refiner_meta = data
                 logger.info(f"  Head Refiner loaded: {latest.name} "
-                            f"(AUC={data.get('test_auc', 'N/A'):.4f})")
+                            f"(AUC={data.get('test_auc', 0):.4f})")
             except Exception as e:
                 logger.warning(f"Head Refiner load failed: {e}")
 

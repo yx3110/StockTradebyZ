@@ -673,7 +673,7 @@ class AIEnhancedDailyReport:
         # 基本信息
         report_lines.extend([
             "**📊 综合评估**",
-            f"- **Claude评分**: {claude_result.get('overall_score', 'N/A'):.1f}分",
+            f"- **Claude评分**: {claude_result.get('overall_score', 0):.1f}分",
             f"- **投资评级**: {claude_result.get('rating', 'N/A')}",
             f"- **分析置信度**: {claude_result.get('confidence', 0):.1%}",
             f"- **风险等级**: {risk.get('risk_level', 'N/A')}",
@@ -762,10 +762,10 @@ class AIEnhancedDailyReport:
         """添加量化分析部分（Claude分析不可用时）"""
         report_lines.extend([
             "**📊 量化分析**",
-            f"- **量化评分**: {stock.get('comprehensive_score', 'N/A'):.1f}分",
+            f"- **量化评分**: {stock.get('comprehensive_score', 0):.1f}分",
             f"- **策略验证**: {', '.join(stock.get('strategies', []))}",
             f"- **收盘价**: {stock.get('close_price', 'N/A')}元",
-            f"- **涨跌幅**: {stock.get('price_change_pct', 'N/A'):.2f}%",
+            f"- **涨跌幅**: {stock.get('price_change_pct', 0):.2f}%",
             "",
             "**注意**: 该股票未进行Claude详细分析，仅提供量化指标参考。",
             ""
