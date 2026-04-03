@@ -636,7 +636,7 @@ def main():
         args.cppi_floor = 0.08
         args.cppi_multiplier = 20
         args.score_floor = 30
-        args.ema_alpha = 0.9
+        args.ema_alpha = 0.7
         args.backtest = True
         args.min_market_cap = 30    # 30亿市值下限
         # V5 WF摘要 (WFER + OOS IC半衰期)
