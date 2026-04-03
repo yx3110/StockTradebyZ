@@ -67,6 +67,7 @@ class DatabaseManager:
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
         conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute("PRAGMA synchronous = NORMAL")
         return conn
 
     @contextmanager
@@ -83,7 +84,11 @@ class DatabaseManager:
         try:
             yield conn
         except Exception:
-            # 出错时关闭并重建连接
+            # 出错时回滚未提交事务，然后关闭并重建连接
+            try:
+                conn.rollback()
+            except Exception:
+                pass
             try:
                 conn.close()
             except Exception:
@@ -112,9 +117,13 @@ class DatabaseManager:
         """批量执行SQL语句"""
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.executemany(query, data)
-            conn.commit()
-            return cursor.rowcount
+            try:
+                cursor.executemany(query, data)
+                conn.commit()
+                return cursor.rowcount
+            except Exception:
+                conn.rollback()
+                raise
     
     def get_security_map(self) -> Dict[str, int]:
         """一次查询获取所有证券的 {code: id} 映射"""
@@ -160,8 +169,8 @@ class DatabaseManager:
         query = """
         INSERT OR REPLACE INTO daily_quotes (
             security_id, trade_date, open, high, low, close, volume,
-            price_change_pct, is_limit_up, is_limit_down
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            price_change_pct, is_limit_up, is_limit_down, is_suspend
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
         
         rows_data = []
@@ -176,7 +185,8 @@ class DatabaseManager:
                 item['volume'],
                 item.get('price_change_pct', 0),
                 item.get('is_limit_up', False),
-                item.get('is_limit_down', False)
+                item.get('is_limit_down', False),
+                item.get('is_suspend', False)
             ))
         
         return self.execute_many(query, rows_data)

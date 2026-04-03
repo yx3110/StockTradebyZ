@@ -362,7 +362,10 @@ def update_daily_basic(date_str: str):
         return 0
 
 def update_financial_indicators(date_str: str):
-    """检查并更新当天或前一天发布财务数据的公司"""
+    """检查并更新当天或前一天发布财务数据的公司
+
+    使用 ann_date 参数批量查询，仅需1-2次API调用（替代原来5000+次逐股查询）
+    """
     logger.info(f"检查 {date_str} 及前一天发布财务数据的公司...")
 
     try:
@@ -371,94 +374,37 @@ def update_financial_indicators(date_str: str):
         yesterday_dt = today_dt - timedelta(days=1)
         target_dates = [date_str, yesterday_dt.strftime('%Y%m%d')]
 
-        import sqlite3
-        db_path = _db_path
-        with sqlite3.connect(db_path, timeout=30) as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT DISTINCT s.code || '.' ||
-                       CASE WHEN s.exchange = 'SH' THEN 'SH'
-                            WHEN s.exchange = 'SZ' THEN 'SZ'
-                            ELSE s.exchange END as ts_code
-                FROM securities s
-                WHERE s.type = 'A股'
-                ORDER BY s.id
-            """)
-            stock_codes = [row[0] for row in cursor.fetchall()]
+        fields = ('ts_code,ann_date,end_date,eps,dt_eps,roe,roe_waa,roe_dt,roa,'
+                  'grossprofit_margin,netprofit_margin,profit_to_gr,'
+                  'ocf_to_profit,debt_to_assets,current_ratio,quick_ratio,'
+                  'ar_turn,ca_turn,fa_turn,assets_turn,'
+                  'netprofit_yoy,or_yoy')
 
-        if not stock_codes:
-            logger.info("未找到活跃股票，跳过财务指标更新")
-            return 0
-
-        logger.info(f"并行检查 {len(stock_codes)} 只A股的财务数据发布情况")
-
-        import concurrent.futures
-        import threading
-
-        companies_with_new_reports = []
-        checked_count = 0
-        lock = threading.Lock()
-
-        def check_single_stock(ts_code):
+        all_results = []
+        for ann_date in target_dates:
             try:
-                fina_df = pro.fina_indicator(
-                    ts_code=ts_code,
-                    fields='ts_code,ann_date,end_date,eps,dt_eps,roe,roe_waa,roe_dt,roa,'
-                           'grossprofit_margin,netprofit_margin,profit_to_gr,'
-                           'ocf_to_profit,debt_to_assets,current_ratio,quick_ratio,'
-                           'ar_turn,ca_turn,fa_turn,assets_turn,'
-                           'netprofit_yoy,or_yoy'
-                )
-
-                if not fina_df.empty:
-                    latest = fina_df.iloc[0]
-                    ann_date = str(int(latest['ann_date'])) if pd.notna(latest['ann_date']) else ""
-
-                    if ann_date in target_dates:
-                        with lock:
-                            companies_with_new_reports.append({
-                                'ts_code': ts_code,
-                                'ann_date': ann_date,
-                                'end_date': latest['end_date'],
-                                'data': latest
-                            })
-                        logger.info(f"发现 {ts_code} 在 {ann_date} 发布财务数据")
-
-                nonlocal checked_count
-                with lock:
-                    checked_count += 1
-                    if checked_count % 100 == 0:
-                        logger.info(f"已检查 {checked_count}/{len(stock_codes)} 只股票")
-
-                return True
-
+                df = pro.fina_indicator(ann_date=ann_date, fields=fields)
+                if df is not None and not df.empty:
+                    logger.info(f"ann_date={ann_date} 查询到 {len(df)} 条财务数据")
+                    all_results.append(df)
+                else:
+                    logger.info(f"ann_date={ann_date} 无新发布财务数据")
             except Exception as e:
-                logger.debug(f"检查 {ts_code} 财务数据失败: {e}")
-                return False
+                logger.warning(f"查询 ann_date={ann_date} 财务数据失败: {e}")
 
-        max_workers = 5
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = [executor.submit(check_single_stock, ts_code) for ts_code in stock_codes]
-            concurrent.futures.wait(futures)
-
-        if not companies_with_new_reports:
+        if not all_results:
             logger.info("未发现当天或前一天发布财务数据的公司")
             return 0
 
-        logger.info(f"发现 {len(companies_with_new_reports)} 家公司发布了新的财务数据")
+        combined_df = pd.concat(all_results, ignore_index=True)
 
-        count = 0
-        for company in companies_with_new_reports:
-            try:
-                df = pd.DataFrame([company['data']])
-                saved = save_financial_data_to_db(df)
-                count += saved
+        # 同一股票可能在today和yesterday都有记录，按ts_code+end_date去重，保留最新ann_date
+        combined_df = combined_df.sort_values('ann_date', ascending=False)
+        combined_df = combined_df.drop_duplicates(subset=['ts_code', 'end_date'], keep='first')
 
-                if saved > 0:
-                    logger.info(f"更新 {company['ts_code']} 财务数据成功 (公告日期: {company['ann_date']})")
+        logger.info(f"发现 {len(combined_df)} 条新发布的财务数据，开始保存...")
 
-            except Exception as e:
-                logger.debug(f"保存 {company['ts_code']} 财务数据失败: {e}")
+        count = save_financial_data_to_db(combined_df)
 
         logger.info(f"✅ 新财报公司财务指标更新完成: {count} 条")
         return count

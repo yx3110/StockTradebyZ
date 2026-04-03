@@ -42,6 +42,8 @@ class TechnicalIndicatorCalculator:
         }
         self.stats_lock = threading.Lock()
         self.db_lock = threading.Lock()  # 数据库全局锁
+        self._thread_connections = []  # 跟踪所有线程连接以便清理
+        self._thread_connections_lock = threading.Lock()
     
     def connect_db(self):
         """连接数据库"""
@@ -66,12 +68,15 @@ class TechnicalIndicatorCalculator:
     def get_thread_connection(self):
         """获取线程本地数据库连接"""
         if not hasattr(self.thread_local, 'conn'):
-            self.thread_local.conn = sqlite3.connect(str(self.db_path), timeout=30.0)
-            self.thread_local.conn.execute("PRAGMA foreign_keys = ON")
-            self.thread_local.conn.execute("PRAGMA journal_mode = WAL")
-            self.thread_local.conn.execute("PRAGMA synchronous = NORMAL")
-            self.thread_local.conn.execute("PRAGMA temp_store = memory")
-            self.thread_local.conn.execute("PRAGMA mmap_size = 268435456")  # 256MB
+            conn = sqlite3.connect(str(self.db_path), timeout=30.0)
+            conn.execute("PRAGMA foreign_keys = ON")
+            conn.execute("PRAGMA journal_mode = WAL")
+            conn.execute("PRAGMA synchronous = NORMAL")
+            conn.execute("PRAGMA temp_store = memory")
+            conn.execute("PRAGMA mmap_size = 268435456")  # 256MB
+            self.thread_local.conn = conn
+            with self._thread_connections_lock:
+                self._thread_connections.append(conn)
         return self.thread_local.conn
 
     def close_thread_connection(self):
@@ -84,9 +89,15 @@ class TechnicalIndicatorCalculator:
             delattr(self.thread_local, 'conn')
 
     def close_all_connections(self):
-        """关闭主连接和所有已知的线程连接"""
+        """关闭主连接和所有工作线程的数据库连接"""
         self.close_db()
-        self.close_thread_connection()
+        with self._thread_connections_lock:
+            for conn in self._thread_connections:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+            self._thread_connections.clear()
     
     def get_stock_list(self, limit: Optional[int] = None) -> List[Tuple]:
         """获取股票列表"""
