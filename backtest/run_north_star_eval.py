@@ -626,22 +626,22 @@ def main():
     # --production: 生产配置覆盖
     if args.production:
         args.report_dir = args.report_dir or 'reports/daily_selection_v4901'
-        args.label = args.label if args.label != 'v3.95' else 'V4901-V51'
-        args.top_n = 15             # WAS 10: expand for L7 capacity
-        args.focus_days = 18        # WAS 15: reduce turnover for L2
-        args.retention_bonus = 0.25 # WAS 0.2: further reduce turnover
+        args.label = args.label if args.label != 'v3.95' else 'V4901-PROD'
+        args.top_n = 10
+        args.focus_days = 15
+        args.retention_bonus = 0.2
         args.cppi_floor = 0.08
         args.cppi_multiplier = 20
         args.score_floor = 30
         args.ema_alpha = 0.7
         args.backtest = True
-        args.min_market_cap = 30    # NEW: 30亿 market cap floor for L7
+        args.min_market_cap = 30    # 30亿市值下限
         # V5 WF摘要 (WFER + OOS IC半衰期)
         _wf_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 '..', 'ml_models', 'trained_models', 'v4901', 'wf_summary.json')
         if os.path.exists(_wf_path) and not args.wf_summary:
             args.wf_summary = _wf_path
-        print("🏆 V5.1优化: V4901 + Top15 + MC30亿 + Focus18 + Ret0.25 + CPPI(8,20) + SF30")
+        print("🏆 生产配置: V4901 + MC30亿 + WF摘要 + CPPI(8,20) + RegimeDamp = V5.1 80.6% S级")
 
     # ── auto 日期解析 ──
     # 如果指定了 --report-dir 且日期为 auto，从报告目录自动检测
