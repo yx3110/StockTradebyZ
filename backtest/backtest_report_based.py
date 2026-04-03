@@ -1949,12 +1949,17 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
         _s = summary[days]
 
         # L7 新增4项: adv_coverage, sector_hhi, avg_impact_cost, micro_cap_ratio
-        if '_vol_df' in dir() and _vol_df is not None and not _vol_df.empty:
+        # 使用当前holding period的_vol_df (刚在V5.1容量数据补齐块中计算)
+        _vol_df_current = _vol_df if ('_vol_df' in dir() and _vol_df is not None
+                                       and not _vol_df.empty
+                                       and '_held_codes' in dir() and len(_held_codes) >= 3
+                                       ) else None
+        if _vol_df_current is not None:
             _turnover_v = _s.get('annual_turnover', 30)
             _s['adv_coverage'] = compute_adv_coverage(
-                _vol_df, assumed_aum_mn=100, n_positions=top_n)
+                _vol_df_current, assumed_aum_mn=100, n_positions=top_n)
             _s['avg_impact_cost'] = compute_avg_impact_cost(
-                _vol_df, _turnover_v, n_positions=top_n)
+                _vol_df_current, _turnover_v, n_positions=top_n, assumed_aum_mn=100)
         else:
             _s.setdefault('adv_coverage', 0.5)
             _s.setdefault('avg_impact_cost', 0.03)

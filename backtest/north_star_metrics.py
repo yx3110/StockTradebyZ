@@ -3444,8 +3444,10 @@ def compute_sector_hhi(sector_series: pd.Series) -> float:
 def compute_avg_impact_cost(picks_with_volume: pd.DataFrame,
                              avg_turnover: float,
                              n_positions: int = 10,
-                             eta: float = 0.15) -> float:
-    """平均冲击成本 (Almgren-Chriss, 年化%). 每次调仓的估计市场冲击."""
+                             eta: float = 0.15,
+                             assumed_aum_mn: float = 100) -> float:
+    """平均冲击成本 (Almgren-Chriss, 年化%). 每次调仓的估计市场冲击.
+    participation = trade_value / ADV, impact = vol * eta * sqrt(participation)."""
     if picks_with_volume is None or picks_with_volume.empty:
         return 0.0
     adv_values = picks_with_volume['adv_20d_value'].values
@@ -3455,16 +3457,22 @@ def compute_avg_impact_cost(picks_with_volume: pd.DataFrame,
     else:
         daily_vols = daily_vols.values
     daily_trade_frac = avg_turnover / 252 if avg_turnover > 1 else avg_turnover
+    position_value = assumed_aum_mn * 1e6 / max(n_positions, 1)
     total_impact = 0.0
+    n_valid = 0
     for i in range(len(adv_values)):
         adv = adv_values[i]
         vol = daily_vols[i]
         if adv <= 0:
             continue
-        participation = daily_trade_frac / max(n_positions, 1)
+        trade_value = position_value * daily_trade_frac
+        participation = trade_value / adv
         impact = vol * eta * np.sqrt(max(participation, 0))
         total_impact += impact
-    return float(total_impact * 252 / max(len(adv_values), 1))
+        n_valid += 1
+    if n_valid == 0:
+        return 0.0
+    return float(total_impact * 252 / n_valid)
 
 
 def compute_micro_cap_ratio(market_caps_bn: pd.Series,
