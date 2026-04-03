@@ -2598,8 +2598,8 @@ def score_metric_v5(value: float, target_info: dict) -> float:
         if value >= bp_raw[-1]:
             return 5.0
         if value < bp_raw[0]:
-            # 低于pass: 外推到0分 (用pass-target的跨度作为外推范围)
-            range_span = max(abs(bp_raw[-1] - bp_raw[0]), 1e-8)
+            # 低于pass: 外推到0分 (V5.2: 对称保护, 与lower方向一致)
+            range_span = max(abs(bp_raw[-1] - bp_raw[0]), abs(bp_raw[0]) * 0.5 + 1e-8)
             floor = bp_raw[0] - range_span
             return float(np.clip(np.interp(value, [floor, bp_raw[0]], [0.0, 1.0]), 0.0, 1.0))
         return float(np.interp(value, bp_raw, [1.0, 2.0, 3.0, 4.0, 5.0]))
@@ -2699,7 +2699,8 @@ def compute_oos_ic_half_life(wf_summary: dict) -> Optional[float]:
     coeffs = np.polyfit(range(len(log_ics)), log_ics, 1)
     slope = coeffs[0]
     if slope >= 0:
-        return 12.0
+        # V5.2: 非衰减IC可能是过拟合信号, 给good而非满分
+        return 6.0
     half_life = np.log(2) / (-slope)
     return float(min(half_life, 12.0))
 
@@ -3141,7 +3142,8 @@ def compute_regime_transition_dd(daily_returns: pd.Series,
     bm_dd_series = abs(bm_cum / bm_peak - 1)
     bm_normal_dd_median = bm_dd_series[normal_mask].median()
 
-    denominator = max(normal_dd_median, bm_normal_dd_median, 0.001)
+    # V5.2: floor从0.001提升到0.02, 避免CPPI策略因正常DD极低导致ratio爆炸
+    denominator = max(normal_dd_median, bm_normal_dd_median, 0.02)
 
     # V5.2: 用p75替代max, 降低单次极端事件对ratio的决定性影响
     transition_dds_sorted = sorted(transition_dds)
@@ -3171,8 +3173,9 @@ def compute_cscv_pbo(daily_returns: pd.Series,
     if period_len < 10:
         return None
     rng = np.random.RandomState(42)
-    # build variants via block-bootstrap (each block = one sub-period length)
-    variants = [returns]
+    # V5.2: trim原始variant到与bootstrap相同长度, 避免subperiod切分不公平
+    trimmed_len = n_subperiods * period_len
+    variants = [returns[:trimmed_len]]
     for v in range(1, n_variants):
         blocks = []
         for _ in range(n_subperiods):
@@ -3406,4 +3409,432 @@ def compute_v51_score(metric_values: Dict[str, float],
         'raw_pct': weighted_pct, 'length_factor': length_factor,
         'final_pct': final_pct, 'grade': grade,
         'layer_details': layer_details, 'metric_scores': metric_scores,
+    }
+
+
+# ═══════════════════════════════════════════════════════
+# V5.2 北极星评分体系 — 9层58指标 + 执行质量 + 条件稳健 + 风格适配
+# ═══════════════════════════════════════════════════════
+
+# ── L7 新增容量指标 (4项) ──
+
+def compute_adv_coverage(picks_with_volume: pd.DataFrame,
+                          assumed_aum_mn: float = 100,
+                          n_positions: int = 10,
+                          threshold: float = 5.0) -> float:
+    """ADV覆盖率: 持仓中ADV > threshold倍仓位金额的比例.
+    threshold=5表示每日成交额至少是仓位的5倍, 即单日可在20%参与率内完成."""
+    if picks_with_volume is None or picks_with_volume.empty:
+        return 0.0
+    aum_yuan = assumed_aum_mn * 1e6
+    position_value = aum_yuan / max(n_positions, 1)
+    adv_values = picks_with_volume['adv_20d_value'].values
+    covered = sum(1 for adv in adv_values if adv > 0 and adv >= threshold * position_value)
+    return float(covered / max(len(adv_values), 1))
+
+
+def compute_sector_hhi(sector_series: pd.Series) -> float:
+    """行业Herfindahl指数. 0=完全分散, 1=单一行业. 基于等权持仓."""
+    if sector_series is None or sector_series.empty:
+        return 1.0
+    counts = sector_series.value_counts(normalize=True)
+    return float((counts ** 2).sum())
+
+
+def compute_avg_impact_cost(picks_with_volume: pd.DataFrame,
+                             avg_turnover: float,
+                             n_positions: int = 10,
+                             eta: float = 0.15) -> float:
+    """平均冲击成本 (Almgren-Chriss, 年化%). 每次调仓的估计市场冲击."""
+    if picks_with_volume is None or picks_with_volume.empty:
+        return 0.0
+    adv_values = picks_with_volume['adv_20d_value'].values
+    daily_vols = picks_with_volume.get('daily_vol')
+    if daily_vols is None:
+        daily_vols = np.full(len(adv_values), 0.025)
+    else:
+        daily_vols = daily_vols.values
+    daily_trade_frac = avg_turnover / 252 if avg_turnover > 1 else avg_turnover
+    total_impact = 0.0
+    for i in range(len(adv_values)):
+        adv = adv_values[i]
+        vol = daily_vols[i]
+        if adv <= 0:
+            continue
+        participation = daily_trade_frac / max(n_positions, 1)
+        impact = vol * eta * np.sqrt(max(participation, 0))
+        total_impact += impact
+    return float(total_impact * 252 / max(len(adv_values), 1))
+
+
+def compute_micro_cap_ratio(market_caps_bn: pd.Series,
+                             threshold_bn: float = 3.0) -> float:
+    """微盘股比例: 市值<threshold(亿)的持仓占比."""
+    if market_caps_bn is None or market_caps_bn.empty:
+        return 0.0
+    return float((market_caps_bn < threshold_bn).mean())
+
+
+# ── L8 执行质量 (5项) ──
+
+def compute_delay_cost(signal_returns: pd.Series,
+                        actual_returns: pd.Series) -> float:
+    """延迟成本(年化%): signal当日收益 vs 次日执行收益的差. 正=延迟有成本."""
+    if signal_returns is None or actual_returns is None:
+        return 0.0
+    n = min(len(signal_returns), len(actual_returns))
+    if n < 20:
+        return 0.0
+    diff = signal_returns.values[:n] - actual_returns.values[:n]
+    return float(np.mean(diff) * 252)
+
+
+def compute_execution_fill_rate(total_attempted: int,
+                                 limit_up_blocked: int) -> float:
+    """执行成功率: 非涨停不可买的比例. 1.0=全部成功."""
+    if total_attempted <= 0:
+        return 1.0
+    return float(1.0 - limit_up_blocked / total_attempted)
+
+
+def compute_realized_vs_theoretical(net_return: float,
+                                     gross_return: float) -> float:
+    """实现/理论收益比: 扣成本后/毛收益. 1.0=无摩擦."""
+    if gross_return <= 0:
+        return 0.0
+    return float(net_return / gross_return)
+
+
+def compute_turnover_efficiency(excess_annual_return: float,
+                                 annual_turnover: float) -> float:
+    """换手效率: 每单位换手产生的超额收益(bps). 高=换手有效."""
+    if annual_turnover <= 0:
+        return 0.0
+    return float(excess_annual_return / annual_turnover * 10000)
+
+
+def compute_implementation_shortfall(gross_return: float,
+                                      net_return: float,
+                                      annual_turnover: float) -> float:
+    """实施缺口(年化%): 毛收益 - 净收益, 归一化到每次换手.
+    越低=执行越好."""
+    if annual_turnover <= 0:
+        return 0.0
+    shortfall = gross_return - net_return
+    return float(shortfall / max(annual_turnover, 1) * 100)
+
+
+# ── L9 条件稳健性 (4项) ──
+
+def _classify_regimes(benchmark_returns: pd.Series,
+                       lookback: int = 60) -> pd.Series:
+    """根据benchmark滚动收益分类市场regime: bull/bear/neutral."""
+    if benchmark_returns is None or len(benchmark_returns) < lookback + 20:
+        return pd.Series(['neutral'] * len(benchmark_returns),
+                         index=benchmark_returns.index)
+    rolling_ret = benchmark_returns.rolling(lookback).sum()
+    regimes = pd.Series('neutral', index=benchmark_returns.index)
+    regimes[rolling_ret > 0.05] = 'bull'
+    regimes[rolling_ret < -0.05] = 'bear'
+    return regimes
+
+
+def compute_regime_ic_consistency(ic_series: pd.Series,
+                                   benchmark_returns: pd.Series,
+                                   lookback: int = 60) -> Optional[float]:
+    """Regime间IC一致性: min(各regime ICIR) / max(各regime ICIR).
+    1.0=完全一致, 0=某regime无预测力. 需每个regime至少30个观测."""
+    if ic_series is None or benchmark_returns is None:
+        return None
+    regimes = _classify_regimes(benchmark_returns, lookback)
+    common = ic_series.index.intersection(regimes.index)
+    if len(common) < 60:
+        return None
+    ic_aligned = ic_series.loc[common]
+    reg_aligned = regimes.loc[common]
+    regime_icirs = []
+    for regime in ['bull', 'bear', 'neutral']:
+        mask = reg_aligned == regime
+        if mask.sum() < 30:
+            continue
+        ic_r = ic_aligned[mask]
+        std = ic_r.std()
+        if std > 0:
+            regime_icirs.append(float(ic_r.mean() / std))
+        else:
+            regime_icirs.append(0.0)
+    if len(regime_icirs) < 2:
+        return None
+    max_icir = max(regime_icirs)
+    min_icir = min(regime_icirs)
+    if max_icir <= 0:
+        return 0.0
+    return float(max(min_icir / max_icir, 0.0))
+
+
+def compute_regime_sharpe_floor(daily_returns: pd.Series,
+                                 benchmark_returns: pd.Series,
+                                 lookback: int = 60) -> Optional[float]:
+    """最差regime Sharpe: min(各regime的Sharpe). 需每个regime至少30个观测."""
+    if daily_returns is None or benchmark_returns is None:
+        return None
+    regimes = _classify_regimes(benchmark_returns, lookback)
+    common = daily_returns.index.intersection(regimes.index)
+    if len(common) < 60:
+        return None
+    ret_aligned = daily_returns.loc[common]
+    reg_aligned = regimes.loc[common]
+    regime_sharpes = []
+    for regime in ['bull', 'bear', 'neutral']:
+        mask = reg_aligned == regime
+        if mask.sum() < 30:
+            continue
+        ret_r = ret_aligned[mask]
+        std = ret_r.std()
+        if std > 0:
+            regime_sharpes.append(float(ret_r.mean() / std * np.sqrt(252)))
+        else:
+            regime_sharpes.append(0.0)
+    if not regime_sharpes:
+        return None
+    return float(min(regime_sharpes))
+
+
+def compute_multi_benchmark_excess(daily_returns: pd.Series,
+                                    primary_bm_returns: pd.Series,
+                                    secondary_bm_returns: pd.Series) -> Optional[float]:
+    """多基准超额: min(vs primary, vs secondary) 年化.
+    primary=自动选择基准, secondary=CSI500(万能基准)."""
+    if daily_returns is None:
+        return None
+    excesses = []
+    for bm in [primary_bm_returns, secondary_bm_returns]:
+        if bm is None:
+            continue
+        common = daily_returns.index.intersection(bm.index)
+        if len(common) < 60:
+            continue
+        excess = daily_returns.loc[common] - bm.loc[common]
+        excesses.append(float(excess.mean() * 252))
+    if not excesses:
+        return None
+    return float(min(excesses))
+
+
+def compute_regime_drawdown_ratio(daily_returns: pd.Series,
+                                   benchmark_returns: pd.Series,
+                                   lookback: int = 60) -> Optional[float]:
+    """Regime DD比: 最差regime MaxDD / 全期MaxDD. <1.0表示全期DD不比单regime差."""
+    if daily_returns is None or benchmark_returns is None:
+        return None
+    regimes = _classify_regimes(benchmark_returns, lookback)
+    common = daily_returns.index.intersection(regimes.index)
+    if len(common) < 60:
+        return None
+    ret_aligned = daily_returns.loc[common]
+    reg_aligned = regimes.loc[common]
+
+    cum_full = (1 + ret_aligned).cumprod()
+    full_dd = float((cum_full / cum_full.expanding().max() - 1).min())
+    if full_dd >= 0:
+        return 1.0
+
+    worst_regime_dd = 0.0
+    for regime in ['bull', 'bear', 'neutral']:
+        mask = reg_aligned == regime
+        if mask.sum() < 20:
+            continue
+        ret_r = ret_aligned[mask]
+        cum_r = (1 + ret_r).cumprod()
+        dd = float((cum_r / cum_r.expanding().max() - 1).min())
+        worst_regime_dd = min(worst_regime_dd, dd)
+
+    if worst_regime_dd >= 0:
+        return 1.0
+    return float(worst_regime_dd / full_dd)
+
+
+# ── V5.2 目标定义 + 权重 + 风格适配 ──
+
+V52_LAYER_NAMES = {
+    1: '信号质量', 2: '组合效率', 3: '风险控制',
+    4: 'OOS鲁棒性', 5: '超额收益', 6: '因子归因',
+    7: '容量可扩展', 8: '执行质量', 9: '条件稳健性',
+}
+
+V52_LAYER_WEIGHTS = {
+    1: 0.22, 2: 0.10, 3: 0.15, 4: 0.12,
+    5: 0.08, 6: 0.08, 7: 0.08, 8: 0.08, 9: 0.09,
+}
+# Sum = 1.00, L7: 14%→8%, 新增 L8=8%, L9=9%
+
+# 继承V5.1全部targets + 新增L7/L8/L9
+NORTH_STAR_TARGETS_V52 = dict(NORTH_STAR_TARGETS_V51)
+NORTH_STAR_TARGETS_V52.update({
+    # ── L7 新增 (4项, 共7) ──
+    'adv_coverage': {
+        'pass': 0.50, 'ok': 0.60, 'good': 0.70, 'great': 0.80, 'target': 0.90,
+        'direction': 'higher', 'layer': 7, 'display': 'ADV覆盖率',
+    },
+    'sector_hhi': {
+        'pass': 0.40, 'ok': 0.30, 'good': 0.25, 'great': 0.18, 'target': 0.10,
+        'direction': 'lower', 'layer': 7, 'display': '行业HHI',
+    },
+    'avg_impact_cost': {
+        'pass': 0.05, 'ok': 0.03, 'good': 0.02, 'great': 0.01, 'target': 0.005,
+        'direction': 'lower', 'layer': 7, 'display': '平均冲击成本',
+    },
+    'micro_cap_ratio': {
+        'pass': 0.50, 'ok': 0.35, 'good': 0.25, 'great': 0.15, 'target': 0.05,
+        'direction': 'lower', 'layer': 7, 'display': '微盘股比例',
+    },
+
+    # ── L8 执行质量 (5项) ──
+    'delay_cost': {
+        'pass': 0.05, 'ok': 0.03, 'good': 0.02, 'great': 0.01, 'target': 0.005,
+        'direction': 'lower', 'layer': 8, 'display': '延迟成本(年化)',
+    },
+    'execution_fill_rate': {
+        'pass': 0.85, 'ok': 0.90, 'good': 0.93, 'great': 0.96, 'target': 0.98,
+        'direction': 'higher', 'layer': 8, 'display': '执行成功率',
+    },
+    'realized_vs_theoretical': {
+        'pass': 0.60, 'ok': 0.70, 'good': 0.75, 'great': 0.80, 'target': 0.85,
+        'direction': 'higher', 'layer': 8, 'display': '实现/理论比',
+    },
+    'turnover_efficiency': {
+        'pass': 10, 'ok': 20, 'good': 35, 'great': 50, 'target': 80,
+        'direction': 'higher', 'layer': 8, 'display': '换手效率(bps)',
+    },
+    'implementation_shortfall': {
+        'pass': 0.50, 'ok': 0.30, 'good': 0.20, 'great': 0.10, 'target': 0.05,
+        'direction': 'lower', 'layer': 8, 'display': '实施缺口(%/换手)',
+    },
+
+    # ── L9 条件稳健性 (4项) ──
+    'regime_ic_consistency': {
+        'pass': 0.20, 'ok': 0.30, 'good': 0.45, 'great': 0.60, 'target': 0.80,
+        'direction': 'higher', 'layer': 9, 'display': 'Regime IC一致性',
+        'min_days': 200,
+    },
+    'regime_sharpe_floor': {
+        'pass': -0.5, 'ok': 0.0, 'good': 0.5, 'great': 1.0, 'target': 1.5,
+        'direction': 'higher', 'layer': 9, 'display': '最差Regime Sharpe',
+        'min_days': 200,
+    },
+    'multi_benchmark_excess': {
+        'pass': 0.0, 'ok': 0.05, 'good': 0.10, 'great': 0.15, 'target': 0.25,
+        'direction': 'higher', 'layer': 9, 'display': '多基准超额(年化)',
+        'min_days': 200,
+    },
+    'regime_drawdown_ratio': {
+        'pass': 2.0, 'ok': 1.5, 'good': 1.2, 'great': 1.0, 'target': 0.8,
+        'direction': 'lower', 'layer': 9, 'display': 'Regime DD比',
+        'min_days': 200,
+    },
+})
+
+# ── 风格适配: 按策略市值风格调整targets ──
+V52_STYLE_PROFILES = {
+    'default': {},
+    'small_cap': {
+        # 小盘策略(中位<15亿): 放宽容量要求, 收紧微盘比
+        'strategy_capacity_mn': {'target': 1000, 'great': 500, 'good': 200},
+        'participation_rate_p90': {'target': 0.03, 'great': 0.04, 'good': 0.05},
+        'effective_n_corr': {'target': 6.0, 'great': 5.0},
+        'micro_cap_ratio': {'pass': 0.60, 'target': 0.10},
+    },
+    'large_cap': {
+        # 大盘策略(中位≥80亿): alpha更难获取
+        'daily_ic': {'pass': 0.02, 'ok': 0.03, 'target': 0.06},
+        'icir': {'pass': 0.20, 'ok': 0.30, 'target': 0.55},
+        'annual_return': {'pass': 0.10, 'ok': 0.15, 'target': 0.35},
+    },
+}
+
+
+def _select_style_profile(median_market_cap_bn: float) -> str:
+    """根据策略持仓市值中位数选择风格."""
+    if median_market_cap_bn >= 80:
+        return 'large_cap'
+    if median_market_cap_bn < 15:
+        return 'small_cap'
+    return 'default'
+
+
+def _apply_style_profile(targets: dict, profile_name: str) -> dict:
+    """将风格适配覆盖到targets的副本上."""
+    profile = V52_STYLE_PROFILES.get(profile_name, {})
+    if not profile:
+        return targets
+    adjusted = {}
+    for metric_name, target_info in targets.items():
+        if metric_name in profile:
+            merged = dict(target_info)
+            merged.update(profile[metric_name])
+            adjusted[metric_name] = merged
+        else:
+            adjusted[metric_name] = target_info
+    return adjusted
+
+
+def compute_v52_score(metric_values: Dict[str, float],
+                       n_trading_days: int = 500,
+                       n_trials: int = 10,
+                       median_market_cap_bn: float = 0) -> Dict:
+    """V5.2评分: 9层58指标, 连续插值 + 风格适配."""
+    # 风格适配
+    style = _select_style_profile(median_market_cap_bn) if median_market_cap_bn > 0 else 'default'
+    targets = _apply_style_profile(NORTH_STAR_TARGETS_V52, style)
+
+    layer_scores = {i: 0.0 for i in range(1, 10)}
+    layer_maxes = {i: 0.0 for i in range(1, 10)}
+    metric_scores = {}
+    skipped_metrics = []
+
+    for metric_name, target_info in targets.items():
+        layer = target_info['layer']
+        layer_maxes[layer] += 5.0
+        value = metric_values.get(metric_name)
+
+        # min_days 检查: 数据不足时警告并跳过
+        min_days = target_info.get('min_days', 0)
+        if min_days > 0 and n_trading_days > 0 and n_trading_days < min_days:
+            if value is None:
+                skipped_metrics.append((metric_name, min_days, n_trading_days))
+                metric_scores[metric_name] = (0.0, '░' * 20, None)
+                continue
+
+        if value is None:
+            metric_scores[metric_name] = (0.0, '░' * 20, None)
+            continue
+
+        score = score_metric_v5(value, target_info)
+        layer_scores[layer] += score
+        filled = int(score / 5.0 * 20)
+        bar = '█' * filled + '░' * (20 - filled)
+        metric_scores[metric_name] = (score, bar, value)
+
+    weighted_pct = 0.0
+    layer_details = {}
+    for layer in range(1, 10):
+        lmax = layer_maxes[layer]
+        lscore = layer_scores[layer]
+        lpct = lscore / lmax * 100 if lmax > 0 else 0
+        weight = V52_LAYER_WEIGHTS[layer]
+        weighted_pct += lpct * weight
+        layer_details[layer] = {'score': lscore, 'max': lmax, 'pct': lpct, 'weight': weight}
+
+    length_factor = compute_backtest_length_factor_v5(n_trading_days)
+    final_pct = weighted_pct * length_factor
+    total_score = sum(layer_scores.values())
+    max_score = sum(layer_maxes.values())
+    grade = compute_v5_grade(final_pct)
+
+    return {
+        'total_score': total_score, 'max_score': max_score,
+        'raw_pct': weighted_pct, 'length_factor': length_factor,
+        'final_pct': final_pct, 'grade': grade,
+        'layer_details': layer_details, 'metric_scores': metric_scores,
+        'style_profile': style, 'skipped_metrics': skipped_metrics,
     }

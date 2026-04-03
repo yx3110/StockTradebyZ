@@ -154,7 +154,7 @@ def _inject_wf_summary(result, wf_summary_path, focus_days):
         return
 
     from backtest.north_star_metrics import compute_wfer, compute_oos_ic_half_life
-    from backtest.backtest_report_based import _print_scorecard_v5, _print_scorecard_v51
+    from backtest.backtest_report_based import _print_scorecard_v5, _print_scorecard_v51, _print_scorecard_v52
 
     wfer = compute_wfer(wf_data)
     oos_hl = compute_oos_ic_half_life(wf_data)
@@ -177,6 +177,9 @@ def _inject_wf_summary(result, wf_summary_path, focus_days):
                             n_trading_days=n_reports)
         _print_scorecard_v51(s, result.get('label', ''), focus_days,
                              n_trading_days=n_reports)
+        _print_scorecard_v52(s, result.get('label', ''), focus_days,
+                             n_trading_days=n_reports)
+        print(f"  ℹ V5.2注入完成: WFER={wfer}, OOS半衰期={oos_hl}")
 
 
 def run_backtest(report_dir, label, top_n=20, benchmark='000905.SH', focus_days=10,
@@ -613,8 +616,8 @@ def main():
     parser.add_argument('--hold-buffer', type=float, default=0,
                         help='持仓缓冲区倍数 (0=关闭, 推荐2-3). 现有持仓在top_n*(1+buffer)内保留')
     parser.add_argument('--score-version', type=str, default='both',
-                        choices=['v2', 'v3', 'v4', 'v5', 'v51', 'both', 'all'],
-                        help='评分卡版本: v2/v3/v4/v5/v51/both(v2+v4)/all(全部) (default: both)')
+                        choices=['v2', 'v3', 'v4', 'v5', 'v51', 'v52', 'both', 'all'],
+                        help='评分卡版本: v2/v3/v4/v5/v51/v52/both(v2+v4)/all(全部) (default: both)')
     parser.add_argument('--n-trials', type=int, default=10,
                         help='DSR多重测试校正: 尝试过的策略变体数 (default: 10)')
     parser.add_argument('--wf-summary', type=str, default=None,
@@ -641,7 +644,7 @@ def main():
                                 '..', 'ml_models', 'trained_models', 'v4901', 'wf_summary.json')
         if os.path.exists(_wf_path) and not args.wf_summary:
             args.wf_summary = _wf_path
-        print("🏆 生产配置: V4901 + MC30亿 + WF摘要 + CPPI(8,20) + EMA0.9 = V5.2 82.4% S级")
+        print("🏆 生产配置: V4901 + MC30亿 + WF摘要 + CPPI(8,20) + EMA0.9 | V5.2 9层59指标")
 
     # ── auto 日期解析 ──
     # 如果指定了 --report-dir 且日期为 auto，从报告目录自动检测
