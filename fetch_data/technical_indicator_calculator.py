@@ -168,11 +168,11 @@ class TechnicalIndicatorCalculator:
             df['highest_high'] = df['high'].rolling(window=period).max()
             df['rsv'] = (df['close'] - df['lowest_low']) / (df['highest_high'] - df['lowest_low']) * 100
             
-            # 计算K值 (RSV的移动平均)
-            df['k'] = df['rsv'].ewm(alpha=1/3).mean()
-            
-            # 计算D值 (K值的移动平均)
-            df['d'] = df['k'].ewm(alpha=1/3).mean()
+            # 计算K值 (RSV的递归EMA: K(t) = 1/3*RSV + 2/3*K(t-1))
+            df['k'] = df['rsv'].ewm(alpha=1/3, adjust=False).mean()
+
+            # 计算D值 (K值的递归EMA: D(t) = 1/3*K + 2/3*D(t-1))
+            df['d'] = df['k'].ewm(alpha=1/3, adjust=False).mean()
             
             # 计算J值
             df['j'] = 3 * df['k'] - 2 * df['d']

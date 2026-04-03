@@ -318,7 +318,7 @@ def update_daily_basic(date_str: str):
         import sqlite3
         db_path = _db_path
 
-        with sqlite3.connect(db_path) as conn:
+        with sqlite3.connect(db_path, timeout=30) as conn:
             cursor = conn.cursor()
 
             # 获取证券ID映射
@@ -373,7 +373,7 @@ def update_financial_indicators(date_str: str):
 
         import sqlite3
         db_path = _db_path
-        with sqlite3.connect(db_path) as conn:
+        with sqlite3.connect(db_path, timeout=30) as conn:
             cursor = conn.cursor()
             cursor.execute("""
                 SELECT DISTINCT s.code || '.' ||
@@ -412,7 +412,7 @@ def update_financial_indicators(date_str: str):
 
                 if not fina_df.empty:
                     latest = fina_df.iloc[0]
-                    ann_date = str(latest['ann_date']) if latest['ann_date'] else ""
+                    ann_date = str(int(latest['ann_date'])) if pd.notna(latest['ann_date']) else ""
 
                     if ann_date in target_dates:
                         with lock:
@@ -474,7 +474,7 @@ def save_financial_data_to_db(df):
         import sqlite3
         db_path = _db_path
 
-        with sqlite3.connect(db_path) as conn:
+        with sqlite3.connect(db_path, timeout=30) as conn:
             cursor = conn.cursor()
 
             cursor.execute('SELECT code, id FROM securities')
@@ -790,7 +790,7 @@ def quick_daily_update(date: str = None, skip_financial: bool = True):
     logger.info("【步骤11.5】更新BRAIN因子缓存...")
     try:
         from wqbrain_integration.cache_brain_features import batch_compute
-        brain_count = batch_compute(db_path, date, date)
+        brain_count = batch_compute(_db_path, date, date)
         stats['brain_cache'] = brain_count
         logger.info(f"  BRAIN缓存更新完成: {brain_count} 条")
     except Exception as e:
