@@ -3076,7 +3076,13 @@ def compute_regime_transition_dd(daily_returns: pd.Series,
                                   lookback: int = 60,
                                   pre_window: int = 10,
                                   post_window: int = 20) -> Optional[float]:
-    """Regime转换期间的DD放大倍数 = max(DD在转换窗口) / 正常期间中位DD."""
+    """Regime转换期间的DD放大倍数 (benchmark-relative).
+
+    V5.2改进: 使用benchmark的正常DD中位数作为分母下限, 避免CPPI策略因
+    正常期DD过低而导致ratio爆炸. 同时用p75替代max降低单次极端事件影响.
+
+    ratio = p75(策略转换DD) / max(策略正常DD中位, 基准正常DD中位)
+    """
     if daily_returns is None or benchmark_returns is None:
         return None
     n = min(len(daily_returns), len(benchmark_returns))
@@ -3122,13 +3128,27 @@ def compute_regime_transition_dd(daily_returns: pd.Series,
     normal_mask = ~is_transition
     if normal_mask.sum() < 60:
         return 1.0
+
+    # 策略正常DD中位数
     full_peak = cum_ret.expanding().max()
     full_dd_series = abs(cum_ret / full_peak - 1)
     normal_dd_median = full_dd_series[normal_mask].median()
-    if normal_dd_median <= 0.001:
-        normal_dd_median = 0.001
-    max_transition_dd = max(transition_dds)
-    return float(max_transition_dd / normal_dd_median)
+
+    # V5.2: benchmark正常DD中位数作为分母下限
+    # 避免CPPI策略因成功压缩正常DD而被不公平惩罚
+    bm_cum = (1 + pd.Series(br)).cumprod()
+    bm_peak = bm_cum.expanding().max()
+    bm_dd_series = abs(bm_cum / bm_peak - 1)
+    bm_normal_dd_median = bm_dd_series[normal_mask].median()
+
+    denominator = max(normal_dd_median, bm_normal_dd_median, 0.001)
+
+    # V5.2: 用p75替代max, 降低单次极端事件对ratio的决定性影响
+    transition_dds_sorted = sorted(transition_dds)
+    p75_idx = int(len(transition_dds_sorted) * 0.75)
+    p75_transition_dd = transition_dds_sorted[min(p75_idx, len(transition_dds_sorted) - 1)]
+
+    return float(p75_transition_dd / denominator)
 
 
 # ── L4 高级OOS ──

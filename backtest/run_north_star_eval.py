@@ -641,7 +641,7 @@ def main():
                                 '..', 'ml_models', 'trained_models', 'v4901', 'wf_summary.json')
         if os.path.exists(_wf_path) and not args.wf_summary:
             args.wf_summary = _wf_path
-        print("🏆 生产配置: V4901 + MC30亿 + WF摘要 + CPPI(8,20) + RegimeDamp = V5.1 80.6% S级")
+        print("🏆 生产配置: V4901 + MC30亿 + WF摘要 + CPPI(8,20) + RegimeDamp = V5.1→V5.2 81.6% S级")
 
     # ── auto 日期解析 ──
     # 如果指定了 --report-dir 且日期为 auto，从报告目录自动检测
