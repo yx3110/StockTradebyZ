@@ -214,6 +214,7 @@ def load_or_build_factors(start_date: str, end_date: str,
         )
         if len(cached) > 0:
             cached = cached.set_index('trade_date')
+            cached.index = pd.to_datetime(cached.index)
             conn.close()
             logger.info(f"Loaded {len(cached)} factor returns from cache")
             return cached[['MKT', 'SMB', 'HML', 'UMD']]
