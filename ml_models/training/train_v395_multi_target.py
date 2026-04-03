@@ -414,26 +414,22 @@ class V395MultiTargetTrainer:
         else:
             predictions = {}
             for target_key, result in all_results.items():
-                target_pred = np.zeros(X.shape[0])
-                total_weight = 0
-
+                # 收集所有子模型预测
+                preds = {}
                 for name, model in result['models'].items():
-                    weight = result['weights'].get(name, 0.2)
                     try:
                         if name == 'xgb':
                             import xgboost as xgb
-                            pred = model.predict(xgb.DMatrix(X))
+                            preds[name] = model.predict(xgb.DMatrix(X))
                         else:
-                            pred = model.predict(X)
-                        target_pred += weight * pred
-                        total_weight += weight
+                            preds[name] = model.predict(X)
                     except Exception as e:
                         logger.warning(f"  全局分位数: {target_key}/{name} 预测失败: {e}")
                         continue
 
-                if total_weight > 0:
-                    target_pred /= total_weight
-                predictions[target_key] = target_pred
+                # 与ensemble_predict对齐: rescale rank模型, 排除Q95
+                predictions[target_key] = self.ensemble_predict(
+                    preds, result['weights'])
 
         # 计算 combined_pred (加权融合)
         combined_pred = np.zeros(X.shape[0])
@@ -483,23 +479,19 @@ class V395MultiTargetTrainer:
         else:
             predictions = {}
             for target_key, result in all_results.items():
-                target_pred = np.zeros(X.shape[0])
-                total_weight = 0
+                preds = {}
                 for name, model in result['models'].items():
-                    weight = result['weights'].get(name, 0.2)
                     try:
                         if name == 'xgb':
                             import xgboost as xgb
-                            pred = model.predict(xgb.DMatrix(X))
+                            preds[name] = model.predict(xgb.DMatrix(X))
                         else:
-                            pred = model.predict(X)
-                        target_pred += weight * pred
-                        total_weight += weight
+                            preds[name] = model.predict(X)
                     except Exception:
                         continue
-                if total_weight > 0:
-                    target_pred /= total_weight
-                predictions[target_key] = target_pred
+                # 与ensemble_predict对齐: rescale rank模型, 排除Q95
+                predictions[target_key] = self.ensemble_predict(
+                    preds, result['weights'])
 
         # Composite score
         composite = np.zeros(X.shape[0])
@@ -1171,11 +1163,48 @@ class V395MultiTargetTrainer:
 
         return weights, mean_ics
 
+    # 排序模型名称集合 (输出尺度与回归模型不同, 需要z-score rescaling)
+    RANK_MODEL_NAMES = frozenset(('lgb_rank', 'lgb_listnet'))
+    # 仅用于Stage 2的模型 (不参与集成评估, 与生产scorer v481对齐)
+    ENSEMBLE_EXCLUDE_NAMES = frozenset(('lgb_q95',))
+
     def ensemble_predict(self, predictions: dict, weights: dict) -> np.ndarray:
-        """加权Ensemble预测"""
+        """加权Ensemble预测 — 对rank模型做z-score rescaling到回归模型尺度
+
+        与生产scorer (v481_production_scorer.py:592-602) 对齐:
+        1. lgb_rank/lgb_listnet 的输出尺度是回归模型的~22x, 需z-score rescale
+        2. lgb_q95 仅用于Widen-then-Concentrate Stage 2, 不参与集成
+        """
+        # 区分回归/排序/排除模型
+        reg_names = [n for n in predictions
+                     if n not in self.RANK_MODEL_NAMES
+                     and n not in self.ENSEMBLE_EXCLUDE_NAMES]
+        rank_names = [n for n in predictions if n in self.RANK_MODEL_NAMES]
+
+        # 计算回归模型的目标尺度 (mean, std)
+        t_mean, t_std = 0.0, 1.0
+        if reg_names and rank_names:
+            reg_means = [float(np.mean(predictions[n])) for n in reg_names]
+            reg_stds = [max(float(np.std(predictions[n])), 1e-8) for n in reg_names]
+            t_mean = float(np.mean(reg_means))
+            t_std = float(np.mean(reg_stds))
+
         result = np.zeros_like(list(predictions.values())[0])
+        total_w = 0.0
         for name, pred in predictions.items():
-            result += weights[name] * pred
+            if name in self.ENSEMBLE_EXCLUDE_NAMES:
+                continue
+            w = weights.get(name, 0)
+            if name in self.RANK_MODEL_NAMES and reg_names:
+                rp_std = max(float(np.std(pred)), 1e-8)
+                pred = (pred - np.mean(pred)) / rp_std * t_std + t_mean
+            result += w * pred
+            total_w += w
+
+        # 重归一化权重 (因排除了部分模型)
+        if total_w > 1e-8 and total_w < 1.0 - 1e-4:
+            result /= total_w
+
         return result
 
     def _log_feature_importance(self, all_results: dict, top_n: int = 20):
@@ -14419,6 +14448,94 @@ def main():
             ]
             logger.info(f"  命令: {' '.join(eval_cmd)}")
             subprocess.run(eval_cmd, cwd=str(PROJECT_ROOT))
+
+    # ── 训练后自动 Pre-2020 向后泛化评估 ──
+    # 用生产模型对2018-2020(训练未见数据)生成报告, 评估模型泛化能力
+    if _actual_wf_dir and not args.skip_wf and not args.fast_check:
+        import subprocess
+        from pathlib import Path
+
+        # 1) 检查 v39_feature_cache 是否有足够的2018-2019数据
+        try:
+            conn = sqlite3.connect(DB_PATH, timeout=30)
+            cur = conn.execute(
+                "SELECT COUNT(DISTINCT trade_date) FROM v39_feature_cache "
+                "WHERE trade_date BETWEEN '2018-01-01' AND '2019-12-31'"
+            )
+            pre2020_days = cur.fetchone()[0]
+            conn.close()
+        except Exception as e:
+            logger.warning(f"Pre-2020评估: 无法查询特征缓存: {e}")
+            pre2020_days = 0
+
+        if pre2020_days >= 200:
+            logger.info("\n" + "=" * 60)
+            logger.info(f"Pre-2020 向后泛化评估: 特征缓存有 {pre2020_days} 个交易日 (2018-2019)")
+            logger.info("=" * 60)
+
+            # 2) 确定报告输出目录: _wf_oos -> _pre2020
+            wf_dir_path = Path(_actual_wf_dir)
+            pre2020_dir_name = wf_dir_path.name.replace('_wf_oos', '_pre2020')
+            pre2020_dir = wf_dir_path.parent / pre2020_dir_name
+
+            # 3) 从目录名提取版本号, 映射为batch_generate需要的带点格式
+            #    e.g. 'daily_selection_v4901_pre2020' -> 'v4901' -> 'v4.9.0.1'
+            _ver_short = pre2020_dir_name.replace('daily_selection_', '').replace('_pre2020', '')
+            _VER_MAP = {
+                'v4901': 'v4.9.0.1', 'v4902': 'v4.9.0.2',
+                'v493': 'v4.9.3', 'v493a': 'v4.9.3a', 'v493b': 'v4.9.3b', 'v493c': 'v4.9.3c',
+                'v492': 'v4.9.2', 'v491': 'v4.9.1', 'v490': 'v4.9.0',
+                'v488': 'v4.8.8', 'v487': 'v4.8.7', 'v486': 'v4.8.6',
+                'v485': 'v4.8.5', 'v484': 'v4.8.4', 'v483': 'v4.8.3',
+                'v482': 'v4.8.2', 'v481': 'v4.8.1', 'v480': 'v4.8.0',
+                'v479': 'v4.7.9', 'v478': 'v4.7.8', 'v477': 'v4.7.7',
+                'v476': 'v4.7.6', 'v475': 'v4.7.5', 'v474': 'v4.7.4',
+                'v473': 'v4.7.3', 'v472': 'v4.7.2', 'v471': 'v4.7.1',
+                'v47': 'v4.7', 'v46': 'v4.6', 'v44': 'v4.4', 'v43': 'v4.3',
+            }
+            _ver_dotted = _VER_MAP.get(_ver_short, None)
+            if not _ver_dotted:
+                logger.warning(f"Pre-2020评估: 无法映射版本 '{_ver_short}' 到batch_generate格式, 跳过")
+            else:
+                # 4) 用batch_generate生成2018-2020报告
+                logger.info(f"  生成Pre-2020报告: {pre2020_dir} (版本={_ver_dotted})")
+                gen_cmd = [
+                    sys.executable, str(PROJECT_ROOT / 'backtest' / 'batch_generate_v395_reports.py'),
+                    '--version', _ver_dotted,
+                    '--start-date', '2018-01-01',
+                    '--end-date', '2019-12-31',
+                    '--output-dir', str(pre2020_dir),
+                    '--force',
+                ]
+                logger.info(f"  命令: {' '.join(gen_cmd)}")
+                gen_result = subprocess.run(gen_cmd, cwd=str(PROJECT_ROOT))
+
+                if gen_result.returncode != 0:
+                    logger.warning(f"Pre-2020评估: 报告生成失败 (returncode={gen_result.returncode})")
+                else:
+                    # 5) 运行北极星评估
+                    n_pre2020 = len(list(pre2020_dir.glob('analysis_data_*.json'))) if pre2020_dir.exists() else 0
+                    if n_pre2020 > 0:
+                        logger.info(f"  Pre-2020报告生成完毕: {n_pre2020} 份, 开始北极星评估...")
+                        eval_cmd_pre = [
+                            sys.executable, str(PROJECT_ROOT / 'backtest' / 'run_north_star_eval.py'),
+                            '--backtest',
+                            '--report-dir', str(pre2020_dir),
+                            '--label', 'PRE-2020',
+                            '--top-n', '10',
+                            '--focus-days', '10',
+                            '--rank-field', 'composite',
+                        ]
+                        logger.info(f"  命令: {' '.join(eval_cmd_pre)}")
+                        subprocess.run(eval_cmd_pre, cwd=str(PROJECT_ROOT))
+                    else:
+                        logger.warning(f"Pre-2020评估: 报告目录为空, 跳过北极星评估")
+        else:
+            logger.warning(
+                f"Pre-2020评估: v39_feature_cache 仅有 {pre2020_days} 个交易日 (需要>=200), 跳过。\n"
+                f"  回填命令: python3 fetch_data/v39_feature_cache_updater.py "
+                f"--start-date 2018-01-01 --end-date 2019-12-31"
+            )
 
 
 if __name__ == '__main__':
