@@ -170,6 +170,8 @@ def _wf_window_worker(wi):
     ]
 
     window_metrics = {}
+    _wf_rdir = getattr(trainer, '_wf_report_dir', None)
+    window_test_preds = {} if _wf_rdir else None
     df_train_w = df[train_mask]
 
     for target_key, y_tr, y_va, y_te in targets_w:
@@ -203,8 +205,16 @@ def _wf_window_worker(wi):
         }
         logger.info(f"  [W{wi+1}] {target_key}: OOS IC={ic:.4f}, ICIR={icir:.4f} | IS IC={is_ic:.4f}, ICIR={is_icir:.4f}")
 
+        if window_test_preds is not None:
+            window_test_preds[target_key] = ensemble_pred.copy()
+
         del models, pred_train, pred_val, pred_test
         _gc.collect()
+
+    # 并行模式: 生成WF OOS报告 (每个进程写不同日期, 无冲突)
+    if window_test_preds:
+        trainer._write_wf_test_reports(
+            _wf_rdir, wi, w, df[test_mask], test_dates_w, window_test_preds)
 
     return (wi, window_metrics)
 
@@ -2285,6 +2295,18 @@ class V43Trainer(V395MultiTargetTrainer):
         logger.info("=" * 60)
         logger.info("V4.3 Walk-Forward 训练")
         logger.info("=" * 60)
+
+        # 0. WF OOS报告: 循环前清空旧文件
+        _wf_rdir_v43 = getattr(self, '_wf_report_dir', None)
+        if _wf_rdir_v43:
+            from pathlib import Path as _P
+            _wf_out = _P(_wf_rdir_v43)
+            _wf_out.mkdir(parents=True, exist_ok=True)
+            _old = list(_wf_out.glob('analysis_data_*.json'))
+            if _old:
+                for _f in _old:
+                    _f.unlink()
+                logger.info(f"  清空 {len(_old)} 份旧WF报告: {_wf_rdir_v43}")
 
         # 1. 一次性加载全量数据
         df = self.load_data(start_date, end_date)
@@ -7240,6 +7262,19 @@ class V475Trainer(V473Trainer):
                          f"test={w['test_start']}~{w['test_end']}")
 
         # 3. 对每个窗口训练+评估 (支持并行)
+        # WF OOS报告: 在fork前清空旧文件 (避免并行进程竞争清理)
+        _wf_rdir = getattr(self, '_wf_report_dir', None)
+        if _wf_rdir:
+            from pathlib import Path as _P
+            _wf_out = _P(_wf_rdir)
+            _wf_out.mkdir(parents=True, exist_ok=True)
+            old_files = list(_wf_out.glob('analysis_data_*.json'))
+            if old_files:
+                for f in old_files:
+                    f.unlink()
+                logger.info(f"  清空 {len(old_files)} 份旧WF报告: {_wf_rdir}")
+            self._wf_reports_cleared = True
+
         n_parallel = getattr(self, '_parallel_wf_workers', 1)
         n_parallel = min(n_parallel, len(windows)) if windows else 1
 
@@ -9844,9 +9879,62 @@ class V490Trainer(V485Trainer):
 
         return weights
 
+    def _fast_check_train_lgb_xgb(self, X_train, X_val, y_train, y_val, target_name,
+                                    sample_weights_train=None):
+        """Fast-check: 只训练LGB(Huber)+XGB, 跳过CB/RF/HGB/LambdaRank/Q95 (~4x加速)"""
+        import gc as _gc
+        max_rounds = getattr(self, '_fast_check_max_boost_round', 200)
+        models, pred_train, pred_val = {}, {}, {}
+
+        # 1. LightGBM (Huber)
+        num_leaves = getattr(self, '_cli_num_leaves', 15)
+        huber_delta = float(np.median(np.abs(y_train - np.median(y_train)))) * 1.5
+        lgb_params = {
+            'objective': 'huber', 'huber_delta': huber_delta, 'metric': 'huber',
+            'num_leaves': num_leaves, 'learning_rate': 0.05,
+            'feature_fraction': 0.6, 'bagging_fraction': 0.7, 'bagging_freq': 5,
+            'reg_alpha': 0.5, 'reg_lambda': 3.0, 'min_data_in_leaf': 200,
+            'verbose': -1,
+        }
+        lgb_ds = lgb.Dataset(X_train, label=y_train, weight=sample_weights_train, free_raw_data=True)
+        lgb_val_ds = lgb.Dataset(X_val, label=y_val, reference=lgb_ds, free_raw_data=True)
+        lgb_model = lgb.train(lgb_params, lgb_ds, num_boost_round=max_rounds,
+                               valid_sets=[lgb_ds, lgb_val_ds],
+                               callbacks=[lgb.early_stopping(15), lgb.log_evaluation(0)])
+        models['lgb'] = lgb_model
+        pred_train['lgb'] = lgb_model.predict(X_train)
+        pred_val['lgb'] = lgb_model.predict(X_val)
+        del lgb_ds, lgb_val_ds; _gc.collect()
+
+        # 2. XGBoost
+        xgb_params = {
+            'objective': 'reg:squarederror', 'eval_metric': 'rmse',
+            'max_depth': 6, 'learning_rate': 0.05,
+            'subsample': 0.7, 'colsample_bytree': 0.6,
+            'reg_alpha': 0.5, 'reg_lambda': 3.0, 'verbosity': 0,
+        }
+        dtrain = xgb.DMatrix(X_train, label=y_train, weight=sample_weights_train)
+        dval = xgb.DMatrix(X_val, label=y_val)
+        xgb_model = xgb.train(xgb_params, dtrain, num_boost_round=max_rounds,
+                               evals=[(dval, 'val')], early_stopping_rounds=15,
+                               verbose_eval=False)
+        models['xgb'] = xgb_model
+        pred_train['xgb'] = xgb_model.predict(dtrain)
+        pred_val['xgb'] = xgb_model.predict(dval)
+        del dtrain, dval; _gc.collect()
+
+        logger.info(f"  [FAST] {target_name}: LGB iter={lgb_model.best_iteration}, "
+                     f"XGB iter={xgb_model.best_iteration}")
+        return models, pred_train, pred_val
+
     def train_single_target_models(self, X_train, X_val, y_train, y_val, target_name: str,
                                     sample_weights_train=None):
         """V4.9.0: 父类6模型 + 重训LambdaRank(trunc=10, 10档) + 新增lgb_q95"""
+        # fast-check: 只训练LGB+XGB (跳过CB/RF/HGB/LambdaRank/Q95)
+        if getattr(self, '_fast_check', False):
+            return self._fast_check_train_lgb_xgb(
+                X_train, X_val, y_train, y_val, target_name, sample_weights_train)
+
         import gc
 
         # 父类训练6个基础模型 (lgb, xgb, cb, rf, hgb, lgb_rank)
@@ -10479,6 +10567,11 @@ class V493Trainer(V4901Trainer):
     def train_single_target_models(self, X_train, X_val, y_train, y_val, target_name: str,
                                     sample_weights_train=None):
         """V4.9.3: 父类模型 + LGB feature_fraction 0.5 重训 (迫使探索不同特征组合)"""
+        # fast-check: 直接走V490的LGB+XGB快速路径, 跳过V493的LGB重训
+        if getattr(self, '_fast_check', False):
+            return self._fast_check_train_lgb_xgb(
+                X_train, X_val, y_train, y_val, target_name, sample_weights_train)
+
         import gc
 
         # 父类训练全部模型 (lgb, xgb, cb, rf, hgb, lgb_rank, lgb_q95)
@@ -10847,6 +10940,11 @@ class V493CTrainer(V4901Trainer):
     def train_single_target_models(self, X_train, X_val, y_train, y_val, target_name: str,
                                     sample_weights_train=None):
         """V493C: 父类模型 + LGB feature_fraction=0.5 重训"""
+        # fast-check: 直接走V490的LGB+XGB快速路径
+        if getattr(self, '_fast_check', False):
+            return self._fast_check_train_lgb_xgb(
+                X_train, X_val, y_train, y_val, target_name, sample_weights_train)
+
         import gc
 
         models, pred_train, pred_val = super().train_single_target_models(
@@ -14299,9 +14397,11 @@ def main():
         trainer.train(start_date=args.start_date, end_date=args.end_date, purge_days=args.purge_days)
 
     # ── 训练后自动北极星评估 (WF OOS报告) ──
-    if _wf_report_dir:
+    # 只在trainer真正设置了_wf_report_dir时才跑 (排除默认分支V395的.train()路径)
+    _actual_wf_dir = getattr(trainer, '_wf_report_dir', None)
+    if _actual_wf_dir and not args.skip_wf and not args.fast_check:
         from pathlib import Path
-        wf_dir = Path(_wf_report_dir)
+        wf_dir = Path(_actual_wf_dir)
         n_reports = len(list(wf_dir.glob('analysis_data_*.json'))) if wf_dir.exists() else 0
         if n_reports > 0:
             logger.info("\n" + "=" * 60)
