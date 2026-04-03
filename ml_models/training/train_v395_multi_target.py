@@ -168,6 +168,9 @@ def _wf_window_worker(wi):
         ('10d', y_10d_tr, y_10d_va, y_10d_te),
         ('15d', y_15d_tr, y_15d_va, y_15d_te),
     ]
+    _turbo_targets = getattr(trainer, '_turbo_targets', None)
+    if _turbo_targets:
+        targets_w = [t for t in targets_w if t[0] in _turbo_targets]
 
     window_metrics = {}
     _wf_rdir = getattr(trainer, '_wf_report_dir', None)
@@ -2493,7 +2496,8 @@ class V43Trainer(V395MultiTargetTrainer):
         if getattr(self, '_fast_check', False):
             duration = (datetime.now() - start_time).total_seconds()
             logger.info("\n" + "=" * 60)
-            logger.info(f"[FAST-CHECK 完成] 耗时 {duration:.0f}s ({duration/60:.1f}min)")
+            _mode = 'TURBO-CHECK' if getattr(self, '_turbo_targets', None) else 'FAST-CHECK'
+            logger.info(f"[{_mode} 完成] 耗时 {duration:.0f}s ({duration/60:.1f}min)")
             logger.info("跳过生产模型训练和保存 (仅验证方向)")
             logger.info("=" * 60)
             return {'walk_forward_metrics': wf_summary, 'fast_check': True}, {'walk_forward_summary': wf_summary}
@@ -3028,7 +3032,8 @@ class V44Trainer(V43Trainer):
         if getattr(self, '_fast_check', False):
             duration = (datetime.now() - start_time).total_seconds()
             logger.info("\n" + "=" * 60)
-            logger.info(f"[FAST-CHECK 完成] 耗时 {duration:.0f}s ({duration/60:.1f}min)")
+            _mode = 'TURBO-CHECK' if getattr(self, '_turbo_targets', None) else 'FAST-CHECK'
+            logger.info(f"[{_mode} 完成] 耗时 {duration:.0f}s ({duration/60:.1f}min)")
             logger.info("跳过生产模型训练和保存 (仅验证方向)")
             logger.info("=" * 60)
             return {'walk_forward_metrics': wf_summary, 'fast_check': True}, {'walk_forward_summary': wf_summary}
@@ -3609,7 +3614,8 @@ class V46Trainer(V44Trainer):
         if getattr(self, '_fast_check', False):
             duration = (datetime.now() - start_time).total_seconds()
             logger.info("\n" + "=" * 60)
-            logger.info(f"[FAST-CHECK 完成] 耗时 {duration:.0f}s ({duration/60:.1f}min)")
+            _mode = 'TURBO-CHECK' if getattr(self, '_turbo_targets', None) else 'FAST-CHECK'
+            logger.info(f"[{_mode} 完成] 耗时 {duration:.0f}s ({duration/60:.1f}min)")
             logger.info("跳过生产模型训练和保存 (仅验证方向)")
             logger.info("=" * 60)
             return {'walk_forward_metrics': wf_summary, 'fast_check': True}, {'walk_forward_summary': wf_summary}
@@ -4091,7 +4097,8 @@ class V47Trainer(V46Trainer):
         if getattr(self, '_fast_check', False):
             duration = (datetime.now() - start_time).total_seconds()
             logger.info("\n" + "=" * 60)
-            logger.info(f"[FAST-CHECK 完成] 耗时 {duration:.0f}s ({duration/60:.1f}min)")
+            _mode = 'TURBO-CHECK' if getattr(self, '_turbo_targets', None) else 'FAST-CHECK'
+            logger.info(f"[{_mode} 完成] 耗时 {duration:.0f}s ({duration/60:.1f}min)")
             logger.info("跳过生产模型训练和保存 (仅验证方向)")
             logger.info("=" * 60)
             return {'walk_forward_metrics': wf_summary, 'fast_check': True}, {'walk_forward_summary': wf_summary}
@@ -5192,7 +5199,8 @@ class V471Trainer(V44Trainer):
         if getattr(self, '_fast_check', False):
             duration = (datetime.now() - start_time).total_seconds()
             logger.info("\n" + "=" * 60)
-            logger.info(f"[FAST-CHECK 完成] 耗时 {duration:.0f}s ({duration/60:.1f}min)")
+            _mode = 'TURBO-CHECK' if getattr(self, '_turbo_targets', None) else 'FAST-CHECK'
+            logger.info(f"[{_mode} 完成] 耗时 {duration:.0f}s ({duration/60:.1f}min)")
             logger.info("跳过生产模型训练和保存 (仅验证方向)")
             logger.info("=" * 60)
             return {'walk_forward_metrics': wf_summary, 'fast_check': True}, {'walk_forward_summary': wf_summary}
@@ -5645,7 +5653,8 @@ class V472Trainer(V471Trainer):
         if getattr(self, '_fast_check', False):
             duration = (datetime.now() - start_time).total_seconds()
             logger.info("\n" + "=" * 60)
-            logger.info(f"[FAST-CHECK 完成] 耗时 {duration:.0f}s ({duration/60:.1f}min)")
+            _mode = 'TURBO-CHECK' if getattr(self, '_turbo_targets', None) else 'FAST-CHECK'
+            logger.info(f"[{_mode} 完成] 耗时 {duration:.0f}s ({duration/60:.1f}min)")
             logger.info("跳过生产模型训练和保存 (仅验证方向)")
             logger.info("=" * 60)
             return {'walk_forward_metrics': wf_summary, 'fast_check': True}, {'walk_forward_summary': wf_summary}
@@ -6336,7 +6345,8 @@ class V473Trainer(V472Trainer):
         if getattr(self, '_fast_check', False):
             duration = (datetime.now() - start_time).total_seconds()
             logger.info("\n" + "=" * 60)
-            logger.info(f"[FAST-CHECK 完成] 耗时 {duration:.0f}s ({duration/60:.1f}min)")
+            _mode = 'TURBO-CHECK' if getattr(self, '_turbo_targets', None) else 'FAST-CHECK'
+            logger.info(f"[{_mode} 完成] 耗时 {duration:.0f}s ({duration/60:.1f}min)")
             logger.info("跳过生产模型训练和保存 (仅验证方向)")
             logger.info("=" * 60)
             return {'walk_forward_metrics': wf_summary, 'fast_check': True}, {'walk_forward_summary': wf_summary}
@@ -6923,7 +6933,8 @@ class V474Trainer(V473Trainer):
         if getattr(self, '_fast_check', False):
             duration = (datetime.now() - start_time).total_seconds()
             logger.info("\n" + "=" * 60)
-            logger.info(f"[FAST-CHECK 完成] 耗时 {duration:.0f}s ({duration/60:.1f}min)")
+            _mode = 'TURBO-CHECK' if getattr(self, '_turbo_targets', None) else 'FAST-CHECK'
+            logger.info(f"[{_mode} 完成] 耗时 {duration:.0f}s ({duration/60:.1f}min)")
             logger.info("跳过生产模型训练和保存 (仅验证方向)")
             logger.info("=" * 60)
             return {'walk_forward_metrics': wf_summary, 'fast_check': True}, {'walk_forward_summary': wf_summary}
@@ -7375,16 +7386,21 @@ class V475Trainer(V473Trainer):
                                               train_dates_w, val_dates_w, test_dates_w,
                                               target_key)
 
-                # 训练4目标
+                # 训练目标 (turbo-check: 只训练指定目标)
                 window_metrics = {}
                 _wf_rdir = getattr(self, '_wf_report_dir', None)
                 window_test_preds = {} if _wf_rdir else None
-                for target_key, y_tr, y_va, y_te in [
+                _turbo_targets = getattr(self, '_turbo_targets', None)
+                all_targets = [
                     ('3d', y_3d_tr, y_3d_va, y_3d_te),
                     ('5d', y_5d_tr, y_5d_va, y_5d_te),
                     ('10d', y_10d_tr, y_10d_va, y_10d_te),
                     ('15d', y_15d_tr, y_15d_va, y_15d_te),
-                ]:
+                ]
+                if _turbo_targets:
+                    all_targets = [t for t in all_targets if t[0] in _turbo_targets]
+                    logger.info(f"  [TURBO] 只训练目标: {_turbo_targets}")
+                for target_key, y_tr, y_va, y_te in all_targets:
                     sample_w = self.compute_sample_weights(df[train_mask], y_tr)
                     models, pred_train, pred_val = self.train_single_target_models(
                         X_train_w, X_val_w, y_tr, y_va, f"label_{target_key}",
@@ -7495,7 +7511,8 @@ class V475Trainer(V473Trainer):
         if getattr(self, '_fast_check', False):
             duration = (datetime.now() - start_time).total_seconds()
             logger.info("\n" + "=" * 60)
-            logger.info(f"[FAST-CHECK 完成] 耗时 {duration:.0f}s ({duration/60:.1f}min)")
+            _mode = 'TURBO-CHECK' if getattr(self, '_turbo_targets', None) else 'FAST-CHECK'
+            logger.info(f"[{_mode} 完成] 耗时 {duration:.0f}s ({duration/60:.1f}min)")
             logger.info("跳过生产模型训练和保存 (仅验证方向)")
             logger.info("=" * 60)
             return {'walk_forward_metrics': wf_summary, 'fast_check': True}, {'walk_forward_summary': wf_summary}
@@ -7990,7 +8007,8 @@ class V476Trainer(V475Trainer):
         if getattr(self, '_fast_check', False):
             duration = (datetime.now() - start_time).total_seconds()
             logger.info("\n" + "=" * 60)
-            logger.info(f"[FAST-CHECK 完成] 耗时 {duration:.0f}s ({duration/60:.1f}min)")
+            _mode = 'TURBO-CHECK' if getattr(self, '_turbo_targets', None) else 'FAST-CHECK'
+            logger.info(f"[{_mode} 完成] 耗时 {duration:.0f}s ({duration/60:.1f}min)")
             logger.info("跳过生产模型训练和保存 (仅验证方向)")
             logger.info("=" * 60)
             return {'walk_forward_metrics': wf_summary, 'fast_check': True}, {'walk_forward_summary': wf_summary}
@@ -9460,6 +9478,11 @@ class V485Trainer(V484Trainer):
         n_a = len(df_a)
         logger.info(f"  V4.8.5 A股数据: {n_a:,} 行")
 
+        # turbo-check: 跳过ETF数据加载 (节省~100s)
+        if getattr(self, '_turbo_skip_etf', False):
+            logger.info(f"  [TURBO] 跳过ETF数据加载")
+            return df_a
+
         # Step 2: 加载ETF特征 + 计算labels
         conn = sqlite3.connect(self.db_path)
 
@@ -10254,6 +10277,627 @@ class V4901Trainer(V490Trainer):
             latest_path = out_dir / 'training_history_latest.json'
             with open(latest_path, 'w', encoding='utf-8') as f:
                 _json.dump(history, f, indent=2, ensure_ascii=False)
+
+        return model_data, history
+
+
+class V5Trainer(V4901Trainer):
+    """V5.0 诚实重建训练器 — 因子残差标签(Phase A) + Rank-Transform(Phase B)
+
+    目标: 消除隐藏动量暴露(β_UMD=3.029), 让模型学习真正的选股Alpha
+    底座: V4.9.0.1 (61特征, Q95+LambdaRank trunc=10, 无头尾加权)
+
+    Phase A - 因子残差标签:
+      对每个label_Nd, 用FF4因子回归得到残差:
+      ret_stock = α + β_mkt·MKT + β_smb·SMB + β_hml·HML + β_umd·UMD + ε
+      residual_Nd = original_label - Σ(β_k · cumulative_factor_k[T+1..T+N])
+      val/test使用最新train-period beta (无重估)
+
+    Phase B - Rank-Transform:
+      截面排名百分位[0,1], 消除极端值+量纲差异
+      替代Robust Z-Score, 更稳健
+
+    额外:
+      移除纯动量特征: market_momentum_20d, market_momentum_5d
+    """
+
+    USE_RESIDUAL_LABELS = True
+    USE_RANK_TRANSFORM = True
+    BETA_WINDOW = 120       # 滚动窗口天数 (估计个股factor beta)
+    MIN_BETA_DAYS = 60      # 最少天数, 否则用截面中位数填充
+    PRUNE_FEATURES = ['market_momentum_20d', 'market_momentum_5d']  # 移除纯动量
+
+    def prepare_features(self, df: pd.DataFrame) -> tuple:
+        """V5.0: 父类特征 + Rank-Transform + 移除纯动量特征"""
+        X, y_3d, y_5d, y_10d, y_15d, df_out = super().prepare_features(df)
+
+        # Phase B: Rank-Transform (截面排名百分位 [0,1])
+        if self.USE_RANK_TRANSFORM and self.feature_names:
+            dates_arr = df_out['trade_date'].values
+            X = self._apply_rank_transform(X, dates_arr, self.feature_names)
+            logger.info(f"  V5.0 Phase B: Rank-Transform applied ({X.shape[1]} features)")
+
+        # 移除纯动量特征
+        if self.feature_names and self.PRUNE_FEATURES:
+            prune_indices = []
+            keep_indices = []
+            pruned_names = []
+            for i, name in enumerate(self.feature_names):
+                if name in self.PRUNE_FEATURES:
+                    prune_indices.append(i)
+                    pruned_names.append(name)
+                else:
+                    keep_indices.append(i)
+            if keep_indices and len(keep_indices) < len(self.feature_names):
+                X = X[:, keep_indices]
+                self.feature_names = [self.feature_names[i] for i in keep_indices]
+                logger.info(f"  V5.0: pruned {len(pruned_names)} momentum features: {pruned_names}")
+
+        return X, y_3d, y_5d, y_10d, y_15d, df_out
+
+    def _apply_rank_transform(self, X: np.ndarray, dates_arr: np.ndarray,
+                               feature_names: list) -> np.ndarray:
+        """Phase B: 截面Rank百分位 [0,1] — 替代Robust Z-Score"""
+        from scipy.stats import rankdata
+
+        X_ranked = X.copy()
+        unique_dates = np.unique(dates_arr)
+
+        for d in unique_dates:
+            mask = dates_arr == d
+            n = mask.sum()
+            if n < 5:
+                continue
+            for j in range(X_ranked.shape[1]):
+                col_data = X_ranked[mask, j]
+                valid = ~np.isnan(col_data)
+                if valid.sum() < 3:
+                    continue
+                ranks = np.full(n, np.nan)
+                ranks[valid] = (rankdata(col_data[valid]) - 1) / max(valid.sum() - 1, 1)
+                X_ranked[mask, j] = ranks
+
+        # Fill remaining NaN with 0.5 (median rank)
+        nan_mask = np.isnan(X_ranked)
+        if nan_mask.any():
+            X_ranked[nan_mask] = 0.5
+            logger.info(f"    Rank-Transform: filled {nan_mask.sum()} NaN with 0.5")
+
+        return X_ranked
+
+    def _residualize_labels(self, df: pd.DataFrame, train_mask: np.ndarray,
+                             val_mask: np.ndarray, test_mask: np.ndarray):
+        """Phase A: 因子残差标签 — 在WF窗口内将label替换为FF4残差
+
+        对train set的每只股票, 用BETA_WINDOW天滚动回归估计beta,
+        然后计算 residual = label_Nd - Σ(β_k × cumul_factor_k[T+1..T+N])
+        val/test使用该股票最新的train-period beta.
+        缺失beta用截面中位数填充.
+        """
+        from backtest.factor_returns import load_or_build_factors
+
+        label_cols = ['label_3d', 'label_5d', 'label_10d', 'label_15d']
+        horizon_map = {'label_3d': 3, 'label_5d': 5, 'label_10d': 10, 'label_15d': 15}
+
+        # 获取日期范围 (含足够lookback)
+        all_dates = df['trade_date'].values
+        date_min = str(np.min(all_dates))
+        date_max = str(np.max(all_dates))
+
+        # 加载因子日收益
+        db_path = str(PROJECT_ROOT / 'data_adapter' / 'stock_data.db')
+        # 需要extra lookback天来计算cumulative factor
+        lookback_start = (pd.Timestamp(date_min.replace('-', '')[:8] if '-' not in date_min else date_min)
+                          - pd.DateOffset(days=self.BETA_WINDOW + 30)).strftime('%Y-%m-%d')
+        factor_df = load_or_build_factors(lookback_start, date_max, db_path=db_path)
+
+        if factor_df.empty or len(factor_df) < 30:
+            logger.warning("  V5.0 Phase A: 因子数据不足, 跳过残差化")
+            return
+
+        # 确保factor_df index是字符串格式以匹配
+        factor_df.index = factor_df.index.astype(str).str[:10]
+        factor_cols = ['MKT', 'SMB', 'HML', 'UMD']
+
+        # 加载个股日收益 (从SQLite)
+        codes_in_df = df['code'].unique()
+        trade_dates_in_df = sorted(df['trade_date'].unique())
+        logger.info(f"  V5.0 Phase A: 估计 {len(codes_in_df)} 只股票的FF4 beta "
+                    f"(window={self.BETA_WINDOW}, min={self.MIN_BETA_DAYS})")
+
+        conn = sqlite3.connect(db_path, timeout=30)
+        stock_ret_query = """
+            SELECT s.code, dq.trade_date,
+                   COALESCE(CAST(dq.price_change_pct AS REAL),
+                            CASE WHEN LAG(dq.close) OVER (PARTITION BY dq.security_id ORDER BY dq.trade_date) > 0
+                                 THEN dq.close / LAG(dq.close) OVER (PARTITION BY dq.security_id ORDER BY dq.trade_date) - 1
+                            END) AS ret
+            FROM daily_quotes dq
+            JOIN securities s ON dq.security_id = s.id
+            WHERE s.code IN ({})
+              AND dq.trade_date BETWEEN ? AND ?
+              AND dq.volume > 0
+            ORDER BY s.code, dq.trade_date
+        """.format(','.join(['?'] * len(codes_in_df)))
+        params = list(codes_in_df) + [lookback_start, date_max]
+        stock_ret_df = pd.read_sql(stock_ret_query, conn, params=params)
+        conn.close()
+
+        stock_ret_df['trade_date'] = stock_ret_df['trade_date'].astype(str).str[:10]
+        stock_ret_df['ret'] = pd.to_numeric(stock_ret_df['ret'], errors='coerce')
+        stock_ret_df = stock_ret_df.dropna(subset=['ret'])
+
+        # 为每只股票、每个train日期估计beta (rolling OLS)
+        # 策略: 对train期内每个(code, date)对, 用前BETA_WINDOW天的数据回归
+        train_dates_set = set(str(d)[:10] for d in all_dates[train_mask])
+
+        # 预计算: 对每只股票的完整收益序列做rolling beta
+        beta_cache = {}  # {code: {date_str: {MKT: β, SMB: β, HML: β, UMD: β}}}
+        n_valid_betas = 0
+        n_median_fill = 0
+
+        for code in codes_in_df:
+            code_ret = stock_ret_df[stock_ret_df['code'] == code].set_index('trade_date')['ret']
+            if len(code_ret) < self.MIN_BETA_DAYS:
+                continue
+
+            # 合并因子数据
+            merged = pd.DataFrame({'ret': code_ret}).join(factor_df[factor_cols], how='inner')
+            if len(merged) < self.MIN_BETA_DAYS:
+                continue
+
+            # Rolling OLS beta
+            code_betas = {}
+            merged_dates = merged.index.values
+            merged_vals = merged.values  # columns: ret, MKT, SMB, HML, UMD
+
+            for i in range(self.MIN_BETA_DAYS, len(merged_dates)):
+                start_i = max(0, i - self.BETA_WINDOW)
+                window = merged_vals[start_i:i]
+                y_w = window[:, 0]  # ret
+                X_w = np.column_stack([np.ones(len(window)), window[:, 1:]])  # intercept + 4 factors
+
+                try:
+                    # OLS: β = (X'X)^{-1} X'y
+                    XtX = X_w.T @ X_w
+                    Xty = X_w.T @ y_w
+                    betas = np.linalg.solve(XtX, Xty)
+                    # betas[0]=alpha, betas[1:5]=[β_mkt, β_smb, β_hml, β_umd]
+                    code_betas[merged_dates[i]] = {
+                        'MKT': betas[1], 'SMB': betas[2], 'HML': betas[3], 'UMD': betas[4]
+                    }
+                    n_valid_betas += 1
+                except np.linalg.LinAlgError:
+                    continue
+
+            if code_betas:
+                beta_cache[code] = code_betas
+
+        logger.info(f"    Beta估计: {n_valid_betas} 有效, {len(beta_cache)} 只股票有beta")
+
+        # 对每个label列计算 cumulative factor returns 和残差
+        # 预计算: 对每个horizon, 构建 cumulative factor return DataFrame
+        factor_dates = sorted(factor_df.index.values)
+        factor_date_idx = {d: i for i, d in enumerate(factor_dates)}
+
+        # 累积因子收益: cum_factor[date][horizon] = Σ factor_k[date+1..date+N]
+        cum_factor_cache = {}  # {horizon: {date: {MKT: cum, SMB: cum, HML: cum, UMD: cum}}}
+        for label_col, horizon in horizon_map.items():
+            cum_factor_cache[horizon] = {}
+            for i, d in enumerate(factor_dates):
+                if i + horizon >= len(factor_dates):
+                    break
+                cum = {}
+                for fc in factor_cols:
+                    # 累积收益: Σ factor[T+1..T+N] (简单相加, 因为因子收益是日频小量)
+                    cum[fc] = float(factor_df[fc].iloc[i+1:i+1+horizon].sum())
+                cum_factor_cache[horizon][d] = cum
+
+        # 对df中每一行计算残差标签
+        n_residualized = 0
+        n_fallback = 0
+        codes_arr = df['code'].values
+
+        for label_col, horizon in horizon_map.items():
+            if label_col not in df.columns:
+                continue
+
+            original_labels = df[label_col].values.copy()
+            residual_labels = original_labels.copy()
+
+            # 收集当前窗口内所有行的beta, 用于中位数填充
+            all_betas_for_median = {fc: [] for fc in factor_cols}
+
+            for idx in range(len(df)):
+                code = codes_arr[idx]
+                date_str = str(all_dates[idx])[:10]
+
+                # 获取beta: train集用自己的beta, val/test用该股最近的train beta
+                beta = None
+                if code in beta_cache:
+                    code_betas = beta_cache[code]
+                    if date_str in code_betas:
+                        beta = code_betas[date_str]
+                    elif val_mask[idx] or test_mask[idx]:
+                        # 用最近的train beta
+                        latest_train_date = None
+                        for td in sorted(code_betas.keys(), reverse=True):
+                            if td in train_dates_set:
+                                latest_train_date = td
+                                break
+                        if latest_train_date:
+                            beta = code_betas[latest_train_date]
+
+                if beta is not None:
+                    for fc in factor_cols:
+                        all_betas_for_median[fc].append(beta[fc])
+
+            # 计算截面中位数beta
+            median_beta = {}
+            for fc in factor_cols:
+                vals = all_betas_for_median[fc]
+                median_beta[fc] = float(np.median(vals)) if vals else 0.0
+
+            # 第二轮: 实际计算残差
+            for idx in range(len(df)):
+                code = codes_arr[idx]
+                date_str = str(all_dates[idx])[:10]
+
+                # 获取 cumulative factor return
+                cum = cum_factor_cache[horizon].get(date_str)
+                if cum is None:
+                    continue
+
+                # 获取beta
+                beta = None
+                if code in beta_cache:
+                    code_betas = beta_cache[code]
+                    if date_str in code_betas:
+                        beta = code_betas[date_str]
+                    elif val_mask[idx] or test_mask[idx]:
+                        latest_train_date = None
+                        for td in sorted(code_betas.keys(), reverse=True):
+                            if td in train_dates_set:
+                                latest_train_date = td
+                                break
+                        if latest_train_date:
+                            beta = code_betas[latest_train_date]
+
+                if beta is None:
+                    # 用截面中位数
+                    beta = median_beta
+                    n_fallback += 1
+
+                # residual = original - Σ(β_k × cumulative_factor_k)
+                factor_exposure = sum(beta[fc] * cum[fc] for fc in factor_cols)
+                residual_labels[idx] = original_labels[idx] - factor_exposure
+                n_residualized += 1
+
+            df[label_col] = residual_labels
+
+        logger.info(f"    残差化完成: {n_residualized} 样本, 中位数beta填充 {n_fallback} 次")
+
+    def walk_forward_train(self, start_date=None, end_date=None,
+                            purge_days=15, min_train_days=900,
+                            val_days=120, test_days=120, step_days=120):
+        """V5.0 Walk-Forward — V47模式WF循环 + Phase A因子残差 + Phase B Rank-Transform"""
+        import shutil
+
+        # fast-check: 覆盖WF参数为紧凑窗口
+        if getattr(self, '_fast_check', False):
+            min_train_days = getattr(self, '_fast_check_min_train', min_train_days)
+            val_days = getattr(self, '_fast_check_val_days', val_days)
+            test_days = getattr(self, '_fast_check_test_days', test_days)
+            step_days = getattr(self, '_fast_check_step_days', step_days)
+
+        start_time = datetime.now()
+        version_tag = 'v5'
+        version_str = 'v5.0'
+
+        logger.info("=" * 60)
+        logger.info(f"{version_str} Walk-Forward 诚实重建 (因子残差标签 + Rank-Transform)")
+        logger.info("=" * 60)
+        logger.info(f"  底座: V4.9.0.1 (61特征, Q95+LambdaRank trunc=10)")
+        logger.info(f"  Phase A: FF4因子残差标签 (消除β_UMD暴露)")
+        logger.info(f"  Phase B: 截面Rank-Transform [0,1]")
+        logger.info(f"  移除: {self.PRUNE_FEATURES}")
+        logger.info(f"  参数: beta_window={self.BETA_WINDOW}, min_beta={self.MIN_BETA_DAYS}")
+        logger.info(f"  参数: min_train={min_train_days}d, val={val_days}d, test={test_days}d, "
+                     f"step={step_days}d, purge={purge_days}d")
+
+        # 1. 加载数据 (支持joblib缓存)
+        use_cache = getattr(self, '_use_data_cache', True)
+        if use_cache:
+            X, y_3d, y_5d, y_10d, y_15d, df = self._load_with_cache(start_date, end_date)
+        else:
+            df = self.load_data(start_date, end_date)
+            X, y_3d, y_5d, y_10d, y_15d, df = self.prepare_features(df)
+
+        dates = df['trade_date'].values
+        unique_dates = np.sort(np.unique(dates))
+        n_dates = len(unique_dates)
+        logger.info(f"  总交易日: {n_dates}, 样本: {len(X):,}, 特征: {X.shape[1]}")
+
+        # 2. Walk-Forward windows
+        windows = []
+        cursor = min_train_days
+        while cursor + val_days + 2 * purge_days + test_days <= n_dates:
+            train_end_idx = cursor - 1
+            val_start_idx = cursor + purge_days
+            val_end_idx = val_start_idx + val_days - 1
+            test_start_idx = val_end_idx + 1 + purge_days
+            test_end_idx = min(test_start_idx + test_days - 1, n_dates - 1)
+            windows.append({
+                'train_end': unique_dates[train_end_idx],
+                'val_start': unique_dates[val_start_idx],
+                'val_end': unique_dates[val_end_idx],
+                'test_start': unique_dates[test_start_idx],
+                'test_end': unique_dates[test_end_idx],
+            })
+            cursor += step_days
+
+        # fast-check: 只取最后N个窗口
+        _max_windows = getattr(self, '_fast_check_max_windows', None)
+        if _max_windows and len(windows) > _max_windows:
+            logger.info(f"  [FAST-CHECK] 截取最后 {_max_windows}/{len(windows)} 个窗口")
+            windows = windows[-_max_windows:]
+
+        logger.info(f"  Walk-Forward 窗口数: {len(windows)}")
+        for i, w in enumerate(windows):
+            logger.info(f"    窗口 {i+1}: train<='{w['train_end']}', val={w['val_start']}~{w['val_end']}, "
+                         f"test={w['test_start']}~{w['test_end']}")
+
+        # 3. WF evaluation
+        wf_metrics = []
+        import gc
+        for wi, w in enumerate(windows):
+            logger.info(f"\n{'='*50}")
+            logger.info(f"Walk-Forward 窗口 {wi+1}/{len(windows)}")
+            logger.info(f"{'='*50}")
+
+            train_mask = dates <= w['train_end']
+            val_mask = (dates >= w['val_start']) & (dates <= w['val_end'])
+            test_mask = (dates >= w['test_start']) & (dates <= w['test_end'])
+
+            # ===== V5.0 Phase A: 因子残差标签 (在X/y分割前修改df中的label列) =====
+            if self.USE_RESIDUAL_LABELS:
+                self._residualize_labels(df, train_mask, val_mask, test_mask)
+                # 重新提取标签 (df中label已被残差化)
+                y_3d = df['label_3d'].values
+                y_5d = df['label_5d'].values
+                y_10d = df['label_10d'].values
+                y_15d = df['label_15d'].values
+
+            X_train_w, X_val_w, X_test_w = X[train_mask].copy(), X[val_mask].copy(), X[test_mask].copy()
+            y_3d_tr, y_3d_va, y_3d_te = y_3d[train_mask].copy(), y_3d[val_mask].copy(), y_3d[test_mask].copy()
+            y_5d_tr, y_5d_va, y_5d_te = y_5d[train_mask].copy(), y_5d[val_mask].copy(), y_5d[test_mask].copy()
+            y_10d_tr, y_10d_va, y_10d_te = y_10d[train_mask].copy(), y_10d[val_mask].copy(), y_10d[test_mask].copy()
+            y_15d_tr, y_15d_va, y_15d_te = y_15d[train_mask].copy(), y_15d[val_mask].copy(), y_15d[test_mask].copy()
+            test_dates_w = dates[test_mask]
+
+            # Winsorization
+            X_train_w, wf_bounds = self.winsorize_features(X_train_w)
+            self._apply_bounds(X_val_w, wf_bounds)
+            self._apply_bounds(X_test_w, wf_bounds)
+
+            for y_tr_w, y_va_w, y_te_w in [(y_3d_tr, y_3d_va, y_3d_te),
+                                             (y_5d_tr, y_5d_va, y_5d_te),
+                                             (y_10d_tr, y_10d_va, y_10d_te),
+                                             (y_15d_tr, y_15d_va, y_15d_te)]:
+                lo = np.percentile(y_tr_w, 1)
+                hi = np.percentile(y_tr_w, 99)
+                y_tr_w[:] = np.clip(y_tr_w, lo, hi)
+                y_va_w[:] = np.clip(y_va_w, lo, hi)
+                y_te_w[:] = np.clip(y_te_w, lo, hi)
+
+            logger.info(f"  train={X_train_w.shape[0]:,}, val={X_val_w.shape[0]:,}, test={X_test_w.shape[0]:,}")
+
+            # 设置train/val dates供lgb_pct使用
+            self.train_dates = dates[train_mask]
+            self.val_dates = dates[val_mask]
+
+            targets_w = [
+                ('3d', y_3d_tr, y_3d_va, y_3d_te),
+                ('5d', y_5d_tr, y_5d_va, y_5d_te),
+                ('10d', y_10d_tr, y_10d_va, y_10d_te),
+                ('15d', y_15d_tr, y_15d_va, y_15d_te),
+            ]
+
+            window_metrics = {}
+            df_train_w = df[train_mask]
+            for target_key, y_tr, y_va, y_te in targets_w:
+                sample_w = self.compute_sample_weights(df_train_w, y_tr)
+                models, pred_train, pred_val = self.train_single_target_models(
+                    X_train_w, X_val_w, y_tr, y_va, f"label_{target_key}",
+                    sample_weights_train=sample_w)
+                weights, _ = self.calculate_ensemble_weights(pred_val, y_va)
+
+                pred_test = {}
+                for name, model in models.items():
+                    if name == 'xgb':
+                        pred_test[name] = model.predict(xgb.DMatrix(X_test_w))
+                    else:
+                        pred_test[name] = model.predict(X_test_w)
+
+                ensemble_pred = self.ensemble_predict(pred_test, weights)
+                ic, icir = self._calculate_daily_ic(ensemble_pred, y_te, test_dates_w)
+                window_metrics[target_key] = {'ic': ic, 'icir': icir}
+                logger.info(f"  {target_key}: IC={ic:.4f}, ICIR={icir:.4f}")
+
+                del models, pred_train, pred_val, pred_test
+                gc.collect()
+
+            wf_metrics.append(window_metrics)
+
+        # 4. WF summary
+        logger.info("\n" + "=" * 60)
+        logger.info(f"{version_str} Walk-Forward 汇总")
+        logger.info("=" * 60)
+        wf_summary = {}
+        for target_key in ['3d', '5d', '10d', '15d']:
+            ics = [m[target_key]['ic'] for m in wf_metrics if target_key in m]
+            icirs = [m[target_key]['icir'] for m in wf_metrics if target_key in m]
+            summary = {
+                'mean_ic': float(np.mean(ics)) if ics else 0.0,
+                'std_ic': float(np.std(ics)) if ics else 0.0,
+                'mean_icir': float(np.mean(icirs)) if icirs else 0.0,
+                'std_icir': float(np.std(icirs)) if icirs else 0.0,
+                'n_windows': len(ics),
+            }
+            wf_summary[target_key] = summary
+            logger.info(f"  {target_key}: IC={summary['mean_ic']:.4f}+/-{summary['std_ic']:.4f}, "
+                         f"ICIR={summary['mean_icir']:.4f}+/-{summary['std_icir']:.4f}")
+
+        # fast-check 门控: 检查是否有目标IC>0.02 且 ICIR>0.15
+        if getattr(self, '_fast_check', False):
+            duration = (datetime.now() - start_time).total_seconds()
+            _mode = 'TURBO-CHECK' if getattr(self, '_turbo_targets', None) else 'FAST-CHECK'
+
+            # 门控逻辑: 至少一个目标通过
+            passed = False
+            for tk in ['3d', '5d', '10d', '15d']:
+                s = wf_summary.get(tk, {})
+                if s.get('mean_ic', 0) > 0.02 and s.get('mean_icir', 0) > 0.15:
+                    passed = True
+                    break
+
+            logger.info(f"\n{'='*60}")
+            logger.info(f"[{_mode} 完成] 耗时 {duration:.0f}s ({duration/60:.1f}min)")
+            logger.info(f"门控结果: {'PASS' if passed else 'FAIL'} "
+                         f"(需要至少一个目标 IC>0.02 且 ICIR>0.15)")
+            logger.info(f"跳过生产模型训练和保存 (仅验证方向)")
+            logger.info("=" * 60)
+            return {'walk_forward_metrics': wf_summary, 'fast_check': True,
+                    'gate_passed': passed}, {'walk_forward_summary': wf_summary}
+
+        # 5. 训练最终V5.0生产模型 (85% train + 15% val)
+        logger.info("\n" + "=" * 60)
+        logger.info(f"训练最终{version_str}生产模型 (全量数据)")
+        logger.info("=" * 60)
+
+        split_idx = int(n_dates * 0.85)
+        split_date = unique_dates[split_idx]
+        train_mask_final = dates <= split_date
+        val_mask_final = dates > split_date
+
+        # Phase A: 生产模型也需要残差化标签
+        if self.USE_RESIDUAL_LABELS:
+            test_mask_empty = np.zeros(len(dates), dtype=bool)
+            self._residualize_labels(df, train_mask_final, val_mask_final, test_mask_empty)
+            y_3d = df['label_3d'].values
+            y_5d = df['label_5d'].values
+            y_10d = df['label_10d'].values
+            y_15d = df['label_15d'].values
+
+        X_train_f, X_val_f = X[train_mask_final], X[val_mask_final]
+        self.train_dates = dates[train_mask_final]
+        self.val_dates = dates[val_mask_final]
+
+        df_train_f = df[train_mask_final]
+        all_results = {}
+        y_val_dict = {}
+
+        targets_final = [
+            ('3d', y_3d[train_mask_final].copy(), y_3d[val_mask_final].copy()),
+            ('5d', y_5d[train_mask_final].copy(), y_5d[val_mask_final].copy()),
+            ('10d', y_10d[train_mask_final].copy(), y_10d[val_mask_final].copy()),
+            ('15d', y_15d[train_mask_final].copy(), y_15d[val_mask_final].copy()),
+        ]
+
+        for target_key, y_tr, y_va in targets_final:
+            lo = np.percentile(y_tr, 1)
+            hi = np.percentile(y_tr, 99)
+            y_tr[:] = np.clip(y_tr, lo, hi)
+            y_va[:] = np.clip(y_va, lo, hi)
+
+        for target_key, y_tr, y_va in targets_final:
+            sample_w = self.compute_sample_weights(df_train_f, y_tr)
+            models, pred_train, pred_val = self.train_single_target_models(
+                X_train_f, X_val_f, y_tr, y_va, f"label_{target_key}",
+                sample_weights_train=sample_w)
+            weights, rmses = self.calculate_ensemble_weights(pred_val, y_va)
+            all_results[target_key] = {'models': models, 'weights': weights, 'rmses': rmses}
+            y_val_dict[target_key] = y_va
+
+        # Feature importance
+        self._log_feature_importance(all_results)
+
+        # Global quantiles
+        global_quantiles = self._compute_global_quantiles(X, all_results, self.target_weights)
+        recommendation_thresholds = self._compute_recommendation_thresholds(X, all_results)
+
+        # Save model
+        end_time = datetime.now()
+        duration = (end_time - start_time).total_seconds()
+
+        out_dir = PROJECT_ROOT / 'ml_models' / 'trained_models' / version_tag
+        out_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+
+        model_data = {
+            'version': version_str,
+            'models': all_results,
+            'feature_names': self.feature_names,
+            'target_weights': self.target_weights,
+            'market_features': list(self.market_calculator.market_features.columns[1:]),
+            'winsorize_bounds': getattr(self, 'winsorize_bounds', None),
+            'global_quantiles': global_quantiles,
+            'recommendation_thresholds': recommendation_thresholds,
+            'cascade': False,
+            'rank_normalized': False,
+            'robust_zscore': False,  # V5用Rank-Transform替代
+            'rank_transform': self.USE_RANK_TRANSFORM,
+            'residual_labels': self.USE_RESIDUAL_LABELS,
+            'industry_excess_labels': True,
+            'targets': ['3d', '5d', '10d', '15d'],
+            'ensemble_type': 'icir_optimized',
+            'sample_weighting': True,
+            'walk_forward_metrics': wf_summary,
+            'walk_forward_windows': len(windows),
+            'v5_innovations': {
+                'phase_a': 'FF4 factor-residual labels (eliminate momentum exposure)',
+                'phase_b': 'Cross-sectional rank-transform [0,1]',
+                'beta_window': self.BETA_WINDOW,
+                'min_beta_days': self.MIN_BETA_DAYS,
+                'pruned_features': self.PRUNE_FEATURES,
+                'base': 'V4.9.0.1 (61 features, Q95+LambdaRank trunc=10)',
+            },
+        }
+
+        model_path = out_dir / f'{version_tag}_multi_target_{timestamp}.pkl'
+        joblib.dump(model_data, model_path)
+        logger.info(f"\n{version_str} 模型已保存: {model_path}")
+        logger.info(f"  大小: {model_path.stat().st_size / 1024 / 1024:.1f} MB")
+
+        # Save training history
+        history = {
+            'version': version_str,
+            'start_time': start_time.isoformat(),
+            'end_time': end_time.isoformat(),
+            'duration_seconds': duration,
+            'status': 'completed',
+            'summary': {
+                'training_samples': int(train_mask_final.sum()),
+                'validation_samples': int(val_mask_final.sum()),
+                'feature_count': len(self.feature_names),
+                'walk_forward_summary': wf_summary,
+            },
+            'target_weights': self.target_weights,
+            'ensemble_weights': {k: all_results[k]['weights'] for k in all_results},
+            'v5_innovations': model_data['v5_innovations'],
+        }
+
+        import json as _json
+        history_path = out_dir / f'training_history_{timestamp}.json'
+        with open(history_path, 'w', encoding='utf-8') as f:
+            _json.dump(history, f, indent=2, ensure_ascii=False)
+        latest_path = out_dir / 'training_history_latest.json'
+        with open(latest_path, 'w', encoding='utf-8') as f:
+            _json.dump(history, f, indent=2, ensure_ascii=False)
+
+        logger.info(f"\n{version_str} training complete!")
+        logger.info(f"  Features: {len(self.feature_names)}")
+        logger.info(f"  Duration: {duration/60:.1f} min")
 
         return model_data, history
 
@@ -13728,7 +14372,8 @@ class V48Trainer(V472Trainer):
         if getattr(self, '_fast_check', False):
             duration = (datetime.now() - start_time).total_seconds()
             logger.info("\n" + "=" * 60)
-            logger.info(f"[FAST-CHECK 完成] 耗时 {duration:.0f}s ({duration/60:.1f}min)")
+            _mode = 'TURBO-CHECK' if getattr(self, '_turbo_targets', None) else 'FAST-CHECK'
+            logger.info(f"[{_mode} 完成] 耗时 {duration:.0f}s ({duration/60:.1f}min)")
             logger.info("跳过生产模型训练和保存 (仅验证方向)")
             logger.info("=" * 60)
             return {'walk_forward_metrics': wf_summary, 'fast_check': True}, {'walk_forward_summary': wf_summary}
@@ -14050,6 +14695,8 @@ def main():
         help='消融B: 仅加3个BRAIN因子(61→64), 无裁剪, 无浓度对策')
     parser.add_argument('--v493c', action='store_true',
         help='消融C: 仅浓度对策(权重clip/shrinkage+LGB feat_frac=0.5), 保持61特征')
+    parser.add_argument('--v5', action='store_true',
+        help='V5.0: 诚实重建 — 因子残差标签+Rank-Transform+防御性特征')
     parser.add_argument('--v4902', action='store_true',
         help='V4.9.0.2: V4.9.0.1+Sharpe-Blend↑+下行加权×1.5+WF摘要')
     parser.add_argument('--v488', action='store_true', help='V4.9.0: V4.8.7+基准超额标签+熊市×2.5+单调性集成(69特征, 目标S级)')
@@ -14059,14 +14706,16 @@ def main():
     parser.add_argument('--skip-wf', action='store_true', help='跳过Walk-Forward评估, 只训练生产模型 (节省~75%时间)')
     parser.add_argument('--fast-check', action='store_true',
                         help='快速方向验证: 2个WF窗口+少数据+浅树, 不保存模型, 仅输出IC/ICIR (~2分钟)')
+    parser.add_argument('--turbo-check', action='store_true',
+                        help='极速方向验证: 1WF+只10d+跳过ETF, 首次~3min缓存后~30s')
     parser.add_argument('--num-leaves', type=int, default=None, help='覆盖LGB num_leaves (默认: 各版本内置值)')
     parser.add_argument('--min-data-in-leaf', type=int, default=None, help='覆盖LGB min_data_in_leaf (默认: 各版本内置值)')
     parser.add_argument('--feature-blacklist', type=str, default=None,
                         help='逗号分隔的特征黑名单,训练时从PRUNE_FEATURES排除 (如: atr_percentile,gk_vol_20d)')
     parser.add_argument('--head-weight', type=float, default=0,
                         help='头部加权倍数 (0=不加权, 3.0=top-1%%样本权重×3)')
-    parser.add_argument('--parallel-wf', type=int, default=1,
-                        help='并行WF窗口数 (1=串行, 3-4=推荐, 使用multiprocessing fork)')
+    parser.add_argument('--parallel-wf', type=int, default=3,
+                        help='并行WF窗口数 (1=串行, 3=默认, 使用multiprocessing fork)')
     parser.add_argument('--no-cache', action='store_true',
                         help='禁用训练数据joblib缓存 (首次加载或数据变更后自动重建)')
     parser.add_argument('--wf-report-dir', type=str, default='auto',
@@ -14078,8 +14727,30 @@ def main():
     # BRAIN 因子标志 — 适用于所有 Trainer 版本
     _use_brain = getattr(args, 'brain_features', False)
 
+    # --turbo-check: 极速方向验证 (fast-check的加强版)
+    if args.turbo_check:
+        args.fast_check = True  # turbo是fast-check的超集
+        logger.info("=" * 60)
+        logger.info("[TURBO-CHECK 模式] 极速方向验证 (跳过ETF+只10d+1窗口)")
+        logger.info("=" * 60)
+        if args.start_date is None:
+            args.start_date = '2024-06-01'
+            logger.info(f"  auto: start_date → {args.start_date} (~450交易日)")
+        if args.num_leaves is None:
+            args.num_leaves = 15
+            logger.info(f"  auto: num_leaves → 15 (浅树加速)")
+        args.skip_wf = False
+        logger.info(f"  auto: max_windows → 1 (只验证最近1个窗口)")
+        logger.info(f"  auto: min_train=200d, val=60d, test=60d (需350天)")
+        logger.info(f"  auto: 只训练10d目标 (跳过3d/5d/15d)")
+        logger.info(f"  auto: 跳过ETF数据加载 (省~100s)")
+        logger.info(f"  auto: num_boost_round → 100")
+        logger.info(f"  auto: 不保存模型文件")
+        logger.info(f"  预计: 首次~5min, 缓存后~30s")
+        logger.info("")
+
     # --fast-check: 自动覆盖参数用于快速方向验证
-    if args.fast_check:
+    elif args.fast_check:
         logger.info("=" * 60)
         logger.info("[FAST-CHECK 模式] 快速方向验证 (不保存模型)")
         logger.info("=" * 60)
@@ -14114,8 +14785,18 @@ def main():
             trainer_obj._parallel_wf_workers = args.parallel_wf
             logger.info(f"  CLI override: parallel_wf={args.parallel_wf} 进程")
 
-        # fast-check 模式设置
-        if args.fast_check:
+        # fast-check / turbo-check 模式设置
+        if args.turbo_check:
+            trainer_obj._fast_check = True
+            trainer_obj._fast_check_max_windows = 1
+            trainer_obj._fast_check_min_train = 200
+            trainer_obj._fast_check_val_days = 60
+            trainer_obj._fast_check_test_days = 60
+            trainer_obj._fast_check_step_days = 60
+            trainer_obj._fast_check_max_boost_round = 100
+            trainer_obj._turbo_skip_etf = True
+            trainer_obj._turbo_targets = ['10d']
+        elif args.fast_check:
             trainer_obj._fast_check = True
             trainer_obj._fast_check_max_windows = 2
             trainer_obj._fast_check_min_train = 300
@@ -14156,7 +14837,7 @@ def main():
         if args.wf_report_dir == 'auto':
             # 从选择的版本推断目录名
             _ver = 'v43'  # fallback
-            for flag in ['v4901', 'v4902', 'v493', 'v493a', 'v493b', 'v493c',
+            for flag in ['v5', 'v4901', 'v4902', 'v493', 'v493a', 'v493b', 'v493c',
                          'v492', 'v491', 'v490', 'v488', 'v487', 'v486',
                          'v485', 'v484', 'v483', 'v482', 'v481', 'v480',
                          'v479', 'v478', 'v477', 'v476', 'v475', 'v474',
@@ -14218,6 +14899,17 @@ def main():
                 purge_days=max(args.purge_days, 15))
     elif args.v493c:
         trainer = V493CTrainer()
+        _apply_overrides(trainer)
+        if args.skip_wf:
+            trainer.train_production_only(
+                start_date=args.start_date, end_date=args.end_date,
+                purge_days=max(args.purge_days, 15))
+        else:
+            trainer.walk_forward_train(
+                start_date=args.start_date, end_date=args.end_date,
+                purge_days=max(args.purge_days, 15))
+    elif args.v5:
+        trainer = V5Trainer()
         _apply_overrides(trainer)
         if args.skip_wf:
             trainer.train_production_only(
@@ -14482,6 +15174,7 @@ def main():
             #    e.g. 'daily_selection_v4901_pre2020' -> 'v4901' -> 'v4.9.0.1'
             _ver_short = pre2020_dir_name.replace('daily_selection_', '').replace('_pre2020', '')
             _VER_MAP = {
+                'v5': 'v5.0',
                 'v4901': 'v4.9.0.1', 'v4902': 'v4.9.0.2',
                 'v493': 'v4.9.3', 'v493a': 'v4.9.3a', 'v493b': 'v4.9.3b', 'v493c': 'v4.9.3c',
                 'v492': 'v4.9.2', 'v491': 'v4.9.1', 'v490': 'v4.9.0',
