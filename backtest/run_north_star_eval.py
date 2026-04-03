@@ -633,7 +633,7 @@ def main():
         args.cppi_floor = 0.08
         args.cppi_multiplier = 20
         args.score_floor = 30
-        args.ema_alpha = 0.7
+        args.ema_alpha = 0.9
         args.backtest = True
         args.min_market_cap = 30    # 30亿市值下限
         # V5 WF摘要 (WFER + OOS IC半衰期)
@@ -641,7 +641,7 @@ def main():
                                 '..', 'ml_models', 'trained_models', 'v4901', 'wf_summary.json')
         if os.path.exists(_wf_path) and not args.wf_summary:
             args.wf_summary = _wf_path
-        print("🏆 生产配置: V4901 + MC30亿 + WF摘要 + CPPI(8,20) + RegimeDamp = V5.1→V5.2 81.6% S级")
+        print("🏆 生产配置: V4901 + MC30亿 + WF摘要 + CPPI(8,20) + EMA0.9 = V5.2 82.4% S级")
 
     # ── auto 日期解析 ──
     # 如果指定了 --report-dir 且日期为 auto，从报告目录自动检测
