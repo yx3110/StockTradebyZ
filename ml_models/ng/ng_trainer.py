@@ -203,7 +203,7 @@ class NGTrainer(V485Trainer):
         result['label_5d'] = df_raw['label_5d'].values
         result['label_10d'] = df_raw['label_10d'].values
         # label_15d not in NG cache → fill zeros for V485 compatibility
-        result['label_15d'] = df_raw['label_15d'].values.astype(float)
+        result['label_15d'] = pd.to_numeric(df_raw['label_15d'], errors='coerce').fillna(0).values
 
         # Fill NaN features with 0
         for col in ALL_FEATURE_NAMES:
