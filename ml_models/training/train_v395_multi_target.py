@@ -64,6 +64,43 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
+class _Progress:
+    """轻量进度追踪器 — 用 logger.info 输出, 兼容 Claude Code / 终端 / 日志文件."""
+    def __init__(self, total, desc='进度', unit='步'):
+        import time as _t
+        self.total = max(total, 1)
+        self.desc = desc
+        self.unit = unit
+        self.n = 0
+        self._start = _t.time()
+        self._detail = ''
+        self._time = _t
+
+    def set_description(self, detail):
+        self._detail = detail
+
+    def update(self, n=1):
+        self.n += n
+        elapsed = self._time.time() - self._start
+        pct = self.n / self.total * 100
+        eta = elapsed / self.n * (self.total - self.n) if self.n < self.total else 0
+        filled = int(20 * self.n / self.total)
+        bar = '█' * filled + '░' * (20 - filled)
+        logger.info(f"  ┃ {bar} {self.n}/{self.total} ({pct:.0f}%) │ {self._detail} │ "
+                    f"{self._fmt(elapsed)} 已用 │ ~{self._fmt(eta)} 剩余")
+
+    def close(self):
+        elapsed = self._time.time() - self._start
+        logger.info(f"  ┗ {self.desc} 完成 ({self.total} {self.unit}, {self._fmt(elapsed)})")
+
+    @staticmethod
+    def _fmt(s):
+        if s < 60: return f"{s:.0f}s"
+        if s < 3600: return f"{s/60:.1f}min"
+        return f"{int(s//3600)}h{int(s%3600//60):02d}m"
+
+
 DB_PATH = str(PROJECT_ROOT / 'data_adapter' / 'stock_data.db')
 
 # ===== Parallel WF: 共享数据 + Worker函数 (multiprocessing fork) =====
@@ -120,7 +157,7 @@ def _wf_window_worker(wi):
     logger.info(f"[并行] Walk-Forward 窗口 {wi+1}/{n_windows}")
     logger.info(f"{'='*50}")
 
-    train_mask = dates <= w['train_end']
+    train_mask = (dates >= w['train_start']) & (dates <= w['train_end'])
     val_mask = (dates >= w['val_start']) & (dates <= w['val_end'])
     test_mask = (dates >= w['test_start']) & (dates <= w['test_end'])
 
@@ -1674,7 +1711,7 @@ class V395MultiTargetTrainer:
             'target_weights': self.target_weights,
             'dynamic_weights': getattr(self, 'dynamic_weights', self.target_weights),
             'sharpe_label_blend': self.sharpe_label_blend,
-            'market_features': list(self.market_calculator.market_features.columns[1:]),
+            'market_features': list(self.market_calculator.market_features.columns[1:]) if getattr(self.market_calculator, 'market_features', None) is not None else list(getattr(self, 'macro_feature_cols', [])),
             'winsorize_bounds': getattr(self, 'winsorize_bounds', None),
             'global_quantiles': global_quantiles,
             'recommendation_thresholds': recommendation_thresholds,
@@ -1706,7 +1743,7 @@ class V395MultiTargetTrainer:
                 'validation_samples': len(X_val),
                 'test_samples': len(X_test),
                 'feature_count': len(self.feature_names),
-                'market_feature_count': len(self.market_calculator.market_features.columns) - 1,
+                'market_feature_count': len(self.market_calculator.market_features.columns) - 1 if getattr(self.market_calculator, 'market_features', None) is not None else len(getattr(self, 'macro_feature_cols', [])),
                 'final_metrics': final_metrics,
             },
             'north_star_metrics': {
@@ -2561,7 +2598,7 @@ class V43Trainer(V395MultiTargetTrainer):
             'models': all_results,
             'feature_names': self.feature_names,
             'target_weights': self.target_weights,
-            'market_features': list(self.market_calculator.market_features.columns[1:]),
+            'market_features': list(self.market_calculator.market_features.columns[1:]) if getattr(self.market_calculator, 'market_features', None) is not None else list(getattr(self, 'macro_feature_cols', [])),
             'winsorize_bounds': getattr(self, 'winsorize_bounds', None),
             'global_quantiles': global_quantiles,
             'recommendation_thresholds': recommendation_thresholds,
@@ -3115,7 +3152,7 @@ class V44Trainer(V43Trainer):
             'models': all_results,
             'feature_names': self.feature_names,
             'target_weights': self.target_weights,
-            'market_features': list(self.market_calculator.market_features.columns[1:]),
+            'market_features': list(self.market_calculator.market_features.columns[1:]) if getattr(self.market_calculator, 'market_features', None) is not None else list(getattr(self, 'macro_feature_cols', [])),
             'winsorize_bounds': getattr(self, 'winsorize_bounds', None),
             'global_quantiles': global_quantiles,
             'recommendation_thresholds': recommendation_thresholds,
@@ -3719,7 +3756,7 @@ class V46Trainer(V44Trainer):
             'models': all_results,
             'feature_names': self.feature_names,
             'target_weights': self.target_weights,
-            'market_features': list(self.market_calculator.market_features.columns[1:]),
+            'market_features': list(self.market_calculator.market_features.columns[1:]) if getattr(self.market_calculator, 'market_features', None) is not None else list(getattr(self, 'macro_feature_cols', [])),
             'winsorize_bounds': getattr(self, 'winsorize_bounds', None),
             'global_quantiles': global_quantiles,
             'recommendation_thresholds': recommendation_thresholds,
@@ -4201,7 +4238,7 @@ class V47Trainer(V46Trainer):
             'models': all_results,
             'feature_names': self.feature_names,
             'target_weights': self.target_weights,
-            'market_features': list(self.market_calculator.market_features.columns[1:]),
+            'market_features': list(self.market_calculator.market_features.columns[1:]) if getattr(self.market_calculator, 'market_features', None) is not None else list(getattr(self, 'macro_feature_cols', [])),
             'winsorize_bounds': getattr(self, 'winsorize_bounds', None),
             'global_quantiles': global_quantiles,
             'recommendation_thresholds': recommendation_thresholds,
@@ -4412,7 +4449,7 @@ class V47Trainer(V46Trainer):
             'models': all_results,
             'feature_names': self.feature_names,
             'target_weights': self.target_weights,
-            'market_features': list(self.market_calculator.market_features.columns[1:]),
+            'market_features': list(self.market_calculator.market_features.columns[1:]) if getattr(self.market_calculator, 'market_features', None) is not None else list(getattr(self, 'macro_feature_cols', [])),
             'winsorize_bounds': getattr(self, 'winsorize_bounds', None),
             'global_quantiles': global_quantiles,
             'recommendation_thresholds': recommendation_thresholds,
@@ -4875,7 +4912,7 @@ class V471Trainer(V44Trainer):
             max_date = dates.max()
             days_ago = ((max_date - dates) / pd.Timedelta(days=1)).astype(float)
 
-            half_life_days = 365.0  # 1年半衰期
+            half_life_days = getattr(self, '_cli_time_decay_halflife', 365.0)
             decay = np.exp(-np.log(2) * days_ago / half_life_days)
             decay = np.clip(decay, 0.25, 1.0)  # 旧数据保留25%权重
 
@@ -5307,7 +5344,7 @@ class V471Trainer(V44Trainer):
             'models': all_results,
             'feature_names': self.feature_names,
             'target_weights': self.target_weights,
-            'market_features': list(self.market_calculator.market_features.columns[1:]),
+            'market_features': list(self.market_calculator.market_features.columns[1:]) if getattr(self.market_calculator, 'market_features', None) is not None else list(getattr(self, 'macro_feature_cols', [])),
             'winsorize_bounds': winsorize_bounds_dict,
             'global_quantiles': global_quantiles,
             'recommendation_thresholds': recommendation_thresholds,
@@ -5783,7 +5820,7 @@ class V472Trainer(V471Trainer):
             'models': all_results,
             'feature_names': self.feature_names,
             'target_weights': self.target_weights,
-            'market_features': list(self.market_calculator.market_features.columns[1:]),
+            'market_features': list(self.market_calculator.market_features.columns[1:]) if getattr(self.market_calculator, 'market_features', None) is not None else list(getattr(self, 'macro_feature_cols', [])),
             'winsorize_bounds': winsorize_bounds_dict,
             'global_quantiles': global_quantiles,
             'recommendation_thresholds': recommendation_thresholds,
@@ -6468,7 +6505,7 @@ class V473Trainer(V472Trainer):
             'models': all_results,
             'feature_names': self.feature_names,
             'target_weights': self.target_weights,
-            'market_features': list(self.market_calculator.market_features.columns[1:]),
+            'market_features': list(self.market_calculator.market_features.columns[1:]) if getattr(self.market_calculator, 'market_features', None) is not None else list(getattr(self, 'macro_feature_cols', [])),
             'winsorize_bounds': winsorize_bounds_dict,
             'global_quantiles': global_quantiles,
             'recommendation_thresholds': recommendation_thresholds,
@@ -7049,7 +7086,7 @@ class V474Trainer(V473Trainer):
             'models': all_results,
             'feature_names': self.feature_names,
             'target_weights': self.target_weights,
-            'market_features': list(self.market_calculator.market_features.columns[1:]),
+            'market_features': list(self.market_calculator.market_features.columns[1:]) if getattr(self.market_calculator, 'market_features', None) is not None else list(getattr(self, 'macro_feature_cols', [])),
             'winsorize_bounds': winsorize_bounds_dict,
             'global_quantiles': global_quantiles,
             'recommendation_thresholds': recommendation_thresholds,
@@ -7273,15 +7310,26 @@ class V475Trainer(V473Trainer):
         logger.info(f"  总交易日: {n_dates}, 样本: {len(X):,}, 特征: {X.shape[1]}")
 
         # 2. 定义滚动窗口
+        # 滑动窗口模式: _max_train_days 限制训练集为最近N个交易日 (诊断信号半衰期)
+        _max_train_days = getattr(self, '_max_train_days', None)
+        _wf_mode = f'sliding({_max_train_days}d)' if _max_train_days else 'expanding'
+        logger.info(f"  WF模式: {_wf_mode}")
+
         windows = []
         cursor = min_train_days
         while cursor + val_days + 2 * purge_days + test_days <= n_dates:
             train_end_idx = cursor - 1
+            # 滑动窗口: 限制训练起始点
+            if _max_train_days:
+                train_start_idx = max(0, train_end_idx - _max_train_days + 1)
+            else:
+                train_start_idx = 0
             val_start_idx = cursor + purge_days
             val_end_idx = val_start_idx + val_days - 1
             test_start_idx = val_end_idx + purge_days + 1
             test_end_idx = min(test_start_idx + test_days - 1, n_dates - 1)
             windows.append({
+                'train_start': unique_dates[train_start_idx],
                 'train_end': unique_dates[train_end_idx],
                 'val_start': unique_dates[val_start_idx],
                 'val_end': unique_dates[val_end_idx],
@@ -7298,7 +7346,7 @@ class V475Trainer(V473Trainer):
 
         logger.info(f"  Walk-Forward窗口: {len(windows)}")
         for i, w in enumerate(windows):
-            logger.info(f"    窗口 {i+1}: train<='{w['train_end']}', val={w['val_start']}~{w['val_end']}, "
+            logger.info(f"    窗口 {i+1}: train={w['train_start']}~{w['train_end']}, val={w['val_start']}~{w['val_end']}, "
                          f"test={w['test_start']}~{w['test_end']}")
 
         # 3. 对每个窗口训练+评估 (支持并行)
@@ -7340,12 +7388,18 @@ class V475Trainer(V473Trainer):
             wf_metrics = []
             import gc
 
+            # 进度追踪: windows × targets_per_window
+            _turbo_targets_g = getattr(self, '_turbo_targets', None)
+            _n_targets_est = len(_turbo_targets_g) if _turbo_targets_g else 4
+            _show_pbar = not getattr(self, '_fast_check', False)
+            _wf_pbar = _Progress(len(windows) * _n_targets_est, desc='WF训练', unit='模型') if _show_pbar else None
+
             for wi, w in enumerate(windows):
                 logger.info(f"\n{'='*50}")
                 logger.info(f"Walk-Forward 窗口 {wi+1}/{len(windows)}")
                 logger.info(f"{'='*50}")
 
-                train_mask = dates <= w['train_end']
+                train_mask = (dates >= w['train_start']) & (dates <= w['train_end'])
                 val_mask = (dates >= w['val_start']) & (dates <= w['val_end'])
                 test_mask = (dates >= w['test_start']) & (dates <= w['test_end'])
 
@@ -7401,6 +7455,8 @@ class V475Trainer(V473Trainer):
                     all_targets = [t for t in all_targets if t[0] in _turbo_targets]
                     logger.info(f"  [TURBO] 只训练目标: {_turbo_targets}")
                 for target_key, y_tr, y_va, y_te in all_targets:
+                    if _wf_pbar:
+                        _wf_pbar.set_description(f"W{wi+1}/{len(windows)} {target_key}")
                     sample_w = self.compute_sample_weights(df[train_mask], y_tr)
                     models, pred_train, pred_val = self.train_single_target_models(
                         X_train_w, X_val_w, y_tr, y_va, f"label_{target_key}",
@@ -7440,6 +7496,8 @@ class V475Trainer(V473Trainer):
 
                     del models, pred_train, pred_val, pred_test
                     gc.collect()
+                    if _wf_pbar:
+                        _wf_pbar.update(1)
 
                 wf_metrics.append(window_metrics)
 
@@ -7450,12 +7508,15 @@ class V475Trainer(V473Trainer):
                         df[test_mask], test_dates_w, window_test_preds)
                     del window_test_preds
 
+            if _wf_pbar:
+                _wf_pbar.close()
+
         # 4. Walk-Forward 汇总
         logger.info("\n" + "=" * 60)
-        logger.info("Walk-Forward 汇总")
+        logger.info(f"Walk-Forward 汇总 (模式: {_wf_mode})")
         logger.info("=" * 60)
 
-        wf_summary = {}
+        wf_summary = {'wf_mode': _wf_mode}
         for target_key in ['3d', '5d', '10d', '15d']:
             ics = [m[target_key]['ic'] for m in wf_metrics if target_key in m]
             icirs = [m[target_key]['icir'] for m in wf_metrics if target_key in m]
@@ -7580,7 +7641,9 @@ class V475Trainer(V473Trainer):
                 _prod_shared = {}
         else:
             # ===== 串行训练 =====
+            _prod_pbar = _Progress(len(targets_final), desc='生产模型', unit='目标')
             for target_key, y_tr, y_va in targets_final:
+                _prod_pbar.set_description(f"生产模型 {target_key}")
                 sample_w = self.compute_sample_weights(df_train_f, y_tr)
                 models, pred_train, pred_val = self.train_single_target_models(
                     X_train_f, X_val_f, y_tr, y_va, f"label_{target_key}",
@@ -7588,6 +7651,8 @@ class V475Trainer(V473Trainer):
                 weights, rmses = self.calculate_ensemble_weights(pred_val, y_va)
                 all_results[target_key] = {'models': models, 'weights': weights, 'rmses': rmses}
                 y_val_dict[target_key] = y_va
+                _prod_pbar.update(1)
+            _prod_pbar.close()
 
         # 6. Bear specialist
         logger.info("\n" + "=" * 60)
@@ -7646,7 +7711,7 @@ class V475Trainer(V473Trainer):
             'models': all_results,
             'feature_names': self.feature_names,
             'target_weights': self.target_weights,
-            'market_features': list(self.market_calculator.market_features.columns[1:]),
+            'market_features': list(self.market_calculator.market_features.columns[1:]) if getattr(self.market_calculator, 'market_features', None) is not None else list(getattr(self, 'macro_feature_cols', [])),
             'winsorize_bounds': winsorize_bounds_dict,
             'global_quantiles': global_quantiles,
             'recommendation_thresholds': recommendation_thresholds,
@@ -8119,7 +8184,7 @@ class V476Trainer(V475Trainer):
             'models': all_results,
             'feature_names': self.feature_names,
             'target_weights': self.target_weights,
-            'market_features': list(self.market_calculator.market_features.columns[1:]),
+            'market_features': list(self.market_calculator.market_features.columns[1:]) if getattr(self.market_calculator, 'market_features', None) is not None else list(getattr(self, 'macro_feature_cols', [])),
             'winsorize_bounds': winsorize_bounds_dict,
             'global_quantiles': global_quantiles,
             'recommendation_thresholds': recommendation_thresholds,
@@ -10839,7 +10904,7 @@ class V5Trainer(V4901Trainer):
             'models': all_results,
             'feature_names': self.feature_names,
             'target_weights': self.target_weights,
-            'market_features': list(self.market_calculator.market_features.columns[1:]),
+            'market_features': list(self.market_calculator.market_features.columns[1:]) if getattr(self.market_calculator, 'market_features', None) is not None else list(getattr(self, 'macro_feature_cols', [])),
             'winsorize_bounds': getattr(self, 'winsorize_bounds', None),
             'global_quantiles': global_quantiles,
             'recommendation_thresholds': recommendation_thresholds,
@@ -10898,6 +10963,240 @@ class V5Trainer(V4901Trainer):
         logger.info(f"\n{version_str} training complete!")
         logger.info(f"  Features: {len(self.feature_names)}")
         logger.info(f"  Duration: {duration/60:.1f} min")
+
+        return model_data, history
+
+
+class V51Trainer(V5Trainer):
+    """V5.1: V5.0 + 大幅特征重构 — 删24个动量代理特征, 加~15个基本面因子
+
+    诊断: V5.0的36个特征对残差label_10d全部ICIR<=0.19, 24个为负(有害)
+    原因: 特征集为原始收益设计(动量/趋势), 对因子残差alpha无效甚至反向
+    方案: 删除动量/波动率/行业动量/估值rank, 新增盈利质量/现金流/增长/杠杆因子
+    """
+
+    # 额外要删除的特征 (在V5的PRUNE_FEATURES基础上)
+    PRUNE_FEATURES = V5Trainer.PRUNE_FEATURES + [
+        # 动量/趋势类 (ICIR < -0.15 against residual labels)
+        'return_5d', 'return_10d', 'return_20d',
+        'avg_pct_change_5d', 'max_pct_change_5d',
+        'ma5_ratio', 'ma10_ratio', 'ma20_ratio', 'ma_cross',
+        'rsi_14',
+        # 波动率 (与beta高度相关)
+        'volatility_10d', 'volatility_20d',
+        # 行业动量
+        'industry_return_5d', 'industry_return_20d',
+        'sw_index_return_1d', 'sw_index_return_5d',
+        'industry_relative_strength',
+        # 估值rank (与HML/SMB因子共线)
+        'pb_industry_rank', 'pe_industry_rank', 'ps_industry_rank',
+        # 其他有害
+        'volume_ratio', 'volume_trend',
+        'northbound_flow_5d', 'sw_l1_code',
+    ]
+
+    # 新增基本面特征列表
+    FUNDAMENTAL_FEATURES = [
+        'roe_ttm',              # 盈利能力: ROE (年化)
+        'roa_ttm',              # 资产回报率
+        'gross_margin',         # 毛利率
+        'net_margin',           # 净利率
+        'ocf_to_profit',        # 现金流质量: 经营现金流/净利润
+        'current_ratio',        # 偿债: 流动比率
+        'debt_to_assets',       # 杠杆: 资产负债率
+        'assets_turnover',      # 效率: 总资产周转率
+        'eps_yoy',              # 增长: EPS同比
+        'revenue_yoy',          # 营收同比
+        'netprofit_qoq',        # 净利润环比
+        'roe_yoy',              # ROE同比变化
+        'ocf_yoy',              # 经营现金流同比
+        'dv_ttm',               # 股息率TTM
+        'fcf_yield',            # FCF收益率 = FCFF_PS / close
+    ]
+
+    def load_data(self, start_date=None, end_date=None):
+        """V5.1: 加载原始数据 + 注入基本面特征"""
+        df = super().load_data(start_date, end_date)
+        df = self._inject_fundamental_features(df)
+        return df
+
+    def _inject_fundamental_features(self, df):
+        """从financial_indicator和daily_basic注入基本面特征 (向量化版, merge_asof)"""
+        logger.info("V5.1: 注入基本面特征...")
+
+        conn = sqlite3.connect(self.db_path, timeout=30)
+
+        # 1. 财报数据: 用merge_asof做point-in-time匹配 (ann_date <= trade_date)
+        fin_df = pd.read_sql("""
+            SELECT s.code, fi.ann_date,
+                   fi.roe AS roe_ttm, fi.roa AS roa_ttm,
+                   fi.grossprofit_margin AS gross_margin,
+                   fi.netprofit_margin AS net_margin,
+                   fi.ocf_to_profit, fi.current_ratio,
+                   fi.debt_to_assets, fi.assets_turn AS assets_turnover,
+                   fi.basic_eps_yoy AS eps_yoy, fi.or_yoy AS revenue_yoy,
+                   fi.q_netprofit_qoq AS netprofit_qoq,
+                   fi.roe_yoy, fi.ocf_yoy, fi.fcff_ps
+            FROM financial_indicator fi
+            JOIN securities s ON fi.security_id = s.id
+            WHERE s.type = 'A股'
+            ORDER BY s.code, fi.ann_date
+        """, conn)
+
+        # 2. daily_basic: dv_ttm + close (for fcf_yield)
+        dv_df = pd.read_sql("""
+            SELECT s.code, db.trade_date, db.dv_ttm, db.close AS db_close
+            FROM daily_basic db
+            JOIN securities s ON db.security_id = s.id
+            WHERE s.type = 'A股'
+            ORDER BY s.code, db.trade_date
+        """, conn)
+        conn.close()
+
+        logger.info(f"  财报: {len(fin_df):,} 条, daily_basic: {len(dv_df):,} 条")
+
+        # 标准化日期格式为datetime
+        fin_df['ann_date'] = pd.to_datetime(
+            fin_df['ann_date'].astype(str).str[:10].str.replace('-', ''),
+            format='%Y%m%d', errors='coerce')
+        fin_df = fin_df.dropna(subset=['ann_date']).sort_values(['code', 'ann_date'])
+        # 去重: 同一股票同一ann_date只保留最后一条
+        fin_df = fin_df.drop_duplicates(subset=['code', 'ann_date'], keep='last')
+
+        df['_trade_date_dt'] = pd.to_datetime(
+            df['trade_date'].astype(str).str[:10].str.replace('-', ''),
+            format='%Y%m%d', errors='coerce')
+
+        # 3. Point-in-time匹配: 对每只股票, 用ann_date <= trade_date的最近财报
+        # 策略: per-code merge_asof (避免全局sort要求)
+        fin_cols = ['roe_ttm', 'roa_ttm', 'gross_margin', 'net_margin',
+                    'ocf_to_profit', 'current_ratio', 'debt_to_assets',
+                    'assets_turnover', 'eps_yoy', 'revenue_yoy',
+                    'netprofit_qoq', 'roe_yoy', 'ocf_yoy', 'fcff_ps']
+
+        codes_with_fin = set(fin_df['code'].unique())
+        result_parts = []
+        n_matched = 0
+
+        for code, grp in df.groupby('code'):
+            grp_dates = grp[['_trade_date_dt']].copy()
+            grp_dates['_orig_idx'] = grp.index
+
+            if code in codes_with_fin:
+                code_fin = fin_df[fin_df['code'] == code].sort_values('ann_date')
+                grp_dates = grp_dates.sort_values('_trade_date_dt')
+
+                merged_chunk = pd.merge_asof(
+                    grp_dates, code_fin[['ann_date'] + fin_cols].rename(
+                        columns={'ann_date': '_trade_date_dt'}),
+                    on='_trade_date_dt', direction='backward'
+                )
+                n_matched += merged_chunk[fin_cols[0]].notna().sum()
+                result_parts.append(merged_chunk.set_index('_orig_idx'))
+            else:
+                for fc in fin_cols:
+                    grp_dates[fc] = np.nan
+                result_parts.append(grp_dates.set_index('_orig_idx'))
+
+        if result_parts:
+            merged_all = pd.concat(result_parts)
+            for col in fin_cols:
+                df[col] = merged_all[col].reindex(df.index)
+
+        logger.info(f"  财报匹配: {n_matched:,}/{len(df):,} ({n_matched/len(df)*100:.1f}%)")
+
+        # 4. merge daily_basic (dv_ttm + close)
+        dv_df['trade_date'] = dv_df['trade_date'].astype(str).str[:10]
+        df['_td_str'] = df['trade_date'].astype(str).str[:10]
+
+        dv_merged = df[['code', '_td_str']].reset_index().merge(
+            dv_df[['code', 'trade_date', 'dv_ttm', 'db_close']],
+            left_on=['code', '_td_str'], right_on=['code', 'trade_date'],
+            how='left'
+        ).set_index('index')
+
+        df['dv_ttm'] = dv_merged['dv_ttm'].reindex(df.index)
+
+        # 5. FCF yield = fcff_ps / close
+        close_vals = dv_merged['db_close'].reindex(df.index).values
+        fcff_vals = df['fcff_ps'].values if 'fcff_ps' in df.columns else np.zeros(len(df))
+        with np.errstate(divide='ignore', invalid='ignore'):
+            df['fcf_yield'] = np.where(
+                (close_vals > 0) & np.isfinite(fcff_vals.astype(float)),
+                fcff_vals.astype(float) / close_vals.astype(float), 0.0
+            )
+
+        # 清理临时列
+        df.drop(columns=['_trade_date_dt', '_td_str', 'fcff_ps'], errors='ignore', inplace=True)
+
+        # 填NaN为0 (financial_indicator可能缺失)
+        fund_cols = self.FUNDAMENTAL_FEATURES
+        for col in fund_cols:
+            if col not in df.columns:
+                df[col] = 0.0
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
+
+        coverage = (df['roe_ttm'] != 0).sum() / len(df) * 100
+        logger.info(f"  基本面覆盖: {coverage:.1f}%, 新增特征: {len(fund_cols)}")
+
+        return df
+
+    def walk_forward_train(self, start_date=None, end_date=None,
+                            purge_days=15, min_train_days=900,
+                            val_days=120, test_days=120, step_days=120):
+        """V5.1 Walk-Forward — 在V5.0基础上改版本标签, 保存为v51格式"""
+        import shutil
+
+        # 暂时让V5的walk_forward_train运行 (它会保存为v5)
+        model_data, history = super().walk_forward_train(
+            start_date=start_date, end_date=end_date,
+            purge_days=purge_days, min_train_days=min_train_days,
+            val_days=val_days, test_days=test_days, step_days=step_days
+        )
+
+        # fast-check不保存，直接返回
+        if model_data.get('fast_check'):
+            return model_data, history
+
+        # 重命名v5→v51
+        v5_dir = PROJECT_ROOT / 'ml_models' / 'trained_models' / 'v5'
+        v51_dir = PROJECT_ROOT / 'ml_models' / 'trained_models' / 'v51'
+        v51_dir.mkdir(parents=True, exist_ok=True)
+
+        v5_files = sorted(v5_dir.glob('v5_*.pkl'), key=lambda f: f.stat().st_mtime)
+        if v5_files:
+            latest = v5_files[-1]
+            timestamp = latest.stem.replace('v5_multi_target_', '')
+            new_path = v51_dir / f'v51_multi_target_{timestamp}.pkl'
+
+            model_data['version'] = 'v5.1'
+            model_data['v51_innovations'] = {
+                'pruned_count': len(self.PRUNE_FEATURES),
+                'pruned_features': list(self.PRUNE_FEATURES),
+                'added_features': self.FUNDAMENTAL_FEATURES,
+                'base': 'V5.0 factor-residual + rank-transform',
+                'rationale': '删24个动量代理(ICIR<0 vs residual) + 加15个基本面因子',
+            }
+            if 'v5_innovations' in model_data:
+                model_data['v51_innovations']['v5_base'] = model_data.pop('v5_innovations')
+
+            joblib.dump(model_data, new_path)
+            logger.info(f"\nV5.1 model saved: {new_path}")
+            logger.info(f"  Size: {new_path.stat().st_size / 1024 / 1024:.1f} MB")
+            latest.unlink()  # remove v5 temp file
+
+            import json as _json
+            history['version'] = 'v5.1'
+            hist_path = v51_dir / f'training_history_{timestamp}.json'
+            with open(hist_path, 'w', encoding='utf-8') as f:
+                _json.dump(history, f, indent=2, ensure_ascii=False)
+            latest_path = v51_dir / 'training_history_latest.json'
+            with open(latest_path, 'w', encoding='utf-8') as f:
+                _json.dump(history, f, indent=2, ensure_ascii=False)
+
+            # 清理v5目录中对应的history文件
+            for hf in v5_dir.glob(f'training_history_{timestamp}*'):
+                hf.unlink()
 
         return model_data, history
 
@@ -14507,7 +14806,7 @@ class V48Trainer(V472Trainer):
             'models': all_results,
             'feature_names': self.feature_names,
             'target_weights': self.target_weights,
-            'market_features': list(self.market_calculator.market_features.columns[1:]),
+            'market_features': list(self.market_calculator.market_features.columns[1:]) if getattr(self.market_calculator, 'market_features', None) is not None else list(getattr(self, 'macro_feature_cols', [])),
             'winsorize_bounds': winsorize_bounds_dict,
             'global_quantiles': global_quantiles,
             'recommendation_thresholds': recommendation_thresholds,
@@ -14697,6 +14996,8 @@ def main():
         help='消融C: 仅浓度对策(权重clip/shrinkage+LGB feat_frac=0.5), 保持61特征')
     parser.add_argument('--v5', action='store_true',
         help='V5.0: 诚实重建 — 因子残差标签+Rank-Transform+防御性特征')
+    parser.add_argument('--v51', action='store_true',
+        help='V5.1: V5.0+特征重构 — 删24个动量代理+加15个基本面因子')
     parser.add_argument('--v4902', action='store_true',
         help='V4.9.0.2: V4.9.0.1+Sharpe-Blend↑+下行加权×1.5+WF摘要')
     parser.add_argument('--v488', action='store_true', help='V4.9.0: V4.8.7+基准超额标签+熊市×2.5+单调性集成(69特征, 目标S级)')
@@ -14712,6 +15013,10 @@ def main():
     parser.add_argument('--min-data-in-leaf', type=int, default=None, help='覆盖LGB min_data_in_leaf (默认: 各版本内置值)')
     parser.add_argument('--feature-blacklist', type=str, default=None,
                         help='逗号分隔的特征黑名单,训练时从PRUNE_FEATURES排除 (如: atr_percentile,gk_vol_20d)')
+    parser.add_argument('--max-train-days', type=int, default=None,
+                        help='滑动窗口WF: 限制训练集最大交易日数 (None=expanding扩展窗口, 720=~3年滑动窗口)')
+    parser.add_argument('--time-decay-halflife', type=float, default=None,
+                        help='样本时间衰减半衰期(天) (默认365, 推荐180~730, 越小近期权重越大)')
     parser.add_argument('--head-weight', type=float, default=0,
                         help='头部加权倍数 (0=不加权, 3.0=top-1%%样本权重×3)')
     parser.add_argument('--parallel-wf', type=int, default=3,
@@ -14722,6 +15027,8 @@ def main():
                         help='WF OOS报告输出目录 (默认auto=自动命名, none=禁用)')
     parser.add_argument('--no-wf-reports', action='store_true',
                         help='禁用WF OOS报告生成')
+    parser.add_argument('--no-auto-wf', action='store_true',
+                        help='跳过自动WF模式选择 (默认V4901会turbo-check 3种配置选最优)')
     args = parser.parse_args()
 
     # BRAIN 因子标志 — 适用于所有 Trainer 版本
@@ -14805,6 +15112,12 @@ def main():
             trainer_obj._fast_check_step_days = 60
             trainer_obj._fast_check_max_boost_round = 200
 
+        if args.max_train_days is not None:
+            trainer_obj._max_train_days = args.max_train_days
+            logger.info(f"  CLI override: max_train_days={args.max_train_days} (滑动窗口WF)")
+        if args.time_decay_halflife is not None:
+            trainer_obj._cli_time_decay_halflife = args.time_decay_halflife
+            logger.info(f"  CLI override: time_decay_halflife={args.time_decay_halflife}d")
         if args.num_leaves is not None:
             trainer_obj._cli_num_leaves = args.num_leaves
             logger.info(f"  CLI override: num_leaves={args.num_leaves}")
@@ -14837,7 +15150,7 @@ def main():
         if args.wf_report_dir == 'auto':
             # 从选择的版本推断目录名
             _ver = 'v43'  # fallback
-            for flag in ['v5', 'v4901', 'v4902', 'v493', 'v493a', 'v493b', 'v493c',
+            for flag in ['v51', 'v5', 'v4901', 'v4902', 'v493', 'v493a', 'v493b', 'v493c',
                          'v492', 'v491', 'v490', 'v488', 'v487', 'v486',
                          'v485', 'v484', 'v483', 'v482', 'v481', 'v480',
                          'v479', 'v478', 'v477', 'v476', 'v475', 'v474',
@@ -14852,264 +15165,228 @@ def main():
     if _wf_report_dir:
         logger.info(f"  WF OOS报告输出: {_wf_report_dir}")
 
+    # ── Auto-WF: 通用WF模式自动选择函数 ──
+    def _auto_wf_select(TrainerClass, trainer_obj):
+        """训练前自动turbo-check 3种WF配置, 选最优应用到trainer_obj.
+
+        跳过条件: fast-check / turbo-check / skip-wf / --no-auto-wf / 用户已指定--max-train-days
+        """
+        _do = (not args.fast_check and not args.turbo_check
+               and not args.skip_wf and not args.no_auto_wf
+               and args.max_train_days is None)
+        if not _do:
+            return
+
+        logger.info("\n" + "=" * 60)
+        logger.info(f"[AUTO-WF] 自动选择最优WF模式 (turbo-check × 3 configs, {TrainerClass.__name__})")
+        logger.info("=" * 60)
+
+        _auto_configs = [
+            ('expanding',              None, None),
+            ('sliding-720d',           720,  None),
+            ('sliding-500d+decay730',  500,  730.0),
+        ]
+        _auto_results = []
+        _auto_pbar = _Progress(len(_auto_configs), desc='Auto-WF', unit='配置')
+        for _cfg_name, _cfg_mtd, _cfg_hl in _auto_configs:
+            _auto_pbar.set_description(f"Auto-WF {_cfg_name}")
+            _t = TrainerClass()
+            _t._fast_check = True
+            _t._fast_check_max_windows = 1
+            _t._fast_check_min_train = 200
+            _t._fast_check_val_days = 60
+            _t._fast_check_test_days = 60
+            _t._fast_check_step_days = 60
+            _t._fast_check_max_boost_round = 100
+            _t._turbo_skip_etf = True
+            _t._turbo_targets = ['10d']
+            _t._use_data_cache = True
+            _t._cli_num_leaves = args.num_leaves or 15
+            if _cfg_mtd:
+                _t._max_train_days = _cfg_mtd
+            if _cfg_hl:
+                _t._cli_time_decay_halflife = _cfg_hl
+
+            logger.info(f"\n  ▶ 测试配置: {_cfg_name}")
+            try:
+                _md, _ = _t.walk_forward_train(
+                    start_date='2024-06-01', end_date=args.end_date,
+                    purge_days=max(args.purge_days, 15))
+                _wf = _md.get('walk_forward_metrics', {})
+                _icir = _wf.get('10d', {}).get('mean_icir', -999)
+                _ic = _wf.get('10d', {}).get('mean_ic', 0)
+            except Exception as _e:
+                logger.warning(f"    ⚠ {_cfg_name} 失败: {_e}")
+                _icir, _ic = -999, 0
+            logger.info(f"    → {_cfg_name}: 10d IC={_ic:.4f}, ICIR={_icir:.4f}")
+            _auto_results.append((_cfg_name, _cfg_mtd, _cfg_hl, _ic, _icir))
+            _auto_pbar.update(1)
+            del _t
+        _auto_pbar.close()
+
+        _auto_results.sort(key=lambda x: x[4], reverse=True)
+        _best = _auto_results[0]
+        logger.info("\n" + "-" * 50)
+        logger.info("AUTO-WF 对比结果:")
+        for _r in _auto_results:
+            _mark = " ← 🏆" if _r is _best else ""
+            logger.info(f"  {_r[0]:30s}  10d IC={_r[3]:.4f}  ICIR={_r[4]:.4f}{_mark}")
+        logger.info("-" * 50)
+        logger.info(f"最优配置: {_best[0]} → 应用到正式训练")
+        logger.info(f"  max_train_days={_best[1]}, time_decay_halflife={_best[2]}")
+        logger.info("=" * 60 + "\n")
+
+        if _best[1] is not None:
+            trainer_obj._max_train_days = _best[1]
+        if _best[2] is not None:
+            trainer_obj._cli_time_decay_halflife = _best[2]
+
+    # ── 版本化 Trainer 代理函数: auto-WF + 训练 ──
+    def _train_with_auto_wf(TrainerClass, trainer_obj):
+        """通用训练入口: auto-WF选择 → WF训练或skip-wf生产训练"""
+        _auto_wf_select(TrainerClass, trainer_obj)
+        if args.skip_wf:
+            trainer_obj.train_production_only(
+                start_date=args.start_date, end_date=args.end_date,
+                purge_days=max(args.purge_days, 15))
+        else:
+            trainer_obj.walk_forward_train(
+                start_date=args.start_date, end_date=args.end_date,
+                purge_days=max(args.purge_days, 15))
+
     if args.v492:
         trainer = V492Trainer()
         _apply_overrides(trainer)
-        trainer.walk_forward_train(
-            start_date=args.start_date, end_date=args.end_date,
-            purge_days=max(args.purge_days, 15))
+        _train_with_auto_wf(V492Trainer, trainer)
     elif args.v491:
         trainer = V491Trainer()
         _apply_overrides(trainer)
-        trainer.walk_forward_train(
-            start_date=args.start_date, end_date=args.end_date,
-            purge_days=max(args.purge_days, 15))
+        _train_with_auto_wf(V491Trainer, trainer)
     elif args.v493:
         trainer = V493Trainer()
         _apply_overrides(trainer)
-        if args.skip_wf:
-            trainer.train_production_only(
-                start_date=args.start_date, end_date=args.end_date,
-                purge_days=max(args.purge_days, 15))
-        else:
-            trainer.walk_forward_train(
-                start_date=args.start_date, end_date=args.end_date,
-                purge_days=max(args.purge_days, 15))
+        _train_with_auto_wf(V493Trainer, trainer)
     elif args.v493a:
         trainer = V493ATrainer()
         _apply_overrides(trainer)
-        if args.skip_wf:
-            trainer.train_production_only(
-                start_date=args.start_date, end_date=args.end_date,
-                purge_days=max(args.purge_days, 15))
-        else:
-            trainer.walk_forward_train(
-                start_date=args.start_date, end_date=args.end_date,
-                purge_days=max(args.purge_days, 15))
+        _train_with_auto_wf(V493ATrainer, trainer)
     elif args.v493b:
         trainer = V493BTrainer()
         _apply_overrides(trainer)
-        if args.skip_wf:
-            trainer.train_production_only(
-                start_date=args.start_date, end_date=args.end_date,
-                purge_days=max(args.purge_days, 15))
-        else:
-            trainer.walk_forward_train(
-                start_date=args.start_date, end_date=args.end_date,
-                purge_days=max(args.purge_days, 15))
+        _train_with_auto_wf(V493BTrainer, trainer)
     elif args.v493c:
         trainer = V493CTrainer()
         _apply_overrides(trainer)
-        if args.skip_wf:
-            trainer.train_production_only(
-                start_date=args.start_date, end_date=args.end_date,
-                purge_days=max(args.purge_days, 15))
-        else:
-            trainer.walk_forward_train(
-                start_date=args.start_date, end_date=args.end_date,
-                purge_days=max(args.purge_days, 15))
+        _train_with_auto_wf(V493CTrainer, trainer)
+    elif args.v51:
+        trainer = V51Trainer()
+        _apply_overrides(trainer)
+        _train_with_auto_wf(V51Trainer, trainer)
     elif args.v5:
         trainer = V5Trainer()
         _apply_overrides(trainer)
-        if args.skip_wf:
-            trainer.train_production_only(
-                start_date=args.start_date, end_date=args.end_date,
-                purge_days=max(args.purge_days, 15))
-        else:
-            trainer.walk_forward_train(
-                start_date=args.start_date, end_date=args.end_date,
-                purge_days=max(args.purge_days, 15))
+        _train_with_auto_wf(V5Trainer, trainer)
     elif args.v4902:
         trainer = V4902Trainer()
         _apply_overrides(trainer)
-        if args.skip_wf:
-            trainer.train_production_only(
-                start_date=args.start_date, end_date=args.end_date,
-                purge_days=max(args.purge_days, 15))
-        else:
-            trainer.walk_forward_train(
-                start_date=args.start_date, end_date=args.end_date,
-                purge_days=max(args.purge_days, 15))
+        _train_with_auto_wf(V4902Trainer, trainer)
     elif args.v4901:
         trainer = V4901Trainer()
         _apply_overrides(trainer)
-        if args.skip_wf:
-            trainer.train_production_only(
-                start_date=args.start_date, end_date=args.end_date,
-                purge_days=max(args.purge_days, 15))
-        else:
-            trainer.walk_forward_train(
-                start_date=args.start_date, end_date=args.end_date,
-                purge_days=max(args.purge_days, 15))
+        _train_with_auto_wf(V4901Trainer, trainer)
     elif args.v490:
         trainer = V490Trainer()
         _apply_overrides(trainer)
-        if args.skip_wf:
-            trainer.train_production_only(
-                start_date=args.start_date, end_date=args.end_date,
-                purge_days=max(args.purge_days, 15))
-        else:
-            trainer.walk_forward_train(
-                start_date=args.start_date, end_date=args.end_date,
-                purge_days=max(args.purge_days, 15))
+        _train_with_auto_wf(V490Trainer, trainer)
     elif args.v488:
         trainer = V488Trainer()
         _apply_overrides(trainer)
-        if args.skip_wf:
-            trainer.train_production_only(
-                start_date=args.start_date, end_date=args.end_date,
-                purge_days=max(args.purge_days, 15))
-        else:
-            trainer.walk_forward_train(
-                start_date=args.start_date, end_date=args.end_date,
-                purge_days=max(args.purge_days, 15))
+        _train_with_auto_wf(V488Trainer, trainer)
     elif args.v487:
         trainer = V486Trainer()  # V487用V486Trainer, 版本号在walk_forward_train里处理
         _apply_overrides(trainer)
-        if args.skip_wf:
-            trainer.train_production_only(
-                start_date=args.start_date, end_date=args.end_date,
-                purge_days=max(args.purge_days, 15))
-        else:
-            trainer.walk_forward_train(
-                start_date=args.start_date, end_date=args.end_date,
-                purge_days=max(args.purge_days, 15))
+        _train_with_auto_wf(V486Trainer, trainer)
     elif args.v486:
         trainer = V486Trainer()
         _apply_overrides(trainer)
-        if args.skip_wf:
-            trainer.train_production_only(
-                start_date=args.start_date, end_date=args.end_date,
-                purge_days=max(args.purge_days, 15))
-        else:
-            trainer.walk_forward_train(
-                start_date=args.start_date, end_date=args.end_date,
-                purge_days=max(args.purge_days, 15))
+        _train_with_auto_wf(V486Trainer, trainer)
     elif args.v485:
         trainer = V485Trainer()
         _apply_overrides(trainer)
-        trainer.walk_forward_train(
-            start_date=args.start_date, end_date=args.end_date,
-            purge_days=max(args.purge_days, 15))
+        _train_with_auto_wf(V485Trainer, trainer)
     elif args.v484:
         trainer = V484Trainer()
         _apply_overrides(trainer)
-        trainer.walk_forward_train(
-            start_date=args.start_date, end_date=args.end_date,
-            purge_days=max(args.purge_days, 15))
+        _train_with_auto_wf(V484Trainer, trainer)
     elif args.v483:
         trainer = V483Trainer()
         _apply_overrides(trainer)
-        trainer.walk_forward_train(
-            start_date=args.start_date, end_date=args.end_date,
-            purge_days=max(args.purge_days, 15))
+        _train_with_auto_wf(V483Trainer, trainer)
     elif args.v482:
         trainer = V482Trainer()
         _apply_overrides(trainer)
         trainer.use_brain_features = _use_brain
-        trainer.walk_forward_train(
-            start_date=args.start_date, end_date=args.end_date,
-            purge_days=max(args.purge_days, 15))
+        _train_with_auto_wf(V482Trainer, trainer)
     elif args.v481:
         trainer = V481Trainer()
         _apply_overrides(trainer)
-        trainer.walk_forward_train(
-            start_date=args.start_date, end_date=args.end_date,
-            purge_days=max(args.purge_days, 15))
+        _train_with_auto_wf(V481Trainer, trainer)
     elif args.v480:
         trainer = V480Trainer()
         _apply_overrides(trainer)
-        trainer.walk_forward_train(
-            start_date=args.start_date, end_date=args.end_date,
-            purge_days=max(args.purge_days, 15))
+        _train_with_auto_wf(V480Trainer, trainer)
     elif args.v479:
         trainer = V479Trainer()
         _apply_overrides(trainer)
-        trainer.walk_forward_train(
-            start_date=args.start_date, end_date=args.end_date,
-            purge_days=max(args.purge_days, 15))
+        _train_with_auto_wf(V479Trainer, trainer)
     elif args.v478:
         trainer = V478Trainer()
         _apply_overrides(trainer)
-        trainer.walk_forward_train(
-            start_date=args.start_date, end_date=args.end_date,
-            purge_days=max(args.purge_days, 15))
+        _train_with_auto_wf(V478Trainer, trainer)
     elif args.v477:
         trainer = V477Trainer()
         _apply_overrides(trainer)
-        trainer.walk_forward_train(
-            start_date=args.start_date, end_date=args.end_date,
-            purge_days=max(args.purge_days, 15))
+        _train_with_auto_wf(V477Trainer, trainer)
     elif args.v476:
         trainer = V476Trainer()
         _apply_overrides(trainer)
-        trainer.walk_forward_train(
-            start_date=args.start_date, end_date=args.end_date,
-            purge_days=max(args.purge_days, 15))
+        _train_with_auto_wf(V476Trainer, trainer)
     elif args.v475:
         trainer = V475Trainer()
         _apply_overrides(trainer)
-        if args.skip_wf:
-            trainer.train_production_only(
-                start_date=args.start_date, end_date=args.end_date,
-                purge_days=max(args.purge_days, 15))
-        else:
-            trainer.walk_forward_train(
-                start_date=args.start_date, end_date=args.end_date,
-                purge_days=max(args.purge_days, 15))
+        _train_with_auto_wf(V475Trainer, trainer)
     elif args.v474:
         trainer = V474Trainer()
         _apply_overrides(trainer)
-        trainer.walk_forward_train(
-            start_date=args.start_date, end_date=args.end_date,
-            purge_days=max(args.purge_days, 15))
+        _train_with_auto_wf(V474Trainer, trainer)
     elif args.v473:
         trainer = V473Trainer()
         _apply_overrides(trainer)
-        trainer.walk_forward_train(
-            start_date=args.start_date, end_date=args.end_date,
-            purge_days=max(args.purge_days, 15))
+        _train_with_auto_wf(V473Trainer, trainer)
     elif args.v472:
         trainer = V472Trainer()
         _apply_overrides(trainer)
-        trainer.walk_forward_train(
-            start_date=args.start_date, end_date=args.end_date,
-            purge_days=max(args.purge_days, 15))
+        _train_with_auto_wf(V472Trainer, trainer)
     elif args.v471:
         trainer = V471Trainer()
         _apply_overrides(trainer)
-        trainer.walk_forward_train(
-            start_date=args.start_date, end_date=args.end_date,
-            purge_days=max(args.purge_days, 15))
+        _train_with_auto_wf(V471Trainer, trainer)
     elif args.v47:
         trainer = V47Trainer()
         _apply_overrides(trainer)
-        if args.skip_wf:
-            trainer.train_production_only(
-                start_date=args.start_date, end_date=args.end_date,
-                purge_days=max(args.purge_days, 15))
-        else:
-            trainer.walk_forward_train(
-                start_date=args.start_date, end_date=args.end_date,
-                purge_days=max(args.purge_days, 15))
+        _train_with_auto_wf(V47Trainer, trainer)
     elif args.v46:
         trainer = V46Trainer()
         _apply_overrides(trainer)
-        trainer.walk_forward_train(
-            start_date=args.start_date, end_date=args.end_date,
-            purge_days=max(args.purge_days, 15))
+        _train_with_auto_wf(V46Trainer, trainer)
     elif args.v44:
         trainer = V44Trainer()
         _apply_overrides(trainer)
-        trainer.walk_forward_train(
-            start_date=args.start_date, end_date=args.end_date,
-            purge_days=max(args.purge_days, 15))
+        _train_with_auto_wf(V44Trainer, trainer)
     elif args.v43:
         trainer = V43Trainer()
         _apply_overrides(trainer)
-        trainer.walk_forward_train(
-            start_date=args.start_date, end_date=args.end_date,
-            purge_days=max(args.purge_days, 15))  # V4.3 需要 15d purge gap
+        _train_with_auto_wf(V43Trainer, trainer)
     else:
         trainer = V395MultiTargetTrainer()
         _apply_overrides(trainer)
