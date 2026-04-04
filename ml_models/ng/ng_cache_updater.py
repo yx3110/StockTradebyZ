@@ -54,7 +54,7 @@ MIN_DATA_DAYS = 60        # Minimum trading days for a stock to be eligible
 BENCHMARK_CODE = '000300.SH'  # CSI300
 
 # Label horizons (trading days after T+1 open)
-LABEL_HORIZONS = [3, 5, 10]
+LABEL_HORIZONS = [3, 5, 10, 15]
 
 
 # ---------------------------------------------------------------------------
@@ -834,6 +834,7 @@ class NGCacheUpdater:
                     _to_sql(stock_labels.get('label_3d')),
                     _to_sql(stock_labels.get('label_5d')),
                     _to_sql(stock_labels.get('label_10d')),
+                    _to_sql(stock_labels.get('label_15d')),
                     _to_sql(market_feats.get('market_return_5d')),
                     _to_sql(market_feats.get('market_return_20d')),
                     _to_sql(market_feats.get('market_volatility_20d')),
@@ -852,12 +853,12 @@ class NGCacheUpdater:
                 conn.executemany(
                     '''INSERT OR REPLACE INTO ng_feature_cache
                        (code, trade_date, features_json,
-                        label_3d, label_5d, label_10d,
+                        label_3d, label_5d, label_10d, label_15d,
                         market_return_5d, market_return_20d, market_volatility_20d,
                         market_breadth, market_new_high_ratio, northbound_flow_5d,
                         market_volume_ratio, market_drawdown, vix_proxy,
                         market_momentum_diff)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
                     insert_rows
                 )
                 conn.commit()

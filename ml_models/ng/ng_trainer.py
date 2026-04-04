@@ -150,7 +150,7 @@ class NGTrainer(V485Trainer):
 
         query = f"""
         SELECT code, trade_date, features_json,
-               label_3d, label_5d, label_10d,
+               label_3d, label_5d, label_10d, label_15d,
                market_return_5d, market_return_20d, market_volatility_20d,
                market_breadth, market_new_high_ratio, northbound_flow_5d,
                market_volume_ratio, market_drawdown, vix_proxy,
@@ -203,7 +203,7 @@ class NGTrainer(V485Trainer):
         result['label_5d'] = df_raw['label_5d'].values
         result['label_10d'] = df_raw['label_10d'].values
         # label_15d not in NG cache → fill zeros for V485 compatibility
-        result['label_15d'] = 0.0
+        result['label_15d'] = df_raw['label_15d'].values.astype(float)
 
         # Fill NaN features with 0
         for col in ALL_FEATURE_NAMES:

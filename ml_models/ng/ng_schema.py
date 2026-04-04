@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS ng_feature_cache (
     label_3d REAL,
     label_5d REAL,
     label_10d REAL,
+    label_15d REAL,
     market_return_5d REAL,
     market_return_20d REAL,
     market_volatility_20d REAL,
