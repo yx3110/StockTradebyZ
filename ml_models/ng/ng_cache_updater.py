@@ -467,17 +467,17 @@ class NGCacheUpdater:
             ind_ret5d = [returns_5d[s] for s in sids if s in returns_5d and not np.isnan(returns_5d[s])]
             ind_ret20d = [returns_20d[s] for s in sids if s in returns_20d and not np.isnan(returns_20d[s])]
 
-            # Industry amounts for last 5d and 20d (use COALESCE of amount/volume)
+            # Industry amounts: per-day average (not sum) for fair 5d/20d comparison
             amounts_5d = []
             amounts_20d = []
             for sid in sids:
                 rows = price_data.get(sid, [])
                 if len(rows) >= 5:
-                    amt = sum(_safe_float(r['amount'] if r['amount'] is not None else r['volume'], 0) for r in rows[-5:])
-                    amounts_5d.append(amt)
+                    daily_amts = [_safe_float(r['amount'] if r['amount'] is not None else r['volume'], 0) for r in rows[-5:]]
+                    amounts_5d.append(np.mean(daily_amts))
                 if len(rows) >= 20:
-                    amt = sum(_safe_float(r['amount'] if r['amount'] is not None else r['volume'], 0) for r in rows[-20:])
-                    amounts_20d.append(amt)
+                    daily_amts = [_safe_float(r['amount'] if r['amount'] is not None else r['volume'], 0) for r in rows[-20:]]
+                    amounts_20d.append(np.mean(daily_amts))
 
             result[ind] = {
                 'returns_1d': np.array(ind_ret1d) if ind_ret1d else np.array([]),
@@ -670,6 +670,12 @@ class NGCacheUpdater:
                     skipped_mv += 1
                     continue
 
+                # P1-2: Filter ST stocks and limit-up/down on report date
+                last_row = rows[-1]
+                if last_row.get('is_st'):
+                    skipped_data += 1
+                    continue
+
                 info = universe[sid]
                 code = info['code']
                 industry = info.get('industry') or 'unknown'
@@ -793,11 +799,11 @@ class NGCacheUpdater:
                     print(f"    WARN: industry_features failed for {code}: {e}")
                     ind_feats = {}
 
-                # --- Merge all features ---
+                # --- Merge all features (exclude market feats from JSON, stored as columns) ---
                 all_feats = {}
                 all_feats.update(stock_feats)
                 all_feats.update(fund_feats)   # Overrides turnover_rate placeholder
-                all_feats.update(market_feats)
+                # market_feats NOT in JSON — stored as separate DB columns
                 all_feats.update(ind_feats)
 
                 # Clean NaN/Inf before JSON serialization

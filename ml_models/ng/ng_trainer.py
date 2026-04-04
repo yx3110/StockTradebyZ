@@ -14,7 +14,7 @@ ng_feature_calculator and stored in ng_feature_cache.  This trainer:
 Key differences from V485Trainer:
   - Data source: ng_feature_cache (not v39_feature_cache)
   - Feature set: 62 NG factors (not 61 legacy factors)
-  - No label_15d: NG cache stores only 3d / 5d / 10d labels
+  - label_15d: stored in cache but NaN-filled with label_10d fallback (V485 requires 4 targets)
   - No ETF data: NG cache contains A-shares only
   - No brain_roll_spread: NG factors are self-contained
 """
@@ -199,24 +199,25 @@ class NGTrainer(V485Trainer):
                 result[col] = np.nan
 
         # Labels
-        result['label_3d'] = df_raw['label_3d'].values
-        result['label_5d'] = df_raw['label_5d'].values
-        result['label_10d'] = df_raw['label_10d'].values
-        # label_15d not in NG cache → fill zeros for V485 compatibility
-        result['label_15d'] = pd.to_numeric(df_raw['label_15d'], errors='coerce').fillna(0).values
+        result['label_3d'] = pd.to_numeric(df_raw['label_3d'], errors='coerce').values
+        result['label_5d'] = pd.to_numeric(df_raw['label_5d'], errors='coerce').values
+        result['label_10d'] = pd.to_numeric(df_raw['label_10d'], errors='coerce').values
+        # label_15d: keep as NaN where missing (prepare_features handles fallback)
+        result['label_15d'] = pd.to_numeric(df_raw.get('label_15d'), errors='coerce').values
 
-        # Fill NaN features with 0
-        for col in ALL_FEATURE_NAMES:
-            result[col] = pd.to_numeric(result[col], errors='coerce').fillna(0.0)
-
-        # Forward-fill market features (same for all stocks on same day,
-        # but may have NaN on some days)
+        # P0-2 fix: fill market features FIRST (ffill), then stock features (zero)
+        # Market features: forward-fill (same value for all stocks on same day)
         result = result.sort_values('trade_date')
         for col in MARKET_FEATURE_NAMES:
+            result[col] = pd.to_numeric(result[col], errors='coerce')
             result[col] = result[col].ffill()
         result = result.dropna(subset=MARKET_FEATURE_NAMES)
 
-        # Drop rows with NaN labels
+        # Stock features: fill NaN with 0 (unknown → neutral)
+        for col in STOCK_FEATURE_NAMES:
+            result[col] = pd.to_numeric(result[col], errors='coerce').fillna(0.0)
+
+        # Drop rows with NaN in core labels (3d/5d/10d)
         result = result.dropna(subset=['label_3d', 'label_5d', 'label_10d'])
 
         result = result.sort_values(['trade_date', 'code']).reset_index(drop=True)
