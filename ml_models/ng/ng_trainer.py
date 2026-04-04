@@ -106,6 +106,12 @@ class NGTrainer(V485Trainer):
         self.target_weights = dict(self.TARGET_WEIGHTS)
         # Disable V485 ETF loading
         self._turbo_skip_etf = True
+        # Stub market_calculator for V475 model_data serialization (line 7714)
+        # NG computes market features in ng_cache_updater, not via market_calculator
+        class _StubMC:
+            class market_features:
+                columns = ['date'] + list(MARKET_FEATURE_NAMES)
+        self.market_calculator = _StubMC()
 
     # ------------------------------------------------------------------
     # Feature name accessors
