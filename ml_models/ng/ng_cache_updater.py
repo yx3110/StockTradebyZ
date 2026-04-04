@@ -45,7 +45,7 @@ from ml_models.ng.ng_feature_calculator import (
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-LOOKBACK_DAYS = 90        # Calendar days for price/volume lookback
+LOOKBACK_DAYS = 120       # Calendar days for price/volume lookback (~80 trading days)
 TECH_LOOKBACK_DAYS = 10   # Extra tech indicator lookback for MACD acceleration
 PE_HISTORY_DAYS = 60      # Trading days for PE percentile history
 FIN_LOOKBACK_DAYS = 400   # Calendar days to find latest financial filing
