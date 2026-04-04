@@ -228,6 +228,12 @@ class NGTrainer(V485Trainer):
 
         result = result.sort_values(['trade_date', 'code']).reset_index(drop=True)
 
+        # Set market_calculator.market_features for V475 serialization (line 7714)
+        # NG doesn't use MarketStateCalculator; fake it with a DataFrame
+        mkt_df = result[['trade_date'] + [c for c in MARKET_FEATURE_NAMES if c in result.columns]].drop_duplicates('trade_date')
+        if self.market_calculator is not None:
+            self.market_calculator.market_features = mkt_df
+
         n_stocks = result['code'].nunique()
         n_dates = result['trade_date'].nunique()
         logger.info(f"  NG load_data complete: {len(result):,} rows, "
