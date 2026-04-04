@@ -265,7 +265,11 @@ class NGTrainer(V485Trainer):
         y_3d = df['label_3d'].values
         y_5d = df['label_5d'].values
         y_10d = df['label_10d'].values
-        y_15d = df['label_15d'].values  # zeros for compat
+        # label_15d: use actual values where available, fallback to label_10d
+        # (V485 WF trains all 4 targets; all-zero labels crash Sharpe blend + CatBoost)
+        y_15d_raw = pd.to_numeric(df['label_15d'], errors='coerce').values
+        y_10d_vals = df['label_10d'].values.copy()
+        y_15d = np.where(np.isnan(y_15d_raw), y_10d_vals, y_15d_raw)
 
         # Winsorization deferred to walk_forward_train per-window
         self.winsorize_bounds = None
