@@ -1,0 +1,629 @@
+"""
+Daily Selection NG v1.1.0 — Feature Calculator
+===============================================
+v1.1.0 changes from v1.0.0:
+  - REMOVED 11 low cross-sectional-discrimination factors:
+    price_above_ma20/60, ma_alignment, new_high_20d/60d,
+    macd_histogram/acceleration, price_channel_position,
+    cumulative_return_60d, bollinger_position, consecutive_down_days
+  - ADDED 10 cross-sectional rank factors (industry-relative percentile)
+  - ADDED 5 residual factors (market/industry-neutralized signals)
+  - ADDED 3 sector activity factors
+
+Factor groups:
+  Group 1 (5):   Trend State          — trend_strength, breakout, adx
+  Group 2 (6):   Pullback Entry       — RSI, KDJ, volume contraction, shadow
+  Group 3 (7):   Volume Confirmation  — OBV, volume ratios, turnover
+  Group 4 (14):  Fundamental          — ROE, margins, valuation, size, liquidity
+  Group 5 (10):  Market Environment   — benchmark trend, breadth, northbound flow
+  Group 6 (11):  Industry Rotation    — sector strength, breadth, HHI + 3 sector activity
+  Group 7 (10):  Cross-Sectional Rank — industry-relative percentile ranks
+  Group 8 (5):   Residual Factors     — market/industry-neutralized alpha signals
+
+Total: 5+6+7+14+10+11+10+5 = 68 factors (58 stock + 10 market)
+
+All functions return Dict[str, float].  Missing values are represented as np.nan.
+All divisions are guarded with +1e-8 or explicit checks to avoid ZeroDivisionError.
+Dependencies: numpy only (no pandas).
+"""
+
+import numpy as np
+from typing import Dict, Optional
+
+
+# ---------------------------------------------------------------------------
+# Helper utilities
+# ---------------------------------------------------------------------------
+
+def _linreg_slope(arr: np.ndarray) -> float:
+    """Return OLS slope of arr ~ index, normalised by nothing."""
+    n = len(arr)
+    if n < 2:
+        return np.nan
+    x = np.arange(n, dtype=float)
+    xm = x - x.mean()
+    ym = arr - arr.mean()
+    denom = (xm * xm).sum()
+    if denom < 1e-12:
+        return np.nan
+    return float((xm * ym).sum() / denom)
+
+
+def _safe_corr(a: np.ndarray, b: np.ndarray) -> float:
+    """Pearson correlation with safety guards."""
+    if len(a) < 3 or len(a) != len(b):
+        return np.nan
+    a_std = a.std()
+    b_std = b.std()
+    if a_std < 1e-12 or b_std < 1e-12:
+        return np.nan
+    return float(np.corrcoef(a, b)[0, 1])
+
+
+def _percentile_rank(value: float, history: np.ndarray) -> float:
+    """Return fraction of history values strictly below value (0..1)."""
+    if history is None or len(history) == 0:
+        return np.nan
+    return float(np.mean(history < value))
+
+
+def _industry_percentile_rank(value: float, peer_values: np.ndarray) -> float:
+    """Return percentile rank of value among peer_values (0..1).
+    Used for cross-sectional rank factors within an industry."""
+    if peer_values is None or len(peer_values) < 2:
+        return 0.5  # neutral if no peers
+    valid = peer_values[~np.isnan(peer_values)]
+    if len(valid) < 2:
+        return 0.5
+    return float(np.mean(valid < value))
+
+
+# ---------------------------------------------------------------------------
+# Function 1: Stock-level price/volume/technical features (19 factors)
+# ---------------------------------------------------------------------------
+
+def compute_stock_features(
+    closes: np.ndarray,
+    opens: np.ndarray,
+    highs: np.ndarray,
+    lows: np.ndarray,
+    volumes: np.ndarray,
+    amounts: np.ndarray,
+    ma5: np.ndarray,
+    ma10: np.ndarray,
+    ma20: np.ndarray,
+    ma60: np.ndarray,
+    atr_14: float,
+    macd_macd: np.ndarray,
+    kdj_j: float,
+    boll_upper: float,
+    boll_lower: float,
+    rsi_12: float,
+    rsi_24: float,
+) -> Dict[str, float]:
+    """
+    Compute 19 stock-level features covering:
+      - Trend state (5): trend_strength_20d, days_since_breakout, adx_proxy (3 kept from v1.0.0)
+        + pullback_from_high, pullback_to_ma10 moved to trend for clarity... no.
+
+    Actually: 5 trend + 6 pullback + 7 volume + 1 intraday_recovery = 19 stock features.
+
+    v1.1.0 REMOVED:
+      price_above_ma20/60, ma_alignment, new_high_20d/60d,
+      macd_histogram/acceleration, price_channel_position,
+      cumulative_return_60d, bollinger_position, consecutive_down_days
+
+    Parameters same as v1.0.0 (macd_macd etc still passed for potential future use,
+    but the removed factors are not computed).
+    """
+    result: Dict[str, float] = {}
+
+    close = float(closes[-1])
+    high_today = float(highs[-1])
+    low_today = float(lows[-1])
+    open_today = float(opens[-1])
+    vol_today = float(volumes[-1])
+
+    _ma5 = float(ma5[-1])
+    _ma10 = float(ma10[-1])
+    _ma20 = float(ma20[-1])
+    _ma60 = float(ma60[-1])
+
+    # ---- Group 1: Trend State (5 factors, was 12 in v1.0.0) -----------------
+
+    # 1. trend_strength_20d
+    if len(closes) >= 20:
+        c20 = closes[-20:].astype(float)
+        slope = _linreg_slope(c20)
+        std20 = c20.std()
+        result['trend_strength_20d'] = slope / (std20 + 1e-8) if not np.isnan(slope) else np.nan
+    else:
+        result['trend_strength_20d'] = np.nan
+
+    # 2. days_since_breakout — consecutive days close > prior 20d high, max 60
+    if len(closes) >= 21:
+        breakout_days = 0
+        for i in range(1, min(len(closes), 61)):
+            idx = len(closes) - i
+            if idx < 20:
+                break
+            prior_high = float(np.max(highs[idx - 20: idx]))
+            if closes[idx] > prior_high:
+                breakout_days += 1
+            else:
+                break
+        result['days_since_breakout'] = float(breakout_days)
+    else:
+        result['days_since_breakout'] = 0.0
+
+    # 3. adx_proxy
+    result['adx_proxy'] = abs(_ma5 - _ma20) / (float(atr_14) + 1e-8)
+
+    # 4. pullback_from_high (relative to recent 5-day high of closes)
+    if len(closes) >= 5:
+        recent_high = float(np.max(closes[-5:]))
+        result['pullback_from_high'] = 1.0 - close / (recent_high + 1e-8)
+    else:
+        result['pullback_from_high'] = np.nan
+
+    # 5. volume_contraction
+    if len(volumes) >= 20:
+        vol5_mean = float(np.mean(volumes[-5:]))
+        vol20_mean = float(np.mean(volumes[-20:]))
+        result['volume_contraction'] = vol5_mean / (vol20_mean + 1e-8)
+    else:
+        result['volume_contraction'] = np.nan
+
+    # ---- Group 2: Pullback Entry (6 factors, was 10 in v1.0.0) ---------------
+    # REMOVED: bollinger_position, consecutive_down_days
+
+    # 6. pullback_to_ma10
+    result['pullback_to_ma10'] = close / (_ma10 + 1e-8) - 1.0
+
+    # 7. pullback_to_ma20
+    result['pullback_to_ma20'] = close / (_ma20 + 1e-8) - 1.0
+
+    # 8. rsi_14 (approximation: 0.6*rsi_12 + 0.4*rsi_24)
+    result['rsi_14'] = 0.6 * float(rsi_12) + 0.4 * float(rsi_24)
+
+    # 9. kdj_j_value
+    result['kdj_j_value'] = float(kdj_j)
+
+    # 10. lower_shadow_ratio
+    hl_range = high_today - low_today + 1e-8
+    result['lower_shadow_ratio'] = (close - low_today) / hl_range
+
+    # 11. intraday_recovery (mean over last 5 bars)
+    if len(closes) >= 5 and len(highs) >= 5 and len(lows) >= 5:
+        recoveries = []
+        for i in range(-5, 0):
+            h = float(highs[i])
+            l = float(lows[i])
+            c = float(closes[i])
+            recoveries.append((c - l) / (h - l + 1e-8))
+        result['intraday_recovery'] = float(np.mean(recoveries))
+    else:
+        result['intraday_recovery'] = np.nan
+
+    # ---- Group 3: Volume Confirmation (7 factors, was 8 in v1.0.0) -----------
+
+    # 12. volume_ratio_5d
+    if len(volumes) >= 20:
+        v5 = float(np.mean(volumes[-5:]))
+        v20 = float(np.mean(volumes[-20:]))
+        result['volume_ratio_5d'] = v5 / (v20 + 1e-8)
+    else:
+        result['volume_ratio_5d'] = np.nan
+
+    # 13. volume_price_corr
+    if len(closes) >= 20 and len(volumes) >= 20:
+        result['volume_price_corr'] = _safe_corr(closes[-20:].astype(float), volumes[-20:].astype(float))
+    else:
+        result['volume_price_corr'] = np.nan
+
+    # 14. obv_trend
+    if len(closes) >= 20 and len(volumes) >= 20:
+        price_diff = np.diff(closes[-20:].astype(float))
+        signs = np.where(price_diff > 0, 1.0, np.where(price_diff < 0, -1.0, 0.0))
+        obv = np.cumsum(signs * volumes[-19:].astype(float))
+        slope = _linreg_slope(obv)
+        v20_mean = float(np.mean(volumes[-20:]))
+        result['obv_trend'] = slope / (v20_mean + 1e-8) if not np.isnan(slope) else np.nan
+    else:
+        result['obv_trend'] = np.nan
+
+    # 15. volume_breakout
+    if len(volumes) >= 20:
+        v20_mean = float(np.mean(volumes[-20:]))
+        result['volume_breakout'] = vol_today / (v20_mean + 1e-8)
+    else:
+        result['volume_breakout'] = np.nan
+
+    # 16. log_amount_ma5
+    if len(amounts) >= 5:
+        result['log_amount_ma5'] = float(np.log(float(np.mean(amounts[-5:])) + 1.0))
+    else:
+        result['log_amount_ma5'] = np.nan
+
+    # 17. turnover_rate — placeholder, overridden by compute_fundamental_features
+    result['turnover_rate'] = np.nan
+
+    # 18. up_volume_ratio
+    if len(closes) >= 20 and len(volumes) >= 20 and len(opens) >= 20:
+        up_mask = closes[-20:] > opens[-20:]
+        total_vol = float(volumes[-20:].sum())
+        up_vol = float(volumes[-20:][up_mask].sum())
+        result['up_volume_ratio'] = up_vol / (total_vol + 1e-8)
+    else:
+        result['up_volume_ratio'] = np.nan
+
+    # 19. volume_cv
+    if len(volumes) >= 20:
+        v_arr = volumes[-20:].astype(float)
+        result['volume_cv'] = float(v_arr.std()) / (float(v_arr.mean()) + 1e-8)
+    else:
+        result['volume_cv'] = np.nan
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Function 2: Fundamental / valuation features (14 factors, unchanged)
+# ---------------------------------------------------------------------------
+
+def compute_fundamental_features(
+    pe_ttm: float,
+    pb: float,
+    dv_ratio: float,
+    circ_mv: float,
+    free_share: float,
+    total_share: float,
+    turnover_rate: float,
+    adv_20d: float,
+    pe_ttm_history_60d: np.ndarray,
+    roe: float,
+    roe_prev_year: float,
+    profit_to_gr: float,
+    netprofit_margin: float,
+    ocf_to_profit: float,
+    debt_to_assets: float,
+    current_ratio: float,
+) -> Dict[str, float]:
+    """Compute 14 fundamental features. Unchanged from v1.0.0."""
+    result: Dict[str, float] = {}
+
+    result['roe_ttm'] = float(roe)
+    result['roe_change'] = float(roe) - float(roe_prev_year)
+    result['revenue_growth'] = float(profit_to_gr)
+    result['net_profit_margin'] = float(netprofit_margin)
+    result['ocf_quality'] = float(ocf_to_profit)
+    result['pe_ttm'] = float(pe_ttm)
+    result['pb'] = float(pb)
+
+    if pe_ttm_history_60d is not None and len(pe_ttm_history_60d) > 0:
+        result['pe_percentile_60d'] = _percentile_rank(float(pe_ttm), pe_ttm_history_60d.astype(float))
+    else:
+        result['pe_percentile_60d'] = np.nan
+
+    result['debt_to_assets'] = float(debt_to_assets)
+    result['current_ratio'] = float(current_ratio)
+    result['log_market_cap'] = float(np.log(float(circ_mv) + 1.0))
+    result['log_adv_20d'] = float(np.log(float(adv_20d) + 1.0))
+
+    _total = float(total_share)
+    result['free_float_ratio'] = float(free_share) / (_total + 1e-8)
+    result['dv_ratio'] = float(dv_ratio)
+    result['turnover_rate'] = float(turnover_rate)
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Function 3: Market environment features (10 factors, unchanged)
+# ---------------------------------------------------------------------------
+
+def compute_market_features(
+    benchmark_closes: np.ndarray,
+    all_stock_returns: np.ndarray,
+    all_stock_highs_20d_ratio: np.ndarray,
+    total_market_amount: np.ndarray,
+    northbound_net_buy_5d: float,
+    northbound_std: float,
+) -> Dict[str, float]:
+    """Compute 10 market-environment features. Unchanged from v1.0.0."""
+    result: Dict[str, float] = {}
+
+    bm = benchmark_closes.astype(float)
+    amount = total_market_amount.astype(float)
+
+    if len(bm) >= 6:
+        result['market_return_5d'] = bm[-1] / (bm[-6] + 1e-8) - 1.0
+    else:
+        result['market_return_5d'] = np.nan
+
+    if len(bm) >= 21:
+        result['market_return_20d'] = bm[-1] / (bm[-21] + 1e-8) - 1.0
+    else:
+        result['market_return_20d'] = np.nan
+
+    if len(bm) >= 21:
+        log_rets = np.diff(np.log(bm[-21:] + 1e-8))
+        vol_20d = float(log_rets.std()) * np.sqrt(252)
+        result['market_volatility_20d'] = vol_20d
+    else:
+        result['market_volatility_20d'] = np.nan
+        vol_20d = np.nan
+
+    if all_stock_returns is not None and len(all_stock_returns) > 0:
+        result['market_breadth'] = float(np.mean(all_stock_returns > 0))
+    else:
+        result['market_breadth'] = np.nan
+
+    if all_stock_highs_20d_ratio is not None and len(all_stock_highs_20d_ratio) > 0:
+        result['market_new_high_ratio'] = float(np.mean(all_stock_highs_20d_ratio > 0.98))
+    else:
+        result['market_new_high_ratio'] = np.nan
+
+    _nb_std = float(northbound_std)
+    result['northbound_flow_5d'] = float(northbound_net_buy_5d) / (_nb_std + 1e-8)
+
+    if len(amount) >= 20:
+        result['market_volume_ratio'] = float(amount[-1]) / (float(np.mean(amount[-20:])) + 1e-8)
+    else:
+        result['market_volume_ratio'] = np.nan
+
+    if len(bm) >= 60:
+        result['market_drawdown'] = bm[-1] / (float(np.max(bm[-60:])) + 1e-8) - 1.0
+    else:
+        result['market_drawdown'] = np.nan
+
+    if len(bm) >= 61:
+        log_rets_60 = np.diff(np.log(bm[-61:] + 1e-8))
+        vol_60d = float(log_rets_60.std()) * np.sqrt(252)
+        if not np.isnan(vol_20d):
+            result['vix_proxy'] = vol_20d / (vol_60d + 1e-8)
+        else:
+            result['vix_proxy'] = np.nan
+    else:
+        result['vix_proxy'] = np.nan
+
+    r5 = result.get('market_return_5d', np.nan)
+    r20 = result.get('market_return_20d', np.nan)
+    if not (np.isnan(r5) or np.isnan(r20)):
+        result['market_momentum_diff'] = r5 - r20
+    else:
+        result['market_momentum_diff'] = np.nan
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Function 4: Industry rotation features (11 factors, was 8 + 3 new sector activity)
+# ---------------------------------------------------------------------------
+
+def compute_industry_features(
+    stock_return_20d: float,
+    industry_stock_returns_1d: np.ndarray,
+    industry_stock_returns_5d: np.ndarray,
+    industry_stock_returns_20d: np.ndarray,
+    industry_amounts_5d: np.ndarray,
+    industry_amounts_20d: np.ndarray,
+    all_industry_returns_5d: np.ndarray,
+    sw_index_return_5d: float,
+    # v1.1.0 new params for sector activity features
+    market_breadth: float = np.nan,
+    market_volume_ratio: float = np.nan,
+) -> Dict[str, float]:
+    """
+    Compute 11 industry-rotation features.
+    v1.1.0: +3 sector activity features (sector_breadth_vs_market,
+    sector_volume_vs_market, n_sectors_strong).
+    """
+    result: Dict[str, float] = {}
+
+    # 1. industry_return_5d
+    if industry_stock_returns_5d is not None and len(industry_stock_returns_5d) > 0:
+        ind_ret5 = float(np.mean(industry_stock_returns_5d))
+        result['industry_return_5d'] = ind_ret5
+    else:
+        ind_ret5 = np.nan
+        result['industry_return_5d'] = np.nan
+
+    # 2. industry_return_20d
+    if industry_stock_returns_20d is not None and len(industry_stock_returns_20d) > 0:
+        ind_ret20 = float(np.mean(industry_stock_returns_20d))
+        result['industry_return_20d'] = ind_ret20
+    else:
+        ind_ret20 = np.nan
+        result['industry_return_20d'] = np.nan
+
+    # 3. industry_relative_strength
+    if not np.isnan(ind_ret20):
+        result['industry_relative_strength'] = float(stock_return_20d) - ind_ret20
+    else:
+        result['industry_relative_strength'] = np.nan
+
+    # 4. industry_breadth
+    if industry_stock_returns_1d is not None and len(industry_stock_returns_1d) > 0:
+        ind_breadth = float(np.mean(industry_stock_returns_1d > 0))
+        result['industry_breadth'] = ind_breadth
+    else:
+        ind_breadth = np.nan
+        result['industry_breadth'] = np.nan
+
+    # 5. industry_volume_change
+    if (industry_amounts_5d is not None and len(industry_amounts_5d) > 0 and
+            industry_amounts_20d is not None and len(industry_amounts_20d) > 0):
+        mean5 = float(np.mean(industry_amounts_5d))
+        mean20 = float(np.mean(industry_amounts_20d))
+        ind_vol_change = mean5 / (mean20 + 1e-8)
+        result['industry_volume_change'] = ind_vol_change
+    else:
+        ind_vol_change = np.nan
+        result['industry_volume_change'] = np.nan
+
+    # 6. industry_rank_return_5d (= sector_momentum_rank)
+    if (all_industry_returns_5d is not None and len(all_industry_returns_5d) > 0
+            and not np.isnan(ind_ret5)):
+        result['industry_rank_return_5d'] = _percentile_rank(ind_ret5, all_industry_returns_5d.astype(float))
+    else:
+        result['industry_rank_return_5d'] = np.nan
+
+    # 7. sw_index_return_5d
+    result['sw_index_return_5d'] = float(sw_index_return_5d)
+
+    # 8. industry_hhi
+    if industry_stock_returns_20d is not None and len(industry_stock_returns_20d) > 0:
+        abs_rets = np.abs(industry_stock_returns_20d.astype(float))
+        total = abs_rets.sum()
+        if total < 1e-12:
+            result['industry_hhi'] = np.nan
+        else:
+            shares = abs_rets / total
+            result['industry_hhi'] = float((shares ** 2).sum())
+    else:
+        result['industry_hhi'] = np.nan
+
+    # ---- v1.1.0: Sector Activity Features (3 new) ---
+
+    # 9. sector_breadth_vs_market — industry breadth / market breadth
+    if not np.isnan(ind_breadth) and not np.isnan(market_breadth) and market_breadth > 1e-8:
+        result['sector_breadth_vs_market'] = ind_breadth / market_breadth
+    else:
+        result['sector_breadth_vs_market'] = np.nan
+
+    # 10. sector_volume_vs_market — industry volume change / market volume ratio
+    if not np.isnan(ind_vol_change) and not np.isnan(market_volume_ratio) and market_volume_ratio > 1e-8:
+        result['sector_volume_vs_market'] = ind_vol_change / market_volume_ratio
+    else:
+        result['sector_volume_vs_market'] = np.nan
+
+    # 11. n_sectors_strong — count of industries with 5d return > 2%
+    if all_industry_returns_5d is not None and len(all_industry_returns_5d) > 0:
+        result['n_sectors_strong'] = float(np.sum(all_industry_returns_5d > 0.02))
+    else:
+        result['n_sectors_strong'] = np.nan
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Function 5: Cross-Sectional Rank Features (10 factors, NEW in v1.1.0)
+# ---------------------------------------------------------------------------
+
+def compute_cross_sectional_rank_features(
+    stock_return_5d: float,
+    stock_return_20d: float,
+    stock_volume_surge: float,       # volume_ratio_5d for this stock
+    stock_turnover: float,           # turnover_rate for this stock
+    stock_rsi: float,                # rsi_14 for this stock
+    stock_new_high_dist: float,      # close / 20d_high for this stock
+    stock_pullback: float,           # pullback_from_high for this stock
+    stock_volatility: float,         # 20d return std for this stock
+    stock_market_cap: float,         # log_market_cap for this stock
+    stock_pe: float,                 # pe_ttm for this stock
+    # Industry peer arrays (all stocks in same industry, including self)
+    peer_returns_5d: np.ndarray,
+    peer_returns_20d: np.ndarray,
+    peer_volume_surges: np.ndarray,
+    peer_turnovers: np.ndarray,
+    peer_rsis: np.ndarray,
+    peer_new_high_dists: np.ndarray,
+    peer_pullbacks: np.ndarray,
+    peer_volatilities: np.ndarray,
+    peer_market_caps: np.ndarray,
+    peer_pes: np.ndarray,
+) -> Dict[str, float]:
+    """
+    Compute 10 cross-sectional rank features — percentile rank of this stock's
+    characteristics within its industry peers. Range: [0, 1].
+
+    These answer "within the same industry, where does this stock rank?" and
+    eliminate the industry-level common movement that caused UMD=3.7 in v1.0.0.
+    """
+    result: Dict[str, float] = {}
+
+    result['cs_rank_return_5d'] = _industry_percentile_rank(stock_return_5d, peer_returns_5d)
+    result['cs_rank_return_20d'] = _industry_percentile_rank(stock_return_20d, peer_returns_20d)
+    result['cs_rank_volume_surge'] = _industry_percentile_rank(stock_volume_surge, peer_volume_surges)
+    result['cs_rank_turnover'] = _industry_percentile_rank(stock_turnover, peer_turnovers)
+    result['cs_rank_rsi'] = _industry_percentile_rank(stock_rsi, peer_rsis)
+    result['cs_rank_new_high'] = _industry_percentile_rank(stock_new_high_dist, peer_new_high_dists)
+    result['cs_rank_pullback'] = _industry_percentile_rank(stock_pullback, peer_pullbacks)
+    result['cs_rank_volatility'] = _industry_percentile_rank(stock_volatility, peer_volatilities)
+    result['cs_rank_market_cap'] = _industry_percentile_rank(stock_market_cap, peer_market_caps)
+    result['cs_rank_pe'] = _industry_percentile_rank(stock_pe, peer_pes)
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Function 6: Residual Factors (5 factors, NEW in v1.1.0)
+# ---------------------------------------------------------------------------
+
+def compute_residual_features(
+    stock_daily_returns: np.ndarray,    # 20d daily log returns for this stock
+    market_daily_returns: np.ndarray,   # 20d daily log returns for market (CSI300)
+    industry_return_20d: float,         # industry mean 20d return
+    stock_avg_volume_5d: float,         # stock's 5d average volume
+    industry_avg_volume_5d: float,      # industry average of 5d avg volumes
+    stock_return_20d: float,            # stock's 20d cumulative return
+    market_return_20d: float,           # market (CSI300) 20d return
+    industry_equal_weight_index: Optional[np.ndarray] = None,  # industry EW index (20d)
+) -> Dict[str, float]:
+    """
+    Compute 5 residual factors — signals after removing market and industry effects.
+
+    These capture pure stock-specific alpha, not market or sector momentum.
+    """
+    result: Dict[str, float] = {}
+
+    # 1. residual_return_20d: stock_return - beta*market_return - industry_return
+    #    Simple decomposition: alpha = R_stock - R_industry (skip beta for simplicity/stability)
+    if not np.isnan(stock_return_20d) and not np.isnan(industry_return_20d):
+        result['residual_return_20d'] = stock_return_20d - industry_return_20d
+    else:
+        result['residual_return_20d'] = np.nan
+
+    # 2. residual_volume: stock volume deviation from industry average
+    if stock_avg_volume_5d > 0 and industry_avg_volume_5d > 0:
+        result['residual_volume'] = np.log(stock_avg_volume_5d + 1) - np.log(industry_avg_volume_5d + 1)
+    else:
+        result['residual_volume'] = np.nan
+
+    # 3. idiosyncratic_volatility: std of residual returns (stock - market)
+    if (stock_daily_returns is not None and market_daily_returns is not None
+            and len(stock_daily_returns) >= 10 and len(market_daily_returns) >= 10):
+        n = min(len(stock_daily_returns), len(market_daily_returns))
+        residuals = stock_daily_returns[-n:] - market_daily_returns[-n:]
+        result['idiosyncratic_volatility'] = float(np.std(residuals)) * np.sqrt(252)
+    else:
+        result['idiosyncratic_volatility'] = np.nan
+
+    # 4. residual_skewness: skewness of residual returns
+    if (stock_daily_returns is not None and market_daily_returns is not None
+            and len(stock_daily_returns) >= 10 and len(market_daily_returns) >= 10):
+        n = min(len(stock_daily_returns), len(market_daily_returns))
+        residuals = stock_daily_returns[-n:] - market_daily_returns[-n:]
+        mean_r = residuals.mean()
+        std_r = residuals.std()
+        if std_r > 1e-8:
+            result['residual_skewness'] = float(np.mean(((residuals - mean_r) / std_r) ** 3))
+        else:
+            result['residual_skewness'] = 0.0
+    else:
+        result['residual_skewness'] = np.nan
+
+    # 5. relative_strength_vs_peers: stock / industry equal-weight index ratio
+    #    Simplified: use cumulative return ratio
+    if not np.isnan(stock_return_20d) and not np.isnan(industry_return_20d):
+        # (1 + R_stock) / (1 + R_industry) - 1
+        denom = 1.0 + industry_return_20d
+        if abs(denom) > 1e-8:
+            result['relative_strength_vs_peers'] = (1.0 + stock_return_20d) / denom - 1.0
+        else:
+            result['relative_strength_vs_peers'] = np.nan
+    else:
+        result['relative_strength_vs_peers'] = np.nan
+
+    return result

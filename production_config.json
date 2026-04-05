@@ -1,55 +1,58 @@
 {
-  "version": "v4.9.0.1",
-  "north_star_v4_score": "92.8% S级 (144/155)",
-  "date": "2026-03-31",
-  "description": "V4.9.0.1 comp + EMA(0.7) + Ret0.2 + CPPI(8,20) + SF30 + Focus15",
+  "version": "ng1.0.2",
+  "north_star_v52_score": "74.0% A+ (CPPI后)",
+  "date": "2026-04-05",
+  "description": "NG1.0.2: 69特征 + 行业超额标签 + 下行风险模型 + ICIR自适应 + CPPI(5,20)",
 
   "model": {
-    "scoring_version": "v4.9.0.1",
-    "model_path": "ml_models/trained_models/v4901/v4901_multi_target_20260330_124139.pkl",
-    "features": 61,
-    "rank_field": "auto"
-  },
-
-  "inference": {
-    "ema_smooth_alpha": 0.7,
-    "comment": "pred_10d和pred_15d做EMA平滑, 降低排名翻转噪声"
+    "scoring_version": "ng1.0.2",
+    "model_path": "ml_models/trained_models/ng/ng_multi_target_20260405_194751.pkl",
+    "features": 69,
+    "rank_field": "composite",
+    "cache_table": "ng102_feature_cache",
+    "downside_model": true,
+    "lambda_risk": 0.5
   },
 
   "portfolio": {
     "top_n": 10,
-    "focus_days": 15,
-    "retention_bonus": 0.2,
-    "score_floor": 30,
-    "cppi_floor": 0.08,
-    "cppi_multiplier": 20
+    "focus_days": 10,
+    "cppi_floor": 0.05,
+    "cppi_multiplier": 20,
+    "_cppi_explanation": "净值接近floor时自动减仓: exposure = min(1.0, 20 × (净值 - floor净值))"
   },
 
-  "performance": {
-    "annual_return": "124.5%",
-    "sharpe": 3.14,
-    "max_drawdown": "-6.4%",
-    "sortino": 14.82,
-    "calmar": 19.57,
-    "excess_annual": "117.9%",
-    "information_ratio": 1.99,
-    "excess_win_rate": "68.6%",
-    "bear_excess": "27.1%",
-    "up_capture": 1.56,
-    "turnover": "32.3x",
-    "cost": "4.9%"
+  "cppi_usage": {
+    "_how_to_use": "每日调仓时计算: cushion = 当前净值 - (历史最高净值 × (1 - cppi_floor)), exposure = min(1.0, cppi_multiplier × cushion). 满仓时exposure=1.0, 亏损时自动减仓",
+    "example_full": "净值1.0, floor净值=0.95 → cushion=0.05 → exposure=min(1,20×0.05)=1.0 → 满仓",
+    "example_drawdown": "净值0.97, floor净值=0.95 → cushion=0.02 → exposure=min(1,20×0.02)=0.40 → 40%仓位",
+    "example_deep_dd": "净值0.96, floor净值=0.95 → cushion=0.01 → exposure=0.20 → 20%仓位"
   },
 
-  "north_star_breakdown": {
-    "L1_signal": "37/40 (92.5%)",
-    "L2_efficiency": "21/25 (84%)",
-    "L3_risk": "35/35 (100%) ← 满分",
-    "L4_robustness": "23/25 (92%)",
-    "L5_excess": "28/30 (93.3%)"
+  "performance_v52": {
+    "_method": "WF OOS无泄露评估 + CPPI(5,20)",
+    "v52_weighted": "74.0% A+",
+    "L1_signal": "81%",
+    "L2_efficiency": "70%",
+    "L3_risk_control": "55%",
+    "L5_excess": "93%",
+    "L9_conditional_robustness": "78%"
+  },
+
+  "evolution": {
+    "ng1.0.0": "62特征, 绝对标签, V5.2=71.5%",
+    "ng1.0.1": "69特征, 行业超额标签, V5.2=71.5%",
+    "ng1.0.2": "69特征 + downside模型 + CPPI(5,20), V5.2=74.0%"
+  },
+
+  "prev_production": {
+    "version": "v4.9.0.1",
+    "v52_score": "54.1% B级 (WF-OOS)"
   },
 
   "cli_commands": {
-    "daily_selection": "python3 tomorrow_stock_selector.py {DATE} --scoring-version v4.9.0.1",
-    "backtest_eval": "python3 backtest/run_north_star_eval.py --backtest --report-dir reports/daily_selection_v4901 --label V4901-PROD --top-n 10 --focus-days 15 --retention-bonus 0.2 --cppi-floor 0.08 --cppi-multiplier 20 --score-floor 30"
+    "daily_cache_update": "python3 ml_models/ng/ng_cache_updater.py --date {DATE} --version ng1.0.2",
+    "daily_selection": "python3 backtest/batch_generate_v395_reports.py --version ng1.0.2 --start-date {DATE} --end-date {DATE} --output-dir reports/daily_selection_ng102",
+    "backtest_eval": "python3 backtest/run_north_star_eval.py --backtest --report-dir reports/daily_selection_ng102 --label NG102-PROD --top-n 10 --focus-days 10 --rank-field composite --cppi-floor 0.05 --cppi-multiplier 20"
   }
 }
