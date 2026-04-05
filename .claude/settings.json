@@ -1,0 +1,18 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "if": "Bash(git commit:*)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "REVIEW=$(codex review --uncommitted --title 'Pre-commit Review' 2>/dev/null) && if [ -n \"$REVIEW\" ]; then echo \"{\\\"hookSpecificOutput\\\":{\\\"hookEventName\\\":\\\"PreToolUse\\\",\\\"additionalContext\\\":\\\"Codex Pre-commit Review:\\\\n$REVIEW\\\"}}\"; fi",
+            "timeout": 120,
+            "statusMessage": "Codex reviewing staged changes..."
+          }
+        ]
+      }
+    ]
+  }
+}

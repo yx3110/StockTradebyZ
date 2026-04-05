@@ -221,19 +221,26 @@ TRANSACTION_COST = {
 # ═══════════════════════════════════════════════════════
 
 def compute_daily_ic(scores: pd.Series, returns: pd.Series, dates: pd.Series,
-                     min_stocks: int = 20) -> pd.DataFrame:
+                     min_stocks: int = 20, winsorize: bool = True) -> pd.DataFrame:
     """
     计算每日截面IC（Spearman Rank Correlation）
 
     Args:
         scores: 预测分数
-        returns: 实际收益
+        returns: 实际收益 (会做 1%/99% winsorize, 与训练侧对称)
         dates: 交易日期
         min_stocks: 每天最少股票数
+        winsorize: 是否对收益做 winsorize (默认True, 与训练标签clip对称)
 
     Returns:
         DataFrame with columns: [date, ic, n_stocks]
     """
+    # 对收益做 winsorize (与训练侧标签 1%/99% clip 对称)
+    if winsorize and len(returns.dropna()) > 20:
+        ret_lo = returns.quantile(0.01)
+        ret_hi = returns.quantile(0.99)
+        returns = returns.clip(ret_lo, ret_hi)
+
     records = []
     for date in sorted(dates.unique()):
         mask = (dates == date) & scores.notna() & returns.notna()
@@ -255,12 +262,13 @@ def compute_daily_ic(scores: pd.Series, returns: pd.Series, dates: pd.Series,
     return pd.DataFrame(records)
 
 
-def compute_ic_summary(ic_df: pd.DataFrame) -> Dict:
+def compute_ic_summary(ic_df: pd.DataFrame, holding_days: int = 1) -> Dict:
     """
     从daily IC序列计算ICIR等汇总指标
 
     Args:
         ic_df: compute_daily_ic的输出
+        holding_days: 持仓天数, >1时使用非重叠子采样避免自相关虚高
 
     Returns:
         dict with ic_mean, ic_std, icir, ic_positive_pct, etc.
@@ -269,14 +277,22 @@ def compute_ic_summary(ic_df: pd.DataFrame) -> Dict:
         return {
             'ic_mean': 0, 'ic_std': 0, 'icir': 0,
             'ic_positive_pct': 0, 'ic_median': 0, 'n_days': 0,
+            'n_independent': 0,
         }
 
     ic_vals = ic_df['ic']
-    ic_mean = ic_vals.mean()
-    ic_std = ic_vals.std()
+
+    # 非重叠子采样: 避免多日持仓的重叠收益期导致IC/ICIR/IC>0%虚高
+    if holding_days > 1 and len(ic_df) >= holding_days * 2:
+        ic_subsample = ic_vals.iloc[::holding_days]
+    else:
+        ic_subsample = ic_vals
+
+    ic_mean = ic_subsample.mean()
+    ic_std = ic_subsample.std()
     icir = ic_mean / ic_std if ic_std > 1e-8 else 0
-    ic_positive_pct = (ic_vals > 0).mean() * 100
-    ic_median = ic_vals.median()
+    ic_positive_pct = (ic_subsample > 0).mean() * 100
+    ic_median = ic_subsample.median()
 
     return {
         'ic_mean': ic_mean,
@@ -285,6 +301,7 @@ def compute_ic_summary(ic_df: pd.DataFrame) -> Dict:
         'ic_positive_pct': ic_positive_pct,
         'ic_median': ic_median,
         'n_days': len(ic_df),
+        'n_independent': len(ic_subsample),
     }
 
 
@@ -1912,7 +1929,7 @@ class NorthStarEvaluator:
                                 dates: pd.Series, holding_days: int = 5) -> Dict:
         """Layer 1: 评估信号质量"""
         ic_df = compute_daily_ic(scores, returns, dates)
-        ic_summary = compute_ic_summary(ic_df)
+        ic_summary = compute_ic_summary(ic_df, holding_days=holding_days)
         monthly_ic = compute_monthly_ic(ic_df)
         spread = compute_top_bottom_spread(scores, returns, dates, quantile=0.1)
 

@@ -1,0 +1,1886 @@
+{
+  "stop": [
+    {
+      "combo": {
+        "stop.atr_multiplier": 3.0,
+        "stop.env_mult_bullish": 0.85,
+        "stop.env_mult_bearish": 1.0,
+        "stop.min_stop_pct": 0.02,
+        "stop.max_stop_main": 0.1
+      },
+      "objective": 1.0143555361675853,
+      "metrics": {
+        "annual_return": 0.044492,
+        "sharpe": 1.03559,
+        "max_drawdown": -0.020505,
+        "n_trades": 3818,
+        "win_rate": 0.660031,
+        "avg_hold_days": 2.037716,
+        "stop_loss_rate": 0.730749,
+        "take_profit_rate": 0.265846
+      }
+    },
+    {
+      "combo": {
+        "stop.atr_multiplier": 3.0,
+        "stop.env_mult_bullish": 0.85,
+        "stop.env_mult_bearish": 1.0,
+        "stop.min_stop_pct": 0.03,
+        "stop.max_stop_main": 0.1
+      },
+      "objective": 1.0143555361675853,
+      "metrics": {
+        "annual_return": 0.044492,
+        "sharpe": 1.03559,
+        "max_drawdown": -0.020505,
+        "n_trades": 3818,
+        "win_rate": 0.660031,
+        "avg_hold_days": 2.037716,
+        "stop_loss_rate": 0.730749,
+        "take_profit_rate": 0.265846
+      }
+    },
+    {
+      "combo": {
+        "stop.atr_multiplier": 3.0,
+        "stop.env_mult_bullish": 0.85,
+        "stop.env_mult_bearish": 1.3,
+        "stop.min_stop_pct": 0.02,
+        "stop.max_stop_main": 0.1
+      },
+      "objective": 1.0143555361675853,
+      "metrics": {
+        "annual_return": 0.044492,
+        "sharpe": 1.03559,
+        "max_drawdown": -0.020505,
+        "n_trades": 3818,
+        "win_rate": 0.660031,
+        "avg_hold_days": 2.037716,
+        "stop_loss_rate": 0.730749,
+        "take_profit_rate": 0.265846
+      }
+    },
+    {
+      "combo": {
+        "stop.atr_multiplier": 3.0,
+        "stop.env_mult_bullish": 0.85,
+        "stop.env_mult_bearish": 1.3,
+        "stop.min_stop_pct": 0.03,
+        "stop.max_stop_main": 0.1
+      },
+      "objective": 1.0143555361675853,
+      "metrics": {
+        "annual_return": 0.044492,
+        "sharpe": 1.03559,
+        "max_drawdown": -0.020505,
+        "n_trades": 3818,
+        "win_rate": 0.660031,
+        "avg_hold_days": 2.037716,
+        "stop_loss_rate": 0.730749,
+        "take_profit_rate": 0.265846
+      }
+    },
+    {
+      "combo": {
+        "stop.atr_multiplier": 3.0,
+        "stop.env_mult_bullish": 1.0,
+        "stop.env_mult_bearish": 1.0,
+        "stop.min_stop_pct": 0.02,
+        "stop.max_stop_main": 0.1
+      },
+      "objective": 1.0143555361675853,
+      "metrics": {
+        "annual_return": 0.044492,
+        "sharpe": 1.03559,
+        "max_drawdown": -0.020505,
+        "n_trades": 3818,
+        "win_rate": 0.660031,
+        "avg_hold_days": 2.037716,
+        "stop_loss_rate": 0.730749,
+        "take_profit_rate": 0.265846
+      }
+    },
+    {
+      "combo": {
+        "stop.atr_multiplier": 3.0,
+        "stop.env_mult_bullish": 1.0,
+        "stop.env_mult_bearish": 1.0,
+        "stop.min_stop_pct": 0.03,
+        "stop.max_stop_main": 0.1
+      },
+      "objective": 1.0143555361675853,
+      "metrics": {
+        "annual_return": 0.044492,
+        "sharpe": 1.03559,
+        "max_drawdown": -0.020505,
+        "n_trades": 3818,
+        "win_rate": 0.660031,
+        "avg_hold_days": 2.037716,
+        "stop_loss_rate": 0.730749,
+        "take_profit_rate": 0.265846
+      }
+    },
+    {
+      "combo": {
+        "stop.atr_multiplier": 3.0,
+        "stop.env_mult_bullish": 1.0,
+        "stop.env_mult_bearish": 1.3,
+        "stop.min_stop_pct": 0.02,
+        "stop.max_stop_main": 0.1
+      },
+      "objective": 1.0143555361675853,
+      "metrics": {
+        "annual_return": 0.044492,
+        "sharpe": 1.03559,
+        "max_drawdown": -0.020505,
+        "n_trades": 3818,
+        "win_rate": 0.660031,
+        "avg_hold_days": 2.037716,
+        "stop_loss_rate": 0.730749,
+        "take_profit_rate": 0.265846
+      }
+    },
+    {
+      "combo": {
+        "stop.atr_multiplier": 3.0,
+        "stop.env_mult_bullish": 1.0,
+        "stop.env_mult_bearish": 1.3,
+        "stop.min_stop_pct": 0.03,
+        "stop.max_stop_main": 0.1
+      },
+      "objective": 1.0143555361675853,
+      "metrics": {
+        "annual_return": 0.044492,
+        "sharpe": 1.03559,
+        "max_drawdown": -0.020505,
+        "n_trades": 3818,
+        "win_rate": 0.660031,
+        "avg_hold_days": 2.037716,
+        "stop_loss_rate": 0.730749,
+        "take_profit_rate": 0.265846
+      }
+    },
+    {
+      "combo": {
+        "stop.atr_multiplier": 3.0,
+        "stop.env_mult_bullish": 0.85,
+        "stop.env_mult_bearish": 1.0,
+        "stop.min_stop_pct": 0.05,
+        "stop.max_stop_main": 0.1
+      },
+      "objective": 1.0121581979460668,
+      "metrics": {
+        "annual_return": 0.044438,
+        "sharpe": 1.033347,
+        "max_drawdown": -0.020505,
+        "n_trades": 3818,
+        "win_rate": 0.660031,
+        "avg_hold_days": 2.039288,
+        "stop_loss_rate": 0.731011,
+        "take_profit_rate": 0.265584
+      }
+    },
+    {
+      "combo": {
+        "stop.atr_multiplier": 3.0,
+        "stop.env_mult_bullish": 0.85,
+        "stop.env_mult_bearish": 1.3,
+        "stop.min_stop_pct": 0.05,
+        "stop.max_stop_main": 0.1
+      },
+      "objective": 1.0121581979460668,
+      "metrics": {
+        "annual_return": 0.044438,
+        "sharpe": 1.033347,
+        "max_drawdown": -0.020505,
+        "n_trades": 3818,
+        "win_rate": 0.660031,
+        "avg_hold_days": 2.039288,
+        "stop_loss_rate": 0.731011,
+        "take_profit_rate": 0.265584
+      }
+    },
+    {
+      "combo": {
+        "stop.atr_multiplier": 3.0,
+        "stop.env_mult_bullish": 1.0,
+        "stop.env_mult_bearish": 1.0,
+        "stop.min_stop_pct": 0.05,
+        "stop.max_stop_main": 0.1
+      },
+      "objective": 1.0121581979460668,
+      "metrics": {
+        "annual_return": 0.044438,
+        "sharpe": 1.033347,
+        "max_drawdown": -0.020505,
+        "n_trades": 3818,
+        "win_rate": 0.660031,
+        "avg_hold_days": 2.039288,
+        "stop_loss_rate": 0.731011,
+        "take_profit_rate": 0.265584
+      }
+    },
+    {
+      "combo": {
+        "stop.atr_multiplier": 3.0,
+        "stop.env_mult_bullish": 1.0,
+        "stop.env_mult_bearish": 1.3,
+        "stop.min_stop_pct": 0.05,
+        "stop.max_stop_main": 0.1
+      },
+      "objective": 1.0121581979460668,
+      "metrics": {
+        "annual_return": 0.044438,
+        "sharpe": 1.033347,
+        "max_drawdown": -0.020505,
+        "n_trades": 3818,
+        "win_rate": 0.660031,
+        "avg_hold_days": 2.039288,
+        "stop_loss_rate": 0.731011,
+        "take_profit_rate": 0.265584
+      }
+    },
+    {
+      "combo": {
+        "stop.atr_multiplier": 3.0,
+        "stop.env_mult_bullish": 0.85,
+        "stop.env_mult_bearish": 1.0,
+        "stop.min_stop_pct": 0.02,
+        "stop.max_stop_main": 0.15
+      },
+      "objective": 1.0093146079701594,
+      "metrics": {
+        "annual_return": 0.044405,
+        "sharpe": 1.030444,
+        "max_drawdown": -0.020505,
+        "n_trades": 3818,
+        "win_rate": 0.660031,
+        "avg_hold_days": 2.037716,
+        "stop_loss_rate": 0.730749,
+        "take_profit_rate": 0.265846
+      }
+    },
+    {
+      "combo": {
+        "stop.atr_multiplier": 3.0,
+        "stop.env_mult_bullish": 0.85,
+        "stop.env_mult_bearish": 1.0,
+        "stop.min_stop_pct": 0.03,
+        "stop.max_stop_main": 0.15
+      },
+      "objective": 1.0093146079701594,
+      "metrics": {
+        "annual_return": 0.044405,
+        "sharpe": 1.030444,
+        "max_drawdown": -0.020505,
+        "n_trades": 3818,
+        "win_rate": 0.660031,
+        "avg_hold_days": 2.037716,
+        "stop_loss_rate": 0.730749,
+        "take_profit_rate": 0.265846
+      }
+    },
+    {
+      "combo": {
+        "stop.atr_multiplier": 3.0,
+        "stop.env_mult_bullish": 0.85,
+        "stop.env_mult_bearish": 1.3,
+        "stop.min_stop_pct": 0.02,
+        "stop.max_stop_main": 0.15
+      },
+      "objective": 1.0093146079701594,
+      "metrics": {
+        "annual_return": 0.044405,
+        "sharpe": 1.030444,
+        "max_drawdown": -0.020505,
+        "n_trades": 3818,
+        "win_rate": 0.660031,
+        "avg_hold_days": 2.037716,
+        "stop_loss_rate": 0.730749,
+        "take_profit_rate": 0.265846
+      }
+    },
+    {
+      "combo": {
+        "stop.atr_multiplier": 3.0,
+        "stop.env_mult_bullish": 0.85,
+        "stop.env_mult_bearish": 1.3,
+        "stop.min_stop_pct": 0.03,
+        "stop.max_stop_main": 0.15
+      },
+      "objective": 1.0093146079701594,
+      "metrics": {
+        "annual_return": 0.044405,
+        "sharpe": 1.030444,
+        "max_drawdown": -0.020505,
+        "n_trades": 3818,
+        "win_rate": 0.660031,
+        "avg_hold_days": 2.037716,
+        "stop_loss_rate": 0.730749,
+        "take_profit_rate": 0.265846
+      }
+    },
+    {
+      "combo": {
+        "stop.atr_multiplier": 3.0,
+        "stop.env_mult_bullish": 1.0,
+        "stop.env_mult_bearish": 1.0,
+        "stop.min_stop_pct": 0.02,
+        "stop.max_stop_main": 0.15
+      },
+      "objective": 1.0093146079701594,
+      "metrics": {
+        "annual_return": 0.044405,
+        "sharpe": 1.030444,
+        "max_drawdown": -0.020505,
+        "n_trades": 3818,
+        "win_rate": 0.660031,
+        "avg_hold_days": 2.037716,
+        "stop_loss_rate": 0.730749,
+        "take_profit_rate": 0.265846
+      }
+    },
+    {
+      "combo": {
+        "stop.atr_multiplier": 3.0,
+        "stop.env_mult_bullish": 1.0,
+        "stop.env_mult_bearish": 1.0,
+        "stop.min_stop_pct": 0.03,
+        "stop.max_stop_main": 0.15
+      },
+      "objective": 1.0093146079701594,
+      "metrics": {
+        "annual_return": 0.044405,
+        "sharpe": 1.030444,
+        "max_drawdown": -0.020505,
+        "n_trades": 3818,
+        "win_rate": 0.660031,
+        "avg_hold_days": 2.037716,
+        "stop_loss_rate": 0.730749,
+        "take_profit_rate": 0.265846
+      }
+    },
+    {
+      "combo": {
+        "stop.atr_multiplier": 3.0,
+        "stop.env_mult_bullish": 1.0,
+        "stop.env_mult_bearish": 1.3,
+        "stop.min_stop_pct": 0.02,
+        "stop.max_stop_main": 0.15
+      },
+      "objective": 1.0093146079701594,
+      "metrics": {
+        "annual_return": 0.044405,
+        "sharpe": 1.030444,
+        "max_drawdown": -0.020505,
+        "n_trades": 3818,
+        "win_rate": 0.660031,
+        "avg_hold_days": 2.037716,
+        "stop_loss_rate": 0.730749,
+        "take_profit_rate": 0.265846
+      }
+    },
+    {
+      "combo": {
+        "stop.atr_multiplier": 3.0,
+        "stop.env_mult_bullish": 1.0,
+        "stop.env_mult_bearish": 1.3,
+        "stop.min_stop_pct": 0.03,
+        "stop.max_stop_main": 0.15
+      },
+      "objective": 1.0093146079701594,
+      "metrics": {
+        "annual_return": 0.044405,
+        "sharpe": 1.030444,
+        "max_drawdown": -0.020505,
+        "n_trades": 3818,
+        "win_rate": 0.660031,
+        "avg_hold_days": 2.037716,
+        "stop_loss_rate": 0.730749,
+        "take_profit_rate": 0.265846
+      }
+    }
+  ],
+  "target": [
+    {
+      "combo": {
+        "target.min_rr_ratio": 1.5,
+        "target.target_clip_min": 0.02,
+        "target.target_clip_max": 0.1
+      },
+      "objective": 1.0567948874414022,
+      "metrics": {
+        "annual_return": 0.040416,
+        "sharpe": 1.07636,
+        "max_drawdown": -0.018177,
+        "n_trades": 3818,
+        "win_rate": 0.706915,
+        "avg_hold_days": 1.768727,
+        "stop_loss_rate": 0.674699,
+        "take_profit_rate": 0.324254
+      }
+    },
+    {
+      "combo": {
+        "target.min_rr_ratio": 2.0,
+        "target.target_clip_min": 0.02,
+        "target.target_clip_max": 0.1
+      },
+      "objective": 1.0470105006087467,
+      "metrics": {
+        "annual_return": 0.040889,
+        "sharpe": 1.067865,
+        "max_drawdown": -0.019529,
+        "n_trades": 3818,
+        "win_rate": 0.691985,
+        "avg_hold_days": 1.854374,
+        "stop_loss_rate": 0.687533,
+        "take_profit_rate": 0.310634
+      }
+    },
+    {
+      "combo": {
+        "target.min_rr_ratio": 1.5,
+        "target.target_clip_min": 0.03,
+        "target.target_clip_max": 0.1
+      },
+      "objective": 1.042162200199141,
+      "metrics": {
+        "annual_return": 0.040482,
+        "sharpe": 1.062126,
+        "max_drawdown": -0.018796,
+        "n_trades": 3818,
+        "win_rate": 0.67627,
+        "avg_hold_days": 1.828444,
+        "stop_loss_rate": 0.716606,
+        "take_profit_rate": 0.282347
+      }
+    },
+    {
+      "combo": {
+        "target.min_rr_ratio": 2.0,
+        "target.target_clip_min": 0.02,
+        "target.target_clip_max": 0.15
+      },
+      "objective": 1.0285745008615232,
+      "metrics": {
+        "annual_return": 0.044575,
+        "sharpe": 1.049445,
+        "max_drawdown": -0.019887,
+        "n_trades": 3818,
+        "win_rate": 0.68989,
+        "avg_hold_days": 1.980618,
+        "stop_loss_rate": 0.690414,
+        "take_profit_rate": 0.306181
+      }
+    },
+    {
+      "combo": {
+        "target.min_rr_ratio": 2.0,
+        "target.target_clip_min": 0.03,
+        "target.target_clip_max": 0.1
+      },
+      "objective": 1.0279264349297992,
+      "metrics": {
+        "annual_return": 0.040807,
+        "sharpe": 1.049062,
+        "max_drawdown": -0.020147,
+        "n_trades": 3818,
+        "win_rate": 0.662127,
+        "avg_hold_days": 1.911472,
+        "stop_loss_rate": 0.727868,
+        "take_profit_rate": 0.270299
+      }
+    },
+    {
+      "combo": {
+        "target.min_rr_ratio": 2.0,
+        "target.target_clip_min": 0.02,
+        "target.target_clip_max": 0.2
+      },
+      "objective": 1.0211043093415921,
+      "metrics": {
+        "annual_return": 0.04789,
+        "sharpe": 1.041823,
+        "max_drawdown": -0.019887,
+        "n_trades": 3818,
+        "win_rate": 0.6912,
+        "avg_hold_days": 2.055526,
+        "stop_loss_rate": 0.688318,
+        "take_profit_rate": 0.305395
+      }
+    },
+    {
+      "combo": {
+        "target.min_rr_ratio": 2.0,
+        "target.target_clip_min": 0.03,
+        "target.target_clip_max": 0.15
+      },
+      "objective": 1.0143555361675853,
+      "metrics": {
+        "annual_return": 0.044492,
+        "sharpe": 1.03559,
+        "max_drawdown": -0.020505,
+        "n_trades": 3818,
+        "win_rate": 0.660031,
+        "avg_hold_days": 2.037716,
+        "stop_loss_rate": 0.730749,
+        "take_profit_rate": 0.265846
+      }
+    },
+    {
+      "combo": {
+        "target.min_rr_ratio": 3.0,
+        "target.target_clip_min": 0.02,
+        "target.target_clip_max": 0.2
+      },
+      "objective": 1.0125990052619773,
+      "metrics": {
+        "annual_return": 0.049155,
+        "sharpe": 1.034759,
+        "max_drawdown": -0.021416,
+        "n_trades": 3818,
+        "win_rate": 0.679937,
+        "avg_hold_days": 2.332897,
+        "stop_loss_rate": 0.694343,
+        "take_profit_rate": 0.293085
+      }
+    },
+    {
+      "combo": {
+        "target.min_rr_ratio": 2.0,
+        "target.target_clip_min": 0.03,
+        "target.target_clip_max": 0.2
+      },
+      "objective": 1.0096735238740069,
+      "metrics": {
+        "annual_return": 0.047808,
+        "sharpe": 1.03081,
+        "max_drawdown": -0.020505,
+        "n_trades": 3818,
+        "win_rate": 0.661341,
+        "avg_hold_days": 2.112624,
+        "stop_loss_rate": 0.728654,
+        "take_profit_rate": 0.26506
+      }
+    },
+    {
+      "combo": {
+        "target.min_rr_ratio": 3.0,
+        "target.target_clip_min": 0.02,
+        "target.target_clip_max": 0.15
+      },
+      "objective": 1.0057569249382747,
+      "metrics": {
+        "annual_return": 0.045305,
+        "sharpe": 1.027506,
+        "max_drawdown": -0.021167,
+        "n_trades": 3818,
+        "win_rate": 0.678104,
+        "avg_hold_days": 2.200891,
+        "stop_loss_rate": 0.700367,
+        "take_profit_rate": 0.292562
+      }
+    },
+    {
+      "combo": {
+        "target.min_rr_ratio": 1.5,
+        "target.target_clip_min": 0.02,
+        "target.target_clip_max": 0.15
+      },
+      "objective": 1.0053006931156492,
+      "metrics": {
+        "annual_return": 0.043428,
+        "sharpe": 1.024286,
+        "max_drawdown": -0.018535,
+        "n_trades": 3818,
+        "win_rate": 0.704034,
+        "avg_hold_days": 1.844945,
+        "stop_loss_rate": 0.678628,
+        "take_profit_rate": 0.319539
+      }
+    },
+    {
+      "combo": {
+        "target.min_rr_ratio": 3.0,
+        "target.target_clip_min": 0.03,
+        "target.target_clip_max": 0.2
+      },
+      "objective": 1.001394307347606,
+      "metrics": {
+        "annual_return": 0.049072,
+        "sharpe": 1.024286,
+        "max_drawdown": -0.022349,
+        "n_trades": 3818,
+        "win_rate": 0.650079,
+        "avg_hold_days": 2.389995,
+        "stop_loss_rate": 0.734678,
+        "take_profit_rate": 0.25275
+      }
+    },
+    {
+      "combo": {
+        "target.min_rr_ratio": 2.5,
+        "target.target_clip_min": 0.02,
+        "target.target_clip_max": 0.15
+      },
+      "objective": 0.9970573563108779,
+      "metrics": {
+        "annual_return": 0.04438,
+        "sharpe": 1.017457,
+        "max_drawdown": -0.02005,
+        "n_trades": 3818,
+        "win_rate": 0.681509,
+        "avg_hold_days": 2.089576,
+        "stop_loss_rate": 0.699843,
+        "take_profit_rate": 0.295181
+      }
+    },
+    {
+      "combo": {
+        "target.min_rr_ratio": 1.5,
+        "target.target_clip_min": 0.03,
+        "target.target_clip_max": 0.15
+      },
+      "objective": 0.9956397055541819,
+      "metrics": {
+        "annual_return": 0.043493,
+        "sharpe": 1.015082,
+        "max_drawdown": -0.019154,
+        "n_trades": 3818,
+        "win_rate": 0.673389,
+        "avg_hold_days": 1.904662,
+        "stop_loss_rate": 0.720534,
+        "take_profit_rate": 0.277632
+      }
+    },
+    {
+      "combo": {
+        "target.min_rr_ratio": 2.5,
+        "target.target_clip_min": 0.02,
+        "target.target_clip_max": 0.1
+      },
+      "objective": 0.9943543416504915,
+      "metrics": {
+        "annual_return": 0.040232,
+        "sharpe": 1.014329,
+        "max_drawdown": -0.019692,
+        "n_trades": 3818,
+        "win_rate": 0.684914,
+        "avg_hold_days": 1.908853,
+        "stop_loss_rate": 0.697224,
+        "take_profit_rate": 0.300943
+      }
+    },
+    {
+      "combo": {
+        "target.min_rr_ratio": 3.0,
+        "target.target_clip_min": 0.03,
+        "target.target_clip_max": 0.15
+      },
+      "objective": 0.992250570543989,
+      "metrics": {
+        "annual_return": 0.045222,
+        "sharpe": 1.014675,
+        "max_drawdown": -0.0221,
+        "n_trades": 3818,
+        "win_rate": 0.648245,
+        "avg_hold_days": 2.257988,
+        "stop_loss_rate": 0.740702,
+        "take_profit_rate": 0.252226
+      }
+    },
+    {
+      "combo": {
+        "target.min_rr_ratio": 2.5,
+        "target.target_clip_min": 0.02,
+        "target.target_clip_max": 0.2
+      },
+      "objective": 0.9870772985240212,
+      "metrics": {
+        "annual_return": 0.047618,
+        "sharpe": 1.007355,
+        "max_drawdown": -0.02013,
+        "n_trades": 3818,
+        "win_rate": 0.682556,
+        "avg_hold_days": 2.188842,
+        "stop_loss_rate": 0.696438,
+        "take_profit_rate": 0.294395
+      }
+    },
+    {
+      "combo": {
+        "target.min_rr_ratio": 2.5,
+        "target.target_clip_min": 0.03,
+        "target.target_clip_max": 0.15
+      },
+      "objective": 0.9829729775158291,
+      "metrics": {
+        "annual_return": 0.044298,
+        "sharpe": 1.003987,
+        "max_drawdown": -0.020931,
+        "n_trades": 3818,
+        "win_rate": 0.65165,
+        "avg_hold_days": 2.146674,
+        "stop_loss_rate": 0.740178,
+        "take_profit_rate": 0.254845
+      }
+    },
+    {
+      "combo": {
+        "target.min_rr_ratio": 1.5,
+        "target.target_clip_min": 0.02,
+        "target.target_clip_max": 0.2
+      },
+      "objective": 0.9825722301732135,
+      "metrics": {
+        "annual_return": 0.045657,
+        "sharpe": 1.001129,
+        "max_drawdown": -0.018535,
+        "n_trades": 3818,
+        "win_rate": 0.704034,
+        "avg_hold_days": 1.865898,
+        "stop_loss_rate": 0.678366,
+        "take_profit_rate": 0.319539
+      }
+    },
+    {
+      "combo": {
+        "target.min_rr_ratio": 2.5,
+        "target.target_clip_min": 0.03,
+        "target.target_clip_max": 0.1
+      },
+      "objective": 0.9759251079769393,
+      "metrics": {
+        "annual_return": 0.04015,
+        "sharpe": 0.996262,
+        "max_drawdown": -0.020413,
+        "n_trades": 3818,
+        "win_rate": 0.655055,
+        "avg_hold_days": 1.965951,
+        "stop_loss_rate": 0.737559,
+        "take_profit_rate": 0.260608
+      }
+    }
+  ],
+  "entry": [
+    {
+      "combo": {
+        "entry.atr_discount_mult": 0.5,
+        "entry.support_discount_mult": 0.0,
+        "entry.ml_bullish_mult": 0.5,
+        "entry.ml_bearish_mult": 1.0
+      },
+      "objective": 1.3927979619170459,
+      "metrics": {
+        "annual_return": 0.05489,
+        "sharpe": 1.436524,
+        "max_drawdown": -0.030439,
+        "n_trades": 5338,
+        "win_rate": 0.639191,
+        "avg_hold_days": 1.858374,
+        "stop_loss_rate": 0.699888,
+        "take_profit_rate": 0.298614
+      }
+    },
+    {
+      "combo": {
+        "entry.atr_discount_mult": 0.5,
+        "entry.support_discount_mult": 0.0,
+        "entry.ml_bullish_mult": 0.5,
+        "entry.ml_bearish_mult": 1.5
+      },
+      "objective": 1.3927979619170459,
+      "metrics": {
+        "annual_return": 0.05489,
+        "sharpe": 1.436524,
+        "max_drawdown": -0.030439,
+        "n_trades": 5338,
+        "win_rate": 0.639191,
+        "avg_hold_days": 1.858374,
+        "stop_loss_rate": 0.699888,
+        "take_profit_rate": 0.298614
+      }
+    },
+    {
+      "combo": {
+        "entry.atr_discount_mult": 0.5,
+        "entry.support_discount_mult": 0.0,
+        "entry.ml_bullish_mult": 0.5,
+        "entry.ml_bearish_mult": 2.0
+      },
+      "objective": 1.3927979619170459,
+      "metrics": {
+        "annual_return": 0.05489,
+        "sharpe": 1.436524,
+        "max_drawdown": -0.030439,
+        "n_trades": 5338,
+        "win_rate": 0.639191,
+        "avg_hold_days": 1.858374,
+        "stop_loss_rate": 0.699888,
+        "take_profit_rate": 0.298614
+      }
+    },
+    {
+      "combo": {
+        "entry.atr_discount_mult": 0.3,
+        "entry.support_discount_mult": 0.0,
+        "entry.ml_bullish_mult": 1.0,
+        "entry.ml_bearish_mult": 1.0
+      },
+      "objective": 1.3550797266987535,
+      "metrics": {
+        "annual_return": 0.052867,
+        "sharpe": 1.392603,
+        "max_drawdown": -0.026944,
+        "n_trades": 5240,
+        "win_rate": 0.641603,
+        "avg_hold_days": 1.862786,
+        "stop_loss_rate": 0.704962,
+        "take_profit_rate": 0.293702
+      }
+    },
+    {
+      "combo": {
+        "entry.atr_discount_mult": 0.3,
+        "entry.support_discount_mult": 0.0,
+        "entry.ml_bullish_mult": 1.0,
+        "entry.ml_bearish_mult": 1.5
+      },
+      "objective": 1.3550797266987535,
+      "metrics": {
+        "annual_return": 0.052867,
+        "sharpe": 1.392603,
+        "max_drawdown": -0.026944,
+        "n_trades": 5240,
+        "win_rate": 0.641603,
+        "avg_hold_days": 1.862786,
+        "stop_loss_rate": 0.704962,
+        "take_profit_rate": 0.293702
+      }
+    },
+    {
+      "combo": {
+        "entry.atr_discount_mult": 0.3,
+        "entry.support_discount_mult": 0.0,
+        "entry.ml_bullish_mult": 1.0,
+        "entry.ml_bearish_mult": 2.0
+      },
+      "objective": 1.3550797266987535,
+      "metrics": {
+        "annual_return": 0.052867,
+        "sharpe": 1.392603,
+        "max_drawdown": -0.026944,
+        "n_trades": 5240,
+        "win_rate": 0.641603,
+        "avg_hold_days": 1.862786,
+        "stop_loss_rate": 0.704962,
+        "take_profit_rate": 0.293702
+      }
+    },
+    {
+      "combo": {
+        "entry.atr_discount_mult": 0.3,
+        "entry.support_discount_mult": 0.2,
+        "entry.ml_bullish_mult": 0.3,
+        "entry.ml_bearish_mult": 1.0
+      },
+      "objective": 1.2899124129914625,
+      "metrics": {
+        "annual_return": 0.054033,
+        "sharpe": 1.336812,
+        "max_drawdown": -0.035083,
+        "n_trades": 5735,
+        "win_rate": 0.625109,
+        "avg_hold_days": 1.835571,
+        "stop_loss_rate": 0.699913,
+        "take_profit_rate": 0.298867
+      }
+    },
+    {
+      "combo": {
+        "entry.atr_discount_mult": 0.3,
+        "entry.support_discount_mult": 0.2,
+        "entry.ml_bullish_mult": 0.3,
+        "entry.ml_bearish_mult": 1.5
+      },
+      "objective": 1.2899124129914625,
+      "metrics": {
+        "annual_return": 0.054033,
+        "sharpe": 1.336812,
+        "max_drawdown": -0.035083,
+        "n_trades": 5735,
+        "win_rate": 0.625109,
+        "avg_hold_days": 1.835571,
+        "stop_loss_rate": 0.699913,
+        "take_profit_rate": 0.298867
+      }
+    },
+    {
+      "combo": {
+        "entry.atr_discount_mult": 0.3,
+        "entry.support_discount_mult": 0.2,
+        "entry.ml_bullish_mult": 0.3,
+        "entry.ml_bearish_mult": 2.0
+      },
+      "objective": 1.2899124129914625,
+      "metrics": {
+        "annual_return": 0.054033,
+        "sharpe": 1.336812,
+        "max_drawdown": -0.035083,
+        "n_trades": 5735,
+        "win_rate": 0.625109,
+        "avg_hold_days": 1.835571,
+        "stop_loss_rate": 0.699913,
+        "take_profit_rate": 0.298867
+      }
+    },
+    {
+      "combo": {
+        "entry.atr_discount_mult": 0.5,
+        "entry.support_discount_mult": 0.0,
+        "entry.ml_bullish_mult": 0.3,
+        "entry.ml_bearish_mult": 1.0
+      },
+      "objective": 1.2858863643737954,
+      "metrics": {
+        "annual_return": 0.056272,
+        "sharpe": 1.33285,
+        "max_drawdown": -0.035235,
+        "n_trades": 5877,
+        "win_rate": 0.618683,
+        "avg_hold_days": 1.848222,
+        "stop_loss_rate": 0.694912,
+        "take_profit_rate": 0.303726
+      }
+    },
+    {
+      "combo": {
+        "entry.atr_discount_mult": 0.5,
+        "entry.support_discount_mult": 0.0,
+        "entry.ml_bullish_mult": 0.3,
+        "entry.ml_bearish_mult": 1.5
+      },
+      "objective": 1.2858863643737954,
+      "metrics": {
+        "annual_return": 0.056272,
+        "sharpe": 1.33285,
+        "max_drawdown": -0.035235,
+        "n_trades": 5877,
+        "win_rate": 0.618683,
+        "avg_hold_days": 1.848222,
+        "stop_loss_rate": 0.694912,
+        "take_profit_rate": 0.303726
+      }
+    },
+    {
+      "combo": {
+        "entry.atr_discount_mult": 0.5,
+        "entry.support_discount_mult": 0.0,
+        "entry.ml_bullish_mult": 0.3,
+        "entry.ml_bearish_mult": 2.0
+      },
+      "objective": 1.2858863643737954,
+      "metrics": {
+        "annual_return": 0.056272,
+        "sharpe": 1.33285,
+        "max_drawdown": -0.035235,
+        "n_trades": 5877,
+        "win_rate": 0.618683,
+        "avg_hold_days": 1.848222,
+        "stop_loss_rate": 0.694912,
+        "take_profit_rate": 0.303726
+      }
+    },
+    {
+      "combo": {
+        "entry.atr_discount_mult": 0.3,
+        "entry.support_discount_mult": 0.0,
+        "entry.ml_bullish_mult": 0.5,
+        "entry.ml_bearish_mult": 1.0
+      },
+      "objective": 1.2776533297901238,
+      "metrics": {
+        "annual_return": 0.05709,
+        "sharpe": 1.324316,
+        "max_drawdown": -0.035235,
+        "n_trades": 6117,
+        "win_rate": 0.6137,
+        "avg_hold_days": 1.846493,
+        "stop_loss_rate": 0.696093,
+        "take_profit_rate": 0.302599
+      }
+    },
+    {
+      "combo": {
+        "entry.atr_discount_mult": 0.3,
+        "entry.support_discount_mult": 0.0,
+        "entry.ml_bullish_mult": 0.5,
+        "entry.ml_bearish_mult": 1.5
+      },
+      "objective": 1.2776533297901238,
+      "metrics": {
+        "annual_return": 0.05709,
+        "sharpe": 1.324316,
+        "max_drawdown": -0.035235,
+        "n_trades": 6117,
+        "win_rate": 0.6137,
+        "avg_hold_days": 1.846493,
+        "stop_loss_rate": 0.696093,
+        "take_profit_rate": 0.302599
+      }
+    },
+    {
+      "combo": {
+        "entry.atr_discount_mult": 0.3,
+        "entry.support_discount_mult": 0.0,
+        "entry.ml_bullish_mult": 0.5,
+        "entry.ml_bearish_mult": 2.0
+      },
+      "objective": 1.2776533297901238,
+      "metrics": {
+        "annual_return": 0.05709,
+        "sharpe": 1.324316,
+        "max_drawdown": -0.035235,
+        "n_trades": 6117,
+        "win_rate": 0.6137,
+        "avg_hold_days": 1.846493,
+        "stop_loss_rate": 0.696093,
+        "take_profit_rate": 0.302599
+      }
+    },
+    {
+      "combo": {
+        "entry.atr_discount_mult": 1.0,
+        "entry.support_discount_mult": 0.0,
+        "entry.ml_bullish_mult": 0.3,
+        "entry.ml_bearish_mult": 1.0
+      },
+      "objective": 1.2748123157158175,
+      "metrics": {
+        "annual_return": 0.049342,
+        "sharpe": 1.310113,
+        "max_drawdown": -0.026944,
+        "n_trades": 4684,
+        "win_rate": 0.651793,
+        "avg_hold_days": 1.859949,
+        "stop_loss_rate": 0.702178,
+        "take_profit_rate": 0.296541
+      }
+    },
+    {
+      "combo": {
+        "entry.atr_discount_mult": 1.0,
+        "entry.support_discount_mult": 0.0,
+        "entry.ml_bullish_mult": 0.3,
+        "entry.ml_bearish_mult": 1.5
+      },
+      "objective": 1.2748123157158175,
+      "metrics": {
+        "annual_return": 0.049342,
+        "sharpe": 1.310113,
+        "max_drawdown": -0.026944,
+        "n_trades": 4684,
+        "win_rate": 0.651793,
+        "avg_hold_days": 1.859949,
+        "stop_loss_rate": 0.702178,
+        "take_profit_rate": 0.296541
+      }
+    },
+    {
+      "combo": {
+        "entry.atr_discount_mult": 1.0,
+        "entry.support_discount_mult": 0.0,
+        "entry.ml_bullish_mult": 0.3,
+        "entry.ml_bearish_mult": 2.0
+      },
+      "objective": 1.2748123157158175,
+      "metrics": {
+        "annual_return": 0.049342,
+        "sharpe": 1.310113,
+        "max_drawdown": -0.026944,
+        "n_trades": 4684,
+        "win_rate": 0.651793,
+        "avg_hold_days": 1.859949,
+        "stop_loss_rate": 0.702178,
+        "take_profit_rate": 0.296541
+      }
+    },
+    {
+      "combo": {
+        "entry.atr_discount_mult": 0.3,
+        "entry.support_discount_mult": 0.2,
+        "entry.ml_bullish_mult": 0.5,
+        "entry.ml_bearish_mult": 1.0
+      },
+      "objective": 1.2619419550191866,
+      "metrics": {
+        "annual_return": 0.04864,
+        "sharpe": 1.299812,
+        "max_drawdown": -0.029135,
+        "n_trades": 5080,
+        "win_rate": 0.641339,
+        "avg_hold_days": 1.804724,
+        "stop_loss_rate": 0.696063,
+        "take_profit_rate": 0.302559
+      }
+    },
+    {
+      "combo": {
+        "entry.atr_discount_mult": 0.3,
+        "entry.support_discount_mult": 0.2,
+        "entry.ml_bullish_mult": 0.5,
+        "entry.ml_bearish_mult": 1.5
+      },
+      "objective": 1.2619419550191866,
+      "metrics": {
+        "annual_return": 0.04864,
+        "sharpe": 1.299812,
+        "max_drawdown": -0.029135,
+        "n_trades": 5080,
+        "win_rate": 0.641339,
+        "avg_hold_days": 1.804724,
+        "stop_loss_rate": 0.696063,
+        "take_profit_rate": 0.302559
+      }
+    }
+  ],
+  "filter": [
+    {
+      "combo": {
+        "filter.composite_cutoff": 0,
+        "filter.min_n": 3,
+        "filter.max_n_bull": 10,
+        "filter.max_n_bear": 3
+      },
+      "objective": 1.4109820779995543,
+      "metrics": {
+        "annual_return": 0.058766,
+        "sharpe": 1.461185,
+        "max_drawdown": -0.034357,
+        "n_trades": 2679,
+        "win_rate": 0.64539,
+        "avg_hold_days": 1.857409,
+        "stop_loss_rate": 0.697648,
+        "take_profit_rate": 0.300859
+      }
+    },
+    {
+      "combo": {
+        "filter.composite_cutoff": 0,
+        "filter.min_n": 3,
+        "filter.max_n_bull": 10,
+        "filter.max_n_bear": 5
+      },
+      "objective": 1.4109820779995543,
+      "metrics": {
+        "annual_return": 0.058766,
+        "sharpe": 1.461185,
+        "max_drawdown": -0.034357,
+        "n_trades": 2679,
+        "win_rate": 0.64539,
+        "avg_hold_days": 1.857409,
+        "stop_loss_rate": 0.697648,
+        "take_profit_rate": 0.300859
+      }
+    },
+    {
+      "combo": {
+        "filter.composite_cutoff": 0,
+        "filter.min_n": 3,
+        "filter.max_n_bull": 10,
+        "filter.max_n_bear": 8
+      },
+      "objective": 1.4109820779995543,
+      "metrics": {
+        "annual_return": 0.058766,
+        "sharpe": 1.461185,
+        "max_drawdown": -0.034357,
+        "n_trades": 2679,
+        "win_rate": 0.64539,
+        "avg_hold_days": 1.857409,
+        "stop_loss_rate": 0.697648,
+        "take_profit_rate": 0.300859
+      }
+    },
+    {
+      "combo": {
+        "filter.composite_cutoff": 0,
+        "filter.min_n": 5,
+        "filter.max_n_bull": 10,
+        "filter.max_n_bear": 3
+      },
+      "objective": 1.4109820779995543,
+      "metrics": {
+        "annual_return": 0.058766,
+        "sharpe": 1.461185,
+        "max_drawdown": -0.034357,
+        "n_trades": 2679,
+        "win_rate": 0.64539,
+        "avg_hold_days": 1.857409,
+        "stop_loss_rate": 0.697648,
+        "take_profit_rate": 0.300859
+      }
+    },
+    {
+      "combo": {
+        "filter.composite_cutoff": 0,
+        "filter.min_n": 5,
+        "filter.max_n_bull": 10,
+        "filter.max_n_bear": 5
+      },
+      "objective": 1.4109820779995543,
+      "metrics": {
+        "annual_return": 0.058766,
+        "sharpe": 1.461185,
+        "max_drawdown": -0.034357,
+        "n_trades": 2679,
+        "win_rate": 0.64539,
+        "avg_hold_days": 1.857409,
+        "stop_loss_rate": 0.697648,
+        "take_profit_rate": 0.300859
+      }
+    },
+    {
+      "combo": {
+        "filter.composite_cutoff": 0,
+        "filter.min_n": 5,
+        "filter.max_n_bull": 10,
+        "filter.max_n_bear": 8
+      },
+      "objective": 1.4109820779995543,
+      "metrics": {
+        "annual_return": 0.058766,
+        "sharpe": 1.461185,
+        "max_drawdown": -0.034357,
+        "n_trades": 2679,
+        "win_rate": 0.64539,
+        "avg_hold_days": 1.857409,
+        "stop_loss_rate": 0.697648,
+        "take_profit_rate": 0.300859
+      }
+    },
+    {
+      "combo": {
+        "filter.composite_cutoff": 0,
+        "filter.min_n": 10,
+        "filter.max_n_bull": 10,
+        "filter.max_n_bear": 3
+      },
+      "objective": 1.4109820779995543,
+      "metrics": {
+        "annual_return": 0.058766,
+        "sharpe": 1.461185,
+        "max_drawdown": -0.034357,
+        "n_trades": 2679,
+        "win_rate": 0.64539,
+        "avg_hold_days": 1.857409,
+        "stop_loss_rate": 0.697648,
+        "take_profit_rate": 0.300859
+      }
+    },
+    {
+      "combo": {
+        "filter.composite_cutoff": 0,
+        "filter.min_n": 10,
+        "filter.max_n_bull": 10,
+        "filter.max_n_bear": 5
+      },
+      "objective": 1.4109820779995543,
+      "metrics": {
+        "annual_return": 0.058766,
+        "sharpe": 1.461185,
+        "max_drawdown": -0.034357,
+        "n_trades": 2679,
+        "win_rate": 0.64539,
+        "avg_hold_days": 1.857409,
+        "stop_loss_rate": 0.697648,
+        "take_profit_rate": 0.300859
+      }
+    },
+    {
+      "combo": {
+        "filter.composite_cutoff": 0,
+        "filter.min_n": 10,
+        "filter.max_n_bull": 10,
+        "filter.max_n_bear": 8
+      },
+      "objective": 1.4109820779995543,
+      "metrics": {
+        "annual_return": 0.058766,
+        "sharpe": 1.461185,
+        "max_drawdown": -0.034357,
+        "n_trades": 2679,
+        "win_rate": 0.64539,
+        "avg_hold_days": 1.857409,
+        "stop_loss_rate": 0.697648,
+        "take_profit_rate": 0.300859
+      }
+    },
+    {
+      "combo": {
+        "filter.composite_cutoff": 0.0005,
+        "filter.min_n": 3,
+        "filter.max_n_bull": 10,
+        "filter.max_n_bear": 3
+      },
+      "objective": 1.4109820779995543,
+      "metrics": {
+        "annual_return": 0.058766,
+        "sharpe": 1.461185,
+        "max_drawdown": -0.034357,
+        "n_trades": 2679,
+        "win_rate": 0.64539,
+        "avg_hold_days": 1.857409,
+        "stop_loss_rate": 0.697648,
+        "take_profit_rate": 0.300859
+      }
+    },
+    {
+      "combo": {
+        "filter.composite_cutoff": 0.0005,
+        "filter.min_n": 3,
+        "filter.max_n_bull": 10,
+        "filter.max_n_bear": 5
+      },
+      "objective": 1.4109820779995543,
+      "metrics": {
+        "annual_return": 0.058766,
+        "sharpe": 1.461185,
+        "max_drawdown": -0.034357,
+        "n_trades": 2679,
+        "win_rate": 0.64539,
+        "avg_hold_days": 1.857409,
+        "stop_loss_rate": 0.697648,
+        "take_profit_rate": 0.300859
+      }
+    },
+    {
+      "combo": {
+        "filter.composite_cutoff": 0.0005,
+        "filter.min_n": 3,
+        "filter.max_n_bull": 10,
+        "filter.max_n_bear": 8
+      },
+      "objective": 1.4109820779995543,
+      "metrics": {
+        "annual_return": 0.058766,
+        "sharpe": 1.461185,
+        "max_drawdown": -0.034357,
+        "n_trades": 2679,
+        "win_rate": 0.64539,
+        "avg_hold_days": 1.857409,
+        "stop_loss_rate": 0.697648,
+        "take_profit_rate": 0.300859
+      }
+    },
+    {
+      "combo": {
+        "filter.composite_cutoff": 0.0005,
+        "filter.min_n": 5,
+        "filter.max_n_bull": 10,
+        "filter.max_n_bear": 3
+      },
+      "objective": 1.4109820779995543,
+      "metrics": {
+        "annual_return": 0.058766,
+        "sharpe": 1.461185,
+        "max_drawdown": -0.034357,
+        "n_trades": 2679,
+        "win_rate": 0.64539,
+        "avg_hold_days": 1.857409,
+        "stop_loss_rate": 0.697648,
+        "take_profit_rate": 0.300859
+      }
+    },
+    {
+      "combo": {
+        "filter.composite_cutoff": 0.0005,
+        "filter.min_n": 5,
+        "filter.max_n_bull": 10,
+        "filter.max_n_bear": 5
+      },
+      "objective": 1.4109820779995543,
+      "metrics": {
+        "annual_return": 0.058766,
+        "sharpe": 1.461185,
+        "max_drawdown": -0.034357,
+        "n_trades": 2679,
+        "win_rate": 0.64539,
+        "avg_hold_days": 1.857409,
+        "stop_loss_rate": 0.697648,
+        "take_profit_rate": 0.300859
+      }
+    },
+    {
+      "combo": {
+        "filter.composite_cutoff": 0.0005,
+        "filter.min_n": 5,
+        "filter.max_n_bull": 10,
+        "filter.max_n_bear": 8
+      },
+      "objective": 1.4109820779995543,
+      "metrics": {
+        "annual_return": 0.058766,
+        "sharpe": 1.461185,
+        "max_drawdown": -0.034357,
+        "n_trades": 2679,
+        "win_rate": 0.64539,
+        "avg_hold_days": 1.857409,
+        "stop_loss_rate": 0.697648,
+        "take_profit_rate": 0.300859
+      }
+    },
+    {
+      "combo": {
+        "filter.composite_cutoff": 0.0005,
+        "filter.min_n": 10,
+        "filter.max_n_bull": 10,
+        "filter.max_n_bear": 3
+      },
+      "objective": 1.4109820779995543,
+      "metrics": {
+        "annual_return": 0.058766,
+        "sharpe": 1.461185,
+        "max_drawdown": -0.034357,
+        "n_trades": 2679,
+        "win_rate": 0.64539,
+        "avg_hold_days": 1.857409,
+        "stop_loss_rate": 0.697648,
+        "take_profit_rate": 0.300859
+      }
+    },
+    {
+      "combo": {
+        "filter.composite_cutoff": 0.0005,
+        "filter.min_n": 10,
+        "filter.max_n_bull": 10,
+        "filter.max_n_bear": 5
+      },
+      "objective": 1.4109820779995543,
+      "metrics": {
+        "annual_return": 0.058766,
+        "sharpe": 1.461185,
+        "max_drawdown": -0.034357,
+        "n_trades": 2679,
+        "win_rate": 0.64539,
+        "avg_hold_days": 1.857409,
+        "stop_loss_rate": 0.697648,
+        "take_profit_rate": 0.300859
+      }
+    },
+    {
+      "combo": {
+        "filter.composite_cutoff": 0.0005,
+        "filter.min_n": 10,
+        "filter.max_n_bull": 10,
+        "filter.max_n_bear": 8
+      },
+      "objective": 1.4109820779995543,
+      "metrics": {
+        "annual_return": 0.058766,
+        "sharpe": 1.461185,
+        "max_drawdown": -0.034357,
+        "n_trades": 2679,
+        "win_rate": 0.64539,
+        "avg_hold_days": 1.857409,
+        "stop_loss_rate": 0.697648,
+        "take_profit_rate": 0.300859
+      }
+    },
+    {
+      "combo": {
+        "filter.composite_cutoff": 0.001,
+        "filter.min_n": 3,
+        "filter.max_n_bull": 10,
+        "filter.max_n_bear": 3
+      },
+      "objective": 1.4109820779995543,
+      "metrics": {
+        "annual_return": 0.058766,
+        "sharpe": 1.461185,
+        "max_drawdown": -0.034357,
+        "n_trades": 2679,
+        "win_rate": 0.64539,
+        "avg_hold_days": 1.857409,
+        "stop_loss_rate": 0.697648,
+        "take_profit_rate": 0.300859
+      }
+    },
+    {
+      "combo": {
+        "filter.composite_cutoff": 0.001,
+        "filter.min_n": 3,
+        "filter.max_n_bull": 10,
+        "filter.max_n_bear": 5
+      },
+      "objective": 1.4109820779995543,
+      "metrics": {
+        "annual_return": 0.058766,
+        "sharpe": 1.461185,
+        "max_drawdown": -0.034357,
+        "n_trades": 2679,
+        "win_rate": 0.64539,
+        "avg_hold_days": 1.857409,
+        "stop_loss_rate": 0.697648,
+        "take_profit_rate": 0.300859
+      }
+    }
+  ],
+  "trailing": [
+    {
+      "combo": {
+        "trailing.trailing_trigger_pct": 0.3,
+        "trailing.trailing_fallback_pct": 0.2
+      },
+      "objective": 2.341595979191712,
+      "metrics": {
+        "annual_return": 0.078297,
+        "sharpe": 2.409476,
+        "max_drawdown": -0.028172,
+        "n_trades": 2679,
+        "win_rate": 0.789847,
+        "avg_hold_days": 1.674132,
+        "stop_loss_rate": 0.731616,
+        "take_profit_rate": 0.268384
+      }
+    },
+    {
+      "combo": {
+        "trailing.trailing_trigger_pct": 0.5,
+        "trailing.trailing_fallback_pct": 0.2
+      },
+      "objective": 2.341595979191712,
+      "metrics": {
+        "annual_return": 0.078297,
+        "sharpe": 2.409476,
+        "max_drawdown": -0.028172,
+        "n_trades": 2679,
+        "win_rate": 0.789847,
+        "avg_hold_days": 1.674132,
+        "stop_loss_rate": 0.731616,
+        "take_profit_rate": 0.268384
+      }
+    },
+    {
+      "combo": {
+        "trailing.trailing_trigger_pct": 0.6,
+        "trailing.trailing_fallback_pct": 0.2
+      },
+      "objective": 2.341595979191712,
+      "metrics": {
+        "annual_return": 0.078297,
+        "sharpe": 2.409476,
+        "max_drawdown": -0.028172,
+        "n_trades": 2679,
+        "win_rate": 0.789847,
+        "avg_hold_days": 1.674132,
+        "stop_loss_rate": 0.731616,
+        "take_profit_rate": 0.268384
+      }
+    },
+    {
+      "combo": {
+        "trailing.trailing_trigger_pct": 0.8,
+        "trailing.trailing_fallback_pct": 0.2
+      },
+      "objective": 2.341595979191712,
+      "metrics": {
+        "annual_return": 0.078297,
+        "sharpe": 2.409476,
+        "max_drawdown": -0.028172,
+        "n_trades": 2679,
+        "win_rate": 0.789847,
+        "avg_hold_days": 1.674132,
+        "stop_loss_rate": 0.731616,
+        "take_profit_rate": 0.268384
+      }
+    },
+    {
+      "combo": {
+        "trailing.trailing_trigger_pct": 0.3,
+        "trailing.trailing_fallback_pct": 0.3
+      },
+      "objective": 1.8140411830297665,
+      "metrics": {
+        "annual_return": 0.066702,
+        "sharpe": 1.871764,
+        "max_drawdown": -0.030839,
+        "n_trades": 2679,
+        "win_rate": 0.70586,
+        "avg_hold_days": 1.739082,
+        "stop_loss_rate": 0.718178,
+        "take_profit_rate": 0.281448
+      }
+    },
+    {
+      "combo": {
+        "trailing.trailing_trigger_pct": 0.5,
+        "trailing.trailing_fallback_pct": 0.3
+      },
+      "objective": 1.8140411830297665,
+      "metrics": {
+        "annual_return": 0.066702,
+        "sharpe": 1.871764,
+        "max_drawdown": -0.030839,
+        "n_trades": 2679,
+        "win_rate": 0.70586,
+        "avg_hold_days": 1.739082,
+        "stop_loss_rate": 0.718178,
+        "take_profit_rate": 0.281448
+      }
+    },
+    {
+      "combo": {
+        "trailing.trailing_trigger_pct": 0.6,
+        "trailing.trailing_fallback_pct": 0.3
+      },
+      "objective": 1.8140411830297665,
+      "metrics": {
+        "annual_return": 0.066702,
+        "sharpe": 1.871764,
+        "max_drawdown": -0.030839,
+        "n_trades": 2679,
+        "win_rate": 0.70586,
+        "avg_hold_days": 1.739082,
+        "stop_loss_rate": 0.718178,
+        "take_profit_rate": 0.281448
+      }
+    },
+    {
+      "combo": {
+        "trailing.trailing_trigger_pct": 0.8,
+        "trailing.trailing_fallback_pct": 0.3
+      },
+      "objective": 1.8140411830297665,
+      "metrics": {
+        "annual_return": 0.066702,
+        "sharpe": 1.871764,
+        "max_drawdown": -0.030839,
+        "n_trades": 2679,
+        "win_rate": 0.70586,
+        "avg_hold_days": 1.739082,
+        "stop_loss_rate": 0.718178,
+        "take_profit_rate": 0.281448
+      }
+    },
+    {
+      "combo": {
+        "trailing.trailing_trigger_pct": 0.3,
+        "trailing.trailing_fallback_pct": 0.4
+      },
+      "objective": 1.4388195811789803,
+      "metrics": {
+        "annual_return": 0.059129,
+        "sharpe": 1.489623,
+        "max_drawdown": -0.034105,
+        "n_trades": 2679,
+        "win_rate": 0.641284,
+        "avg_hold_days": 1.846958,
+        "stop_loss_rate": 0.699141,
+        "take_profit_rate": 0.299365
+      }
+    },
+    {
+      "combo": {
+        "trailing.trailing_trigger_pct": 0.5,
+        "trailing.trailing_fallback_pct": 0.4
+      },
+      "objective": 1.4109820779995543,
+      "metrics": {
+        "annual_return": 0.058766,
+        "sharpe": 1.461185,
+        "max_drawdown": -0.034357,
+        "n_trades": 2679,
+        "win_rate": 0.64539,
+        "avg_hold_days": 1.857409,
+        "stop_loss_rate": 0.697648,
+        "take_profit_rate": 0.300859
+      }
+    },
+    {
+      "combo": {
+        "trailing.trailing_trigger_pct": 0.6,
+        "trailing.trailing_fallback_pct": 0.4
+      },
+      "objective": 1.4109820779995543,
+      "metrics": {
+        "annual_return": 0.058766,
+        "sharpe": 1.461185,
+        "max_drawdown": -0.034357,
+        "n_trades": 2679,
+        "win_rate": 0.64539,
+        "avg_hold_days": 1.857409,
+        "stop_loss_rate": 0.697648,
+        "take_profit_rate": 0.300859
+      }
+    },
+    {
+      "combo": {
+        "trailing.trailing_trigger_pct": 0.8,
+        "trailing.trailing_fallback_pct": 0.4
+      },
+      "objective": 1.4109820779995543,
+      "metrics": {
+        "annual_return": 0.058766,
+        "sharpe": 1.461185,
+        "max_drawdown": -0.034357,
+        "n_trades": 2679,
+        "win_rate": 0.64539,
+        "avg_hold_days": 1.857409,
+        "stop_loss_rate": 0.697648,
+        "take_profit_rate": 0.300859
+      }
+    },
+    {
+      "combo": {
+        "trailing.trailing_trigger_pct": 0.3,
+        "trailing.trailing_fallback_pct": 0.5
+      },
+      "objective": 1.208266652248073,
+      "metrics": {
+        "annual_return": 0.054253,
+        "sharpe": 1.25541,
+        "max_drawdown": -0.037552,
+        "n_trades": 2679,
+        "win_rate": 0.578574,
+        "avg_hold_days": 1.965286,
+        "stop_loss_rate": 0.680478,
+        "take_profit_rate": 0.316909
+      }
+    },
+    {
+      "combo": {
+        "trailing.trailing_trigger_pct": 0.5,
+        "trailing.trailing_fallback_pct": 0.5
+      },
+      "objective": 1.1372380891655547,
+      "metrics": {
+        "annual_return": 0.052875,
+        "sharpe": 1.182905,
+        "max_drawdown": -0.038606,
+        "n_trades": 2679,
+        "win_rate": 0.590892,
+        "avg_hold_days": 2.023143,
+        "stop_loss_rate": 0.675252,
+        "take_profit_rate": 0.322135
+      }
+    },
+    {
+      "combo": {
+        "trailing.trailing_trigger_pct": 0.6,
+        "trailing.trailing_fallback_pct": 0.5
+      },
+      "objective": 1.1372380891655547,
+      "metrics": {
+        "annual_return": 0.052875,
+        "sharpe": 1.182905,
+        "max_drawdown": -0.038606,
+        "n_trades": 2679,
+        "win_rate": 0.590892,
+        "avg_hold_days": 2.023143,
+        "stop_loss_rate": 0.675252,
+        "take_profit_rate": 0.322135
+      }
+    },
+    {
+      "combo": {
+        "trailing.trailing_trigger_pct": 0.8,
+        "trailing.trailing_fallback_pct": 0.5
+      },
+      "objective": 1.1372380891655547,
+      "metrics": {
+        "annual_return": 0.052875,
+        "sharpe": 1.182905,
+        "max_drawdown": -0.038606,
+        "n_trades": 2679,
+        "win_rate": 0.590892,
+        "avg_hold_days": 2.023143,
+        "stop_loss_rate": 0.675252,
+        "take_profit_rate": 0.322135
+      }
+    }
+  ],
+  "hold": [
+    {
+      "combo": {
+        "hold.max_hold_days": 5
+      },
+      "objective": 5.000790756537637,
+      "metrics": {
+        "annual_return": 0.253881,
+        "sharpe": 5.145757,
+        "max_drawdown": -0.028172,
+        "n_trades": 2679,
+        "win_rate": 0.789847,
+        "avg_hold_days": 1.671519,
+        "stop_loss_rate": 0.73087,
+        "take_profit_rate": 0.268384
+      }
+    },
+    {
+      "combo": {
+        "hold.max_hold_days": 10
+      },
+      "objective": 3.2012986110116057,
+      "metrics": {
+        "annual_return": 0.119716,
+        "sharpe": 3.2941,
+        "max_drawdown": -0.028172,
+        "n_trades": 2679,
+        "win_rate": 0.789847,
+        "avg_hold_days": 1.674132,
+        "stop_loss_rate": 0.731616,
+        "take_profit_rate": 0.268384
+      }
+    },
+    {
+      "combo": {
+        "hold.max_hold_days": 15
+      },
+      "objective": 2.341595979191712,
+      "metrics": {
+        "annual_return": 0.078297,
+        "sharpe": 2.409476,
+        "max_drawdown": -0.028172,
+        "n_trades": 2679,
+        "win_rate": 0.789847,
+        "avg_hold_days": 1.674132,
+        "stop_loss_rate": 0.731616,
+        "take_profit_rate": 0.268384
+      }
+    },
+    {
+      "combo": {
+        "hold.max_hold_days": 20
+      },
+      "objective": 1.7921032503096592,
+      "metrics": {
+        "annual_return": 0.058166,
+        "sharpe": 1.844054,
+        "max_drawdown": -0.028172,
+        "n_trades": 2679,
+        "win_rate": 0.789847,
+        "avg_hold_days": 1.674132,
+        "stop_loss_rate": 0.731616,
+        "take_profit_rate": 0.268384
+      }
+    },
+    {
+      "combo": {
+        "hold.max_hold_days": 30
+      },
+      "objective": 1.0782217382706771,
+      "metrics": {
+        "annual_return": 0.038411,
+        "sharpe": 1.109478,
+        "max_drawdown": -0.028172,
+        "n_trades": 2679,
+        "win_rate": 0.789847,
+        "avg_hold_days": 1.674132,
+        "stop_loss_rate": 0.731616,
+        "take_profit_rate": 0.268384
+      }
+    }
+  ]
+}

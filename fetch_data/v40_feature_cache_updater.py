@@ -1089,7 +1089,13 @@ class V40FeatureCacheUpdater:
                                 dates_list: List[str],
                                 hs300_dates: List[str],
                                 hs300_closes: np.ndarray) -> Dict[str, Optional[float]]:
-        """计算超额收益标签 (个股收益 - 沪深300收益)"""
+        """计算超额收益标签 (个股收益 - 沪深300收益)
+
+        标签定义与回测执行对齐 (股票与基准同一持仓期):
+          个股: open[T+1] → close[T+1+N]
+          基准: close[T+1] → close[T+1+N] (同持仓期, 指数用close-to-close)
+          excess = 个股收益 - 基准同期收益
+        """
         labels = {'label_3d_excess': None, 'label_5d_excess': None, 'label_10d_excess': None}
 
         if stock_df_full is None or len(dates_list) == 0:
@@ -1101,26 +1107,40 @@ class V40FeatureCacheUpdater:
 
         closes = stock_df_full['close'].values
         volumes = stock_df_full['volume'].values
-        base_close = closes[pos]
 
-        if base_close <= 0 or volumes[pos] == 0:
+        # 报告日停牌检测
+        if volumes[pos] == 0:
             return labels
 
-        # 沪深300基准
+        # 需要至少 pos+2 的数据
+        remaining = len(dates_list) - pos
+        if remaining < 3:
+            return labels
+
+        # base = 买入日 (pos+1) 的开盘价
+        opens = stock_df_full['open'].values
+        buy_open = opens[pos + 1]
+        if buy_open <= 0 or volumes[pos + 1] == 0:
+            return labels
+
+        # 沪深300基准: 同持仓期 close[T+1] → close[T+1+N]
         hs300_pos = bisect.bisect_left(hs300_dates, date)
         if hs300_pos >= len(hs300_dates) or hs300_dates[hs300_pos] != date:
             return labels
-        hs300_base = hs300_closes[hs300_pos]
+        # 基准也从 T+1 起算
+        hs300_buy_pos = hs300_pos + 1
+        if hs300_buy_pos >= len(hs300_closes):
+            return labels
+        hs300_base = hs300_closes[hs300_buy_pos]
         if hs300_base <= 0:
             return labels
 
-        remaining = len(dates_list) - pos
-        hs300_remaining = len(hs300_dates) - hs300_pos
+        hs300_remaining = len(hs300_closes) - hs300_buy_pos
 
         for n, key in [(3, 'label_3d_excess'), (5, 'label_5d_excess'), (10, 'label_10d_excess')]:
-            if remaining > n and hs300_remaining > n:
-                stock_ret = closes[pos + n] / base_close - 1
-                market_ret = hs300_closes[hs300_pos + n] / hs300_base - 1
+            if remaining > 1 + n and hs300_remaining > n:
+                stock_ret = closes[pos + 1 + n] / buy_open - 1
+                market_ret = hs300_closes[hs300_buy_pos + n] / hs300_base - 1
                 labels[key] = float(stock_ret - market_ret)
 
         return labels
@@ -1147,10 +1167,10 @@ class V40FeatureCacheUpdater:
             return 0
         cutoff_date = recent_dates[10]
 
-        # 查找需要回填的记录
+        # 查找需要回填的记录 (用最长horizon确保所有label都被填充)
         cursor.execute("""
             SELECT id, code, trade_date FROM v40_feature_cache
-            WHERE label_5d_excess IS NULL AND trade_date <= ?
+            WHERE label_10d_excess IS NULL AND trade_date <= ?
             ORDER BY trade_date, code
         """, (cutoff_date,))
         rows = cursor.fetchall()
@@ -1180,15 +1200,15 @@ class V40FeatureCacheUpdater:
                 if not sid or not hs300_sid:
                     continue
 
-                # 股票未来价格
+                # 股票未来价格 (含 open, 标签对齐回测执行)
                 cursor.execute("""
-                    SELECT trade_date, close, volume FROM daily_quotes
+                    SELECT trade_date, open, close, volume FROM daily_quotes
                     WHERE security_id = ? AND trade_date >= ?
-                    ORDER BY trade_date LIMIT 15
+                    ORDER BY trade_date LIMIT 17
                 """, (sid, trade_date))
                 stock_rows = cursor.fetchall()
 
-                # 沪深300未来价格
+                # 沪深300未来价格 (指数用 close-to-close)
                 cursor.execute("""
                     SELECT trade_date, close FROM daily_quotes
                     WHERE security_id = ? AND trade_date >= ?
@@ -1196,21 +1216,31 @@ class V40FeatureCacheUpdater:
                 """, (hs300_sid, trade_date))
                 hs300_rows = cursor.fetchall()
 
-                if len(stock_rows) < 2 or len(hs300_rows) < 2:
+                # 至少需要报告日 + 买入日 + 1天
+                if len(stock_rows) < 3 or len(hs300_rows) < 3:
                     continue
 
-                base_close = stock_rows[0][1]
-                base_vol = stock_rows[0][2]
-                hs300_base = hs300_rows[0][1]
+                # 报告日停牌检测
+                base_vol = stock_rows[0][3]
+                if base_vol is not None and base_vol == 0:
+                    continue
 
-                if not base_close or base_close <= 0 or base_vol == 0 or not hs300_base or hs300_base <= 0:
+                # 买入日 (T+1) 的开盘价作为 base
+                buy_open = stock_rows[1][1]  # open
+                buy_vol = stock_rows[1][3]   # volume
+                # 基准也从 T+1 起算 (同持仓期)
+                hs300_base = hs300_rows[1][1]  # close[T+1]
+
+                if not buy_open or buy_open <= 0 or (buy_vol is not None and buy_vol == 0):
+                    continue
+                if not hs300_base or hs300_base <= 0:
                     continue
 
                 label_3d = label_5d = label_10d = None
                 for n, idx in [(3, 0), (5, 1), (10, 2)]:
-                    if len(stock_rows) > n and len(hs300_rows) > n:
-                        stock_ret = stock_rows[n][1] / base_close - 1
-                        mkt_ret = hs300_rows[n][1] / hs300_base - 1
+                    if len(stock_rows) > 1 + n and len(hs300_rows) > 1 + n:
+                        stock_ret = stock_rows[1 + n][2] / buy_open - 1  # [2]=close
+                        mkt_ret = hs300_rows[1 + n][1] / hs300_base - 1  # 基准同持仓期
                         val = stock_ret - mkt_ret
                         if idx == 0:
                             label_3d = val

@@ -1,394 +1,562 @@
 #!/usr/bin/env python3
 """
-V4.9.0.1 推荐阈值校准脚本
+V4901 推荐阈值校准脚本
 
-两阶段:
-  Phase 1: 批量生成V4901报告 (2024-01-01 ~ 2026-03-16)
-  Phase 2: 匹配实际收益 + 网格搜索最优 strong_buy/buy/cautious 阈值
+基于 analysis_data_*.json 报告中的 pred_10d/pred_15d 预测值,
+结合 daily_quotes 中的实际未来收益, 校准推荐阈值。
 
-校准方法: grid_search_PF_weighted
-  - 遍历所有阈值组合
-  - 用10d实际收益计算 PF (Profit Factor) 和 WR (Win Rate)
-  - 综合评分 = capped_PF × WR × count_penalty × coverage_bonus
-  - 选择综合评分最高的阈值组合
+目标:
+- strong_buy: 每日 3-10 只 (中位数 ~5), 正超额收益
+- buy: 每日 10-30 只
+- cautious: 每日 30-100 只
+- hold: 其余有正预测的股票
 """
 
-import sys, json, subprocess
+import json
+import glob
+import os
+import sqlite3
+import sys
+from datetime import datetime
+from pathlib import Path
+from collections import defaultdict
+
 import numpy as np
 import pandas as pd
-from pathlib import Path
-from datetime import datetime
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
+# ── 配置 ──────────────────────────────────────────
+REPORT_DIR = Path('/Users/yangxu/StockTradebyZ/reports/daily_selection_v4901')
+DB_PATH = '/Users/yangxu/StockTradebyZ/data_adapter/stock_data.db'
+OUTPUT_PATH = Path('/Users/yangxu/StockTradebyZ/ml_models/trained_models/v4901/recommendation_thresholds.json')
+BENCHMARK_CODE = '000905.SH'  # 中证500
+FORWARD_DAYS = 10  # 10日前瞻收益
 
-REPORT_DIR = PROJECT_ROOT / 'reports' / 'daily_selection_v4.9.0.1_extended'
-MODEL_DIR = PROJECT_ROOT / 'ml_models' / 'trained_models' / 'v4901'
-START_DATE = '2024-01-01'
-END_DATE = '2026-03-16'  # 留15个交易日给forward return
-
-
-def phase1_generate_reports():
-    """Phase 1: 批量生成V4901全市场报告"""
-    print("=" * 70)
-    print(f"Phase 1: 批量生成V4901报告 ({START_DATE} ~ {END_DATE})")
-    print("=" * 70)
-
-    existing = list(REPORT_DIR.glob('analysis_data_*.json'))
-    if existing:
-        print(f"  已存在 {len(existing)} 份报告，跳过生成")
-        print(f"  (如需重新生成，请删除 {REPORT_DIR})")
-        return
-
-    cmd = [
-        sys.executable, str(PROJECT_ROOT / 'backtest' / 'batch_generate_v395_reports.py'),
-        '--start-date', START_DATE,
-        '--end-date', END_DATE,
-        '--version', 'v4.9.0.1',
-        '--output-dir', str(REPORT_DIR),
-    ]
-    print(f"  命令: {' '.join(cmd[-8:])}")
-    subprocess.run(cmd, check=True)
+# composite = 0.6 * pred_10d + 0.4 * pred_15d
+W_10D, W_15D = 0.6, 0.4
 
 
-def phase2_load_and_match():
-    """Phase 2: 直接从JSON加载 + 匹配实际收益"""
-    print("\n" + "=" * 70)
-    print("Phase 2: 加载报告 + 匹配实际10d收益")
-    print("=" * 70)
+def load_all_reports():
+    """加载所有 analysis_data JSON 报告, 提取每日股票预测"""
+    files = sorted(glob.glob(str(REPORT_DIR / 'analysis_data_*.json')))
+    print(f"找到 {len(files)} 个报告文件")
 
-    from backtest.backtest_report_based import batch_get_all_future_returns
+    daily_data = {}  # date -> list of dicts
+    for f in files:
+        basename = os.path.basename(f)
+        date_str = basename.replace('analysis_data_', '').replace('.json', '')
 
-    # 直接读取JSON (避免load_reports的字段映射问题)
-    json_files = sorted(REPORT_DIR.glob('analysis_data_*.json'))
-    print(f"  找到 {len(json_files)} 份JSON报告")
+        with open(f) as fh:
+            data = json.load(fh)
 
-    all_stocks_by_date = {}
-    for jf in json_files:
-        date_str = jf.stem.replace('analysis_data_', '')
-        # 转为YYYY-MM-DD
-        date_dash = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:]}"
-        try:
-            with open(jf) as f:
-                data = json.load(f)
-            stocks = data.get('all_stocks_with_scores', [])
-            if stocks:
-                all_stocks_by_date[date_dash] = stocks
-        except Exception:
-            continue
-
-    report_dates = sorted(all_stocks_by_date.keys())
-    print(f"  加载了 {len(report_dates)} 个交易日")
-    print(f"  日期范围: {report_dates[0]} ~ {report_dates[-1]}")
-
-    # 批量获取实际收益
-    all_future_rets = batch_get_all_future_returns(report_dates,
-                                                    holding_days_list=[3, 5, 10, 15])
-    print(f"  已获取实际收益数据")
-
-    # 构建校准DataFrame
-    records = []
-    for date, stocks in all_stocks_by_date.items():
-        buy_date_rets = all_future_rets.get(date, {})
-        for stock in stocks:
-            code = stock.get('stock_code', stock.get('code', ''))
+        stocks = data.get('all_stocks_with_scores', [])
+        records = []
+        for s in stocks:
+            p10 = s.get('pred_10d', 0) or 0
+            p15 = s.get('pred_15d', 0) or 0
+            if p10 == 0 and p15 == 0:
+                continue
+            code = s.get('stock_code', '')
             if not code:
                 continue
-            fwd = buy_date_rets.get(code, {})
-            fwd_10d = fwd.get('return_10d')
-            if fwd_10d is None:
-                continue
-
-            # 直接从pred_10d/pred_15d计算composite (与V4901 scorer一致)
-            p10 = stock.get('pred_10d', 0) or 0
-            p15 = stock.get('pred_15d', 0) or 0
-            comp = 0.6 * p10 + 0.4 * p15
-
+            # Add exchange suffix if missing
+            if '.' not in code:
+                market = s.get('market', '')
+                if market:
+                    code = f"{code}.{market}"
+                else:
+                    # Infer from code prefix
+                    if code.startswith(('6', '5')):
+                        code = f"{code}.SH"
+                    elif code.startswith(('0', '3')):
+                        code = f"{code}.SZ"
+                    elif code.startswith(('4', '8', '9')):
+                        code = f"{code}.BJ"
+                    else:
+                        continue
+            composite = W_10D * p10 + W_15D * p15
             records.append({
-                'date': date,
-                'code': code,
-                'composite': comp,
+                'stock_code': code,
+                'composite': composite,
                 'pred_10d': p10,
                 'pred_15d': p15,
-                'rank_score': stock.get('rank_score', 0),
-                'fwd_3d': fwd.get('return_3d'),
-                'fwd_5d': fwd.get('return_5d'),
-                'fwd_10d': fwd_10d,
-                'fwd_15d': fwd.get('return_15d'),
             })
 
-    df = pd.DataFrame(records)
-    print(f"  有效样本: {len(df)} stock-days, {df['date'].nunique()} 个交易日")
-    print(f"  composite分布: P50={df['composite'].median():.6f}, "
-          f"P90={df['composite'].quantile(0.9):.6f}, "
-          f"P95={df['composite'].quantile(0.95):.6f}, "
-          f"P99={df['composite'].quantile(0.99):.6f}, "
-          f"Max={df['composite'].max():.6f}")
-    return df
+        if records:
+            # Convert date to DB format: 20240102 -> 2024-01-02
+            if len(date_str) == 8 and '-' not in date_str:
+                db_date = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
+            else:
+                db_date = date_str
+            daily_data[db_date] = records
+
+    print(f"有效报告日数: {len(daily_data)}")
+    return daily_data
 
 
-def phase3_grid_search(df: pd.DataFrame):
-    """Phase 3: 网格搜索最优阈值"""
-    print("\n" + "=" * 70)
-    print("Phase 3: 网格搜索最优阈值 (PF-weighted)")
-    print("=" * 70)
+def load_close_prices(conn, codes, dates):
+    """批量加载收盘价"""
+    cur = conn.cursor()
 
-    n_dates = df['date'].nunique()
-    dates = df['date'].unique()
+    # code -> security_id
+    cur.execute("SELECT id, code FROM securities")
+    sec_map = {row[1]: row[0] for row in cur.fetchall()}
 
-    # 确定搜索范围 (基于composite分布)
-    pcts = {}
-    for p in [50, 70, 80, 90, 95, 97, 98, 99, 99.5, 99.8, 99.9]:
-        pcts[p] = df['composite'].quantile(p / 100)
-    print(f"  分布分位数:")
-    for p, v in pcts.items():
-        n_above = (df['composite'] >= v).sum()
-        per_day = n_above / n_dates
-        print(f"    P{p}: {v:.6f} ({per_day:.1f}/day)")
-
-    # 搜索范围设计:
-    # strong_buy: 目标1-8只/天 → P99~P99.9 range
-    # buy: 目标5-30只/天 → P95~P99 range
-    # cautious: 目标30-100只/天 → P80~P95 range
-    sb_lo = pcts[98]
-    sb_hi = pcts[99.9]
-    buy_lo = pcts[90]
-    buy_hi = pcts[99]
-    cautious_lo = pcts[70]
-    cautious_hi = pcts[95]
-
-    sb_range = np.linspace(sb_lo, sb_hi, 40)
-    buy_range = np.linspace(buy_lo, buy_hi, 30)
-    cautious_range = np.linspace(cautious_lo, cautious_hi, 20)
-
-    print(f"\n  搜索范围: strong_buy=[{sb_lo:.5f}, {sb_hi:.5f}] ({len(sb_range)}步)")
-    print(f"            buy=[{buy_lo:.5f}, {buy_hi:.5f}] ({len(buy_range)}步)")
-    print(f"            cautious=[{cautious_lo:.5f}, {cautious_hi:.5f}] ({len(cautious_range)}步)")
-
-    # ---- Step 1: 搜索最佳 strong_buy ----
-    print(f"\n  Step 1: 搜索 strong_buy 阈值...")
-    sb_results = []
-    for sb_th in sb_range:
-        mask = df['composite'] >= sb_th
-        rets = df.loc[mask, 'fwd_10d'].dropna()
-        n = len(rets)
-        if n < 30:
-            continue
-
-        gp = rets[rets > 0].sum()
-        gl = abs(rets[rets <= 0].sum())
-        pf = gp / max(gl, 1e-8)
-        wr = (rets > 0).mean()
-        per_day = n / n_dates
-        n_dates_with = df.loc[mask, 'date'].nunique()
-        coverage = n_dates_with / n_dates
-
-        # 评分: 目标1-8只/天, 覆盖率≥40%, PF capped at 5
-        pf_cap = min(pf, 5.0)
-
-        # 每日信号数惩罚 (1-5最优)
-        if per_day < 0.3:
-            cnt_pen = 0.4
-        elif per_day <= 1:
-            cnt_pen = 0.7 + 0.3 * (per_day - 0.3) / 0.7
-        elif per_day <= 5:
-            cnt_pen = 1.0
-        elif per_day <= 10:
-            cnt_pen = 1.0 - 0.3 * (per_day - 5) / 5
-        elif per_day <= 20:
-            cnt_pen = 0.7 - 0.3 * (per_day - 10) / 10
+    code_to_id = {}
+    needed_ids = set()
+    for code in codes:
+        if code in sec_map:
+            code_to_id[code] = sec_map[code]
+            needed_ids.add(sec_map[code])
         else:
-            cnt_pen = 0.3
+            # Try bare code (without exchange suffix)
+            bare = code.split('.')[0]
+            if bare in sec_map:
+                code_to_id[code] = sec_map[bare]
+                needed_ids.add(sec_map[bare])
 
-        # 覆盖率惩罚 (≥50%最优)
-        if coverage >= 0.5:
-            cov_pen = 1.0
-        elif coverage >= 0.3:
-            cov_pen = 0.7 + 0.3 * (coverage - 0.3) / 0.2
-        elif coverage >= 0.15:
-            cov_pen = 0.4 + 0.3 * (coverage - 0.15) / 0.15
-        else:
-            cov_pen = 0.2
+    if not needed_ids:
+        return {}
 
-        score = pf_cap * wr * cnt_pen * cov_pen
-        sb_results.append({
-            'threshold': sb_th, 'score': score,
-            'pf': pf, 'wr': wr, 'per_day': per_day,
-            'coverage': coverage, 'avg_ret': rets.mean() * 100, 'n': n
-        })
+    all_dates = sorted(dates)
+    min_date = all_dates[0]
 
-    sb_results.sort(key=lambda x: x['score'], reverse=True)
-    for r in sb_results[:5]:
-        print(f"    sb≥{r['threshold']:.6f}: score={r['score']:.3f} PF={r['pf']:.2f} WR={r['wr']:.1%} "
-              f"{r['per_day']:.1f}/day cov={r['coverage']:.0%} avg={r['avg_ret']:+.2f}%")
-    best_sb = sb_results[0]['threshold']
+    # 分批查询
+    price_data = defaultdict(dict)
+    id_list_all = list(needed_ids)
+    batch_size = 500
 
-    # ---- Step 2: 固定strong_buy, 搜索buy ----
-    print(f"\n  Step 2: 固定sb≥{best_sb:.6f}, 搜索 buy 阈值...")
-    buy_results = []
-    for buy_th in buy_range:
-        if buy_th >= best_sb:
-            continue
-        mask = (df['composite'] >= buy_th) & (df['composite'] < best_sb)
-        rets = df.loc[mask, 'fwd_10d'].dropna()
-        n = len(rets)
-        if n < 50:
-            continue
+    for i in range(0, len(id_list_all), batch_size):
+        batch_ids = id_list_all[i:i + batch_size]
+        id_str = ','.join(str(x) for x in batch_ids)
+        cur.execute(f"""
+            SELECT security_id, trade_date, close
+            FROM daily_quotes
+            WHERE security_id IN ({id_str})
+              AND trade_date >= ?
+            ORDER BY security_id, trade_date
+        """, (min_date,))
+        for sid, td, close in cur.fetchall():
+            price_data[sid][td] = close
 
-        gp = rets[rets > 0].sum()
-        gl = abs(rets[rets <= 0].sum())
-        pf = gp / max(gl, 1e-8)
-        wr = (rets > 0).mean()
-        per_day = n / n_dates
+    id_to_code = {v: k for k, v in code_to_id.items()}
+    result = {}
+    for sid, date_prices in price_data.items():
+        code = id_to_code.get(sid)
+        if code:
+            result[code] = date_prices
 
-        # buy: 目标5-20只/天, PF>1.3
-        if per_day < 2:
-            cnt_pen = 0.5
-        elif per_day <= 5:
-            cnt_pen = 0.7
-        elif per_day <= 20:
-            cnt_pen = 1.0
-        elif per_day <= 50:
-            cnt_pen = 0.8
-        else:
-            cnt_pen = 0.5
+    return result
 
-        score = min(pf, 4.0) * wr * cnt_pen
-        buy_results.append({
-            'threshold': buy_th, 'score': score,
-            'pf': pf, 'wr': wr, 'per_day': per_day, 'n': n
-        })
 
-    buy_results.sort(key=lambda x: x['score'], reverse=True)
-    for r in buy_results[:5]:
-        print(f"    buy≥{r['threshold']:.6f}: score={r['score']:.3f} PF={r['pf']:.2f} WR={r['wr']:.1%} {r['per_day']:.1f}/day")
-    best_buy = buy_results[0]['threshold'] if buy_results else pcts[95]
+def compute_forward_returns(daily_data, conn):
+    """计算每只股票的实际未来N日收益率"""
+    print(f"\n计算 {FORWARD_DAYS} 日前瞻收益...")
 
-    # ---- Step 3: 固定buy, 搜索cautious ----
-    print(f"\n  Step 3: 固定buy≥{best_buy:.6f}, 搜索 cautious 阈值...")
-    cau_results = []
-    for c_th in cautious_range:
-        if c_th >= best_buy:
-            continue
-        mask = (df['composite'] >= c_th) & (df['composite'] < best_buy)
-        rets = df.loc[mask, 'fwd_10d'].dropna()
-        n = len(rets)
-        if n < 100:
-            continue
+    all_codes = set()
+    all_dates = set()
+    for date_str, records in daily_data.items():
+        all_dates.add(date_str)
+        for r in records:
+            all_codes.add(r['stock_code'])
+    all_codes.add(BENCHMARK_CODE)
 
-        gp = rets[rets > 0].sum()
-        gl = abs(rets[rets <= 0].sum())
-        pf = gp / max(gl, 1e-8)
-        wr = (rets > 0).mean()
+    print(f"  需查询 {len(all_codes)} 只股票, {len(all_dates)} 个日期")
 
-        # cautious: PF>1.0即可
-        cau_results.append({
-            'threshold': c_th, 'pf': pf, 'wr': wr, 'n': n,
-            'per_day': n / n_dates
-        })
+    price_data = load_close_prices(conn, all_codes, all_dates)
+    print(f"  成功加载 {len(price_data)} 只股票的价格数据")
 
-    # 选PF≥1.0的最低阈值 (最大覆盖)
-    best_cautious = pcts[70]
-    for r in sorted(cau_results, key=lambda x: x['threshold']):
-        if r['pf'] >= 1.0:
-            best_cautious = r['threshold']
-            print(f"    cautious≥{r['threshold']:.6f}: PF={r['pf']:.2f} WR={r['wr']:.1%} {r['per_day']:.1f}/day")
-            break
-    if not cau_results:
-        print(f"    使用默认: {best_cautious:.6f}")
-
-    # 合并结果
-    results = []
-    for r in sb_results[:5]:
-        sb_th = r['threshold']
-        # 找此sb_th下最佳buy
-        for br in buy_results[:3]:
-            if br['threshold'] < sb_th:
-                results.append({
-                    'strong_buy': round(sb_th, 6),
-                    'buy': round(br['threshold'], 6),
-                    'cautious': round(best_cautious, 6),
-                    'score': round(r['score'], 4),
-                    'sb_pf': round(r['pf'], 3),
-                    'sb_wr': round(r['wr'], 4),
-                    'sb_per_day': round(r['per_day'], 2),
-                    'sb_coverage': round(r['coverage'], 3),
-                    'sb_avg_ret': round(r['avg_ret'], 3),
-                    'sb_n': r['n'],
-                    'buy_pf': round(br['pf'], 3),
-                    'buy_wr': round(br['wr'], 4),
-                    'buy_n': br['n'],
-                })
+    # 交易日历
+    benchmark_prices = price_data.get(BENCHMARK_CODE, {})
+    if not benchmark_prices:
+        for code in price_data:
+            if '000905' in code:
+                benchmark_prices = price_data[code]
                 break
+    trading_days = sorted(benchmark_prices.keys())
+    td_index = {d: i for i, d in enumerate(trading_days)}
+    print(f"  交易日历: {trading_days[0]} ~ {trading_days[-1]} ({len(trading_days)} 日)")
 
-    if not results:
-        # Fallback: use percentile-based thresholds
-        results = [{
-            'strong_buy': round(pcts[99], 6),
-            'buy': round(pcts[95], 6),
-            'cautious': round(pcts[80], 6),
-            'score': 0, 'sb_pf': 0, 'sb_wr': 0, 'sb_per_day': 0,
-            'sb_coverage': 0, 'sb_avg_ret': 0, 'sb_n': 0,
-            'buy_pf': 0, 'buy_wr': 0, 'buy_n': 0,
-        }]
-    df_results = pd.DataFrame(results).sort_values('score', ascending=False)
-    return df_results
+    results = []
+    skipped_no_price = 0
+    skipped_no_future = 0
+
+    for date_str, records in daily_data.items():
+        if date_str not in td_index:
+            continue
+        idx = td_index[date_str]
+        if idx + FORWARD_DAYS >= len(trading_days):
+            continue
+
+        future_date = trading_days[idx + FORWARD_DAYS]
+
+        bm_t0 = benchmark_prices.get(date_str)
+        bm_tf = benchmark_prices.get(future_date)
+        if bm_t0 is None or bm_tf is None:
+            continue
+        bm_return = (bm_tf - bm_t0) / bm_t0
+
+        for r in records:
+            code = r['stock_code']
+            stock_prices = price_data.get(code, {})
+            if not stock_prices:
+                skipped_no_price += 1
+                continue
+
+            close_t0 = stock_prices.get(date_str)
+            close_tf = stock_prices.get(future_date)
+            if close_t0 is None:
+                skipped_no_price += 1
+                continue
+            if close_tf is None:
+                skipped_no_future += 1
+                continue
+
+            actual_return = (close_tf - close_t0) / close_t0
+            excess_return = actual_return - bm_return
+
+            results.append({
+                'date': date_str,
+                'stock_code': code,
+                'composite': r['composite'],
+                'pred_10d': r['pred_10d'],
+                'pred_15d': r['pred_15d'],
+                'actual_10d_return': actual_return,
+                'benchmark_return': bm_return,
+                'excess_return': excess_return,
+            })
+
+    print(f"  有效样本: {len(results)} (跳过无价格: {skipped_no_price}, 无未来: {skipped_no_future})")
+    return pd.DataFrame(results)
 
 
-def phase4_save(df_results: pd.DataFrame, df_cal: pd.DataFrame):
-    """Phase 4: 保存校准结果"""
-    print("\n" + "=" * 70)
-    print("Phase 4: 保存校准结果")
-    print("=" * 70)
+def calibrate_thresholds(df, new_model_composites):
+    """
+    百分位校准: 用历史数据找最优百分位, 再映射到新模型分布.
 
-    # Top 10
-    print("\n  Top 10 组合:")
-    print(f"  {'score':>6} | {'sb_th':>9} {'sb_PF':>6} {'sb_WR':>6} {'sb/day':>6} {'sb_cov':>6} {'sb_ret':>7} | {'buy_th':>9} {'buy_PF':>6} {'buy_WR':>6} | cautious")
-    print("  " + "-" * 105)
-    for _, row in df_results.head(10).iterrows():
-        print(f"  {row['score']:6.3f} | {row['strong_buy']:9.6f} {row['sb_pf']:6.2f} {row['sb_wr']:6.1%} {row['sb_per_day']:6.1f} {row['sb_coverage']:6.0%} {row['sb_avg_ret']:+6.2f}% | "
-              f"{row['buy']:9.6f} {row['buy_pf']:6.2f} {row['buy_wr']:6.1%} | {row['cautious']:.6f}")
+    核心思想: 不同模型的 composite 绝对值不同, 但「前 X% 的股票」
+    这个相对概念是稳定的. 所以我们:
+    1. 在历史数据上扫描百分位, 找到每个档位的最优百分位
+    2. 用新模型的分布, 把百分位映射回绝对阈值
+    """
+    print("\n" + "=" * 75)
+    print("  V4901 推荐阈值校准 (百分位法)")
+    print("=" * 75)
 
-    best = df_results.iloc[0]
-    n_dates = df_cal['date'].nunique()
-    date_range = f"{df_cal['date'].min()} ~ {df_cal['date'].max()}"
+    # ── Step 1: 每日分布统计 ──
+    print("\n[1] 每日 composite 分布统计")
+    daily_stats = df.groupby('date')['composite'].agg(['count', 'mean', 'std'])
+    print(f"  日均股票数: {daily_stats['count'].mean():.0f}")
+    print(f"  composite均值: {daily_stats['mean'].mean():.6f}")
+    print(f"  composite标准差: {daily_stats['std'].mean():.6f}")
 
-    # hold阈值: composite > 0 视为有微弱正向信号
-    hold_th = max(0.0, float(df_cal['composite'].quantile(0.30)))
+    # ── Step 2: 百分位扫描 ──
+    print(f"\n[2] 百分位扫描 (用每日top-N%选股, 计算实际超额收益)")
+    header = f"  {'百分位':>8} {'日均数':>8} {'实际10d%':>10} {'基准10d%':>10} {'超额%':>10} {'胜率%':>8}"
+    print(header)
+    print("  " + "-" * 63)
 
-    thresholds = {
-        'strong_buy': float(best['strong_buy']),
-        'buy': float(best['buy']),
-        'cautious': float(best['cautious']),
-        'hold': hold_th,
+    sweep_pcts = np.arange(90.0, 99.95, 0.1)
+    sweep_results = []
+
+    grouped = dict(list(df.groupby('date')))
+
+    for pct in sweep_pcts:
+        daily_counts = []
+        daily_returns = []
+        daily_benchmark = []
+        daily_excess = []
+        daily_win = []
+
+        for date_str, group in grouped.items():
+            composites = group['composite'].values
+            if len(composites) < 100:
+                continue
+            cutoff = np.percentile(composites, pct)
+            above = group[group['composite'] >= cutoff]
+            daily_counts.append(len(above))
+            if len(above) > 0:
+                avg_ret = above['actual_10d_return'].mean()
+                avg_bm = above['benchmark_return'].mean()
+                avg_excess = above['excess_return'].mean()
+                daily_returns.append(avg_ret)
+                daily_benchmark.append(avg_bm)
+                daily_excess.append(avg_excess)
+                daily_win.append(1 if avg_excess > 0 else 0)
+
+        if len(daily_returns) < 10:
+            continue
+
+        mean_count = np.mean(daily_counts)
+        mean_return = np.mean(daily_returns) * 100
+        mean_bm = np.mean(daily_benchmark) * 100
+        mean_excess = np.mean(daily_excess) * 100
+        win_rate = np.mean(daily_win) * 100
+
+        sweep_results.append({
+            'percentile': pct,
+            'mean_count': mean_count,
+            'mean_return': mean_return,
+            'mean_benchmark': mean_bm,
+            'mean_excess': mean_excess,
+            'win_rate': win_rate,
+        })
+
+        # Print at key points
+        if pct % 1.0 < 0.05 or pct >= 99.0:
+            print(f"  P{pct:5.1f} {mean_count:8.1f} {mean_return:10.2f} {mean_bm:10.2f} {mean_excess:10.2f} {win_rate:8.1f}")
+
+    sweep_df = pd.DataFrame(sweep_results)
+
+    # ── Step 3: 选择最优百分位 ──
+    print(f"\n[3] 百分位选择")
+
+    # strong_buy: target 3-10 stocks/day, prefer ~5, maximize excess * win_rate
+    sb_cands = sweep_df[
+        (sweep_df['mean_count'] >= 2) &
+        (sweep_df['mean_count'] <= 15)
+    ].copy()
+
+    if len(sb_cands) > 0:
+        sb_cands['score'] = (
+            -abs(sb_cands['mean_count'] - 5) * 0.3
+            + sb_cands['mean_excess'] * 5
+            + sb_cands['win_rate'] * 0.05
+        )
+        best_sb = sb_cands.sort_values('score', ascending=False).iloc[0]
+        sb_pct = best_sb['percentile']
+        print(f"  strong_buy: P{sb_pct:.1f}"
+              f"  (日均 {best_sb['mean_count']:.1f}, 超额 {best_sb['mean_excess']:.2f}%, 胜率 {best_sb['win_rate']:.1f}%)")
+    else:
+        sb_pct = 99.9
+        print(f"  strong_buy: P{sb_pct:.1f} (fallback)")
+
+    # buy: target 10-30
+    buy_cands = sweep_df[
+        (sweep_df['mean_count'] >= 8) &
+        (sweep_df['mean_count'] <= 40) &
+        (sweep_df['percentile'] < sb_pct)
+    ].copy()
+
+    if len(buy_cands) > 0:
+        buy_cands['score'] = (
+            -abs(buy_cands['mean_count'] - 20) * 0.2
+            + buy_cands['mean_excess'] * 5
+        )
+        best_buy = buy_cands.sort_values('score', ascending=False).iloc[0]
+        buy_pct = best_buy['percentile']
+        print(f"  buy:        P{buy_pct:.1f}"
+              f"  (日均 {best_buy['mean_count']:.1f}, 超额 {best_buy['mean_excess']:.2f}%)")
+    else:
+        buy_pct = sb_pct - 2.0
+        print(f"  buy:        P{buy_pct:.1f} (fallback)")
+
+    # cautious: target 30-100
+    caut_cands = sweep_df[
+        (sweep_df['mean_count'] >= 25) &
+        (sweep_df['mean_count'] <= 150) &
+        (sweep_df['percentile'] < buy_pct)
+    ].copy()
+
+    if len(caut_cands) > 0:
+        caut_cands['score'] = (
+            -abs(caut_cands['mean_count'] - 60) * 0.1
+            + caut_cands['mean_excess'] * 3
+        )
+        best_caut = caut_cands.sort_values('score', ascending=False).iloc[0]
+        caut_pct = best_caut['percentile']
+        print(f"  cautious:   P{caut_pct:.1f}"
+              f"  (日均 {best_caut['mean_count']:.1f}, 超额 {best_caut['mean_excess']:.2f}%)")
+    else:
+        caut_pct = buy_pct - 3.0
+        print(f"  cautious:   P{caut_pct:.1f} (fallback)")
+
+    # hold: target 100-400
+    hold_cands = sweep_df[
+        (sweep_df['mean_count'] >= 80) &
+        (sweep_df['mean_count'] <= 600) &
+        (sweep_df['percentile'] < caut_pct)
+    ].copy()
+
+    if len(hold_cands) > 0:
+        hold_cands['score'] = (
+            -abs(hold_cands['mean_count'] - 200) * 0.05
+            + hold_cands['mean_excess'] * 2
+        )
+        best_hold = hold_cands.sort_values('score', ascending=False).iloc[0]
+        hold_pct = best_hold['percentile']
+        print(f"  hold:       P{hold_pct:.1f}"
+              f"  (日均 {best_hold['mean_count']:.1f})")
+    else:
+        hold_pct = caut_pct - 5.0
+        print(f"  hold:       P{hold_pct:.1f} (fallback)")
+
+    percentiles = {
+        'strong_buy': sb_pct,
+        'buy': buy_pct,
+        'cautious': caut_pct,
+        'hold': hold_pct,
+    }
+
+    # ── Step 4: 映射到新模型的绝对阈值 ──
+    print(f"\n[4] 映射到新模型绝对阈值")
+    print(f"  新模型有 {len(new_model_composites)} 只股票的 composite 值")
+
+    if len(new_model_composites) > 0:
+        nm_arr = np.array(new_model_composites)
+        thresholds = {}
+        for name, pct in percentiles.items():
+            thresh = np.percentile(nm_arr, pct)
+            thresholds[name] = round(float(thresh), 6)
+            count = int((nm_arr >= thresh).sum())
+            print(f"  {name:12s}: P{pct:.1f} -> {thresh:.6f} ({count} 只)")
+    else:
+        # Fallback: use historical median of daily percentile thresholds
+        print("  WARNING: 无新模型数据, 使用历史中位数")
+        thresholds = {}
+        for name, pct in percentiles.items():
+            daily_thresholds = []
+            for date_str, group in grouped.items():
+                composites = group['composite'].values
+                if len(composites) >= 100:
+                    daily_thresholds.append(np.percentile(composites, pct))
+            if daily_thresholds:
+                thresholds[name] = round(float(np.median(daily_thresholds)), 6)
+            else:
+                thresholds[name] = 0.0
+
+    # ── Step 5: 验证历史回测表现 ──
+    print(f"\n[5] 验证: 用新阈值回测历史数据")
+    header = f"  {'级别':>12} {'日均数':>8} {'实际10d%':>10} {'基准10d%':>10} {'超额%':>10} {'胜率%':>8}"
+    print(header)
+    print("  " + "-" * 63)
+
+    for name in ['strong_buy', 'buy', 'cautious', 'hold']:
+        pct = percentiles[name]
+        daily_counts = []
+        daily_excess = []
+        daily_win = []
+        daily_ret = []
+        daily_bm = []
+
+        for date_str, group in grouped.items():
+            composites = group['composite'].values
+            if len(composites) < 100:
+                continue
+            cutoff = np.percentile(composites, pct)
+            above = group[group['composite'] >= cutoff]
+            daily_counts.append(len(above))
+            if len(above) > 0:
+                daily_ret.append(above['actual_10d_return'].mean())
+                daily_bm.append(above['benchmark_return'].mean())
+                daily_excess.append(above['excess_return'].mean())
+                daily_win.append(1 if above['excess_return'].mean() > 0 else 0)
+
+        if daily_ret:
+            print(f"  {name:>12} {np.mean(daily_counts):8.1f}"
+                  f" {np.mean(daily_ret)*100:10.2f}"
+                  f" {np.mean(daily_bm)*100:10.2f}"
+                  f" {np.mean(daily_excess)*100:10.2f}"
+                  f" {np.mean(daily_win)*100:8.1f}")
+
+    return thresholds, percentiles, sweep_df
+
+
+def main():
+    print("=" * 75)
+    print("V4901 推荐阈值校准 (百分位法)")
+    print(f"报告目录: {REPORT_DIR}")
+    print(f"数据库:   {DB_PATH}")
+    print(f"基准:     {BENCHMARK_CODE}")
+    print(f"前瞻:     {FORWARD_DAYS} 日")
+    print("=" * 75)
+
+    # 1. 加载报告
+    daily_data = load_all_reports()
+
+    # 2. 提取新模型(最新日期)的composite分布
+    # 用最新报告文件直接读取完整composite列表(包括无future return的)
+    latest_date = max(daily_data.keys())
+    print(f"\n最新报告日期: {latest_date}")
+    new_model_composites = [r['composite'] for r in daily_data[latest_date]]
+    print(f"新模型 composite: {len(new_model_composites)} 只,"
+          f" range [{min(new_model_composites):.6f}, {max(new_model_composites):.6f}]")
+
+    # 3. 计算前瞻收益
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    df = compute_forward_returns(daily_data, conn)
+    conn.close()
+
+    if len(df) == 0:
+        print("ERROR: 没有有效数据, 无法校准")
+        sys.exit(1)
+
+    # 4. 校准阈值
+    thresholds, percentiles, sweep_df = calibrate_thresholds(df, new_model_composites)
+
+    # 5. 新模型预期数量
+    nm_arr = np.array(new_model_composites)
+    new_model_counts = {}
+    for name, thresh in thresholds.items():
+        new_model_counts[name] = int((nm_arr >= thresh).sum())
+
+    # 6. 保存
+    print(f"\n[6] 保存结果")
+    output = {
+        'strong_buy': thresholds['strong_buy'],
+        'buy': thresholds['buy'],
+        'cautious': thresholds['cautious'],
+        'hold': thresholds['hold'],
         '_calibration': {
-            'method': 'grid_search_PF_weighted',
+            'method': 'percentile_based_calibration',
             'date': datetime.now().strftime('%Y-%m-%d'),
-            'data_range': f"{date_range} ({n_dates} trading days)",
-            'optimal_max_per_day': round(float(best['sb_per_day']), 1),
-            'optimization_score': float(best['score']),
-            'strong_buy_10d_stats': f"PF={best['sb_pf']:.3f}, WR={best['sb_wr']:.1%}, "
-                                    f"{best['sb_per_day']:.1f}/day, {best['sb_coverage']:.0%} coverage, "
-                                    f"avg_ret={best['sb_avg_ret']:+.2f}%",
-            'buy_10d_stats': f"PF={best['buy_pf']:.3f}, WR={best['buy_wr']:.1%}, n={int(best['buy_n'])}",
+            'report_days': len(set(df['date'])),
+            'total_samples': len(df),
+            'forward_days': FORWARD_DAYS,
+            'benchmark': BENCHMARK_CODE,
+            'composite_formula': f'{W_10D}*pred_10d + {W_15D}*pred_15d',
+            'optimal_percentiles': {k: round(v, 1) for k, v in percentiles.items()},
+            'new_model_expected_counts': new_model_counts,
+            'new_model_date': latest_date,
+            'new_model_stocks': len(new_model_composites),
+            'note': '百分位法: 从历史542天报告找最优百分位, 再映射到新模型分布',
         }
     }
 
-    out_path = MODEL_DIR / 'recommendation_thresholds.json'
-    with open(out_path, 'w') as f:
-        json.dump(thresholds, f, indent=2, ensure_ascii=False)
-    print(f"\n  已保存到: {out_path}")
-    print(f"  strong_buy ≥ {thresholds['strong_buy']:.6f}")
-    print(f"  buy        ≥ {thresholds['buy']:.6f}")
-    print(f"  cautious   ≥ {thresholds['cautious']:.6f}")
-    print(f"  hold       ≥ {thresholds['hold']:.6f}")
+    OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(OUTPUT_PATH, 'w', encoding='utf-8') as f:
+        json.dump(output, f, indent=2, ensure_ascii=False)
+    print(f"  已保存: {OUTPUT_PATH}")
 
-    return thresholds
+    # 7. 总结
+    print("\n" + "=" * 75)
+    print("  校准结果总结")
+    print("=" * 75)
+    print(f"  {'级别':>12} {'百分位':>8} {'阈值':>12} {'新模型数':>10}")
+    print(f"  {'---':>12} {'---':>8} {'---':>12} {'---':>10}")
+    for name in ['strong_buy', 'buy', 'cautious', 'hold']:
+        c = new_model_counts.get(name, '?')
+        p = percentiles.get(name, 0)
+        print(f"  {name:>12} P{p:5.1f} {thresholds[name]:12.6f} {str(c):>10}")
+
+    print()
+    print("  对比:")
+    print(f"    旧 strong_buy = 0.00980  (日均 ~146 只 - 太多)")
+    print(f"    模型内嵌      = 0.02265  (日均 ~0 只 - 太少)")
+    print(f"    新 strong_buy = {thresholds['strong_buy']:.6f}  (P{percentiles['strong_buy']:.1f}, {new_model_counts.get('strong_buy', '?')} 只)")
+    print()
+
+    # Also save log
+    log_path = OUTPUT_PATH.parent / 'optimizer_params_calibrated.log.json'
+    log_data = {
+        'thresholds': thresholds,
+        'percentiles': percentiles,
+        'new_model_counts': new_model_counts,
+        'calibration_date': datetime.now().isoformat(),
+    }
+    with open(log_path, 'w', encoding='utf-8') as f:
+        json.dump(log_data, f, indent=2, ensure_ascii=False)
+    print(f"  校准日志: {log_path}")
 
 
 if __name__ == '__main__':
-    phase1_generate_reports()
-    df_cal = phase2_load_and_match()
-    df_results = phase3_grid_search(df_cal)
-    phase4_save(df_results, df_cal)
-    print("\n校准完成!")
+    main()

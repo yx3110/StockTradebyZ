@@ -250,18 +250,24 @@ class V39FeatureCacheUpdaterOptimized:
         return features
 
     def calculate_labels(self, code: str, date: str) -> Dict[str, Optional[float]]:
-        """计算3d, 5d, 10d, 15d未来收益标签"""
+        """计算3d, 5d, 10d, 15d未来收益标签
+
+        标签定义与回测执行对齐:
+          base = open[T+1] (报告日下一个交易日的开盘价)
+          target = close[T+1+N] (买入后第N个交易日的收盘价)
+          label_Nd = close[T+1+N] / open[T+1] - 1
+        """
         conn = sqlite3.connect(self.db_path)
 
-        # 获取当天和未来的收盘价
+        # 获取当天和未来的行情 (需要 open 和 close)
         query = """
-        SELECT q.trade_date, q.close
+        SELECT q.trade_date, q.open, q.close, q.volume
         FROM daily_quotes q
         JOIN securities s ON q.security_id = s.id
         WHERE s.code = ?
         AND q.trade_date >= ?
         ORDER BY q.trade_date
-        LIMIT 20
+        LIMIT 22
         """
 
         df = pd.read_sql_query(query, conn, params=(code, date))
@@ -274,24 +280,34 @@ class V39FeatureCacheUpdaterOptimized:
             'label_15d': None
         }
 
-        if df.empty or len(df) < 2:
+        # 至少需要报告日 + 买入日 + 1天 = 3行
+        if df.empty or len(df) < 3:
             return labels
 
-        base_close = df.iloc[0]['close']
-        if base_close <= 0:
+        # 停牌检测: 报告日成交量为0
+        if df.iloc[0]['volume'] == 0:
+            return labels
+
+        # base = 买入日 (T+1) 的开盘价
+        buy_open = df.iloc[1]['open']
+        if buy_open is None or buy_open <= 0:
+            return labels
+
+        # 买入日成交量为0 (停牌无法买入)
+        if df.iloc[1]['volume'] == 0:
             return labels
 
         closes = df['close'].tolist()
 
-        # 计算各期限收益
-        if len(closes) > 3:
-            labels['label_3d'] = (closes[3] / base_close - 1)
-        if len(closes) > 5:
-            labels['label_5d'] = (closes[5] / base_close - 1)
-        if len(closes) > 10:
-            labels['label_10d'] = (closes[10] / base_close - 1)
-        if len(closes) > 15:
-            labels['label_15d'] = (closes[15] / base_close - 1)
+        # label_Nd = close[1+N] / open[1] - 1  (从买入日起算第N个交易日)
+        if len(closes) > 1 + 3:
+            labels['label_3d'] = (closes[1 + 3] / buy_open - 1)
+        if len(closes) > 1 + 5:
+            labels['label_5d'] = (closes[1 + 5] / buy_open - 1)
+        if len(closes) > 1 + 10:
+            labels['label_10d'] = (closes[1 + 10] / buy_open - 1)
+        if len(closes) > 1 + 15:
+            labels['label_15d'] = (closes[1 + 15] / buy_open - 1)
 
         return labels
 
@@ -1030,10 +1046,11 @@ class V39FeatureCacheUpdaterOptimized:
         cutoff_date = recent_dates[15]  # 第16个最新交易日
         logger.info(f"截止日期: {cutoff_date} (距今 >=16 个交易日)")
 
-        # 查询所有需要回填的记录 (label_5d IS NULL 且 trade_date <= cutoff)
+        # 查询所有需要回填的记录 (任一label为NULL 且 trade_date <= cutoff)
+        # 使用label_15d IS NULL确保所有horizon都被填充，避免部分更新后遗漏
         cursor.execute("""
             SELECT id, code, trade_date FROM v39_feature_cache
-            WHERE label_5d IS NULL AND trade_date <= ?
+            WHERE label_15d IS NULL AND trade_date <= ?
             ORDER BY trade_date, code
         """, (cutoff_date,))
         rows = cursor.fetchall()
@@ -1064,46 +1081,57 @@ class V39FeatureCacheUpdaterOptimized:
                     skipped_insufficient += 1
                     continue
 
-                # 查询 base_date 的 volume（检查停牌）和未来 16 天收盘价
+                # 查询 base_date 及未来 17 天的 open/close/volume
+                # 标签对齐回测: base = open[T+1], target = close[T+1+N]
                 cursor.execute("""
-                    SELECT trade_date, close, volume
+                    SELECT trade_date, open, close, volume
                     FROM daily_quotes
                     WHERE security_id = ? AND trade_date >= ?
                     ORDER BY trade_date
-                    LIMIT 20
+                    LIMIT 22
                 """, (sid, trade_date))
                 future_rows = cursor.fetchall()
 
-                if len(future_rows) < 2:
+                # 至少需要报告日 + 买入日 + 1天
+                if len(future_rows) < 3:
                     skipped_insufficient += 1
                     continue
 
-                # 第一行应该是 base_date 本身
-                base_date_str, base_close, base_volume = future_rows[0]
+                # 第一行 = 报告日 (T)
+                base_date_str, _, _, base_volume = future_rows[0]
 
-                # 停牌检测: base_date 成交量为 0
+                # 停牌检测: 报告日成交量为 0
                 if base_volume is not None and base_volume == 0:
                     skipped_suspended += 1
                     continue
 
-                if base_close is None or base_close <= 0:
+                # 第二行 = 买入日 (T+1), 用开盘价作为 base
+                buy_open = future_rows[1][1]  # open
+                buy_volume = future_rows[1][3]  # volume
+
+                if buy_open is None or buy_open <= 0:
                     skipped_insufficient += 1
                     continue
 
-                # 计算标签
+                # 买入日停牌检测
+                if buy_volume is not None and buy_volume == 0:
+                    skipped_suspended += 1
+                    continue
+
+                # 计算标签: label_Nd = close[1+N] / open[1] - 1
                 label_3d = None
                 label_5d = None
                 label_10d = None
                 label_15d = None
 
-                if len(future_rows) > 3:
-                    label_3d = future_rows[3][1] / base_close - 1
-                if len(future_rows) > 5:
-                    label_5d = future_rows[5][1] / base_close - 1
-                if len(future_rows) > 10:
-                    label_10d = future_rows[10][1] / base_close - 1
-                if len(future_rows) > 15:
-                    label_15d = future_rows[15][1] / base_close - 1
+                if len(future_rows) > 1 + 3:
+                    label_3d = future_rows[1 + 3][2] / buy_open - 1  # [2]=close
+                if len(future_rows) > 1 + 5:
+                    label_5d = future_rows[1 + 5][2] / buy_open - 1
+                if len(future_rows) > 1 + 10:
+                    label_10d = future_rows[1 + 10][2] / buy_open - 1
+                if len(future_rows) > 1 + 15:
+                    label_15d = future_rows[1 + 15][2] / buy_open - 1
 
                 # 至少有 label_3d 才更新
                 if label_3d is not None:
@@ -1400,32 +1428,50 @@ class V39FeatureCacheUpdaterOptimized:
     def _compute_labels_from_preloaded(self, stock_df_full: pd.DataFrame,
                                         dates_list: List[str],
                                         date: str) -> Dict[str, Optional[float]]:
-        """从预加载数据直接计算标签 (无需 SQL 查询)"""
+        """从预加载数据直接计算标签 (无需 SQL 查询)
+
+        标签定义与回测执行对齐:
+          base = open[pos+1] (报告日下一个交易日的开盘价)
+          target = close[pos+1+N] (买入后第N个交易日的收盘价)
+          label_Nd = close[pos+1+N] / open[pos+1] - 1
+        """
         labels = {'label_3d': None, 'label_5d': None, 'label_10d': None, 'label_15d': None}
 
         pos = bisect.bisect_left(dates_list, date)
         if pos >= len(dates_list) or dates_list[pos] != date:
             return labels
 
-        closes = stock_df_full['close'].values
-        base_close = closes[pos]
-        if base_close <= 0:
-            return labels
-
-        # 停牌检测
+        # 停牌检测: 报告日成交量为0
         volumes = stock_df_full['volume'].values
         if volumes[pos] == 0:
             return labels
 
+        # 需要至少 pos+2 的数据 (报告日 + 买入日 + 至少1天)
         remaining = len(dates_list) - pos
-        if remaining > 3:
-            labels['label_3d'] = float(closes[pos + 3] / base_close - 1)
-        if remaining > 5:
-            labels['label_5d'] = float(closes[pos + 5] / base_close - 1)
-        if remaining > 10:
-            labels['label_10d'] = float(closes[pos + 10] / base_close - 1)
-        if remaining > 15:
-            labels['label_15d'] = float(closes[pos + 15] / base_close - 1)
+        if remaining < 3:
+            return labels
+
+        # base = 买入日 (pos+1) 的开盘价
+        opens = stock_df_full['open'].values
+        buy_open = opens[pos + 1]
+        if buy_open <= 0:
+            return labels
+
+        # 买入日停牌检测
+        if volumes[pos + 1] == 0:
+            return labels
+
+        closes = stock_df_full['close'].values
+
+        # label_Nd = close[pos+1+N] / open[pos+1] - 1
+        if remaining > 1 + 3:
+            labels['label_3d'] = float(closes[pos + 1 + 3] / buy_open - 1)
+        if remaining > 1 + 5:
+            labels['label_5d'] = float(closes[pos + 1 + 5] / buy_open - 1)
+        if remaining > 1 + 10:
+            labels['label_10d'] = float(closes[pos + 1 + 10] / buy_open - 1)
+        if remaining > 1 + 15:
+            labels['label_15d'] = float(closes[pos + 1 + 15] / buy_open - 1)
 
         return labels
 

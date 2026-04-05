@@ -205,8 +205,10 @@ class Alpha158FeatureCacheUpdater:
             if features_df.empty:
                 continue
 
-            # 准备 labels (log return)
+            # 准备 labels (log return, 对齐回测: open[T+1] → close[T+1+N])
             closes = df['close'].values
+            opens = df['open'].values
+            volumes = df['volume'].values
             dates_arr = df['trade_date'].values
             date_to_idx = {d: idx for idx, d in enumerate(dates_arr)}
 
@@ -217,20 +219,21 @@ class Alpha158FeatureCacheUpdater:
                 if td not in target_set:
                     continue
 
-                # 计算 labels
+                # 计算 labels (对齐回测: base=open[T+1], target=close[T+1+N])
                 idx = date_to_idx.get(td)
                 if idx is None:
                     continue
 
                 label_3d = label_5d = label_10d = None
-                base = closes[idx]
-                if base > 0:
-                    if idx + 3 < len(closes):
-                        label_3d = float(np.log(closes[idx + 3] / base))
-                    if idx + 5 < len(closes):
-                        label_5d = float(np.log(closes[idx + 5] / base))
-                    if idx + 10 < len(closes):
-                        label_10d = float(np.log(closes[idx + 10] / base))
+                buy_idx = idx + 1
+                if buy_idx < len(opens) and opens[buy_idx] > 0 and volumes[buy_idx] > 0:
+                    buy_open = opens[buy_idx]
+                    if buy_idx + 3 < len(closes):
+                        label_3d = float(np.log(closes[buy_idx + 3] / buy_open))
+                    if buy_idx + 5 < len(closes):
+                        label_5d = float(np.log(closes[buy_idx + 5] / buy_open))
+                    if buy_idx + 10 < len(closes):
+                        label_10d = float(np.log(closes[buy_idx + 10] / buy_open))
 
                 # JSON 序列化特征
                 feat_dict = {name: float(row[name]) for name in feature_names}
@@ -288,31 +291,36 @@ class Alpha158FeatureCacheUpdater:
 
         updated = 0
         for code, trade_date in missing:
-            # 查询该股票的后续收盘价
+            # 查询该股票的后续行情 (open+close, 标签对齐回测执行)
             cursor.execute("""
-                SELECT q.trade_date, q.close
+                SELECT q.trade_date, q.open, q.close, q.volume
                 FROM daily_quotes q
                 JOIN securities s ON q.security_id = s.id
                 WHERE s.code = ? AND q.trade_date >= ?
                 ORDER BY q.trade_date
-                LIMIT 11
+                LIMIT 13
             """, (code, trade_date))
             rows = cursor.fetchall()
 
-            if len(rows) < 2:
+            # 至少需要报告日 + 买入日 + 1天
+            if len(rows) < 3:
                 continue
 
-            base_close = rows[0][1]
-            if base_close <= 0:
+            # 买入日 (T+1) 的开盘价作为 base
+            buy_open = rows[1][1]  # open
+            buy_volume = rows[1][3]  # volume
+            if buy_open is None or buy_open <= 0:
+                continue
+            if buy_volume is not None and buy_volume == 0:
                 continue
 
             label_3d = label_5d = label_10d = None
-            if len(rows) > 3:
-                label_3d = float(np.log(rows[3][1] / base_close))
-            if len(rows) > 5:
-                label_5d = float(np.log(rows[5][1] / base_close))
-            if len(rows) > 10:
-                label_10d = float(np.log(rows[10][1] / base_close))
+            if len(rows) > 1 + 3:
+                label_3d = float(np.log(rows[1 + 3][2] / buy_open))  # [2]=close
+            if len(rows) > 1 + 5:
+                label_5d = float(np.log(rows[1 + 5][2] / buy_open))
+            if len(rows) > 1 + 10:
+                label_10d = float(np.log(rows[1 + 10][2] / buy_open))
 
             if label_3d is not None:
                 cursor.execute("""

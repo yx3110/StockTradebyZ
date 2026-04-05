@@ -1531,33 +1531,73 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
         win_rate = (sub['avg_top_return'] > 0).mean() * 100
         avg_positive_pct = sub['top_positive_pct'].mean() * 100
 
-        # 全局IC
-        sub_picks = picks_df[picks_df[f'return_{days}d'].notna()]
+        # 全局IC (对收益做 1%/99% winsorize, 与训练侧对称)
+        return_col = f'return_{days}d'
+        sub_picks = picks_df[picks_df[return_col].notna()].copy()
         if len(sub_picks) > 10:
-            ic, p_val = spearmanr(sub_picks['score'], sub_picks[f'return_{days}d'])
+            ret_lo = sub_picks[return_col].quantile(0.01)
+            ret_hi = sub_picks[return_col].quantile(0.99)
+            sub_picks[return_col] = sub_picks[return_col].clip(ret_lo, ret_hi)
+            ic, p_val = spearmanr(sub_picks['score'], sub_picks[return_col])
         else:
             ic, p_val = 0, 1
 
         # 逐日IC序列 (向量化: groupby rank + Pearson, 替代逐日spearmanr循环)
-        return_col = f'return_{days}d'
-        ic_df = _vectorized_daily_ic(picks_df, return_col)
+        # 对收益做 winsorize 后再计算 (与训练侧 label clip 对称)
+        ic_picks = picks_df.copy()
+        if len(ic_picks[ic_picks[return_col].notna()]) > 10:
+            rl = ic_picks[return_col].quantile(0.01)
+            rh = ic_picks[return_col].quantile(0.99)
+            ic_picks[return_col] = ic_picks[return_col].clip(rl, rh)
+        ic_df = _vectorized_daily_ic(ic_picks, return_col)
         daily_ic_series[days] = ic_df
 
-        # ICIR = mean(daily_IC) / std(daily_IC)
-        # 对多日持仓期，使用非重叠子采样避免自相关导致的ICIR高估
+        # ICIR + IC>0%: 统一使用非重叠子采样避免自相关虚高
         if len(ic_df) > 5:
             if days > 1 and len(ic_df) >= days * 2:
                 # Non-overlapping subsample: take every N-th IC observation
                 ic_subsample = ic_df.iloc[::days]
-                ic_mean = ic_subsample['ic'].mean()
-                ic_std = ic_subsample['ic'].std()
             else:
-                ic_mean = ic_df['ic'].mean()
-                ic_std = ic_df['ic'].std()
+                ic_subsample = ic_df
+            ic_mean = ic_subsample['ic'].mean()
+            ic_std = ic_subsample['ic'].std()
             icir = ic_mean / ic_std if ic_std > 0 else 0
-            ic_positive_pct = (ic_df['ic'] > 0).mean() * 100
+            # IC>0% 也用非重叠采样, 避免重叠收益期导致虚高
+            ic_positive_pct = (ic_subsample['ic'] > 0).mean() * 100
+            n_ic_independent = len(ic_subsample)
         else:
             ic_mean, ic_std, icir, ic_positive_pct = ic, 0, 0, 0
+            n_ic_independent = len(ic_df)
+
+        # Top-N 精度诊断: 衡量模型头部区分度
+        top_excess = 0.0
+        precision_at_n = 0.0
+        n_precision_days = 0
+        if len(sub_picks) > top_n * 2:
+            # 逐日计算 top-N excess return 和 precision@N
+            daily_excesses = []
+            daily_precisions = []
+            for date_val, grp in sub_picks.groupby('date'):
+                if len(grp) < top_n * 2:
+                    continue
+                # 模型选的 top-N (按 score 排序)
+                grp_sorted = grp.sort_values('score', ascending=False)
+                model_top = set(grp_sorted.head(top_n)['code'].values) if 'code' in grp_sorted.columns else set()
+                # 实际最优 top-N (按 return 排序)
+                grp_by_ret = grp.sort_values(return_col, ascending=False)
+                actual_top = set(grp_by_ret.head(top_n)['code'].values) if 'code' in grp_by_ret.columns else set()
+                # precision@N: 模型top-N中有多少实际在top-N
+                if model_top and actual_top:
+                    daily_precisions.append(len(model_top & actual_top) / top_n)
+                # excess: top-N均值 vs 全体中位数
+                top_ret = grp_sorted.head(top_n)[return_col].mean()
+                median_ret = grp[return_col].median()
+                daily_excesses.append(top_ret - median_ret)
+            if daily_excesses:
+                top_excess = np.mean(daily_excesses) * 100
+            if daily_precisions:
+                precision_at_n = np.mean(daily_precisions) * 100
+                n_precision_days = len(daily_precisions)
 
         # 累计收益
         cumulative = (1 + sub['avg_top_return']).prod() - 1
@@ -1577,6 +1617,9 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
             'cumulative': cumulative * 100,
             'n_days': len(sub),
             'n_ic_days': len(ic_df),
+            'n_ic_independent': n_ic_independent,
+            'top_excess': top_excess,
+            'precision_at_n': precision_at_n,
         }
 
         print(f"\n  📊 {days}日持仓 ({len(sub)}天):")
@@ -1588,7 +1631,10 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
         print(f"    全局IC (Spearman):    {ic:.4f} (p={p_val:.4f})")
         print(f"    逐日IC均值:           {ic_mean:.4f} ± {ic_std:.4f}")
         print(f"    ICIR:                 {icir:.4f}")
-        print(f"    IC>0天数占比:         {ic_positive_pct:.1f}% ({len(ic_df)}天)")
+        print(f"    IC>0占比(非重叠):     {ic_positive_pct:.1f}% ({n_ic_independent}个独立观测)")
+        print(f"    Top{top_n} 超额(vs中位):  {top_excess:+.3f}%")
+        if n_precision_days > 0:
+            print(f"    Precision@{top_n}:        {precision_at_n:.1f}% ({n_precision_days}天)")
 
     # ═══════════════════════════════════════════════════
     # 北极星增强: 风险指标 + 交易成本 + 基准对比

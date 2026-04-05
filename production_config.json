@@ -22,6 +22,18 @@
     "_cppi_explanation": "净值接近floor时自动减仓: exposure = min(1.0, 20 × (净值 - floor净值))"
   },
 
+  "recommendation_ranks": {
+    "_calibration": "2024-01-01~2026-04-03, 543天, ng1.0.2模型, 基于截面排名的alpha验证",
+    "_evidence": "Top1-5 10d超额+3.4%, 胜率66%; 信号强度与alpha相关系数=0.022(无关); 强熊时Top5超额反而最高(+8.7%)",
+    "strong_buy": 5,
+    "buy": 20,
+    "cautious_buy": 50,
+    "watch": 200,
+    "_strong_buy_10d_excess": "+3.4% (年化~250%)",
+    "_buy_10d_excess": "+1.7% (年化~135%)",
+    "_cautious_10d_excess": "+0.8% (年化~89%)"
+  },
+
   "cppi_usage": {
     "_how_to_use": "每日调仓时计算: cushion = 当前净值 - (历史最高净值 × (1 - cppi_floor)), exposure = min(1.0, cppi_multiplier × cushion). 满仓时exposure=1.0, 亏损时自动减仓",
     "example_full": "净值1.0, floor净值=0.95 → cushion=0.05 → exposure=min(1,20×0.05)=1.0 → 满仓",
