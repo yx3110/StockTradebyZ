@@ -218,8 +218,14 @@ ml_models/
 ```
 
 **ML系统特点:**
-- **V3.9** (生产推荐): 42个增强特征 + 17个扩展财务指标，LightGBM+XGBoost+CatBoost+RF Ensemble
-- **V3.95** (最新): 多目标预测（3d/5d/10d），滚动训练窗口
+- **🏆 NG v1.0.1** (最新): 69特征(59股票+10市场), 行业超额标签, ICIR自适应权重, V5=70.1% A+
+  - 缓存表: `ng101_feature_cache` (分表存储, backward compatible)
+  - 训练: `python3 ml_models/ng/ng_trainer.py --start-date 2020-01-01 --purge-days 15`
+  - 回填: `python3 ml_models/ng/ng_cache_updater.py --start-date 2020-01-01 --end-date 2026-04-03 --version ng1.0.1`
+  - 报告: `python3 backtest/batch_generate_v395_reports.py --version ng1.0.1`
+- **NG v1.0.0**: 62特征, 绝对收益标签, 缓存表: `ng_feature_cache` (永久保留)
+- **V3.9** (旧版): 42个增强特征 + 17个扩展财务指标，LightGBM+XGBoost+CatBoost+RF Ensemble
+- **V3.95** (旧版): 多目标预测（3d/5d/10d），滚动训练窗口
 - **V3.8** (deprecated): 增量学习系统，保留模型文件供参考
 
 #### 4. **Incremental Learning Components** (`incremental_learning/`)
@@ -510,37 +516,55 @@ python3 backtest/extensible_backtest_engine.py --ml-version v3.9 --start-date 20
 cat reports/backtest/回测结果_YYYYMMDD.md
 ```
 
-### 🎯 北极星评估 (North Star V2)
+### 🎯 北极星评估 (无泄露双向评估 — 正式方法)
+
+**⚠️ 重要**: 训练数据不可用于回测。所有模型评估必须使用以下无泄露方法：
+
 ```bash
-# 短窗口V2评估 (112天, ~1分钟)
+# 🏆 推荐方式: 训练时自动执行双向评估 (默认开启, 无需手动操作)
+python3 ml_models/training/train_v395_multi_target.py --v4901 --purge-days 15
+# 训练完成后自动输出:
+#   1. WF OOS 北极星评估 (向前泛化, WF test period报告)
+#   2. Pre-2020 北极星评估 (向后泛化, 生产模型对2018-2019的预测)
+
+# 手动评估WF OOS报告 (训练后已自动生成在 reports/daily_selection_{ver}_wf_oos/)
 python3 backtest/run_north_star_eval.py --backtest \
-    --report-dir reports/daily_selection_v4.3 \
-    --label "V4.3" --top-n 10 --focus-days 10
+    --report-dir reports/daily_selection_v4901_wf_oos \
+    --label WF-OOS --top-n 10 --focus-days 10 --rank-field composite
 
-# 扩展窗口V2评估 (~520天, ~3分钟)
-python3 backtest/run_north_star_eval.py --extended \
-    --report-dir reports/daily_selection_v4.3 \
-    --extended-dir reports/daily_selection_v4.3_extended \
-    --label "V4.3" --top-n 10 --focus-days 10
+# 手动评估Pre-2020报告 (训练后已自动生成在 reports/daily_selection_{ver}_pre2020/)
+python3 backtest/run_north_star_eval.py --backtest \
+    --report-dir reports/daily_selection_v4901_pre2020 \
+    --label PRE-2020 --top-n 10 --focus-days 10 --rank-field composite
 
-# 市况分析 (牛/熊/震荡分别计算IC)
-python3 backtest/run_north_star_eval.py --regime-analysis \
-    --report-dir reports/daily_selection_v4.3 \
-    --label "V4.3" --top-n 10 --focus-days 10
-
-# 批量生成扩展报告 (支持 v3.9/v3.95/v4.3/v5.0)
-python3 backtest/batch_generate_v395_reports.py \
-    --version v4.3 --start-date 2024-01-01 --end-date 2025-08-31 \
-    --output-dir reports/daily_selection_v4.3_extended
+# 回填2018-2020特征缓存 (首次使用Pre-2020评估前需执行一次)
+python3 fetch_data/v39_feature_cache_updater.py --start-date 2018-01-01 --end-date 2019-12-31
 ```
+
+**评估解读:**
+- WF OOS (向前): 模型能否预测未来 — B~A级为合理预期
+- Pre-2020 (向后): 模型学到的是通用规律还是过拟合 — A级说明信号真实
+- 两个都有alpha → 高置信; 只有一个有 → 谨慎; 都没有 → 模型有问题
+- **--production 回测(S级)包含数据泄露，仅供内部参考，不可作为模型评估依据**
 
 ### Training ML Models
 ```bash
-# Train V3.9 model (日常推荐，基于缓存特征)
-python3 ml_models/training/train_v390_from_cache.py
+# Train V4901 (生产推荐, 默认流程: auto-WF模式选择 + 3进程并行WF + 自动双向评估)
+# 训练前自动turbo-check 3种WF配置(expanding/sliding-720d/sliding-500d+decay730)
+# 选择10d ICIR最优的配置后再全量训练 (~6min额外开销)
+python3 ml_models/training/train_v395_multi_target.py --v4901 --purge-days 15
 
-# Train V3.95 model (多目标预测，最新生产版)
-python3 ml_models/training/train_v395_multi_target.py
+# 跳过auto-WF, 直接用默认expanding模式训练
+python3 ml_models/training/train_v395_multi_target.py --v4901 --purge-days 15 --no-auto-wf
+
+# 手动指定滑动窗口模式 (跳过auto-WF)
+python3 ml_models/training/train_v395_multi_target.py --v4901 --purge-days 15 --max-train-days 720
+
+# 手动调整时间衰减半衰期 (默认365天)
+python3 ml_models/training/train_v395_multi_target.py --v4901 --purge-days 15 --time-decay-halflife 730
+
+# Train V3.9 model (旧版)
+python3 ml_models/training/train_v390_from_cache.py
 ```
 
 ### 🔍 Quantitative Scoring Correlation Analysis
