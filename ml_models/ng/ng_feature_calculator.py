@@ -775,6 +775,7 @@ def compute_interaction_features(
     industry_feats: Dict[str, float],
     residual_feats: Dict[str, float],
     cs_rank_feats: Dict[str, float],
+    fund_feats: Optional[Dict[str, float]] = None,
 ) -> Dict[str, float]:
     """
     Compute 8 candidate interaction factors (to be IC-screened during training).
@@ -811,9 +812,11 @@ def compute_interaction_features(
     )
 
     # 5. ix_mf_efficiency = net_mf_ratio_5d / (turnover_rate + 1e-8)
+    # turnover_rate lives in fund_feats (compute_fundamental_features), not stock_feats
+    _turnover = fund_feats.get('turnover_rate') if fund_feats else stock_feats.get('turnover_rate')
     result['ix_mf_efficiency'] = _safe_div(
         mf_feats.get('net_mf_ratio_5d'),
-        stock_feats.get('turnover_rate'),
+        _turnover,
     )
 
     # 6. ix_vol_surge_pullback = cs_rank_volume_surge * pullback_from_high
@@ -829,9 +832,11 @@ def compute_interaction_features(
     )
 
     # 8. ix_north_cap = northbound_stock_5d * log_market_cap
+    # log_market_cap lives in fund_feats (compute_fundamental_features), not stock_feats
+    _log_mcap = fund_feats.get('log_market_cap') if fund_feats else stock_feats.get('log_market_cap')
     result['ix_north_cap'] = _safe_mul(
         mf_feats.get('northbound_stock_5d'),
-        stock_feats.get('log_market_cap'),
+        _log_mcap,
     )
 
     return result

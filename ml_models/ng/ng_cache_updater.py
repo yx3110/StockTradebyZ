@@ -1213,6 +1213,7 @@ class NGCacheUpdater:
                             data['ind_feats'],
                             res_feats,
                             cs_feats,
+                            fund_feats=data.get('fund_feats', {}),
                         )
                     except Exception as e:
                         print(f"    WARN: interaction_features failed for {data['code']}: {e}")

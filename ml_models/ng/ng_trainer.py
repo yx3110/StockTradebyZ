@@ -118,6 +118,10 @@ class NGTrainer(V485Trainer):
         self.target_weights = dict(self.TARGET_WEIGHTS)
         self._turbo_skip_etf = True
         self.cache_table = get_table_name(NG_VERSION)
+        # Initialize feature names (may be extended in load_data based on CLI switches)
+        self.feature_names = list(ALL_FEATURE_NAMES)
+        self.stock_feature_cols = list(STOCK_FEATURE_NAMES)
+        self.macro_feature_cols = list(MARKET_FEATURE_NAMES)
         # Stub market_calculator for V475 model_data serialization
         class _StubMC:
             class market_features:
