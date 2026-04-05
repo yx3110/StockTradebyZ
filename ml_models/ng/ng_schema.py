@@ -18,9 +18,10 @@ DB_PATH = os.path.join(os.path.dirname(__file__), '..', '..', 'data_adapter', 's
 VERSION_TABLE_MAP = {
     'ng1.0.0': 'ng_feature_cache',
     'ng1.0.1': 'ng101_feature_cache',
+    'ng1.0.2': 'ng102_feature_cache',
 }
 
-DEFAULT_VERSION = 'ng1.0.1'
+DEFAULT_VERSION = 'ng1.0.2'
 
 
 def get_table_name(version: str = None) -> str:
@@ -29,8 +30,12 @@ def get_table_name(version: str = None) -> str:
     return VERSION_TABLE_MAP.get(ver, f'ng{ver.replace(".", "").replace("ng", "")}_feature_cache')
 
 
-def _schema_sql(table_name: str) -> str:
-    """Generate CREATE TABLE SQL for a given table name."""
+def _schema_sql(table_name: str, version: str = None) -> str:
+    """Generate CREATE TABLE SQL for a given table name and version."""
+    ver = version or DEFAULT_VERSION
+    extra_cols = ''
+    if ver >= 'ng1.0.2':
+        extra_cols = '\n    downside_10d REAL,'
     return f"""
 CREATE TABLE IF NOT EXISTS {table_name} (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -40,7 +45,7 @@ CREATE TABLE IF NOT EXISTS {table_name} (
     label_3d REAL,
     label_5d REAL,
     label_10d REAL,
-    label_15d REAL,
+    label_15d REAL,{extra_cols}
     market_return_5d REAL,
     market_return_20d REAL,
     market_volatility_20d REAL,
@@ -62,9 +67,10 @@ CREATE INDEX IF NOT EXISTS idx_{table_name}_code_date ON {table_name}(code, trad
 def create_table(db_path: str = None, version: str = None):
     """Create feature cache table for the given version (if not exists)."""
     path = db_path or DB_PATH
-    table_name = get_table_name(version)
+    ver = version or DEFAULT_VERSION
+    table_name = get_table_name(ver)
     with sqlite3.connect(path, timeout=30) as conn:
-        conn.executescript(_schema_sql(table_name))
+        conn.executescript(_schema_sql(table_name, version=ver))
     print(f"{table_name} table ready: {path}")
 
 
