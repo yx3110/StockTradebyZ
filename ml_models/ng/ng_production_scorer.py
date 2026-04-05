@@ -3,10 +3,11 @@
 NG v1.1.0 Production Scorer — loads NG model, scores all stocks for a date.
 
 v1.1.0 changes:
-  - 68 features (58 stock + 10 market), was 62
+  - Dynamic feature list from model pkl (moneyflow + interaction support)
+  - 68+ features (58+ stock + 10 market), extensible via model pkl
   - ICIR adaptive composite weights from model (not hardcoded)
   - Labels are industry excess returns
-  - Backward compatible: auto-detects v1.0.0 vs v1.1.0 models
+  - Backward compatible: auto-detects v1.0.0 / v1.0.1 / v1.1.0 models
 """
 
 import json
@@ -30,6 +31,8 @@ from .ng_trainer import (
     MARKET_FEATURE_NAMES,
     ALL_FEATURE_NAMES,
     NG_VERSION,
+    MONEYFLOW_FEATURE_NAMES,
+    INTERACTION_FEATURE_NAMES,
 )
 from .ng_schema import get_table_name
 
@@ -201,10 +204,11 @@ class NGProductionScorer:
         parsed = df_raw['features_json'].apply(_json_loads).tolist()
         df_stock = pd.DataFrame(parsed)
 
-        # Ensure expected columns (handles both v1.0.0 and v1.1.0 data)
+        # Ensure expected columns (handles v1.0.0 / v1.1.0 / v1.1.0+ data)
+        # Fill missing moneyflow/interaction features with 0 for older cache entries
         for col in self.stock_feature_cols:
             if col not in df_stock.columns:
-                df_stock[col] = np.nan
+                df_stock[col] = 0.0
 
         result = pd.DataFrame()
         result['code'] = df_raw['code'].values
