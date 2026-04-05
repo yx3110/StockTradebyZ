@@ -82,7 +82,7 @@ ALL_FEATURE_NAMES: List[str] = STOCK_FEATURE_NAMES + MARKET_FEATURE_NAMES  # 68 
 
 # v1.0.0 constants (for backward compatibility reference)
 NG_V1_VERSION = 'ng1.0.0'
-NG_VERSION = 'ng1.0.1'
+NG_VERSION = 'ng1.0.2'
 
 
 # ---------------------------------------------------------------------------
@@ -309,6 +309,7 @@ class NGTrainer(V485Trainer):
         query = f"""
         SELECT code, trade_date, features_json,
                label_3d, label_5d, label_10d, label_15d,
+               downside_10d,
                market_return_5d, market_return_20d, market_volatility_20d,
                market_breadth, market_new_high_ratio, northbound_flow_5d,
                market_volume_ratio, market_drawdown, vix_proxy,
@@ -358,6 +359,12 @@ class NGTrainer(V485Trainer):
         result['label_5d'] = pd.to_numeric(df_raw['label_5d'], errors='coerce').values
         result['label_10d'] = pd.to_numeric(df_raw['label_10d'], errors='coerce').values
         result['label_15d'] = pd.to_numeric(df_raw.get('label_15d'), errors='coerce').values
+
+        # downside_10d (v1.0.2): backward compat with ng101 cache
+        if 'downside_10d' in df_raw.columns:
+            result['downside_10d'] = pd.to_numeric(df_raw['downside_10d'], errors='coerce').fillna(0.0).values
+        else:
+            result['downside_10d'] = 0.0
 
         # Market features: ffill
         result = result.sort_values('trade_date')
@@ -423,10 +430,45 @@ class NGTrainer(V485Trainer):
         y_10d_vals = df['label_10d'].values.copy()
         y_15d = np.where(np.isnan(y_15d_raw), y_10d_vals, y_15d_raw)
 
+        # v1.0.2: downside target (stored as instance var for V485 compatibility)
+        self._y_downside = df['downside_10d'].values.copy() if 'downside_10d' in df.columns else np.zeros(len(df))
+
         self.winsorize_bounds = None
 
         logger.info(f"  Feature matrix: {X.shape[0]:,} x {X.shape[1]}")
         return X, y_3d, y_5d, y_10d, y_15d, df
+
+    # ------------------------------------------------------------------
+    # Downside Model Training (v1.0.2)
+    # ------------------------------------------------------------------
+
+    def _train_downside_model(self, X_train, y_train, X_val, y_val, feature_names):
+        """Train a standalone LightGBM for downside_10d prediction."""
+        import lightgbm as lgb
+
+        params = {
+            'objective': 'regression',
+            'metric': 'mae',
+            'num_leaves': 31,
+            'learning_rate': 0.05,
+            'feature_fraction': 0.8,
+            'bagging_fraction': 0.8,
+            'bagging_freq': 5,
+            'min_data_in_leaf': 200,
+            'verbose': -1,
+        }
+
+        dtrain = lgb.Dataset(X_train, label=y_train, feature_name=feature_names)
+        dval = lgb.Dataset(X_val, label=y_val, reference=dtrain)
+
+        model = lgb.train(
+            params, dtrain,
+            num_boost_round=500,
+            valid_sets=[dval],
+            callbacks=[lgb.early_stopping(50), lgb.log_evaluation(0)],
+        )
+
+        return model
 
     # ------------------------------------------------------------------
     # Walk-Forward Training
@@ -456,6 +498,52 @@ class NGTrainer(V485Trainer):
         if model_data.get('fast_check'):
             return model_data, history
 
+        # --- v1.0.2: Train downside model ---
+        logger.info("Training downside_10d model (separate LightGBM pass)...")
+        try:
+            df_full = self.load_data(start_date=start_date, end_date=end_date)
+            _result = self.prepare_features(df_full)
+            X, y_3d, y_5d, y_10d, y_15d, df_full = _result
+            y_downside = self._y_downside
+
+            # Use last portion as val (matching WF logic)
+            unique_dates = sorted(df_full['trade_date'].unique())
+            n = len(unique_dates)
+            val_start_idx = max(0, n - test_days - val_days)
+            val_end_idx = max(0, n - test_days)
+
+            train_dates = set(unique_dates[:val_start_idx])
+            val_dates = set(unique_dates[val_start_idx:val_end_idx])
+            test_dates = set(unique_dates[val_end_idx:])
+
+            train_mask = df_full['trade_date'].isin(train_dates).values
+            val_mask = df_full['trade_date'].isin(val_dates).values
+            test_mask = df_full['trade_date'].isin(test_dates).values
+
+            if train_mask.sum() > 1000 and val_mask.sum() > 100:
+                downside_model = self._train_downside_model(
+                    X[train_mask], y_downside[train_mask],
+                    X[val_mask], y_downside[val_mask],
+                    feature_names=self.feature_names,
+                )
+                model_data['downside_model'] = downside_model
+
+                # Compute OOS IC
+                if test_mask.sum() > 0:
+                    pred_ds = downside_model.predict(X[test_mask])
+                    from scipy.stats import spearmanr
+                    ic, _ = spearmanr(pred_ds, y_downside[test_mask])
+                    logger.info(f"  Downside 10d OOS IC: {ic:.4f}")
+                    model_data['downside_ic'] = float(ic)
+
+                logger.info(f"  Downside model trained: {downside_model.num_trees()} trees")
+            else:
+                logger.warning("  Not enough data for downside model training")
+                model_data['downside_model'] = None
+        except Exception as e:
+            logger.warning(f"  Downside model training failed: {e}")
+            model_data['downside_model'] = None
+
         # Compute ICIR adaptive weights from WF history
         adaptive_weights = self._compute_icir_adaptive_weights(history)
         self.target_weights = adaptive_weights
@@ -473,6 +561,7 @@ class NGTrainer(V485Trainer):
 
             # Update model metadata
             model_data['version'] = NG_VERSION
+            model_data['lambda_risk'] = getattr(self, '_lambda_risk', 0.5)
             model_data['ng_innovations'] = {
                 'base': 'V4.8.5 ensemble machinery',
                 'version': NG_VERSION,
@@ -484,6 +573,8 @@ class NGTrainer(V485Trainer):
                 'targets': ['3d', '5d', '10d', '15d'],
                 'target_weights': adaptive_weights,
                 'label_type': 'industry_excess_return',
+                'downside_model': model_data.get('downside_model') is not None,
+                'lambda_risk': model_data.get('lambda_risk', 0.5),
                 'new_in_v110': {
                     'cs_rank_factors': 10,
                     'residual_factors': 5,
@@ -560,6 +651,8 @@ if __name__ == '__main__':
                         help='Fast check mode: 2 WF windows, no model save')
     parser.add_argument('--parallel', type=int, default=1,
                         help='Number of parallel WF workers')
+    parser.add_argument('--lambda-risk', type=float, default=0.5,
+                        help='Risk discount factor for downside model (default: 0.5)')
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -579,6 +672,8 @@ if __name__ == '__main__':
 
     if args.parallel > 1:
         trainer._parallel_wf_workers = args.parallel
+
+    trainer._lambda_risk = args.lambda_risk
 
     model_data, history = trainer.walk_forward_train(
         start_date=args.start_date,
