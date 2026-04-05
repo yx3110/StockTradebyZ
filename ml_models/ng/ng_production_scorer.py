@@ -379,13 +379,18 @@ class NGProductionScorer:
         for target_key in ['3d', '5d', '10d', '15d']:
             combined_pred += w.get(target_key, 0.0) * predictions.get(target_key, np.zeros(len(codes)))
 
-        # v1.0.2: Risk discount
+        # v1.0.2: Risk discount (normalized to return scale)
         pred_downside = np.zeros(len(codes))
         if self.downside_model is not None:
             try:
                 pred_downside = self.downside_model.predict(feature_matrix)
-                pred_downside = np.clip(pred_downside, 0, None)  # downside is non-negative
-                combined_pred = combined_pred - self.lambda_risk * pred_downside
+                pred_downside = np.clip(pred_downside, 0, None)
+                # Normalize downside to same scale as combined_pred
+                # Without this, downside (~0.024) overwhelms return (~0.00004)
+                return_std = max(np.std(combined_pred), 1e-8)
+                ds_std = max(np.std(pred_downside), 1e-8)
+                pred_downside_scaled = pred_downside * (return_std / ds_std)
+                combined_pred = combined_pred - self.lambda_risk * pred_downside_scaled
             except Exception as e:
                 logger.warning("Downside prediction failed: %s", e)
 
@@ -471,13 +476,18 @@ class NGProductionScorer:
         for target_key in ['3d', '5d', '10d', '15d']:
             combined_pred += w.get(target_key, 0.0) * predictions.get(target_key, np.zeros(len(codes)))
 
-        # v1.0.2: Risk discount
+        # v1.0.2: Risk discount (normalized to return scale)
         pred_downside = np.zeros(len(codes))
         if self.downside_model is not None:
             try:
                 pred_downside = self.downside_model.predict(feature_matrix)
-                pred_downside = np.clip(pred_downside, 0, None)  # downside is non-negative
-                combined_pred = combined_pred - self.lambda_risk * pred_downside
+                pred_downside = np.clip(pred_downside, 0, None)
+                # Normalize downside to same scale as combined_pred
+                # Without this, downside (~0.024) overwhelms return (~0.00004)
+                return_std = max(np.std(combined_pred), 1e-8)
+                ds_std = max(np.std(pred_downside), 1e-8)
+                pred_downside_scaled = pred_downside * (return_std / ds_std)
+                combined_pred = combined_pred - self.lambda_risk * pred_downside_scaled
             except Exception as e:
                 logger.warning("Downside prediction failed: %s", e)
 
