@@ -80,9 +80,20 @@ MARKET_FEATURE_NAMES: List[str] = [
 
 ALL_FEATURE_NAMES: List[str] = STOCK_FEATURE_NAMES + MARKET_FEATURE_NAMES  # 68 total
 
+MONEYFLOW_FEATURE_NAMES: List[str] = [
+    'net_mf_ratio_5d', 'big_order_ratio', 'big_order_trend_5d',
+    'small_vs_big_divergence', 'mf_concentration', 'mf_momentum_10d',
+    'northbound_stock_5d', 'mf_volume_divergence',
+]
+
+INTERACTION_FEATURE_NAMES: List[str] = [
+    'ix_vol_pullback', 'ix_big_trend', 'ix_rsi_mf', 'ix_ind_big',
+    'ix_mf_efficiency', 'ix_vol_surge_pullback', 'ix_alpha_conc', 'ix_north_cap',
+]
+
 # v1.0.0 constants (for backward compatibility reference)
 NG_V1_VERSION = 'ng1.0.0'
-NG_VERSION = 'ng1.0.2'
+NG_VERSION = 'ng1.1.0'
 
 
 # ---------------------------------------------------------------------------
@@ -284,6 +295,70 @@ class NGTrainer(V485Trainer):
         return summary
 
     # ------------------------------------------------------------------
+    # IC Screening for Interaction Features (ng1.1.0)
+    # ------------------------------------------------------------------
+
+    def _select_interaction_features(self, df, label_col='label_10d', min_ic=0.02, max_corr=0.7):
+        """IC-based selection of interaction features. Returns list of selected feature names."""
+        from scipy.stats import spearmanr
+
+        existing_cols = [c for c in self.feature_names if c in df.columns and c not in INTERACTION_FEATURE_NAMES]
+        candidate_cols = [c for c in INTERACTION_FEATURE_NAMES if c in df.columns]
+
+        if not candidate_cols or label_col not in df.columns:
+            return []
+
+        y = df[label_col].values
+        valid = ~np.isnan(y)
+        selected = []
+
+        for col in candidate_cols:
+            x = df[col].values
+            both_valid = valid & ~np.isnan(x)
+            if both_valid.sum() < 1000:
+                continue
+            ic, _ = spearmanr(x[both_valid], y[both_valid])
+            if abs(ic) < min_ic:
+                logger.info(f"  IX {col}: IC={ic:.4f} < {min_ic}, SKIP")
+                continue
+            max_abs_corr = 0.0
+            for ecol in existing_cols:
+                ex = df[ecol].values
+                both = both_valid & ~np.isnan(ex)
+                if both.sum() < 100:
+                    continue
+                corr, _ = spearmanr(x[both], ex[both])
+                max_abs_corr = max(max_abs_corr, abs(corr))
+            if max_abs_corr > max_corr:
+                logger.info(f"  IX {col}: IC={ic:.4f}, max_corr={max_abs_corr:.3f} > {max_corr}, SKIP")
+                continue
+            logger.info(f"  IX {col}: IC={ic:.4f}, max_corr={max_abs_corr:.3f} → SELECTED")
+            selected.append(col)
+
+        return selected
+
+    # ------------------------------------------------------------------
+    # Market Regime Sample Weighting (ng1.1.0)
+    # ------------------------------------------------------------------
+
+    def _compute_regime_weights(self, df):
+        """Compute sample weights: bull(+5%)=0.8, sideways=1.0, bear(-5%)=1.2"""
+        mkt_ret = df['market_return_20d'].values if 'market_return_20d' in df.columns else np.zeros(len(df))
+        weights = np.ones(len(df))
+        weights[mkt_ret > 0.05] = 0.8
+        weights[mkt_ret < -0.05] = 1.2
+        logger.info(f"  Regime weights: bull={np.sum(weights == 0.8):,}, sideways={np.sum(weights == 1.0):,}, bear={np.sum(weights == 1.2):,}")
+        return weights
+
+    def compute_sample_weights(self, df, y):
+        """NG v1.1.0: parent weights + optional regime weighting."""
+        weights = super().compute_sample_weights(df, y)
+        if getattr(self, '_regime_weight', False):
+            regime_w = self._compute_regime_weights(df)
+            weights = weights * regime_w
+        return weights
+
+    # ------------------------------------------------------------------
     # Data loading
     # ------------------------------------------------------------------
 
@@ -334,19 +409,33 @@ class NGTrainer(V485Trainer):
         parsed_rows = df_raw['features_json'].apply(_json_loads).tolist()
         df_stock_features = pd.DataFrame(parsed_rows)
 
-        for col in STOCK_FEATURE_NAMES:
+        # Dynamic feature list based on CLI switches
+        active_stock_features = list(STOCK_FEATURE_NAMES)
+        if getattr(self, '_enable_moneyflow', False):
+            active_stock_features += MONEYFLOW_FEATURE_NAMES
+        if getattr(self, '_enable_interaction', False):
+            active_stock_features += INTERACTION_FEATURE_NAMES
+
+        for col in active_stock_features:
             if col not in df_stock_features.columns:
                 df_stock_features[col] = np.nan
 
-        df_stock_features = df_stock_features[STOCK_FEATURE_NAMES]
+        df_stock_features = df_stock_features[[c for c in active_stock_features if c in df_stock_features.columns]]
+
+        n_extra = len(active_stock_features) - len(STOCK_FEATURE_NAMES)
+        if n_extra > 0:
+            logger.info(f"  Dynamic features enabled: +{n_extra} "
+                         f"(moneyflow={getattr(self, '_enable_moneyflow', False)}, "
+                         f"interaction={getattr(self, '_enable_interaction', False)})")
 
         # Assemble result
         result = pd.DataFrame()
         result['code'] = df_raw['code'].values
         result['trade_date'] = df_raw['trade_date'].values
 
-        for col in STOCK_FEATURE_NAMES:
-            result[col] = df_stock_features[col].values
+        for col in active_stock_features:
+            if col in df_stock_features.columns:
+                result[col] = df_stock_features[col].values
 
         for col in MARKET_FEATURE_NAMES:
             if col in df_raw.columns:
@@ -374,8 +463,9 @@ class NGTrainer(V485Trainer):
         result = result.dropna(subset=MARKET_FEATURE_NAMES)
 
         # Stock features: fill NaN with 0
-        for col in STOCK_FEATURE_NAMES:
-            result[col] = pd.to_numeric(result[col], errors='coerce').fillna(0.0)
+        for col in active_stock_features:
+            if col in result.columns:
+                result[col] = pd.to_numeric(result[col], errors='coerce').fillna(0.0)
 
         result = result.dropna(subset=['label_3d', 'label_5d', 'label_10d'])
         result = result.sort_values(['trade_date', 'code']).reset_index(drop=True)
@@ -387,8 +477,9 @@ class NGTrainer(V485Trainer):
 
         n_stocks = result['code'].nunique()
         n_dates = result['trade_date'].nunique()
+        n_total_features = len(active_stock_features) + len(MARKET_FEATURE_NAMES)
         logger.info(f"  NG load_data complete: {len(result):,} rows, "
-                     f"{n_stocks:,} stocks, {n_dates} dates, {len(ALL_FEATURE_NAMES)} features")
+                     f"{n_stocks:,} stocks, {n_dates} dates, {n_total_features} features")
 
         return result
 
@@ -397,11 +488,26 @@ class NGTrainer(V485Trainer):
     # ------------------------------------------------------------------
 
     def prepare_features(self, df: pd.DataFrame) -> tuple:
-        """Prepare NG v1.1.0 feature matrix."""
-        logger.info(f"NG {NG_VERSION} prepare_features: {len(ALL_FEATURE_NAMES)} factors "
-                     f"({len(STOCK_FEATURE_NAMES)} stock + {len(MARKET_FEATURE_NAMES)} market)")
+        """Prepare NG v1.1.0 feature matrix (dynamic: base + moneyflow + interaction)."""
+        # Build dynamic stock feature list matching load_data
+        active_stock_features = list(STOCK_FEATURE_NAMES)
+        if getattr(self, '_enable_moneyflow', False):
+            active_stock_features += MONEYFLOW_FEATURE_NAMES
+        if getattr(self, '_enable_interaction', False):
+            # Only include interaction features that passed IC screening
+            selected_ix = getattr(self, '_selected_ix', [])
+            if selected_ix:
+                active_stock_features += selected_ix
+            else:
+                # If screening hasn't run yet (e.g., first load_data call), include all
+                # They will be pruned after screening in walk_forward_train
+                active_stock_features += INTERACTION_FEATURE_NAMES
 
-        self.stock_feature_cols = [c for c in STOCK_FEATURE_NAMES if c in df.columns]
+        logger.info(f"NG {NG_VERSION} prepare_features: "
+                     f"{len(active_stock_features)} stock + {len(MARKET_FEATURE_NAMES)} market "
+                     f"= {len(active_stock_features) + len(MARKET_FEATURE_NAMES)} total")
+
+        self.stock_feature_cols = [c for c in active_stock_features if c in df.columns]
         self.macro_feature_cols = [c for c in MARKET_FEATURE_NAMES if c in df.columns]
         self.feature_names = self.stock_feature_cols + self.macro_feature_cols
 
@@ -485,9 +591,36 @@ class NGTrainer(V485Trainer):
         logger.info(f"NG {NG_VERSION} Walk-Forward Training")
         logger.info("=" * 60)
         logger.info(f"  Base: V4.8.5 machinery (6-model ensemble, LambdaRank, Bear Specialist)")
-        logger.info(f"  Data: ng_feature_cache ({len(ALL_FEATURE_NAMES)} features)")
+        logger.info(f"  Data: {self.cache_table}")
+        logger.info(f"  Switches: moneyflow={getattr(self, '_enable_moneyflow', False)}, "
+                     f"interaction={getattr(self, '_enable_interaction', False)}, "
+                     f"regime_weight={getattr(self, '_regime_weight', False)}")
         logger.info(f"  Labels: INDUSTRY EXCESS returns (stock - industry median)")
         logger.info(f"  Initial weights: {', '.join(f'{k}={v:.2f}' for k, v in self.target_weights.items())}")
+
+        # IC screening for interaction features (before WF training)
+        self._selected_ix = []
+        if getattr(self, '_enable_interaction', False):
+            logger.info("Screening interaction features by IC...")
+            df_screen = self.load_data(start_date=start_date, end_date=end_date)
+            if not df_screen.empty:
+                # Temporarily set feature_names so screening can reference them
+                _tmp_stock = list(STOCK_FEATURE_NAMES)
+                if getattr(self, '_enable_moneyflow', False):
+                    _tmp_stock += MONEYFLOW_FEATURE_NAMES
+                _tmp_stock += INTERACTION_FEATURE_NAMES
+                self.stock_feature_cols = [c for c in _tmp_stock if c in df_screen.columns]
+                self.macro_feature_cols = [c for c in MARKET_FEATURE_NAMES if c in df_screen.columns]
+                self.feature_names = self.stock_feature_cols + self.macro_feature_cols
+
+                self._selected_ix = self._select_interaction_features(df_screen)
+                if self._selected_ix:
+                    remove_ix = [c for c in INTERACTION_FEATURE_NAMES if c not in self._selected_ix]
+                    logger.info(f"  Interaction screening: {len(self._selected_ix)} selected, "
+                                 f"{len(remove_ix)} removed")
+                else:
+                    logger.info("  Interaction screening: none passed IC threshold, removing all")
+                del df_screen  # free memory
 
         model_data, history = super().walk_forward_train(
             start_date=start_date, end_date=end_date,
@@ -566,10 +699,10 @@ class NGTrainer(V485Trainer):
                 'base': 'V4.8.5 ensemble machinery',
                 'version': NG_VERSION,
                 'prev_version': NG_V1_VERSION,
-                'data_source': 'ng_feature_cache (industry excess labels)',
-                'feature_set': f'{len(STOCK_FEATURE_NAMES)} stock + {len(MARKET_FEATURE_NAMES)} market features',
-                'stock_features': STOCK_FEATURE_NAMES,
-                'market_features': MARKET_FEATURE_NAMES,
+                'data_source': f'{self.cache_table} (industry excess labels)',
+                'feature_set': f'{len(self.stock_feature_cols)} stock + {len(self.macro_feature_cols)} market features',
+                'stock_features': list(self.stock_feature_cols),
+                'market_features': list(self.macro_feature_cols),
                 'targets': ['3d', '5d', '10d', '15d'],
                 'target_weights': adaptive_weights,
                 'label_type': 'industry_excess_return',
@@ -582,6 +715,14 @@ class NGTrainer(V485Trainer):
                     'removed_factors': 11,
                     'icir_adaptive_weights': True,
                     'wf_summary': True,
+                },
+                'ng110_switches': {
+                    'moneyflow': getattr(self, '_enable_moneyflow', False),
+                    'interaction': getattr(self, '_enable_interaction', False),
+                    'interaction_selected': self._selected_ix if getattr(self, '_enable_interaction', False) else [],
+                    'residual_label': True,  # ng1.1.0 cache always has residual labels
+                    'regime_weight': getattr(self, '_regime_weight', False),
+                    'wf_step_days': step_days,
                 },
             }
             model_data['feature_names'] = self.feature_names
@@ -606,7 +747,7 @@ class NGTrainer(V485Trainer):
 
             # Save training history
             history['version'] = NG_VERSION
-            history['base'] = f'NG {NG_VERSION} ({len(ALL_FEATURE_NAMES)} features, industry excess labels)'
+            history['base'] = f'NG {NG_VERSION} ({len(self.feature_names)} features, industry excess labels)'
             history['ng_innovations'] = model_data['ng_innovations']
             history['adaptive_weights'] = adaptive_weights
 
@@ -653,6 +794,17 @@ if __name__ == '__main__':
                         help='Number of parallel WF workers')
     parser.add_argument('--lambda-risk', type=float, default=0.5,
                         help='Risk discount factor for downside model (default: 0.5)')
+    # ng1.1.0 new switches
+    parser.add_argument('--enable-moneyflow', action='store_true',
+                        help='Enable moneyflow features (8 factors)')
+    parser.add_argument('--enable-interaction', action='store_true',
+                        help='Enable interaction features with IC screening')
+    parser.add_argument('--residual-label', action='store_true',
+                        help='Use style-residual labels (ng1.1.0 default)')
+    parser.add_argument('--wf-windows', type=int, default=3,
+                        help='Target WF windows (3 or 8)')
+    parser.add_argument('--regime-weight', action='store_true',
+                        help='Enable market regime sample weighting')
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -661,6 +813,15 @@ if __name__ == '__main__':
     )
 
     trainer = NGTrainer()
+
+    # ng1.1.0 switches
+    trainer._enable_moneyflow = args.enable_moneyflow
+    trainer._enable_interaction = args.enable_interaction
+    trainer._regime_weight = args.regime_weight
+
+    if args.wf_windows > 3:
+        args.step_days = 90
+        logger.info(f"WF windows target: {args.wf_windows}, step_days=90")
 
     if args.fast_check:
         trainer._fast_check = True
