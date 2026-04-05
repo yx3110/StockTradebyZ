@@ -543,6 +543,29 @@ def update_v40_feature_cache(date_str: str, stock_data_cache: dict = None):
         return 0
 
 
+def update_ng_feature_cache(date_str: str):
+    """更新NG特征缓存 (Daily Selection NG 62因子)"""
+    logger.info(f"开始更新 {date_str} 的NG特征缓存...")
+
+    try:
+        from ml_models.ng.ng_cache_updater import NGCacheUpdater
+
+        date_dash = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
+        updater = NGCacheUpdater()
+        count = updater.update_single_date(date_dash)
+
+        if count and count > 0:
+            logger.info(f"✅ NG特征缓存更新成功: {count} 条")
+        else:
+            logger.info("✅ NG特征缓存更新完成 (无新数据)")
+
+        return count or 0
+
+    except Exception as e:
+        logger.warning(f"⚠️ NG特征缓存更新异常: {e}")
+        return 0
+
+
 def update_sw_index_daily(date_str: str):
     """更新申万行业指数日线数据"""
     logger.info(f"开始更新 {date_str} 的申万行业指数数据...")
@@ -637,7 +660,7 @@ def update_neural_embeddings(date_str: str):
 def quick_daily_update(date: str = None, skip_financial: bool = True):
     """快速每日更新 - 包含市场行情、基本面、财务和技术指标
 
-    优化后步骤: 12步 (移除了已失效的挤压动量和活跃市值步骤)
+    优化后步骤: 14步 (含v39/v40/NG/BRAIN/GRU缓存更新)
     - API调用之间保留 sleep(2) 避免限流
     - 本地计算步骤之间不再 sleep
     """
@@ -664,7 +687,7 @@ def quick_daily_update(date: str = None, skip_financial: bool = True):
     }
 
     # 1. 批量更新市场行情（A股）
-    logger.info("【步骤1/12】更新A股市场行情...")
+    logger.info("【步骤1/14】更新A股市场行情...")
     quotes_count = batch_update_stocks(date)
     stats['quotes'] += quotes_count
 
@@ -679,61 +702,102 @@ def quick_daily_update(date: str = None, skip_financial: bool = True):
     time.sleep(2)
 
     # 2. 批量更新ETF/基金
-    logger.info("【步骤2/12】更新ETF/基金行情...")
+    logger.info("【步骤2/14】更新ETF/基金行情...")
     stats['quotes'] += batch_update_funds(date)
 
     # API限流等待
     time.sleep(2)
 
     # 3. 更新大盘指数数据
-    logger.info("【步骤3/12】更新大盘指数数据...")
+    logger.info("【步骤3/14】更新大盘指数数据...")
     stats['indices'] = update_market_indices(date)
 
     # API限流等待
     time.sleep(2)
 
     # 4. 更新基本面指标
-    logger.info("【步骤4/12】更新基本面指标...")
+    logger.info("【步骤4/14】更新基本面指标...")
     stats['basic'] = update_daily_basic(date)
 
     # 5. 检查申万行业分类 (月度更新) — 本地检查，无需sleep
-    logger.info("【步骤5/12】检查申万行业分类 (月度更新)...")
+    logger.info("【步骤5/14】检查申万行业分类 (月度更新)...")
     stats['sw_industry'] = check_sw_industry(date)
 
     # 6. 更新申万行业指数日线 — API调用
-    logger.info("【步骤6/12】更新申万行业指数日线...")
+    logger.info("【步骤6/14】更新申万行业指数日线...")
     stats['sw_index'] = update_sw_index_daily(date)
 
     # 7. 更新北向资金数据 — API调用
-    logger.info("【步骤7/12】更新北向资金数据...")
+    logger.info("【步骤7/14】更新北向资金数据...")
     stats['hsgt'] = update_hsgt_daily(date)
 
     # 8. 更新财务指标（如果有）
     if not skip_financial:
-        logger.info("【步骤8/12】检查财务指标更新...")
+        logger.info("【步骤8/14】检查财务指标更新...")
         stats['financial'] = update_financial_indicators(date)
     else:
-        logger.info("【步骤8/12】跳过财务指标更新...")
+        logger.info("【步骤8/14】跳过财务指标更新...")
         stats['financial'] = 0
 
     # 9. 计算技术指标 — 本地计算，无需sleep
-    logger.info("【步骤9/12】计算技术指标...")
+    logger.info("【步骤9/14】计算技术指标...")
     stats['technical'] = calculate_technical_indicators(date)
 
     # 10. 更新V3.9/V3.95特征缓存 — 本地计算，返回stock_data_cache供v40共享
-    logger.info("【步骤10/12】更新V3.9/V3.95特征缓存...")
+    logger.info("【步骤10/14】更新V3.9/V3.95特征缓存...")
     v39_count, stock_data_cache = update_v39_feature_cache(date)
     stats['v39_cache'] = v39_count
 
     # 11. 更新V4.0特征缓存 — 复用v39的股票数据缓存
-    logger.info("【步骤11/12】更新V4.0 Cross-Sectional特征缓存...")
+    logger.info("【步骤11/14】更新V4.0 Cross-Sectional特征缓存...")
     stats['v40_cache'] = update_v40_feature_cache(date, stock_data_cache=stock_data_cache)
 
     # 释放缓存
     stock_data_cache = None
 
-    # 11.5. 更新BRAIN因子缓存 (V4.8.4 brain_roll_spread等)
-    logger.info("【步骤11.5】更新BRAIN因子缓存...")
+    # 11.4. 更新资金流数据 (NG v1.1.0 moneyflow_daily)
+    logger.info("【步骤11.5/14】更新资金流数据...")
+    try:
+        from ml_models.ng.ng_schema import create_moneyflow_table, DB_PATH as NG_DB_PATH
+        import sqlite3 as _sqlite3
+        create_moneyflow_table(NG_DB_PATH)
+        import json as _json
+        with open(os.path.join(os.path.dirname(__file__), '..', 'config.json')) as f:
+            cfg = _json.load(f)
+        import tushare as ts
+        pro = ts.pro_api(cfg['tushare']['token'])
+        date_str_nohyphen = date.replace('-', '')
+        df_mf = pro.moneyflow(trade_date=date_str_nohyphen)
+        if df_mf is not None and len(df_mf) > 0:
+            # Convert date to dash format for storage
+            date_dash = f"{date[:4]}-{date[4:6]}-{date[6:8]}" if '-' not in date else date
+            conn_mf = _sqlite3.connect(NG_DB_PATH, timeout=30)
+            rows_mf = [(row['ts_code'], date_dash,
+                         float(row.get('buy_sm_amount') or 0), float(row.get('sell_sm_amount') or 0),
+                         float(row.get('buy_md_amount') or 0), float(row.get('sell_md_amount') or 0),
+                         float(row.get('buy_lg_amount') or 0), float(row.get('sell_lg_amount') or 0),
+                         float(row.get('buy_elg_amount') or 0), float(row.get('sell_elg_amount') or 0),
+                         float(row.get('net_mf_amount') or 0)) for _, row in df_mf.iterrows()]
+            conn_mf.executemany(
+                "INSERT OR REPLACE INTO moneyflow_daily "
+                "(code,trade_date,buy_sm_amount,sell_sm_amount,buy_md_amount,sell_md_amount,"
+                "buy_lg_amount,sell_lg_amount,buy_elg_amount,sell_elg_amount,net_mf_amount) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?)", rows_mf)
+            conn_mf.commit()
+            conn_mf.close()
+            stats['moneyflow'] = len(rows_mf)
+        else:
+            stats['moneyflow'] = 0
+    except Exception as e:
+        logger.warning(f"  资金流数据更新失败: {e}")
+        stats['moneyflow'] = 0
+
+    # 11.5. 更新NG特征缓存 (Daily Selection NG 62因子)
+    logger.info("【步骤12/14】更新NG特征缓存...")
+    stats['ng_cache'] = update_ng_feature_cache(date)
+
+    # 11.6. 更新BRAIN因子缓存 (V4.8.4 brain_roll_spread等)
+    logger.info("【步骤13/14】更新BRAIN因子缓存...")
     try:
         from wqbrain_integration.cache_brain_features import batch_compute
         brain_count = batch_compute(_db_path, date, date)
@@ -744,7 +808,7 @@ def quick_daily_update(date: str = None, skip_financial: bool = True):
         stats['brain_cache'] = 0
 
     # 12. 更新GRU神经网络嵌入缓存 (V5.0)
-    logger.info("【步骤12/12】更新GRU神经网络嵌入缓存...")
+    logger.info("【步骤14/14】更新GRU神经网络嵌入缓存...")
     stats['neural_embed'] = update_neural_embeddings(date)
 
     end_time = time.time()
@@ -773,6 +837,8 @@ def quick_daily_update(date: str = None, skip_financial: bool = True):
     logger.info(f"技术指标: {stats['technical']:,} 条")
     logger.info(f"V3.9/V3.95特征缓存: {stats['v39_cache']:,} 条")
     logger.info(f"V4.0特征缓存: {stats['v40_cache']:,} 条")
+    logger.info(f"资金流数据: {stats.get('moneyflow', 0):,} 条")
+    logger.info(f"NG特征缓存: {stats.get('ng_cache', 0):,} 条")
     logger.info(f"GRU神经网络嵌入: {stats['neural_embed']:,} 条")
     logger.info(f"总耗时: {duration:.1f} 秒")
     if stats['quotes'] > 0:

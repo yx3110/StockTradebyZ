@@ -28,7 +28,7 @@ _PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '.
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-from ml_models.ng.ng_schema import create_table, get_table_name, DB_PATH
+from ml_models.ng.ng_schema import create_table, get_table_name, DB_PATH, create_moneyflow_table
 from ml_models.ng.ng_feature_calculator import (
     compute_stock_features,
     compute_fundamental_features,
@@ -36,7 +36,10 @@ from ml_models.ng.ng_feature_calculator import (
     compute_industry_features,
     compute_cross_sectional_rank_features,
     compute_residual_features,
+    compute_moneyflow_features,
+    compute_interaction_features,
 )
+from sklearn.linear_model import LinearRegression
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -81,9 +84,9 @@ def _safe_float(val, default=np.nan) -> float:
 # ---------------------------------------------------------------------------
 
 class NGCacheUpdater:
-    """Batch compute NG v1.0.1/v1.0.2 factors and write to version-specific cache table."""
+    """Batch compute NG v1.0.1/v1.0.2/v1.1.0 factors and write to version-specific cache table."""
 
-    def __init__(self, db_path: str = None, version: str = 'ng1.0.2'):
+    def __init__(self, db_path: str = None, version: str = 'ng1.1.0'):
         self.db_path = db_path or DB_PATH
         self.version = version
         self.table_name = get_table_name(version)
@@ -353,6 +356,116 @@ class NGCacheUpdater:
             return np.array([])
         return np.array([float(r['total_amount'] or 0) for r in rows])
 
+    # ------------------------------------------------------------------
+    # Moneyflow data (v1.1.0)
+    # ------------------------------------------------------------------
+
+    def _fetch_and_store_moneyflow(self, conn: sqlite3.Connection, date: str) -> int:
+        """Fetch moneyflow data from Tushare and store in moneyflow_daily table.
+        Returns row count inserted."""
+        date_str = date.replace('-', '')
+
+        # Check if data already exists for this date
+        existing = conn.execute(
+            "SELECT COUNT(*) as cnt FROM moneyflow_daily WHERE trade_date = ?",
+            (date,)
+        ).fetchone()
+        if existing and existing['cnt'] > 0:
+            return 0
+
+        # Read Tushare token
+        try:
+            config_path = os.path.join(_PROJECT_ROOT, 'config.json')
+            with open(config_path) as f:
+                cfg = json.load(f)
+            import tushare as ts
+            pro = ts.pro_api(cfg['tushare']['token'])
+            df_mf = pro.moneyflow(trade_date=date_str)
+        except Exception as e:
+            print(f"    WARN: moneyflow fetch failed: {e}")
+            return 0
+
+        if df_mf is None or len(df_mf) == 0:
+            return 0
+
+        rows = []
+        for _, row in df_mf.iterrows():
+            rows.append((
+                row['ts_code'], date,
+                float(row.get('buy_sm_amount') or 0),
+                float(row.get('sell_sm_amount') or 0),
+                float(row.get('buy_md_amount') or 0),
+                float(row.get('sell_md_amount') or 0),
+                float(row.get('buy_lg_amount') or 0),
+                float(row.get('sell_lg_amount') or 0),
+                float(row.get('buy_elg_amount') or 0),
+                float(row.get('sell_elg_amount') or 0),
+                float(row.get('net_mf_amount') or 0),
+            ))
+
+        prev_row_factory = conn.row_factory
+        conn.row_factory = None
+        conn.executemany(
+            """INSERT OR REPLACE INTO moneyflow_daily
+               (code, trade_date, buy_sm_amount, sell_sm_amount,
+                buy_md_amount, sell_md_amount, buy_lg_amount, sell_lg_amount,
+                buy_elg_amount, sell_elg_amount, net_mf_amount)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            rows
+        )
+        conn.commit()
+        conn.row_factory = prev_row_factory
+        return len(rows)
+
+    def _load_moneyflow_data(
+        self, conn: sqlite3.Connection, date: str,
+        security_ids: List[int], n_days: int = 20
+    ) -> Dict[str, list]:
+        """Load moneyflow data for given stocks up to n_days before date.
+        Returns Dict[code -> List[dict]] sorted by date ascending."""
+        from datetime import datetime, timedelta
+        dt = datetime.strptime(date, '%Y-%m-%d')
+        lookback_start = (dt - timedelta(days=n_days * 2)).strftime('%Y-%m-%d')
+
+        # Map security_ids -> codes
+        chunk_size = 900
+        sid_to_code: Dict[int, str] = {}
+        for i in range(0, len(security_ids), chunk_size):
+            chunk = security_ids[i:i + chunk_size]
+            rows = conn.execute(
+                f"SELECT id, code FROM securities WHERE id IN ({','.join('?' * len(chunk))})",
+                chunk
+            ).fetchall()
+            for r in rows:
+                sid_to_code[r['id']] = r['code']
+
+        codes = list(sid_to_code.values())
+        if not codes:
+            return {}
+
+        # Query moneyflow_daily in chunks
+        result: Dict[str, list] = defaultdict(list)
+        for i in range(0, len(codes), chunk_size):
+            chunk = codes[i:i + chunk_size]
+            rows = conn.execute(
+                f"""SELECT code, trade_date, buy_sm_amount, sell_sm_amount,
+                           buy_md_amount, sell_md_amount, buy_lg_amount, sell_lg_amount,
+                           buy_elg_amount, sell_elg_amount, net_mf_amount
+                    FROM moneyflow_daily
+                    WHERE trade_date BETWEEN ? AND ?
+                      AND code IN ({','.join('?' * len(chunk))})
+                    ORDER BY code, trade_date""",
+                [lookback_start, date] + chunk
+            ).fetchall()
+            for r in rows:
+                result[r['code']].append(dict(r))
+
+        # Trim to latest n_days per code
+        for code in result:
+            result[code] = result[code][-n_days:]
+
+        return dict(result)
+
     def _load_future_prices(
         self, conn: sqlite3.Connection, future_dates: List[str],
         security_ids: List[int]
@@ -567,6 +680,96 @@ class NGCacheUpdater:
 
         return excess_labels
 
+    def _convert_labels_to_residual(
+        self,
+        excess_labels: Dict[int, Dict[str, float]],
+        universe: Dict[int, dict],
+        price_data: Dict[int, list],
+        returns_20d: Dict[int, float],
+        stock_volatilities: Dict[int, float],
+    ) -> Dict[int, Dict[str, float]]:
+        """
+        v1.1.0: Convert industry-excess labels to STYLE RESIDUAL labels.
+        Regress out [log_market_cap, momentum_20d, volatility_20d] cross-sectionally.
+        Original excess labels stored as label_raw_Xd; residuals become label_Xd.
+        """
+        # Collect cross-sectional data
+        sids_with_data = []
+        X_list = []
+        for sid, labs in excess_labels.items():
+            info = universe.get(sid)
+            if info is None:
+                continue
+            circ_mv = info.get('circ_mv', np.nan)
+            if circ_mv is None or (isinstance(circ_mv, float) and np.isnan(circ_mv)):
+                continue
+            log_mcap = np.log(max(circ_mv, 1.0))
+            mom_20d = returns_20d.get(sid, np.nan)
+            vol_20d = stock_volatilities.get(sid, np.nan)
+            if np.isnan(mom_20d) or np.isnan(vol_20d):
+                continue
+            sids_with_data.append(sid)
+            X_list.append([log_mcap, mom_20d, vol_20d])
+
+        # Need at least 100 stocks for meaningful regression
+        if len(sids_with_data) < 100:
+            # Keep excess labels as-is, just copy to label_raw
+            for sid, labs in excess_labels.items():
+                for h in LABEL_HORIZONS:
+                    key = f'label_{h}d'
+                    labs[f'label_raw_{h}d'] = labs.get(key, np.nan)
+            return excess_labels
+
+        X = np.array(X_list)
+
+        # Run regression for each horizon
+        for h in LABEL_HORIZONS:
+            key = f'label_{h}d'
+            raw_key = f'label_raw_{h}d'
+
+            # First, save original excess as raw for ALL sids
+            for sid, labs in excess_labels.items():
+                labs[raw_key] = labs.get(key, np.nan)
+
+            # Build y vector for regression (only sids_with_data)
+            y = np.array([
+                excess_labels[sid].get(key, np.nan) for sid in sids_with_data
+            ])
+
+            # Mask valid entries
+            valid = ~np.isnan(y)
+            if valid.sum() < 100:
+                continue  # Not enough valid labels, keep excess as-is
+
+            X_valid = X[valid]
+            y_valid = y[valid]
+
+            # Fit linear regression
+            try:
+                reg = LinearRegression()
+                reg.fit(X_valid, y_valid)
+
+                # Compute residuals for ALL sids_with_data
+                y_pred_all = reg.predict(X)
+                for i, sid in enumerate(sids_with_data):
+                    labs = excess_labels[sid]
+                    original = labs.get(key, np.nan)
+                    if not np.isnan(original):
+                        labs[key] = original - y_pred_all[i]
+                    # else: keep as NaN
+            except Exception:
+                pass  # Keep excess labels if regression fails
+
+        # Update downside_10d from residual label_10d
+        for sid, labs in excess_labels.items():
+            label_10d = labs.get('label_10d', np.nan)
+            if label_10d is not None and not np.isnan(label_10d):
+                labs['downside_10d'] = max(0.0, -label_10d)
+            else:
+                labs['downside_10d'] = np.nan
+
+        return excess_labels
+
     # ------------------------------------------------------------------
     # Main entry point: process a single date
     # ------------------------------------------------------------------
@@ -646,6 +849,16 @@ class NGCacheUpdater:
             # 8. Load northbound flow
             nb_5d, nb_std = self._load_northbound_data(conn, date)
 
+            # 8.5. Load moneyflow data (v1.1.0)
+            if self.version >= 'ng1.1.0':
+                create_moneyflow_table(self.db_path)
+                mf_count = self._fetch_and_store_moneyflow(conn, date)
+                if mf_count > 0:
+                    print(f"  [{date}] Fetched {mf_count} moneyflow records")
+                mf_data = self._load_moneyflow_data(conn, date, active_sids, n_days=20)
+            else:
+                mf_data = {}
+
             # 9. Load total market amounts
             market_amounts = self._load_market_amounts(conn, date)
 
@@ -695,6 +908,17 @@ class NGCacheUpdater:
             labels_abs = self._compute_labels(future_dates, future_prices, active_sids)
             # Convert to industry excess returns
             labels_all = self._convert_labels_to_excess(labels_abs, universe)
+
+            # v1.1.0: Convert to style residual labels
+            if self.version >= 'ng1.1.0':
+                # Inject circ_mv into universe for residual regression
+                for sid in active_sids:
+                    db = daily_basic.get(sid)
+                    if db:
+                        universe[sid]['circ_mv'] = _safe_float(db.get('circ_mv'))
+                labels_all = self._convert_labels_to_residual(
+                    labels_all, universe, price_data, returns_20d, stock_volatilities
+                )
 
             # ---------------------------------------------------------------
             # v1.1.0: Pre-compute per-industry peer arrays for CS rank factors
@@ -850,6 +1074,23 @@ class NGCacheUpdater:
                     print(f"    WARN: industry_features failed for {code}: {e}")
                     ind_feats = {}
 
+                # --- Compute moneyflow features (8, v1.1.0) ---
+                mf_feats = {}
+                if self.version >= 'ng1.1.0':
+                    code_for_mf = info['code']
+                    mf_rows_for_stock = mf_data.get(code_for_mf, [])
+                    if len(closes) >= 2:
+                        price_changes = np.diff(closes) / (closes[:-1] + 1e-8)
+                    else:
+                        price_changes = np.array([0.0])
+                    try:
+                        mf_feats = compute_moneyflow_features(
+                            mf_rows_for_stock, amounts, price_changes
+                        )
+                    except Exception as e:
+                        print(f"    WARN: moneyflow_features failed for {code}: {e}")
+                        mf_feats = {}
+
                 # Store raw values needed for CS rank (pass 2)
                 ret_5d_val = returns_5d.get(sid, np.nan)
                 ret_20d_val = returns_20d.get(sid, np.nan)
@@ -869,6 +1110,7 @@ class NGCacheUpdater:
                     'stock_feats': stock_feats,
                     'fund_feats': fund_feats,
                     'ind_feats': ind_feats,
+                    'mf_feats': mf_feats,
                     # Raw values for CS rank
                     'return_5d': ret_5d_val,
                     'return_20d': ret_20d_val,
@@ -961,6 +1203,21 @@ class NGCacheUpdater:
                     print(f"    WARN: residual_features failed for {data['code']}: {e}")
                     res_feats = {}
 
+                # --- Interaction features (8, v1.1.0) ---
+                ix_feats = {}
+                if self.version >= 'ng1.1.0':
+                    try:
+                        ix_feats = compute_interaction_features(
+                            data['stock_feats'],
+                            data.get('mf_feats', {}),
+                            data['ind_feats'],
+                            res_feats,
+                            cs_feats,
+                        )
+                    except Exception as e:
+                        print(f"    WARN: interaction_features failed for {data['code']}: {e}")
+                        ix_feats = {}
+
                 # --- Merge all features ---
                 all_feats = {}
                 all_feats.update(data['stock_feats'])
@@ -968,6 +1225,9 @@ class NGCacheUpdater:
                 all_feats.update(data['ind_feats'])
                 all_feats.update(cs_feats)
                 all_feats.update(res_feats)
+                if self.version >= 'ng1.1.0':
+                    all_feats.update(data.get('mf_feats', {}))
+                    all_feats.update(ix_feats)
 
                 # Clean NaN/Inf
                 clean_feats = {}
@@ -995,7 +1255,8 @@ class NGCacheUpdater:
                         return float(v)
                     return v
 
-                insert_rows.append((
+                # Build base row tuple
+                base_row = (
                     data['code'],
                     date,
                     features_json,
@@ -1004,6 +1265,20 @@ class NGCacheUpdater:
                     _to_sql(stock_labels.get('label_10d')),
                     _to_sql(stock_labels.get('label_15d')),
                     _to_sql(stock_labels.get('downside_10d')),
+                )
+
+                # v1.1.0: add label_raw columns
+                if self.version >= 'ng1.1.0':
+                    raw_cols = (
+                        _to_sql(stock_labels.get('label_raw_3d')),
+                        _to_sql(stock_labels.get('label_raw_5d')),
+                        _to_sql(stock_labels.get('label_raw_10d')),
+                        _to_sql(stock_labels.get('label_raw_15d')),
+                    )
+                else:
+                    raw_cols = ()
+
+                market_cols = (
                     _to_sql(market_feats.get('market_return_5d')),
                     _to_sql(market_feats.get('market_return_20d')),
                     _to_sql(market_feats.get('market_volatility_20d')),
@@ -1014,12 +1289,28 @@ class NGCacheUpdater:
                     _to_sql(market_feats.get('market_drawdown')),
                     _to_sql(market_feats.get('vix_proxy')),
                     _to_sql(market_feats.get('market_momentum_diff')),
-                ))
+                )
+
+                insert_rows.append(base_row + raw_cols + market_cols)
 
             # Write to database
             if insert_rows:
                 conn.row_factory = None
-                if self.version >= 'ng1.0.2':
+                if self.version >= 'ng1.1.0':
+                    # 22 columns: includes downside_10d + 4 label_raw columns
+                    conn.executemany(
+                        f'''INSERT OR REPLACE INTO {self.table_name}
+                           (code, trade_date, features_json,
+                            label_3d, label_5d, label_10d, label_15d, downside_10d,
+                            label_raw_3d, label_raw_5d, label_raw_10d, label_raw_15d,
+                            market_return_5d, market_return_20d, market_volatility_20d,
+                            market_breadth, market_new_high_ratio, northbound_flow_5d,
+                            market_volume_ratio, market_drawdown, vix_proxy,
+                            market_momentum_diff)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                        insert_rows
+                    )
+                elif self.version >= 'ng1.0.2':
                     # 18 columns: includes downside_10d at position 7
                     conn.executemany(
                         f'''INSERT OR REPLACE INTO {self.table_name}
@@ -1090,7 +1381,7 @@ def main():
     parser.add_argument('--start-date', help='Backfill start date (YYYY-MM-DD)')
     parser.add_argument('--end-date', help='Backfill end date (YYYY-MM-DD)')
     parser.add_argument('--db-path', help='Override database path')
-    parser.add_argument('--version', default='ng1.0.2', help='NG version (default: ng1.0.2)')
+    parser.add_argument('--version', default='ng1.1.0', help='NG version (default: ng1.1.0)')
     args = parser.parse_args()
 
     updater = NGCacheUpdater(db_path=args.db_path, version=args.version)
