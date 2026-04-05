@@ -19,6 +19,7 @@ VERSION_TABLE_MAP = {
     'ng1.0.0': 'ng_feature_cache',
     'ng1.0.1': 'ng101_feature_cache',
     'ng1.0.2': 'ng102_feature_cache',
+    'ng1.1.0': 'ng110_feature_cache',
 }
 
 DEFAULT_VERSION = 'ng1.0.2'
@@ -36,6 +37,11 @@ def _schema_sql(table_name: str, version: str = None) -> str:
     extra_cols = ''
     if ver >= 'ng1.0.2':
         extra_cols = '\n    downside_10d REAL,'
+    if ver >= 'ng1.1.0':
+        extra_cols += '\n    label_raw_3d REAL,'
+        extra_cols += '\n    label_raw_5d REAL,'
+        extra_cols += '\n    label_raw_10d REAL,'
+        extra_cols += '\n    label_raw_15d REAL,'
     return f"""
 CREATE TABLE IF NOT EXISTS {table_name} (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -76,6 +82,35 @@ def create_table(db_path: str = None, version: str = None):
 
 # Backward compatibility: also expose SCHEMA_SQL for ng_feature_cache (v1.0.0)
 SCHEMA_SQL = _schema_sql('ng_feature_cache')
+
+
+MONEYFLOW_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS moneyflow_daily (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    code VARCHAR(10) NOT NULL,
+    trade_date DATE NOT NULL,
+    buy_sm_amount REAL,
+    sell_sm_amount REAL,
+    buy_md_amount REAL,
+    sell_md_amount REAL,
+    buy_lg_amount REAL,
+    sell_lg_amount REAL,
+    buy_elg_amount REAL,
+    sell_elg_amount REAL,
+    net_mf_amount REAL,
+    UNIQUE(code, trade_date)
+);
+CREATE INDEX IF NOT EXISTS idx_moneyflow_daily_date ON moneyflow_daily(trade_date);
+CREATE INDEX IF NOT EXISTS idx_moneyflow_daily_code_date ON moneyflow_daily(code, trade_date);
+"""
+
+
+def create_moneyflow_table(db_path: str = None):
+    """Create moneyflow_daily table (if not exists)."""
+    path = db_path or DB_PATH
+    with sqlite3.connect(path, timeout=30) as conn:
+        conn.executescript(MONEYFLOW_SCHEMA_SQL)
+    print(f"moneyflow_daily table ready: {path}")
 
 
 if __name__ == '__main__':
