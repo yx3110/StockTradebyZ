@@ -71,6 +71,8 @@ class NGProductionScorer:
         self.recommendation_thresholds = None
         self.target_weights = dict(DEFAULT_COMPOSITE_WEIGHTS)
         self.cache_table = get_table_name(NG_VERSION)  # default, updated by model version
+        self.downside_model = None
+        self.lambda_risk = 0.5
 
         self._load_model(model_path)
 
@@ -155,6 +157,9 @@ class NGProductionScorer:
         model_version = model_data.get('version', 'unknown')
         # Auto-detect cache table from model version
         self.cache_table = get_table_name(model_version)
+        # v1.0.2: downside model
+        self.downside_model = model_data.get('downside_model')
+        self.lambda_risk = model_data.get('lambda_risk', 0.5)
         n_targets = len(self.models)
         n_features = len(self.feature_names)
         scoring_mode = "continuous" if self.global_quantiles is not None else "cross-sectional"
@@ -163,6 +168,8 @@ class NGProductionScorer:
         print(f"  file: {path.name}")
         print(f"  cache table: {self.cache_table}")
         print(f"  composite weights: {self.target_weights}")
+        if self.downside_model is not None:
+            print(f"  downside model: loaded (lambda_risk={self.lambda_risk})")
 
     # ------------------------------------------------------------------
     # Feature loading
@@ -368,6 +375,16 @@ class NGProductionScorer:
         for target_key in ['3d', '5d', '10d', '15d']:
             combined_pred += w.get(target_key, 0.0) * predictions.get(target_key, np.zeros(len(codes)))
 
+        # v1.0.2: Risk discount
+        pred_downside = np.zeros(len(codes))
+        if self.downside_model is not None:
+            try:
+                pred_downside = self.downside_model.predict(feature_matrix)
+                pred_downside = np.clip(pred_downside, 0, None)  # downside is non-negative
+                combined_pred = combined_pred - self.lambda_risk * pred_downside
+            except Exception as e:
+                logger.warning("Downside prediction failed: %s", e)
+
         scores = self._to_global_score(combined_pred)
 
         all_results = {}
@@ -377,6 +394,7 @@ class NGProductionScorer:
                 'pred_5d': float(predictions['5d'][i]),
                 'pred_10d': float(predictions['10d'][i]),
                 'pred_15d': float(predictions.get('15d', np.zeros(len(codes)))[i]),
+                'pred_downside_10d': float(pred_downside[i]),
                 'rank_score': float(combined_pred[i]),
                 'score': float(scores[i]),
                 'recommendation': self._get_recommendation(float(scores[i])),
@@ -449,6 +467,16 @@ class NGProductionScorer:
         for target_key in ['3d', '5d', '10d', '15d']:
             combined_pred += w.get(target_key, 0.0) * predictions.get(target_key, np.zeros(len(codes)))
 
+        # v1.0.2: Risk discount
+        pred_downside = np.zeros(len(codes))
+        if self.downside_model is not None:
+            try:
+                pred_downside = self.downside_model.predict(feature_matrix)
+                pred_downside = np.clip(pred_downside, 0, None)  # downside is non-negative
+                combined_pred = combined_pred - self.lambda_risk * pred_downside
+            except Exception as e:
+                logger.warning("Downside prediction failed: %s", e)
+
         scores = self._to_global_score(combined_pred)
 
         results = {}
@@ -459,6 +487,7 @@ class NGProductionScorer:
                     'pred_5d': float(predictions['5d'][i]),
                     'pred_10d': float(predictions['10d'][i]),
                     'pred_15d': float(predictions.get('15d', np.zeros(len(codes)))[i]),
+                    'pred_downside_10d': float(pred_downside[i]),
                     'rank_score': float(combined_pred[i]),
                     'score': float(scores[i]),
                     'recommendation': self._get_recommendation(float(scores[i])),
