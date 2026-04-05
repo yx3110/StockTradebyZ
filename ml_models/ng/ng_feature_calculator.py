@@ -627,3 +627,211 @@ def compute_residual_features(
         result['relative_strength_vs_peers'] = np.nan
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# Helper utilities for interaction features
+# ---------------------------------------------------------------------------
+
+def _safe_mul(a, b) -> float:
+    """Multiply two values, return np.nan if either is nan or None."""
+    if a is None or b is None:
+        return np.nan
+    a_f, b_f = float(a), float(b)
+    if np.isnan(a_f) or np.isnan(b_f):
+        return np.nan
+    return a_f * b_f
+
+
+def _safe_div(a, b, eps: float = 1e-8) -> float:
+    """Divide a by b, return np.nan if either is nan or None."""
+    if a is None or b is None:
+        return np.nan
+    a_f, b_f = float(a), float(b)
+    if np.isnan(a_f) or np.isnan(b_f):
+        return np.nan
+    return a_f / (b_f + eps)
+
+
+# ---------------------------------------------------------------------------
+# Function 7: Money Flow Features (8 factors, NEW in v1.1.0)
+# ---------------------------------------------------------------------------
+
+def compute_moneyflow_features(
+    mf_rows: list,       # List[dict] with keys: net_mf_amount, buy_lg_amount, sell_lg_amount,
+                          #   buy_elg_amount, sell_elg_amount, buy_sm_amount, sell_sm_amount,
+                          #   buy_md_amount, sell_md_amount
+    amounts: np.ndarray,  # Daily trading amounts (for normalization)
+    price_changes: np.ndarray,  # Daily price change pct (for divergence)
+) -> Dict[str, float]:
+    """
+    Compute 8 money-flow factors from Tushare moneyflow data.
+
+    Factors:
+      1. net_mf_ratio_5d       — net money flow / trading amount (5d)
+      2. big_order_ratio        — (big+elg net buy today) / total amount today
+      3. big_order_trend_5d     — linreg slope of big net over 5d
+      4. small_vs_big_divergence — sign agreement of small vs big net (5d mean)
+      5. mf_concentration       — elg share / (sm+md share) today
+      6. mf_momentum_10d        — (MA5 - MA10 of net_mf) / std(net_mf 10d)
+      7. northbound_stock_5d    — placeholder (filled externally)
+      8. mf_volume_divergence   — sign agreement of net_mf vs price_change (5d)
+
+    Returns np.nan for any factor where data is insufficient (< 3 rows).
+    All divisions guarded with +1e-8.
+    """
+    result: Dict[str, float] = {}
+    n = len(mf_rows) if mf_rows else 0
+
+    # Insufficient data guard
+    if n < 3:
+        return {
+            'net_mf_ratio_5d': np.nan,
+            'big_order_ratio': np.nan,
+            'big_order_trend_5d': np.nan,
+            'small_vs_big_divergence': np.nan,
+            'mf_concentration': np.nan,
+            'mf_momentum_10d': np.nan,
+            'northbound_stock_5d': 0.0,
+            'mf_volume_divergence': np.nan,
+        }
+
+    # Extract arrays from mf_rows
+    net_mf = np.array([float(r.get('net_mf_amount', 0) or 0) for r in mf_rows])
+    buy_lg = np.array([float(r.get('buy_lg_amount', 0) or 0) for r in mf_rows])
+    sell_lg = np.array([float(r.get('sell_lg_amount', 0) or 0) for r in mf_rows])
+    buy_elg = np.array([float(r.get('buy_elg_amount', 0) or 0) for r in mf_rows])
+    sell_elg = np.array([float(r.get('sell_elg_amount', 0) or 0) for r in mf_rows])
+    buy_sm = np.array([float(r.get('buy_sm_amount', 0) or 0) for r in mf_rows])
+    sell_sm = np.array([float(r.get('sell_sm_amount', 0) or 0) for r in mf_rows])
+    buy_md = np.array([float(r.get('buy_md_amount', 0) or 0) for r in mf_rows])
+    sell_md = np.array([float(r.get('sell_md_amount', 0) or 0) for r in mf_rows])
+
+    big_net = (buy_lg + buy_elg) - (sell_lg + sell_elg)
+    sm_net = buy_sm - sell_sm
+
+    # 1. net_mf_ratio_5d = sum(net_mf[-5:]) / sum(amounts[-5:])
+    tail5 = min(n, 5)
+    amt_tail5 = amounts[-tail5:] if amounts is not None and len(amounts) >= tail5 else None
+    if amt_tail5 is not None and len(amt_tail5) > 0:
+        result['net_mf_ratio_5d'] = float(net_mf[-tail5:].sum()) / (float(amt_tail5.sum()) + 1e-8)
+    else:
+        result['net_mf_ratio_5d'] = np.nan
+
+    # 2. big_order_ratio = (big+elg net buy today) / total_amount today
+    today_amt = float(amounts[-1]) if amounts is not None and len(amounts) > 0 else 0.0
+    result['big_order_ratio'] = float(big_net[-1]) / (today_amt + 1e-8)
+
+    # 3. big_order_trend_5d = linreg slope of big_net[-5:]
+    if tail5 >= 2:
+        result['big_order_trend_5d'] = _linreg_slope(big_net[-tail5:])
+    else:
+        result['big_order_trend_5d'] = np.nan
+
+    # 4. small_vs_big_divergence = mean(sign(sm_net) * sign(big_net)) over 5d
+    if tail5 >= 3:
+        signs = np.sign(sm_net[-tail5:]) * np.sign(big_net[-tail5:])
+        result['small_vs_big_divergence'] = float(signs.mean())
+    else:
+        result['small_vs_big_divergence'] = np.nan
+
+    # 5. mf_concentration = (elg_amount today / total) / (sm_md_amount today / total)
+    elg_today = float(buy_elg[-1]) + float(sell_elg[-1])
+    sm_md_today = float(buy_sm[-1]) + float(sell_sm[-1]) + float(buy_md[-1]) + float(sell_md[-1])
+    result['mf_concentration'] = elg_today / (sm_md_today + 1e-8)
+
+    # 6. mf_momentum_10d = (MA5 - MA10 of net_mf) / std(net_mf[-10:])
+    tail10 = min(n, 10)
+    if tail10 >= 5:
+        ma5_mf = float(net_mf[-5:].mean())
+        ma10_mf = float(net_mf[-tail10:].mean())
+        std10 = float(net_mf[-tail10:].std())
+        result['mf_momentum_10d'] = (ma5_mf - ma10_mf) / (std10 + 1e-8)
+    else:
+        result['mf_momentum_10d'] = np.nan
+
+    # 7. northbound_stock_5d — placeholder, filled externally
+    result['northbound_stock_5d'] = 0.0
+
+    # 8. mf_volume_divergence = mean(sign(net_mf) * sign(price_change)) over 5d
+    if (price_changes is not None and len(price_changes) >= tail5
+            and tail5 >= 3):
+        pc = price_changes[-tail5:].astype(float)
+        signs_div = np.sign(net_mf[-tail5:]) * np.sign(pc)
+        result['mf_volume_divergence'] = float(signs_div.mean())
+    else:
+        result['mf_volume_divergence'] = np.nan
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Function 8: Interaction Features (8 factors, NEW in v1.1.0)
+# ---------------------------------------------------------------------------
+
+def compute_interaction_features(
+    stock_feats: Dict[str, float],
+    mf_feats: Dict[str, float],
+    industry_feats: Dict[str, float],
+    residual_feats: Dict[str, float],
+    cs_rank_feats: Dict[str, float],
+) -> Dict[str, float]:
+    """
+    Compute 8 candidate interaction factors (to be IC-screened during training).
+
+    These capture non-linear cross-group interactions that single factors miss.
+    All factor names prefixed with ix_.
+
+    Uses _safe_mul / _safe_div helpers so that any nan input propagates correctly.
+    """
+    result: Dict[str, float] = {}
+
+    # 1. ix_vol_pullback = volume_ratio_5d * pullback_to_ma20
+    result['ix_vol_pullback'] = _safe_mul(
+        stock_feats.get('volume_ratio_5d'),
+        stock_feats.get('pullback_to_ma20'),
+    )
+
+    # 2. ix_big_trend = big_order_ratio * trend_strength_20d
+    result['ix_big_trend'] = _safe_mul(
+        mf_feats.get('big_order_ratio'),
+        stock_feats.get('trend_strength_20d'),
+    )
+
+    # 3. ix_rsi_mf = rsi_14 * mf_momentum_10d
+    result['ix_rsi_mf'] = _safe_mul(
+        stock_feats.get('rsi_14'),
+        mf_feats.get('mf_momentum_10d'),
+    )
+
+    # 4. ix_ind_big = industry_relative_strength * big_order_ratio
+    result['ix_ind_big'] = _safe_mul(
+        industry_feats.get('industry_relative_strength'),
+        mf_feats.get('big_order_ratio'),
+    )
+
+    # 5. ix_mf_efficiency = net_mf_ratio_5d / (turnover_rate + 1e-8)
+    result['ix_mf_efficiency'] = _safe_div(
+        mf_feats.get('net_mf_ratio_5d'),
+        stock_feats.get('turnover_rate'),
+    )
+
+    # 6. ix_vol_surge_pullback = cs_rank_volume_surge * pullback_from_high
+    result['ix_vol_surge_pullback'] = _safe_mul(
+        cs_rank_feats.get('cs_rank_volume_surge'),
+        stock_feats.get('pullback_from_high'),
+    )
+
+    # 7. ix_alpha_conc = residual_return_20d * mf_concentration
+    result['ix_alpha_conc'] = _safe_mul(
+        residual_feats.get('residual_return_20d'),
+        mf_feats.get('mf_concentration'),
+    )
+
+    # 8. ix_north_cap = northbound_stock_5d * log_market_cap
+    result['ix_north_cap'] = _safe_mul(
+        mf_feats.get('northbound_stock_5d'),
+        stock_feats.get('log_market_cap'),
+    )
+
+    return result
