@@ -81,9 +81,9 @@ def _safe_float(val, default=np.nan) -> float:
 # ---------------------------------------------------------------------------
 
 class NGCacheUpdater:
-    """Batch compute NG v1.0.1 factors and write to version-specific cache table."""
+    """Batch compute NG v1.0.1/v1.0.2 factors and write to version-specific cache table."""
 
-    def __init__(self, db_path: str = None, version: str = 'ng1.0.1'):
+    def __init__(self, db_path: str = None, version: str = 'ng1.0.2'):
         self.db_path = db_path or DB_PATH
         self.version = version
         self.table_name = get_table_name(version)
@@ -557,6 +557,14 @@ class NGCacheUpdater:
                     excess[key] = val - medians.get(key, 0.0)
             excess_labels[sid] = excess
 
+        # v1.0.2: compute downside_10d from excess label_10d
+        for sid, labs in excess_labels.items():
+            label_10d = labs.get('label_10d', np.nan)
+            if label_10d is not None and not np.isnan(label_10d):
+                labs['downside_10d'] = max(0.0, -label_10d)
+            else:
+                labs['downside_10d'] = np.nan
+
         return excess_labels
 
     # ------------------------------------------------------------------
@@ -995,6 +1003,7 @@ class NGCacheUpdater:
                     _to_sql(stock_labels.get('label_5d')),
                     _to_sql(stock_labels.get('label_10d')),
                     _to_sql(stock_labels.get('label_15d')),
+                    _to_sql(stock_labels.get('downside_10d')),
                     _to_sql(market_feats.get('market_return_5d')),
                     _to_sql(market_feats.get('market_return_20d')),
                     _to_sql(market_feats.get('market_volatility_20d')),
@@ -1010,17 +1019,33 @@ class NGCacheUpdater:
             # Write to database
             if insert_rows:
                 conn.row_factory = None
-                conn.executemany(
-                    f'''INSERT OR REPLACE INTO {self.table_name}
-                       (code, trade_date, features_json,
-                        label_3d, label_5d, label_10d, label_15d,
-                        market_return_5d, market_return_20d, market_volatility_20d,
-                        market_breadth, market_new_high_ratio, northbound_flow_5d,
-                        market_volume_ratio, market_drawdown, vix_proxy,
-                        market_momentum_diff)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
-                    insert_rows
-                )
+                if self.version >= 'ng1.0.2':
+                    # 18 columns: includes downside_10d at position 7
+                    conn.executemany(
+                        f'''INSERT OR REPLACE INTO {self.table_name}
+                           (code, trade_date, features_json,
+                            label_3d, label_5d, label_10d, label_15d, downside_10d,
+                            market_return_5d, market_return_20d, market_volatility_20d,
+                            market_breadth, market_new_high_ratio, northbound_flow_5d,
+                            market_volume_ratio, market_drawdown, vix_proxy,
+                            market_momentum_diff)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                        insert_rows
+                    )
+                else:
+                    # 17 columns: drop downside_10d (index 7) for backward compat
+                    rows_no_ds = [r[:7] + r[8:] for r in insert_rows]
+                    conn.executemany(
+                        f'''INSERT OR REPLACE INTO {self.table_name}
+                           (code, trade_date, features_json,
+                            label_3d, label_5d, label_10d, label_15d,
+                            market_return_5d, market_return_20d, market_volatility_20d,
+                            market_breadth, market_new_high_ratio, northbound_flow_5d,
+                            market_volume_ratio, market_drawdown, vix_proxy,
+                            market_momentum_diff)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                        rows_no_ds
+                    )
                 conn.commit()
 
             elapsed = time.time() - t0
@@ -1065,7 +1090,7 @@ def main():
     parser.add_argument('--start-date', help='Backfill start date (YYYY-MM-DD)')
     parser.add_argument('--end-date', help='Backfill end date (YYYY-MM-DD)')
     parser.add_argument('--db-path', help='Override database path')
-    parser.add_argument('--version', default='ng1.0.1', help='NG version (default: ng1.0.1)')
+    parser.add_argument('--version', default='ng1.0.2', help='NG version (default: ng1.0.2)')
     args = parser.parse_args()
 
     updater = NGCacheUpdater(db_path=args.db_path, version=args.version)
