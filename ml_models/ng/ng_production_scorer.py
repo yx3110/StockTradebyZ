@@ -1,21 +1,12 @@
 #!/usr/bin/env python3
 """
-NG Production Scorer — loads NG model, scores all stocks for a date.
+NG v1.1.0 Production Scorer — loads NG model, scores all stocks for a date.
 
-Architecture:
-  Model: NG trained model (62 features: 52 stock + 10 market)
-  Data:  Features loaded directly from ng_feature_cache table
-  Scoring pipeline:
-    1. Load features from ng_feature_cache for the given date
-    2. Cross-sectional Robust Z-Score on stock features
-    3. Apply winsorization bounds from model
-    4. Predict with ensemble for each target (3d, 5d, 10d)
-    5. Composite ranking: 5d x 0.50 + 10d x 0.35 + 3d x 0.15
-    6. Convert to percentile score (0-100)
-    7. Assign recommendation: >=95 strong buy, >=85 buy, >=70 cautious buy
-
-This scorer is self-contained — it does NOT inherit from V485ProductionScorer.
-It reads directly from ng_feature_cache, avoiding the legacy feature pipeline.
+v1.1.0 changes:
+  - 68 features (58 stock + 10 market), was 62
+  - ICIR adaptive composite weights from model (not hardcoded)
+  - Labels are industry excess returns
+  - Backward compatible: auto-detects v1.0.0 vs v1.1.0 models
 """
 
 import json
@@ -34,28 +25,28 @@ logger = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 DB_PATH = str(PROJECT_ROOT / 'data_adapter' / 'stock_data.db')
 
-# Import feature names from the trainer module
 from .ng_trainer import (
     STOCK_FEATURE_NAMES,
     MARKET_FEATURE_NAMES,
     ALL_FEATURE_NAMES,
+    NG_VERSION,
 )
+from .ng_schema import get_table_name
 
-# Optional fast JSON
 try:
     import orjson
     _json_loads = orjson.loads
 except ImportError:
     _json_loads = json.loads
 
-# Composite weights for ranking
-COMPOSITE_WEIGHTS = {
-    '3d': 0.15,
-    '5d': 0.50,
+# Default composite weights (overridden by model's ICIR adaptive weights)
+DEFAULT_COMPOSITE_WEIGHTS = {
+    '3d': 0.10,
+    '5d': 0.20,
     '10d': 0.35,
+    '15d': 0.35,
 }
 
-# Recommendation thresholds (percentile-based)
 REC_THRESHOLDS = {
     'strong_buy': 95,
     'buy': 85,
@@ -64,28 +55,26 @@ REC_THRESHOLDS = {
 
 
 class NGProductionScorer:
-    """NG Production Scorer — self-contained scoring from ng_feature_cache."""
+    """NG v1.1.0 Production Scorer — self-contained scoring from ng_feature_cache."""
 
     def __init__(self, db_path: str = None, model_path: str = None):
         self.db_path = db_path or DB_PATH
         self.model_dir = PROJECT_ROOT / 'ml_models' / 'trained_models' / 'ng'
 
-        # Model components
-        self.models = {}       # {target: {model_name: model}}
-        self.weights = {}      # {target: {model_name: weight}}
+        self.models = {}
+        self.weights = {}
         self.feature_names = list(ALL_FEATURE_NAMES)
         self.stock_feature_cols = list(STOCK_FEATURE_NAMES)
         self.macro_feature_cols = list(MARKET_FEATURE_NAMES)
         self.winsorize_bounds = None
         self.global_quantiles = None
         self.recommendation_thresholds = None
-        self.target_weights = dict(COMPOSITE_WEIGHTS)
+        self.target_weights = dict(DEFAULT_COMPOSITE_WEIGHTS)
+        self.cache_table = get_table_name(NG_VERSION)  # default, updated by model version
 
-        # Load model
         self._load_model(model_path)
 
     def _load_model(self, model_path: str = None):
-        """Load the latest NG model from trained_models/ng/."""
         if model_path:
             path = Path(model_path)
         else:
@@ -116,7 +105,7 @@ class NGProductionScorer:
             else:
                 self.models[target] = target_data
 
-        # Feature names from model (fallback to static list)
+        # Feature names from model
         self.feature_names = model_data.get('feature_names', list(ALL_FEATURE_NAMES))
         self.stock_feature_cols = model_data.get('stock_feature_cols', list(STOCK_FEATURE_NAMES))
         self.macro_feature_cols = model_data.get('macro_feature_cols', list(MARKET_FEATURE_NAMES))
@@ -130,7 +119,7 @@ class NGProductionScorer:
         else:
             self.winsorize_bounds = None
 
-        # Global quantiles for percentile scoring
+        # Global quantiles
         raw_quantiles = model_data.get('global_quantiles')
         if raw_quantiles is not None:
             self.global_quantiles = np.array(raw_quantiles)
@@ -147,16 +136,15 @@ class NGProductionScorer:
                 with open(rec_path, 'r') as f:
                     self.recommendation_thresholds = json.load(f)
 
-        # Target weights from model
+        # Target weights from model (ICIR adaptive in v1.1.0)
         stored_weights = model_data.get('target_weights', {})
         if stored_weights:
-            # Convert label_Xd → Xd format if needed
             self.target_weights = {}
             for k, v in stored_weights.items():
                 key = k.replace('label_', '') if k.startswith('label_') else k
                 self.target_weights[key] = v
 
-        # ICIR-clipped weights
+        # ICIR-clipped ensemble weights
         ensemble_weights = model_data.get('ensemble_weights', {})
         if ensemble_weights:
             for target_key in self.weights:
@@ -164,42 +152,35 @@ class NGProductionScorer:
                 if ew_key in ensemble_weights:
                     self.weights[target_key] = ensemble_weights[ew_key]
 
+        model_version = model_data.get('version', 'unknown')
+        # Auto-detect cache table from model version
+        self.cache_table = get_table_name(model_version)
         n_targets = len(self.models)
         n_features = len(self.feature_names)
         scoring_mode = "continuous" if self.global_quantiles is not None else "cross-sectional"
-        print(f"NG scorer loaded: {list(self.models.keys())} "
+        print(f"NG scorer loaded ({model_version}): {list(self.models.keys())} "
               f"[{scoring_mode} scoring, {n_features} features]")
         print(f"  file: {path.name}")
+        print(f"  cache table: {self.cache_table}")
+        print(f"  composite weights: {self.target_weights}")
 
     # ------------------------------------------------------------------
-    # Feature loading from ng_feature_cache
+    # Feature loading
     # ------------------------------------------------------------------
 
     def _load_features(self, stock_codes: List[str], date: str) -> Optional[pd.DataFrame]:
-        """Load features from ng_feature_cache for a given date.
-
-        Args:
-            stock_codes: List of stock codes to score
-            date: Trade date (YYYY-MM-DD or YYYYMMDD)
-
-        Returns:
-            DataFrame with columns: code, [62 feature names]
-            or None if no data
-        """
-        # Normalize date format
         if isinstance(date, str) and len(date) == 8 and date.isdigit():
             date = f"{date[:4]}-{date[4:6]}-{date[6:]}"
 
         conn = sqlite3.connect(self.db_path, timeout=30)
         try:
-            # Load all stocks for the date (for cross-sectional z-score)
-            query = """
+            query = f"""
             SELECT code, features_json,
                    market_return_5d, market_return_20d, market_volatility_20d,
                    market_breadth, market_new_high_ratio, northbound_flow_5d,
                    market_volume_ratio, market_drawdown, vix_proxy,
                    market_momentum_diff
-            FROM ng_feature_cache
+            FROM {self.cache_table}
             WHERE trade_date = ?
             """
             df_raw = pd.read_sql(query, conn, params=[date])
@@ -207,26 +188,24 @@ class NGProductionScorer:
             conn.close()
 
         if df_raw.empty:
-            logger.warning("No ng_feature_cache data for date %s", date)
+            logger.warning("No %s data for date %s", self.cache_table, date)
             return None
 
-        # Parse features_json
         parsed = df_raw['features_json'].apply(_json_loads).tolist()
         df_stock = pd.DataFrame(parsed)
 
-        # Ensure all stock feature columns exist
-        for col in STOCK_FEATURE_NAMES:
+        # Ensure expected columns (handles both v1.0.0 and v1.1.0 data)
+        for col in self.stock_feature_cols:
             if col not in df_stock.columns:
                 df_stock[col] = np.nan
 
-        # Build result
         result = pd.DataFrame()
         result['code'] = df_raw['code'].values
 
-        for col in STOCK_FEATURE_NAMES:
+        for col in self.stock_feature_cols:
             result[col] = pd.to_numeric(df_stock[col], errors='coerce').fillna(0.0).values
 
-        for col in MARKET_FEATURE_NAMES:
+        for col in self.macro_feature_cols:
             if col in df_raw.columns:
                 result[col] = pd.to_numeric(df_raw[col], errors='coerce').fillna(0.0).values
             else:
@@ -240,14 +219,6 @@ class NGProductionScorer:
 
     @staticmethod
     def _robust_zscore(data: np.ndarray) -> np.ndarray:
-        """Apply Robust Z-Score (MAD-based) across all rows for each column.
-
-        Args:
-            data: (n_samples, n_features) array
-
-        Returns:
-            Normalized array, clipped to [-3, 3]
-        """
         result = data.copy()
         for col in range(data.shape[1]):
             values = data[:, col]
@@ -263,15 +234,6 @@ class NGProductionScorer:
     # ------------------------------------------------------------------
 
     def _ensemble_predict(self, X: np.ndarray, target: str) -> Optional[np.ndarray]:
-        """Run ensemble prediction for a target.
-
-        Args:
-            X: Feature matrix (n_stocks, n_features)
-            target: '3d', '5d', or '10d'
-
-        Returns:
-            Ensemble prediction array or None if target not available
-        """
         if target not in self.models or not self.models[target]:
             return None
 
@@ -290,7 +252,6 @@ class NGProductionScorer:
         if not preds:
             return None
 
-        # Rescale rank models to regression scale (exclude quantile models)
         regression_names = [n for n in preds if n not in ('lgb_rank', 'lgb_listnet', 'lgb_q95')]
         rank_names = [n for n in preds if n in ('lgb_rank', 'lgb_listnet')]
         if regression_names and rank_names:
@@ -302,7 +263,6 @@ class NGProductionScorer:
                 rp_std = max(np.std(rp), 1e-8)
                 preds[rn] = (rp - np.mean(rp)) / rp_std * t_std + t_mean
 
-        # Weighted average (exclude Q95 from composite)
         COMPOSITE_EXCLUDE = ('lgb_q95',)
         target_w = self.weights.get(target, {})
         weighted_sum = np.zeros(X.shape[0])
@@ -324,17 +284,11 @@ class NGProductionScorer:
     # ------------------------------------------------------------------
 
     def _to_global_score(self, combined_pred: np.ndarray) -> np.ndarray:
-        """Convert combined prediction to global percentile score (0-100).
-
-        Uses global_quantiles from training if available, otherwise
-        falls back to cross-sectional percentile.
-        """
         if self.global_quantiles is not None and len(self.global_quantiles) > 0:
             gq = np.array(self.global_quantiles)
             scores = np.searchsorted(gq, combined_pred) / len(gq) * 100
             return np.clip(scores, 0, 100)
         else:
-            # Cross-sectional percentile
             n = len(combined_pred)
             if n <= 1:
                 return np.full(n, 50.0)
@@ -342,7 +296,6 @@ class NGProductionScorer:
             return (ranks - 1) / (n - 1) * 100
 
     def _get_recommendation(self, score: float) -> str:
-        """Map score to recommendation string."""
         if score >= REC_THRESHOLDS['strong_buy']:
             return '强烈买入'
         elif score >= REC_THRESHOLDS['buy']:
@@ -357,22 +310,11 @@ class NGProductionScorer:
     # ------------------------------------------------------------------
 
     def predict_scores(self, stock_codes: List[str], date: str) -> Dict[str, Dict]:
-        """Score stocks for a given date.
-
-        Args:
-            stock_codes: List of stock codes to score
-            date: Trade date (YYYY-MM-DD or YYYYMMDD)
-
-        Returns:
-            {code: {pred_3d, pred_5d, pred_10d, rank_score, score, recommendation}}
-        """
-        # Normalize date
         if isinstance(date, str) and len(date) == 8 and date.isdigit():
             date = f"{date[:4]}-{date[4:6]}-{date[6:]}"
 
         results = {}
 
-        # Step 1: Load features (full cross-section for z-score)
         features_df = self._load_features(stock_codes, date)
 
         if features_df is None or len(features_df) == 0:
@@ -384,118 +326,12 @@ class NGProductionScorer:
                 }
             return results
 
-        # Step 2: Cross-sectional Robust Z-Score on stock features
+        # Cross-sectional Robust Z-Score on stock features
         stock_cols_idx = [
             self.feature_names.index(c) for c in self.stock_feature_cols
             if c in self.feature_names
         ]
         feature_matrix = features_df[self.feature_names].values.copy()
-        if stock_cols_idx:
-            stock_block = feature_matrix[:, stock_cols_idx]
-            stock_block = self._robust_zscore(stock_block)
-            feature_matrix[:, stock_cols_idx] = stock_block
-
-        # Step 3: Apply winsorization bounds
-        if self.winsorize_bounds:
-            if isinstance(self.winsorize_bounds, dict):
-                for i, fname in enumerate(self.feature_names):
-                    if fname in self.winsorize_bounds:
-                        lo, hi = self.winsorize_bounds[fname]
-                        feature_matrix[:, i] = np.clip(feature_matrix[:, i], lo, hi)
-            elif isinstance(self.winsorize_bounds, list):
-                for i, (lo, hi) in enumerate(self.winsorize_bounds):
-                    if i < feature_matrix.shape[1]:
-                        feature_matrix[:, i] = np.clip(feature_matrix[:, i], lo, hi)
-
-        # Replace NaN/Inf
-        feature_matrix = np.nan_to_num(feature_matrix, nan=0.0, posinf=0.0, neginf=0.0)
-
-        codes = features_df['code'].tolist()
-
-        # Step 4: Predict for each target
-        predictions = {}
-        for target in ['3d', '5d', '10d']:
-            pred = self._ensemble_predict(feature_matrix, target)
-            if pred is not None:
-                predictions[target] = pred
-            else:
-                predictions[target] = np.zeros(len(codes))
-
-        # Step 5: Composite ranking
-        w = self.target_weights
-        combined_pred = (
-            w.get('3d', 0.15) * predictions.get('3d', np.zeros(len(codes))) +
-            w.get('5d', 0.50) * predictions.get('5d', np.zeros(len(codes))) +
-            w.get('10d', 0.35) * predictions.get('10d', np.zeros(len(codes)))
-        )
-
-        # Step 6: Convert to score
-        scores = self._to_global_score(combined_pred)
-
-        # Build results for all stocks in cross-section
-        all_results = {}
-        for i, code in enumerate(codes):
-            all_results[code] = {
-                'pred_3d': float(predictions['3d'][i]),
-                'pred_5d': float(predictions['5d'][i]),
-                'pred_10d': float(predictions['10d'][i]),
-                'rank_score': float(combined_pred[i]),
-                'score': float(scores[i]),
-                'recommendation': self._get_recommendation(float(scores[i])),
-            }
-
-        # Filter to requested codes, fill missing
-        for code in stock_codes:
-            if code in all_results:
-                results[code] = all_results[code]
-            else:
-                results[code] = {
-                    'score': 50.0, 'pred_3d': 0, 'pred_5d': 0, 'pred_10d': 0,
-                    'rank_score': 0, 'recommendation': '观望',
-                    'exec_filter': 'no_data',
-                }
-
-        return results
-
-    def predict_scores_from_preloaded(self, stock_codes: List[str], date: str,
-                                       features_df: pd.DataFrame) -> Dict[str, Dict]:
-        """Score stocks using a preloaded features DataFrame.
-
-        This avoids the DB query — useful for batch report generation where
-        features are already loaded.
-
-        Args:
-            stock_codes: List of stock codes to score
-            date: Trade date string
-            features_df: DataFrame with columns: code, [52 stock features]
-                         (market features will be loaded from DB if missing)
-
-        Returns:
-            Same format as predict_scores
-        """
-        if features_df is None or len(features_df) == 0:
-            return {code: {'score': 50.0, 'pred_3d': 0, 'pred_5d': 0,
-                           'pred_10d': 0, 'rank_score': 0,
-                           'recommendation': '观望', 'exec_filter': 'no_data'}
-                    for code in stock_codes}
-
-        # Normalize date
-        if isinstance(date, str) and len(date) == 8 and date.isdigit():
-            date = f"{date[:4]}-{date[4:6]}-{date[6:]}"
-
-        # Ensure all feature columns exist
-        for col in self.feature_names:
-            if col not in features_df.columns:
-                features_df[col] = 0.0
-
-        # Z-score stock features
-        stock_cols_idx = [
-            self.feature_names.index(c) for c in self.stock_feature_cols
-            if c in self.feature_names
-        ]
-        feature_matrix = features_df[self.feature_names].values.copy()
-        feature_matrix = np.nan_to_num(feature_matrix, nan=0.0, posinf=0.0, neginf=0.0)
-
         if stock_cols_idx:
             stock_block = feature_matrix[:, stock_cols_idx]
             stock_block = self._robust_zscore(stock_block)
@@ -514,20 +350,105 @@ class NGProductionScorer:
                         feature_matrix[:, i] = np.clip(feature_matrix[:, i], lo, hi)
 
         feature_matrix = np.nan_to_num(feature_matrix, nan=0.0, posinf=0.0, neginf=0.0)
+
         codes = features_df['code'].tolist()
 
-        # Predict
+        # Predict for each target
         predictions = {}
-        for target in ['3d', '5d', '10d']:
+        for target in ['3d', '5d', '10d', '15d']:
+            pred = self._ensemble_predict(feature_matrix, target)
+            if pred is not None:
+                predictions[target] = pred
+            else:
+                predictions[target] = np.zeros(len(codes))
+
+        # Composite ranking using ICIR adaptive weights
+        w = self.target_weights
+        combined_pred = np.zeros(len(codes), dtype=float)
+        for target_key in ['3d', '5d', '10d', '15d']:
+            combined_pred += w.get(target_key, 0.0) * predictions.get(target_key, np.zeros(len(codes)))
+
+        scores = self._to_global_score(combined_pred)
+
+        all_results = {}
+        for i, code in enumerate(codes):
+            all_results[code] = {
+                'pred_3d': float(predictions['3d'][i]),
+                'pred_5d': float(predictions['5d'][i]),
+                'pred_10d': float(predictions['10d'][i]),
+                'pred_15d': float(predictions.get('15d', np.zeros(len(codes)))[i]),
+                'rank_score': float(combined_pred[i]),
+                'score': float(scores[i]),
+                'recommendation': self._get_recommendation(float(scores[i])),
+            }
+
+        # Build mapping: strip suffix (.SH/.SZ/.BJ) for matching against cache codes
+        for code in stock_codes:
+            short_code = code.split('.')[0] if '.' in code else code
+            if code in all_results:
+                results[code] = all_results[code]
+            elif short_code in all_results:
+                results[code] = all_results[short_code]
+            else:
+                results[code] = {
+                    'score': 50.0, 'pred_3d': 0, 'pred_5d': 0, 'pred_10d': 0,
+                    'pred_15d': 0, 'rank_score': 0, 'recommendation': '观望',
+                    'exec_filter': 'no_data',
+                }
+
+        return results
+
+    def predict_scores_from_preloaded(self, stock_codes: List[str], date: str,
+                                       features_df: pd.DataFrame) -> Dict[str, Dict]:
+        if features_df is None or len(features_df) == 0:
+            return {code: {'score': 50.0, 'pred_3d': 0, 'pred_5d': 0,
+                           'pred_10d': 0, 'pred_15d': 0, 'rank_score': 0,
+                           'recommendation': '观望', 'exec_filter': 'no_data'}
+                    for code in stock_codes}
+
+        if isinstance(date, str) and len(date) == 8 and date.isdigit():
+            date = f"{date[:4]}-{date[4:6]}-{date[6:]}"
+
+        for col in self.feature_names:
+            if col not in features_df.columns:
+                features_df[col] = 0.0
+
+        stock_cols_idx = [
+            self.feature_names.index(c) for c in self.stock_feature_cols
+            if c in self.feature_names
+        ]
+        feature_matrix = features_df[self.feature_names].values.copy()
+        feature_matrix = np.nan_to_num(feature_matrix, nan=0.0, posinf=0.0, neginf=0.0)
+
+        if stock_cols_idx:
+            stock_block = feature_matrix[:, stock_cols_idx]
+            stock_block = self._robust_zscore(stock_block)
+            feature_matrix[:, stock_cols_idx] = stock_block
+
+        if self.winsorize_bounds:
+            if isinstance(self.winsorize_bounds, dict):
+                for i, fname in enumerate(self.feature_names):
+                    if fname in self.winsorize_bounds:
+                        lo, hi = self.winsorize_bounds[fname]
+                        feature_matrix[:, i] = np.clip(feature_matrix[:, i], lo, hi)
+            elif isinstance(self.winsorize_bounds, list):
+                for i, (lo, hi) in enumerate(self.winsorize_bounds):
+                    if i < feature_matrix.shape[1]:
+                        feature_matrix[:, i] = np.clip(feature_matrix[:, i], lo, hi)
+
+        feature_matrix = np.nan_to_num(feature_matrix, nan=0.0, posinf=0.0, neginf=0.0)
+        codes = features_df['code'].tolist()
+
+        predictions = {}
+        for target in ['3d', '5d', '10d', '15d']:
             pred = self._ensemble_predict(feature_matrix, target)
             predictions[target] = pred if pred is not None else np.zeros(len(codes))
 
         w = self.target_weights
-        combined_pred = (
-            w.get('3d', 0.15) * predictions['3d'] +
-            w.get('5d', 0.50) * predictions['5d'] +
-            w.get('10d', 0.35) * predictions['10d']
-        )
+        combined_pred = np.zeros(len(codes), dtype=float)
+        for target_key in ['3d', '5d', '10d', '15d']:
+            combined_pred += w.get(target_key, 0.0) * predictions.get(target_key, np.zeros(len(codes)))
+
         scores = self._to_global_score(combined_pred)
 
         results = {}
@@ -537,6 +458,7 @@ class NGProductionScorer:
                     'pred_3d': float(predictions['3d'][i]),
                     'pred_5d': float(predictions['5d'][i]),
                     'pred_10d': float(predictions['10d'][i]),
+                    'pred_15d': float(predictions.get('15d', np.zeros(len(codes)))[i]),
                     'rank_score': float(combined_pred[i]),
                     'score': float(scores[i]),
                     'recommendation': self._get_recommendation(float(scores[i])),
@@ -546,7 +468,7 @@ class NGProductionScorer:
             if code not in results:
                 results[code] = {
                     'score': 50.0, 'pred_3d': 0, 'pred_5d': 0, 'pred_10d': 0,
-                    'rank_score': 0, 'recommendation': '观望',
+                    'pred_15d': 0, 'rank_score': 0, 'recommendation': '观望',
                     'exec_filter': 'no_data',
                 }
 
