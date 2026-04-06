@@ -91,6 +91,9 @@ class NGCacheUpdater:
         self.version = version
         self.table_name = get_table_name(version)
         create_table(self.db_path, version=version)
+        if version >= 'ng1.1.0':
+            create_moneyflow_table(self.db_path)
+        self._pro = None  # lazy-init Tushare API
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path, timeout=30)
@@ -373,14 +376,15 @@ class NGCacheUpdater:
         if existing and existing['cnt'] > 0:
             return 0
 
-        # Read Tushare token
+        # Lazy-init Tushare API (cached across calls)
         try:
-            config_path = os.path.join(_PROJECT_ROOT, 'config.json')
-            with open(config_path) as f:
-                cfg = json.load(f)
-            import tushare as ts
-            pro = ts.pro_api(cfg['tushare']['token'])
-            df_mf = pro.moneyflow(trade_date=date_str)
+            if self._pro is None:
+                config_path = os.path.join(_PROJECT_ROOT, 'config.json')
+                with open(config_path) as f:
+                    cfg = json.load(f)
+                import tushare as ts
+                self._pro = ts.pro_api(cfg['tushare']['token'])
+            df_mf = self._pro.moneyflow(trade_date=date_str)
         except Exception as e:
             print(f"    WARN: moneyflow fetch failed: {e}")
             return 0
@@ -403,8 +407,6 @@ class NGCacheUpdater:
                 float(row.get('net_mf_amount') or 0),
             ))
 
-        prev_row_factory = conn.row_factory
-        conn.row_factory = None
         conn.executemany(
             """INSERT OR REPLACE INTO moneyflow_daily
                (code, trade_date, buy_sm_amount, sell_sm_amount,
@@ -414,12 +416,11 @@ class NGCacheUpdater:
             rows
         )
         conn.commit()
-        conn.row_factory = prev_row_factory
         return len(rows)
 
     def _load_moneyflow_data(
         self, conn: sqlite3.Connection, date: str,
-        security_ids: List[int], n_days: int = 20
+        security_ids: List[int], universe: Dict[int, dict] = None, n_days: int = 20
     ) -> Dict[str, list]:
         """Load moneyflow data for given stocks up to n_days before date.
         Returns Dict[code -> List[dict]] sorted by date ascending."""
@@ -427,19 +428,21 @@ class NGCacheUpdater:
         dt = datetime.strptime(date, '%Y-%m-%d')
         lookback_start = (dt - timedelta(days=n_days * 2)).strftime('%Y-%m-%d')
 
-        # Map security_ids -> codes
+        # Use universe to get codes directly (avoid re-querying securities table)
         chunk_size = 900
-        sid_to_code: Dict[int, str] = {}
-        for i in range(0, len(security_ids), chunk_size):
-            chunk = security_ids[i:i + chunk_size]
-            rows = conn.execute(
-                f"SELECT id, code FROM securities WHERE id IN ({','.join('?' * len(chunk))})",
-                chunk
-            ).fetchall()
-            for r in rows:
-                sid_to_code[r['id']] = r['code']
-
-        codes = list(sid_to_code.values())
+        if universe:
+            codes = [universe[sid]['code'] for sid in security_ids if sid in universe]
+        else:
+            sid_to_code: Dict[int, str] = {}
+            for i in range(0, len(security_ids), chunk_size):
+                chunk = security_ids[i:i + chunk_size]
+                rows = conn.execute(
+                    f"SELECT id, code FROM securities WHERE id IN ({','.join('?' * len(chunk))})",
+                    chunk
+                ).fetchall()
+                for r in rows:
+                    sid_to_code[r['id']] = r['code']
+            codes = list(sid_to_code.values())
         if not codes:
             return {}
 
@@ -851,11 +854,10 @@ class NGCacheUpdater:
 
             # 8.5. Load moneyflow data (v1.1.0)
             if self.version >= 'ng1.1.0':
-                create_moneyflow_table(self.db_path)
                 mf_count = self._fetch_and_store_moneyflow(conn, date)
                 if mf_count > 0:
                     print(f"  [{date}] Fetched {mf_count} moneyflow records")
-                mf_data = self._load_moneyflow_data(conn, date, active_sids, n_days=20)
+                mf_data = self._load_moneyflow_data(conn, date, active_sids, universe=universe, n_days=20)
             else:
                 mf_data = {}
 

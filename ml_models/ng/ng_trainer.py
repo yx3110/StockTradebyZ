@@ -83,12 +83,12 @@ ALL_FEATURE_NAMES: List[str] = STOCK_FEATURE_NAMES + MARKET_FEATURE_NAMES  # 68 
 MONEYFLOW_FEATURE_NAMES: List[str] = [
     'net_mf_ratio_5d', 'big_order_ratio', 'big_order_trend_5d',
     'small_vs_big_divergence', 'mf_concentration', 'mf_momentum_10d',
-    'northbound_stock_5d', 'mf_volume_divergence',
+    'mf_volume_divergence',
 ]
 
 INTERACTION_FEATURE_NAMES: List[str] = [
     'ix_vol_pullback', 'ix_big_trend', 'ix_rsi_mf', 'ix_ind_big',
-    'ix_mf_efficiency', 'ix_vol_surge_pullback', 'ix_alpha_conc', 'ix_north_cap',
+    'ix_mf_efficiency', 'ix_vol_surge_pullback', 'ix_alpha_conc',
 ]
 
 # v1.0.0 constants (for backward compatibility reference)
@@ -143,6 +143,19 @@ class NGTrainer(V485Trainer):
     @staticmethod
     def get_market_feature_names() -> List[str]:
         return list(MARKET_FEATURE_NAMES)
+
+    def _get_active_stock_features(self) -> List[str]:
+        """Build active stock feature list based on CLI switches."""
+        features = list(STOCK_FEATURE_NAMES)
+        if getattr(self, '_enable_moneyflow', False):
+            features += MONEYFLOW_FEATURE_NAMES
+        if getattr(self, '_enable_interaction', False):
+            selected = getattr(self, '_selected_ix', None)
+            if selected:
+                features += selected
+            else:
+                features += INTERACTION_FEATURE_NAMES
+        return features
 
     # ------------------------------------------------------------------
     # ICIR Adaptive Composite Weights
@@ -413,12 +426,7 @@ class NGTrainer(V485Trainer):
         parsed_rows = df_raw['features_json'].apply(_json_loads).tolist()
         df_stock_features = pd.DataFrame(parsed_rows)
 
-        # Dynamic feature list based on CLI switches
-        active_stock_features = list(STOCK_FEATURE_NAMES)
-        if getattr(self, '_enable_moneyflow', False):
-            active_stock_features += MONEYFLOW_FEATURE_NAMES
-        if getattr(self, '_enable_interaction', False):
-            active_stock_features += INTERACTION_FEATURE_NAMES
+        active_stock_features = self._get_active_stock_features()
 
         for col in active_stock_features:
             if col not in df_stock_features.columns:
@@ -493,19 +501,7 @@ class NGTrainer(V485Trainer):
 
     def prepare_features(self, df: pd.DataFrame) -> tuple:
         """Prepare NG v1.1.0 feature matrix (dynamic: base + moneyflow + interaction)."""
-        # Build dynamic stock feature list matching load_data
-        active_stock_features = list(STOCK_FEATURE_NAMES)
-        if getattr(self, '_enable_moneyflow', False):
-            active_stock_features += MONEYFLOW_FEATURE_NAMES
-        if getattr(self, '_enable_interaction', False):
-            # Only include interaction features that passed IC screening
-            selected_ix = getattr(self, '_selected_ix', [])
-            if selected_ix:
-                active_stock_features += selected_ix
-            else:
-                # If screening hasn't run yet (e.g., first load_data call), include all
-                # They will be pruned after screening in walk_forward_train
-                active_stock_features += INTERACTION_FEATURE_NAMES
+        active_stock_features = self._get_active_stock_features()
 
         logger.info(f"NG {NG_VERSION} prepare_features: "
                      f"{len(active_stock_features)} stock + {len(MARKET_FEATURE_NAMES)} market "

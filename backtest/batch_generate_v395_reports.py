@@ -54,7 +54,7 @@ DB_PATH = os.path.join(PROJECT_ROOT, 'data_adapter', 'stock_data.db')
 
 def get_trading_dates(start_date: str, end_date: str, version: str = 'v3.95') -> List[str]:
     """从特征缓存获取交易日列表"""
-    _ng_tables = {'ng1.0.0': 'ng_feature_cache', 'ng1.0.1': 'ng101_feature_cache', 'ng1.0.2': 'ng102_feature_cache', 'ng1.1.0': 'ng110_feature_cache'}
+    from ml_models.ng.ng_schema import VERSION_TABLE_MAP as _ng_tables
     table = 'alpha158_feature_cache' if version == 'alpha158' else (_ng_tables[version] if version in _ng_tables else 'v39_feature_cache')
     conn = sqlite3.connect(DB_PATH)
     try:

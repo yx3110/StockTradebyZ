@@ -755,44 +755,7 @@ def quick_daily_update(date: str = None, skip_financial: bool = True):
     # 释放缓存
     stock_data_cache = None
 
-    # 11.4. 更新资金流数据 (NG v1.1.0 moneyflow_daily)
-    logger.info("【步骤11.5/14】更新资金流数据...")
-    try:
-        from ml_models.ng.ng_schema import create_moneyflow_table, DB_PATH as NG_DB_PATH
-        import sqlite3 as _sqlite3
-        create_moneyflow_table(NG_DB_PATH)
-        import json as _json
-        with open(os.path.join(os.path.dirname(__file__), '..', 'config.json')) as f:
-            cfg = _json.load(f)
-        import tushare as ts
-        pro = ts.pro_api(cfg['tushare']['token'])
-        date_str_nohyphen = date.replace('-', '')
-        df_mf = pro.moneyflow(trade_date=date_str_nohyphen)
-        if df_mf is not None and len(df_mf) > 0:
-            # Convert date to dash format for storage
-            date_dash = f"{date[:4]}-{date[4:6]}-{date[6:8]}" if '-' not in date else date
-            conn_mf = _sqlite3.connect(NG_DB_PATH, timeout=30)
-            rows_mf = [(row['ts_code'], date_dash,
-                         float(row.get('buy_sm_amount') or 0), float(row.get('sell_sm_amount') or 0),
-                         float(row.get('buy_md_amount') or 0), float(row.get('sell_md_amount') or 0),
-                         float(row.get('buy_lg_amount') or 0), float(row.get('sell_lg_amount') or 0),
-                         float(row.get('buy_elg_amount') or 0), float(row.get('sell_elg_amount') or 0),
-                         float(row.get('net_mf_amount') or 0)) for _, row in df_mf.iterrows()]
-            conn_mf.executemany(
-                "INSERT OR REPLACE INTO moneyflow_daily "
-                "(code,trade_date,buy_sm_amount,sell_sm_amount,buy_md_amount,sell_md_amount,"
-                "buy_lg_amount,sell_lg_amount,buy_elg_amount,sell_elg_amount,net_mf_amount) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?)", rows_mf)
-            conn_mf.commit()
-            conn_mf.close()
-            stats['moneyflow'] = len(rows_mf)
-        else:
-            stats['moneyflow'] = 0
-    except Exception as e:
-        logger.warning(f"  资金流数据更新失败: {e}")
-        stats['moneyflow'] = 0
-
-    # 11.5. 更新NG特征缓存 (Daily Selection NG 62因子)
+    # 12. 更新NG特征缓存 (Daily Selection NG因子 — 内部自动获取moneyflow)
     logger.info("【步骤12/14】更新NG特征缓存...")
     stats['ng_cache'] = update_ng_feature_cache(date)
 
