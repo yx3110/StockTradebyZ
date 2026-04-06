@@ -83,12 +83,13 @@ ALL_FEATURE_NAMES: List[str] = STOCK_FEATURE_NAMES + MARKET_FEATURE_NAMES  # 68 
 MONEYFLOW_FEATURE_NAMES: List[str] = [
     'net_mf_ratio_5d', 'big_order_ratio', 'big_order_trend_5d',
     'small_vs_big_divergence', 'mf_concentration', 'mf_momentum_10d',
-    'mf_volume_divergence',
+    'mf_volume_divergence', 'northbound_stock_5d',
 ]
 
 INTERACTION_FEATURE_NAMES: List[str] = [
     'ix_vol_pullback', 'ix_big_trend', 'ix_rsi_mf', 'ix_ind_big',
     'ix_mf_efficiency', 'ix_vol_surge_pullback', 'ix_alpha_conc',
+    'ix_north_cap',
 ]
 
 # v1.0.0 constants (for backward compatibility reference)
