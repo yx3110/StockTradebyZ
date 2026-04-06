@@ -362,8 +362,8 @@ def main():
     parser = argparse.ArgumentParser(description='Alpha158 特征缓存更新器')
     parser.add_argument('--start-date', default='2020-01-02',
                         help='开始日期 (default: 2020-01-02)')
-    parser.add_argument('--end-date', default='2026-02-13',
-                        help='结束日期 (default: 2026-02-13)')
+    parser.add_argument('--end-date', default=None,
+                        help='结束日期 (default: today)')
     parser.add_argument('--force', action='store_true',
                         help='强制覆盖已有缓存')
     parser.add_argument('--backfill-labels', action='store_true',
@@ -371,6 +371,10 @@ def main():
     parser.add_argument('--stats', action='store_true',
                         help='仅显示缓存统计')
     args = parser.parse_args()
+
+    if args.end_date is None:
+        from datetime import datetime
+        args.end_date = datetime.now().strftime('%Y-%m-%d')
 
     updater = Alpha158FeatureCacheUpdater()
 

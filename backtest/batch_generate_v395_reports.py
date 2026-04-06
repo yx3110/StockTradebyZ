@@ -913,7 +913,7 @@ def main():
     start_date = args.start_date
     end_date = args.end_date
     if start_date == 'auto' or end_date == 'auto':
-        _ng_tables = {'ng1.0.0': 'ng_feature_cache', 'ng1.0.1': 'ng101_feature_cache', 'ng1.0.2': 'ng102_feature_cache', 'ng1.1.0': 'ng110_feature_cache'}
+        from ml_models.ng.ng_schema import VERSION_TABLE_MAP as _ng_tables
         table = 'alpha158_feature_cache' if args.version == 'alpha158' else (_ng_tables[args.version] if args.version in _ng_tables else 'v39_feature_cache')
         conn = sqlite3.connect(DB_PATH)
         try:

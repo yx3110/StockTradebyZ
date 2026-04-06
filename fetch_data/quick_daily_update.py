@@ -759,7 +759,7 @@ def quick_daily_update(date: str = None, skip_financial: bool = True):
     logger.info("【步骤12/14】更新NG特征缓存...")
     stats['ng_cache'] = update_ng_feature_cache(date)
 
-    # 11.6. 更新BRAIN因子缓存 (V4.8.4 brain_roll_spread等)
+    # 13. 更新BRAIN因子缓存 (V4.8.4 brain_roll_spread等)
     logger.info("【步骤13/14】更新BRAIN因子缓存...")
     try:
         from wqbrain_integration.cache_brain_features import batch_compute
@@ -770,7 +770,7 @@ def quick_daily_update(date: str = None, skip_financial: bool = True):
         logger.warning(f"  BRAIN缓存更新失败: {e}")
         stats['brain_cache'] = 0
 
-    # 12. 更新GRU神经网络嵌入缓存 (V5.0)
+    # 14. 更新GRU神经网络嵌入缓存 (V5.0)
     logger.info("【步骤14/14】更新GRU神经网络嵌入缓存...")
     stats['neural_embed'] = update_neural_embeddings(date)
 
@@ -800,7 +800,6 @@ def quick_daily_update(date: str = None, skip_financial: bool = True):
     logger.info(f"技术指标: {stats['technical']:,} 条")
     logger.info(f"V3.9/V3.95特征缓存: {stats['v39_cache']:,} 条")
     logger.info(f"V4.0特征缓存: {stats['v40_cache']:,} 条")
-    logger.info(f"资金流数据: {stats.get('moneyflow', 0):,} 条")
     logger.info(f"NG特征缓存: {stats.get('ng_cache', 0):,} 条")
     logger.info(f"GRU神经网络嵌入: {stats['neural_embed']:,} 条")
     logger.info(f"总耗时: {duration:.1f} 秒")

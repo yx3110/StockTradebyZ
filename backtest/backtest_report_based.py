@@ -1543,12 +1543,13 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
             ic, p_val = 0, 1
 
         # 逐日IC序列 (向量化: groupby rank + Pearson, 替代逐日spearmanr循环)
-        # 对收益做 winsorize 后再计算 (与训练侧 label clip 对称)
-        ic_picks = picks_df.copy()
-        if len(ic_picks[ic_picks[return_col].notna()]) > 10:
-            rl = ic_picks[return_col].quantile(0.01)
-            rh = ic_picks[return_col].quantile(0.99)
-            ic_picks[return_col] = ic_picks[return_col].clip(rl, rh)
+        # 对收益做 winsorize 后再计算 (与训练侧 label clip 对称) — 只copy return列避免全DF copy
+        ic_picks = picks_df.assign(**{
+            return_col: picks_df[return_col].clip(
+                picks_df[return_col].quantile(0.01),
+                picks_df[return_col].quantile(0.99)
+            )
+        }) if len(picks_df[picks_df[return_col].notna()]) > 10 else picks_df
         ic_df = _vectorized_daily_ic(ic_picks, return_col)
         daily_ic_series[days] = ic_df
 
