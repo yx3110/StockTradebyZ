@@ -275,7 +275,7 @@ class Alpha158FeatureCacheUpdater:
                      f"{total_stocks} 只股票, 耗时 {elapsed:.1f}秒 ({elapsed/60:.1f}分钟)")
 
     def backfill_labels(self):
-        """回填缺失的标签 (用于最近 10 天的数据)"""
+        """回填缺失的标签 (用于最近 10 天的数据) — 批量预加载版"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
 
@@ -295,18 +295,60 @@ class Alpha158FeatureCacheUpdater:
 
         logger.info(f"需要回填标签: {len(missing)} 条记录")
 
+        # --- 批量预加载价格数据 (替代 N+1 per-row JOIN 查询) ---
+        needed_codes = list(set(row[0] for row in missing))
+        min_date = min(row[1] for row in missing)
+
+        # code → security_id 映射
+        code_to_sid = {}
+        for chunk_start in range(0, len(needed_codes), 900):
+            chunk = needed_codes[chunk_start:chunk_start + 900]
+            placeholders = ','.join('?' * len(chunk))
+            sid_rows = cursor.execute(
+                f"SELECT code, id FROM securities WHERE code IN ({placeholders})", chunk
+            ).fetchall()
+            for c, sid in sid_rows:
+                code_to_sid[c] = sid
+
+        needed_sids = list(code_to_sid.values())
+
+        # sid → sorted list of (trade_date, open, close, volume)
+        price_data = {}
+        for chunk_start in range(0, len(needed_sids), 900):
+            chunk = needed_sids[chunk_start:chunk_start + 900]
+            placeholders = ','.join('?' * len(chunk))
+            price_rows = cursor.execute(f"""
+                SELECT security_id, trade_date, open, close, volume
+                FROM daily_quotes
+                WHERE security_id IN ({placeholders})
+                  AND trade_date >= ?
+                ORDER BY security_id, trade_date
+            """, chunk + [min_date]).fetchall()
+            for sid, td, op, cl, vol in price_rows:
+                if sid not in price_data:
+                    price_data[sid] = []
+                price_data[sid].append((td, op, cl, vol))
+
+        # trade_date → index 快速查找
+        sid_date_idx = {}
+        for sid, prices in price_data.items():
+            sid_date_idx[sid] = {prices[i][0]: i for i in range(len(prices))}
+
+        logger.info(f"价格数据预加载完成: {len(needed_sids)} 只股票, "
+                    f"{sum(len(v) for v in price_data.values()):,} 条记录")
+
         updated = 0
         for code, trade_date in missing:
-            # 查询该股票的后续行情 (open+close, 标签对齐回测执行)
-            cursor.execute("""
-                SELECT q.trade_date, q.open, q.close, q.volume
-                FROM daily_quotes q
-                JOIN securities s ON q.security_id = s.id
-                WHERE s.code = ? AND q.trade_date >= ?
-                ORDER BY q.trade_date
-                LIMIT 13
-            """, (code, trade_date))
-            rows = cursor.fetchall()
+            sid = code_to_sid.get(code)
+            if not sid or sid not in price_data:
+                continue
+
+            prices = price_data[sid]
+            idx = sid_date_idx[sid].get(trade_date)
+            if idx is None:
+                continue
+
+            rows = prices[idx:idx + 13]
 
             # 至少需要报告日 + 买入日 + 1天
             if len(rows) < 3:

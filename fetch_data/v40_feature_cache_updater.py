@@ -1154,36 +1154,78 @@ class V40FeatureCacheUpdater:
         cursor.execute("SELECT code, id FROM securities WHERE type = 'A股'")
         code_to_sid = {r[0]: r[1] for r in cursor.fetchall()}
 
-        # 加载沪深300的security_id和数据
+        # 加载沪深300的security_id
         cursor.execute("""
             SELECT s.id FROM securities s WHERE s.code = '000300.SH' OR s.name = '沪深300' LIMIT 1
         """)
         hs300_row = cursor.fetchone()
         hs300_sid = hs300_row[0] if hs300_row else None
+        if not hs300_sid:
+            logger.warning("找不到沪深300的security_id，无法回填超额标签")
+            conn.close()
+            return 0
+
+        # --- 批量预加载价格数据 (替代 N+1 per-row 查询) ---
+        needed_codes = set(row[1] for row in rows)
+        needed_sids = [code_to_sid[c] for c in needed_codes if c in code_to_sid]
+        min_date = min(row[2] for row in rows)
+        logger.info(f"批量预加载价格数据: {len(needed_sids)} 只股票, 起始日期 {min_date}")
+
+        # 股票价格: sid → sorted list of (trade_date, open, close, volume)
+        price_data = {}
+        for chunk_start in range(0, len(needed_sids), 900):
+            chunk = needed_sids[chunk_start:chunk_start + 900]
+            placeholders = ','.join('?' * len(chunk))
+            price_rows = cursor.execute(f"""
+                SELECT security_id, trade_date, open, close, volume
+                FROM daily_quotes
+                WHERE security_id IN ({placeholders})
+                  AND trade_date >= ?
+                ORDER BY security_id, trade_date
+            """, chunk + [min_date]).fetchall()
+            for sid, td, op, cl, vol in price_rows:
+                if sid not in price_data:
+                    price_data[sid] = []
+                price_data[sid].append((td, op, cl, vol))
+
+        # 股票 trade_date → index 快速查找
+        sid_date_idx = {}
+        for sid, prices in price_data.items():
+            sid_date_idx[sid] = {prices[i][0]: i for i in range(len(prices))}
+
+        # 沪深300价格: 一次性加载全部 (替代 N 次 per-row 查询)
+        hs300_prices = cursor.execute("""
+            SELECT trade_date, close FROM daily_quotes
+            WHERE security_id = ? AND trade_date >= ?
+            ORDER BY trade_date
+        """, (hs300_sid, min_date)).fetchall()
+        # trade_date → (index, close) 的快速查找
+        hs300_date_idx = {hs300_prices[i][0]: i for i in range(len(hs300_prices))}
+
+        load_elapsed = time.time() - start_time
+        logger.info(f"价格数据预加载完成: {sum(len(v) for v in price_data.values()):,} 条股票 + "
+                    f"{len(hs300_prices):,} 条HS300, 耗时 {load_elapsed:.1f}秒")
 
         updated = 0
         for i in range(0, total, batch_size):
             batch = rows[i:i + batch_size]
             for cache_id, code, trade_date in batch:
                 sid = code_to_sid.get(code)
-                if not sid or not hs300_sid:
+                if not sid or sid not in price_data:
                     continue
 
-                # 股票未来价格 (含 open, 标签对齐回测执行)
-                cursor.execute("""
-                    SELECT trade_date, open, close, volume FROM daily_quotes
-                    WHERE security_id = ? AND trade_date >= ?
-                    ORDER BY trade_date LIMIT 17
-                """, (sid, trade_date))
-                stock_rows = cursor.fetchall()
+                prices = price_data[sid]
+                idx = sid_date_idx[sid].get(trade_date)
+                if idx is None:
+                    continue
 
-                # 沪深300未来价格 (指数用 close-to-close)
-                cursor.execute("""
-                    SELECT trade_date, close FROM daily_quotes
-                    WHERE security_id = ? AND trade_date >= ?
-                    ORDER BY trade_date LIMIT 15
-                """, (hs300_sid, trade_date))
-                hs300_rows = cursor.fetchall()
+                stock_rows = prices[idx:idx + 17]
+
+                # 沪深300从同一日期切片
+                hs300_idx = hs300_date_idx.get(trade_date)
+                if hs300_idx is None:
+                    continue
+                hs300_rows = hs300_prices[hs300_idx:hs300_idx + 15]
 
                 # 至少需要报告日 + 买入日 + 1天
                 if len(stock_rows) < 3 or len(hs300_rows) < 3:
@@ -1206,14 +1248,14 @@ class V40FeatureCacheUpdater:
                     continue
 
                 label_3d = label_5d = label_10d = None
-                for n, idx in [(3, 0), (5, 1), (10, 2)]:
+                for n, label_idx in [(3, 0), (5, 1), (10, 2)]:
                     if len(stock_rows) > 1 + n and len(hs300_rows) > 1 + n:
                         stock_ret = stock_rows[1 + n][2] / buy_open - 1  # [2]=close
                         mkt_ret = hs300_rows[1 + n][1] / hs300_base - 1  # 基准同持仓期
                         val = stock_ret - mkt_ret
-                        if idx == 0:
+                        if label_idx == 0:
                             label_3d = val
-                        elif idx == 1:
+                        elif label_idx == 1:
                             label_5d = val
                         else:
                             label_10d = val

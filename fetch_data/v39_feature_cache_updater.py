@@ -1008,8 +1008,36 @@ class V39FeatureCacheUpdaterOptimized:
         cursor.execute("SELECT code, id FROM securities WHERE type IN ('A股', 'ETF_基金')")
         code_to_sid = {row[0]: row[1] for row in cursor.fetchall()}
 
-        # 预加载停牌日数据: (security_id, trade_date) 的 volume
-        # 批量获取太大，改为按需查询
+        # --- 批量预加载价格数据 (替代 N+1 per-row 查询) ---
+        needed_codes = set(row[1] for row in rows)
+        needed_sids = [code_to_sid[c] for c in needed_codes if c in code_to_sid]
+        min_date = min(row[2] for row in rows)
+        logger.info(f"批量预加载价格数据: {len(needed_sids)} 只股票, 起始日期 {min_date}")
+
+        # sid → sorted list of (trade_date, open, close, volume)
+        price_data = {}
+        for chunk_start in range(0, len(needed_sids), 900):
+            chunk = needed_sids[chunk_start:chunk_start + 900]
+            placeholders = ','.join('?' * len(chunk))
+            price_rows = cursor.execute(f"""
+                SELECT security_id, trade_date, open, close, volume
+                FROM daily_quotes
+                WHERE security_id IN ({placeholders})
+                  AND trade_date >= ?
+                ORDER BY security_id, trade_date
+            """, chunk + [min_date]).fetchall()
+            for sid, td, op, cl, vol in price_rows:
+                if sid not in price_data:
+                    price_data[sid] = []
+                price_data[sid].append((td, op, cl, vol))
+
+        # 为每只股票构建 trade_date → index 的快速查找
+        sid_date_idx = {}
+        for sid, prices in price_data.items():
+            sid_date_idx[sid] = {prices[i][0]: i for i in range(len(prices))}
+
+        load_elapsed = time.time() - start_time
+        logger.info(f"价格数据预加载完成: {sum(len(v) for v in price_data.values()):,} 条记录, 耗时 {load_elapsed:.1f}秒")
 
         updated = 0
         skipped_suspended = 0
@@ -1020,20 +1048,19 @@ class V39FeatureCacheUpdaterOptimized:
 
             for cache_id, code, trade_date in batch:
                 sid = code_to_sid.get(code)
-                if not sid:
+                if not sid or sid not in price_data:
                     skipped_insufficient += 1
                     continue
 
-                # 查询 base_date 及未来 17 天的 open/close/volume
-                # 标签对齐回测: base = open[T+1], target = close[T+1+N]
-                cursor.execute("""
-                    SELECT trade_date, open, close, volume
-                    FROM daily_quotes
-                    WHERE security_id = ? AND trade_date >= ?
-                    ORDER BY trade_date
-                    LIMIT 22
-                """, (sid, trade_date))
-                future_rows = cursor.fetchall()
+                prices = price_data[sid]
+                date_idx_map = sid_date_idx[sid]
+                idx = date_idx_map.get(trade_date)
+                if idx is None:
+                    skipped_insufficient += 1
+                    continue
+
+                # 需要 idx 起 22 条记录 (T + T+1 ... T+16)
+                future_rows = prices[idx:idx + 22]
 
                 # 至少需要报告日 + 买入日 + 1天
                 if len(future_rows) < 3:
@@ -1041,7 +1068,7 @@ class V39FeatureCacheUpdaterOptimized:
                     continue
 
                 # 第一行 = 报告日 (T)
-                base_date_str, _, _, base_volume = future_rows[0]
+                _, _, _, base_volume = future_rows[0]
 
                 # 停牌检测: 报告日成交量为 0
                 if base_volume is not None and base_volume == 0:
