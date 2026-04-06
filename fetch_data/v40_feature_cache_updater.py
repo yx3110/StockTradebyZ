@@ -26,6 +26,7 @@ import bisect
 import time
 
 from fetch_data.label_utils import compute_aligned_labels
+from fetch_data.shared_data_loader import batch_load_stock_data, load_sw_industry_mapping
 
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -55,66 +56,27 @@ class V40FeatureCacheUpdater:
     # ================================================================
 
     def _load_sw_industry_mapping(self):
-        """加载申万行业映射"""
+        """加载申万行业映射 (委托 shared_data_loader)"""
         if self._sw_industry_mapping is not None:
             return
 
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='sw_industry'")
-        if not cursor.fetchone():
-            logger.warning("sw_industry表不存在，行业特征将使用默认值")
-            self._sw_industry_mapping = {}
-            self._sw_l1_label_encoding = {}
-            conn.close()
-            return
-
-        cursor.execute("SELECT code, l1_name FROM sw_industry WHERE is_new = 'Y'")
-        self._sw_industry_mapping = {row[0]: row[1] for row in cursor.fetchall()}
-
-        cursor.execute("SELECT DISTINCT l1_name FROM sw_industry WHERE is_new = 'Y' ORDER BY l1_name")
-        names = [row[0] for row in cursor.fetchall()]
-        self._sw_l1_label_encoding = {name: i for i, name in enumerate(names)}
-
-        cursor.execute("SELECT DISTINCT l1_code, l1_name FROM sw_industry WHERE is_new = 'Y'")
-        self._sw_l1_codes = {row[1]: row[0] for row in cursor.fetchall()}
-
-        conn.close()
-        logger.info(f"加载申万行业映射: {len(self._sw_industry_mapping)} 只股票, "
-                     f"{len(self._sw_l1_label_encoding)} 个行业")
+        mapping, encoding, codes = load_sw_industry_mapping(db_path=self.db_path)
+        self._sw_industry_mapping = mapping
+        self._sw_l1_label_encoding = encoding
+        self._sw_l1_codes = codes
 
     # ================================================================
     # 数据加载
     # ================================================================
 
     def _batch_load_stock_data(self, date: str, lookback: int = 60) -> Dict[str, pd.DataFrame]:
-        """批量加载所有A股的历史行情数据"""
-        logger.info(f"批量预加载股票行情数据 (lookback={lookback}天)...")
-        start_time = time.time()
-
-        end_date = datetime.strptime(date, '%Y-%m-%d')
-        start_date = end_date - timedelta(days=lookback + 30)
-
-        conn = sqlite3.connect(self.db_path)
-        query = """
-        SELECT s.code, q.trade_date, q.open, q.high, q.low, q.close, q.volume, q.price_change_pct
-        FROM daily_quotes q
-        JOIN securities s ON q.security_id = s.id
-        WHERE s.type = 'A股'
-        AND q.trade_date >= ? AND q.trade_date <= ?
-        ORDER BY s.code, q.trade_date
-        """
-        df = pd.read_sql_query(query, conn, params=(start_date.strftime('%Y-%m-%d'), date))
-        conn.close()
-
-        stock_data = {}
-        for code, group in df.groupby('code'):
-            stock_data[code] = group.reset_index(drop=True)
-
-        elapsed = time.time() - start_time
-        logger.info(f"行情加载完成: {len(stock_data)} 只股票, 耗时 {elapsed:.1f}秒")
-        return stock_data
+        """批量加载所有A股的历史行情数据 (委托 shared_data_loader)"""
+        return batch_load_stock_data(
+            date=date,
+            lookback=lookback,
+            db_path=self.db_path,
+            stock_types=('A股',),
+        )
 
     def _batch_load_technical_indicators(self, date: str) -> Dict[str, Dict]:
         """
