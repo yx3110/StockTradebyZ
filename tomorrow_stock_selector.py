@@ -12,6 +12,7 @@ import numpy as np
 from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Dict, List, Any, Tuple, Optional
+import importlib
 import importlib.util
 from data_adapter.stock_data_loader import StockDataLoader
 
@@ -39,11 +40,105 @@ logging.basicConfig(
 )
 logger = logging.getLogger("tomorrow_selector")
 
-# === 版本管理 ===
+# === 版本管理: Scorer注册表 ===
+# 每个条目: (module_path, class_name, engine_attr, batch_cache_attr, constructor_kwargs, has_strategy_predictor)
+#   - engine_attr: 评分器存储在 self.{engine_attr}
+#   - batch_cache_attr: 批量缓存存储在 self.{batch_cache_attr}
+#   - constructor_kwargs: 传给 ScorerClass(**kwargs) 的参数
+#   - has_strategy_predictor: 是否初始化 StrategyBasedReturnPredictor
+SCORER_REGISTRY = {
+    # --- NG 系列 (无 model_type) ---
+    'ng1.0.0': ('ml_models.ng.ng_production_scorer', 'NGProductionScorer',
+                'scoring_engine_v44', 'v44_batch_cache', {}, False),
+    'ng1.0.1': ('ml_models.ng.ng_production_scorer', 'NGProductionScorer',
+                'scoring_engine_v44', 'v44_batch_cache', {}, False),
+    'ng1.0.2': ('ml_models.ng.ng_production_scorer', 'NGProductionScorer',
+                'scoring_engine_v44', 'v44_batch_cache', {}, False),
+    # --- V5.0 (独立 engine_attr) ---
+    'v5.0': ('ml_models.v39.v500_production_scorer', 'V500ProductionScorer',
+             'scoring_engine_v500', 'v500_batch_cache', {'model_type': 'small_data'}, True),
+    # --- V4.9.x ---
+    'v4.9.1': ('ml_models.v39.v491_production_scorer', 'V491ProductionScorer',
+               'scoring_engine_v44', 'v44_batch_cache', {'model_type': 'small_data'}, True),
+    'v4.9.0.2': ('ml_models.v39.v4902_production_scorer', 'V4902ProductionScorer',
+                 'scoring_engine_v44', 'v44_batch_cache', {'model_type': 'small_data'}, False),
+    'v4.9.0.1': ('ml_models.v39.v4901_production_scorer', 'V4901ProductionScorer',
+                 'scoring_engine_v44', 'v44_batch_cache', {'model_type': 'small_data'}, False),
+    'v4.9.0': ('ml_models.v39.v490_production_scorer', 'V490ProductionScorer',
+               'scoring_engine_v44', 'v44_batch_cache', {'model_type': 'small_data'}, False),
+    # --- V4.8.x ---
+    'v4.8.8': ('ml_models.v39.v488_production_scorer', 'V488ProductionScorer',
+               'scoring_engine_v44', 'v44_batch_cache', {'model_type': 'small_data'}, False),
+    'v4.8.7': ('ml_models.v39.v487_production_scorer', 'V487ProductionScorer',
+               'scoring_engine_v44', 'v44_batch_cache', {'model_type': 'small_data'}, False),
+    'v4.8.6': ('ml_models.v39.v486_production_scorer', 'V486ProductionScorer',
+               'scoring_engine_v44', 'v44_batch_cache', {'model_type': 'small_data'}, True),
+    'v4.8.5': ('ml_models.v39.v485_production_scorer', 'V485ProductionScorer',
+               'scoring_engine_v44', 'v44_batch_cache', {'model_type': 'small_data'}, True),
+    'v4.8.4': ('ml_models.v39.v484_production_scorer', 'V484ProductionScorer',
+               'scoring_engine_v44', 'v44_batch_cache', {'model_type': 'small_data'}, True),
+    'v4.8.2': ('ml_models.v39.v482_production_scorer', 'V482ProductionScorer',
+               'scoring_engine_v44', 'v44_batch_cache', {'model_type': 'small_data'}, True),
+    'v4.8.1': ('ml_models.v39.v481_production_scorer', 'V481ProductionScorer',
+               'scoring_engine_v44', 'v44_batch_cache', {'model_type': 'small_data'}, True),
+    'v4.8.0': ('ml_models.v39.v480_production_scorer', 'V480ProductionScorer',
+               'scoring_engine_v44', 'v44_batch_cache', {'model_type': 'small_data'}, True),
+    # --- V4.7.x ---
+    'v4.7.9': ('ml_models.v39.v479_production_scorer', 'V479ProductionScorer',
+               'scoring_engine_v44', 'v44_batch_cache', {'model_type': 'small_data'}, True),
+    'v4.7.8': ('ml_models.v39.v478_production_scorer', 'V478ProductionScorer',
+               'scoring_engine_v44', 'v44_batch_cache', {'model_type': 'small_data'}, True),
+    'v4.7.7': ('ml_models.v39.v477_production_scorer', 'V477ProductionScorer',
+               'scoring_engine_v44', 'v44_batch_cache', {'model_type': 'small_data'}, True),
+    'v4.7.6': ('ml_models.v39.v476_production_scorer', 'V476ProductionScorer',
+               'scoring_engine_v44', 'v44_batch_cache', {'model_type': 'small_data'}, True),
+    'v4.7.5': ('ml_models.v39.v475_production_scorer', 'V475ProductionScorer',
+               'scoring_engine_v44', 'v44_batch_cache', {'model_type': 'small_data'}, True),
+    'v4.7.4': ('ml_models.v39.v474_production_scorer', 'V474ProductionScorer',
+               'scoring_engine_v44', 'v44_batch_cache', {'model_type': 'small_data'}, True),
+    'v4.7.3': ('ml_models.v39.v473_production_scorer', 'V473ProductionScorer',
+               'scoring_engine_v44', 'v44_batch_cache', {'model_type': 'small_data'}, True),
+    'v4.7.2': ('ml_models.v39.v472_production_scorer', 'V472ProductionScorer',
+               'scoring_engine_v44', 'v44_batch_cache', {'model_type': 'small_data'}, True),
+    'v4.7.1': ('ml_models.v39.v471_production_scorer', 'V471ProductionScorer',
+               'scoring_engine_v44', 'v44_batch_cache', {'model_type': 'small_data'}, True),
+    # --- V4.4 ~ V4.6 ---
+    'v4.6': ('ml_models.v39.v46_production_scorer', 'V46ProductionScorer',
+             'scoring_engine_v44', 'v44_batch_cache', {'model_type': 'small_data'}, True),
+    'v4.5': ('ml_models.v39.v44_production_scorer', 'V44ProductionScorer',
+             'scoring_engine_v44', 'v44_batch_cache', {'model_type': 'small_data'}, True),
+    'v4.4.2': ('ml_models.v39.v44_production_scorer', 'V442ProductionScorer',
+               'scoring_engine_v44', 'v44_batch_cache', {'model_type': 'small_data'}, True),
+    'v4.4': ('ml_models.v39.v44_production_scorer', 'V44ProductionScorer',
+             'scoring_engine_v44', 'v44_batch_cache', {'model_type': 'small_data'}, True),
+    # --- V4.3 (独立 engine_attr) ---
+    'v4.3': ('ml_models.v39.v43_production_scorer', 'V43ProductionScorer',
+             'scoring_engine_v43', 'v43_batch_cache', {'model_type': 'small_data'}, True),
+    # --- V4.0 / V4.2 (独立 engine_attr, 无 model_type) ---
+    'v4.2': ('ml_models.v40.v400_production_scorer', 'V400ProductionScorer',
+             'scoring_engine_v40', 'v40_batch_cache', {}, False),
+    'v4.0': ('ml_models.v40.v400_production_scorer', 'V400ProductionScorer',
+             'scoring_engine_v40', 'v40_batch_cache', {}, False),
+    # --- V3.96 (独立 engine_attr) ---
+    'v3.96': ('ml_models.v39.v396_production_scorer', 'V396ProductionScorer',
+              'scoring_engine_v396', 'v396_batch_cache', {'model_type': 'small_data'}, True),
+    # --- V3.95 (独立 engine_attr, 无 model_type) ---
+    'v3.95': ('ml_models.v39.v395_production_scorer', 'V395ProductionScorer',
+              'scoring_engine_v395', 'v395_batch_cache', {'model_type': 'small_data'}, True),
+    # --- V3.94 (独立 engine_attr, 无 model_type) ---
+    'v3.94': ('ml_models.v39.v394_production_scorer', 'V394ProductionScorer',
+              'scoring_engine_v394', 'v394_batch_cache', {}, False),
+    # --- V3.9 (独立 engine_attr, 无 model_type) ---
+    'v3.9': ('ml_models.v39.v390_production_scorer', 'V390ProductionScorer',
+             'scoring_engine_v39', 'v39_batch_cache', {}, False),
+}
+
+# 从注册表自动派生活跃版本集合
+ACTIVE_VERSIONS = set(SCORER_REGISTRY.keys())
+
 DEPRECATED_VERSIONS = {'v2', 'v3', 'v3.1', 'v3.2', 'v3.3', 'v3.4', 'v3.41',
                        'v3.5', 'v3.51', 'v3.52', 'v3.53', 'v3.6', 'v3.7',
                        'v3.8', 'v3.81', 'v3.94', 'v4'}
-ACTIVE_VERSIONS = {'v3.9', 'v3.95', 'v3.96', 'v4.0', 'v4.2', 'v4.3', 'v4.4', 'v4.4.2', 'v4.5', 'v4.6', 'v4.7.1', 'v4.7.2', 'v4.7.3', 'v4.7.4', 'v4.7.5', 'v4.7.6', 'v4.7.7', 'v4.7.8', 'v4.7.9', 'v4.8.0', 'v4.8.1', 'v4.8.2', 'v4.8.4', 'v4.8.5', 'v4.8.6', 'v4.8.7', 'v4.8.8', 'v4.9.0', 'v4.9.0.1', 'v4.9.0.2', 'v4.9.1', 'v5.0', 'ng1.0.0', 'ng1.0.1', 'ng1.0.2'}
 
 class TomorrowStockSelector:
     """明日股票选择器"""
@@ -79,340 +174,122 @@ class TomorrowStockSelector:
         self.v39_batch_cache = {}   # V3.9批处理结果缓存
         self.v394_batch_cache = {}  # V3.94批处理结果缓存（用于百分位排名）
         self.v395_batch_cache = {}  # V3.95批处理结果缓存（多目标预测）
+        self.v396_batch_cache = {}  # V3.96批处理结果缓存
         self.v40_batch_cache = {}   # V4.0批处理结果缓存（cross-sectional alpha）
         self.v43_batch_cache = {}   # V4.3批处理结果缓存（扩展特征+强正则）
         self.v44_batch_cache = {}   # V4.4批处理结果缓存（V4.3+6增强模块）
+        self.v500_batch_cache = {}  # V5.0批处理结果缓存
 
         # 初始化数据加载器
         self.data_loader = StockDataLoader()
 
-        # 根据版本初始化评分引擎
-        if scoring_version == "v5.0":
-            # V5.0 Unified Feature Fusion (v39+v40+neural)
-            from ml_models.v39.v500_production_scorer import V500ProductionScorer
-            self.scoring_engine_v500 = V500ProductionScorer(model_type='small_data')
-            self.v500_batch_cache = {}
-            from ml_models.v39.strategy_based_return_predictor import StrategyBasedReturnPredictor
-            self.strategy_return_predictor = StrategyBasedReturnPredictor()
-            logger.info("🔬 已初始化V5.0 Unified Feature Fusion评分系统 (v39+v40+neural)")
-        elif scoring_version in ("ng1.0.0", "ng1.0.1", "ng1.0.2"):
-            from ml_models.ng.ng_production_scorer import NGProductionScorer
-            self.scoring_engine_v44 = NGProductionScorer()
-            self.v44_batch_cache = {}
-            logger.info(f"🔬 已初始化{scoring_version.upper()}评分系统 (NG系列, ICIR自适应权重+行业超额标签)")
-        elif scoring_version == "v4.8.8":
-            from ml_models.v39.v488_production_scorer import V488ProductionScorer
-            self.scoring_engine_v44 = V488ProductionScorer(model_type='small_data')
-            self.v44_batch_cache = {}
-            logger.info("🔬 已初始化V4.9.0评分系统 (69特征+基准超额+熊市加权+单调性集成)")
-        elif scoring_version == "v4.9.0":
-            from ml_models.v39.v490_production_scorer import V490ProductionScorer
-            self.scoring_engine_v44 = V490ProductionScorer(model_type='small_data')
-            self.v44_batch_cache = {}
-            logger.info("🔬 已初始化V4.9.0评分系统 (Q95+头部加权+truncation=10)")
-        elif scoring_version == "v4.9.0.1":
-            from ml_models.v39.v4901_production_scorer import V4901ProductionScorer
-            self.scoring_engine_v44 = V4901ProductionScorer(model_type='small_data')
-            self.v44_batch_cache = {}
-            logger.info("🔬 已初始化V4.9.0.1评分系统 (去头尾加权+composite排序)")
-        elif scoring_version == "v4.9.0.2":
-            from ml_models.v39.v4902_production_scorer import V4902ProductionScorer
-            self.scoring_engine_v44 = V4902ProductionScorer(model_type='small_data')
-            self.v44_batch_cache = {}
-            logger.info("🔬 已初始化V4.9.0.2评分系统 (风控增强+CVaR止损+换手优化)")
-        elif scoring_version == "v4.8.7":
-            from ml_models.v39.v487_production_scorer import V487ProductionScorer
-            self.scoring_engine_v44 = V487ProductionScorer(model_type='small_data')
-            self.v44_batch_cache = {}
-            logger.info("🔬 已初始化V4.8.7评分系统 (69特征+YetiRank+RRF)")
-        elif scoring_version == "v4.8.6":
-            from ml_models.v39.v486_production_scorer import V486ProductionScorer
-            self.scoring_engine_v44 = V486ProductionScorer(model_type='small_data')
-            self.v44_batch_cache = {}
-            from ml_models.v39.strategy_based_return_predictor import StrategyBasedReturnPredictor
-            self.strategy_return_predictor = StrategyBasedReturnPredictor()
-            logger.info("V4.8.6 (64 features + RRF ensemble, 头部区分度优化)")
-        elif scoring_version == "v4.9.1":
-            from ml_models.v39.v491_production_scorer import V491ProductionScorer
-            self.scoring_engine_v44 = V491ProductionScorer(model_type='small_data')
-            self.v44_batch_cache = {}
-            from ml_models.v39.strategy_based_return_predictor import StrategyBasedReturnPredictor
-            self.strategy_return_predictor = StrategyBasedReturnPredictor()
-            logger.info("🛡️ V4.9.1 (超额标签+市场门控+排名平滑, 基于V4.8.5)")
-        elif scoring_version == "v4.8.5":
-            from ml_models.v39.v485_production_scorer import V485ProductionScorer
-            self.scoring_engine_v44 = V485ProductionScorer(model_type='small_data')
-            self.v44_batch_cache = {}
-            from ml_models.v39.strategy_based_return_predictor import StrategyBasedReturnPredictor
-            self.strategy_return_predictor = StrategyBasedReturnPredictor()
-            logger.info("V4.8.5 (61 features, trained on A股+ETF)")
-        elif scoring_version == "v4.8.4":
-            from ml_models.v39.v484_production_scorer import V484ProductionScorer
-            self.scoring_engine_v44 = V484ProductionScorer(model_type='small_data')
-            self.v44_batch_cache = {}
-            from ml_models.v39.strategy_based_return_predictor import StrategyBasedReturnPredictor
-            self.strategy_return_predictor = StrategyBasedReturnPredictor()
-            logger.info("V4.8.4 (61 features = V4.8.1 + brain_roll_spread)")
-        elif scoring_version == "v4.8.2":
-            from ml_models.v39.v482_production_scorer import V482ProductionScorer
-            self.scoring_engine_v44 = V482ProductionScorer(model_type='small_data')
-            self.v44_batch_cache = {}
-            from ml_models.v39.strategy_based_return_predictor import StrategyBasedReturnPredictor
-            self.strategy_return_predictor = StrategyBasedReturnPredictor()
-            logger.info("V4.8.2 loaded")
-        elif scoring_version == "v4.8.1":
-            from ml_models.v39.v481_production_scorer import V481ProductionScorer
-            self.scoring_engine_v44 = V481ProductionScorer(model_type='small_data')
-            self.v44_batch_cache = {}
-            from ml_models.v39.strategy_based_return_predictor import StrategyBasedReturnPredictor
-            self.strategy_return_predictor = StrategyBasedReturnPredictor()
-            logger.info("V4.8.1 (60 features = V4.7.5 - 5 pruned + 15 new factors + V4.7.6 post-processing)")
-        elif scoring_version == "v4.8.0":
-            from ml_models.v39.v480_production_scorer import V480ProductionScorer
-            self.scoring_engine_v44 = V480ProductionScorer(model_type='small_data')
-            self.v44_batch_cache = {}
-            from ml_models.v39.strategy_based_return_predictor import StrategyBasedReturnPredictor
-            self.strategy_return_predictor = StrategyBasedReturnPredictor()
-            logger.info("V4.8.0 (270d衰减 + V4.7.6 scorer后处理, 目标ic_decay_ratio)")
-        elif scoring_version == "v4.7.9":
-            from ml_models.v39.v479_production_scorer import V479ProductionScorer
-            self.scoring_engine_v44 = V479ProductionScorer(model_type='small_data')
-            self.v44_batch_cache = {}
-            from ml_models.v39.strategy_based_return_predictor import StrategyBasedReturnPredictor
-            self.strategy_return_predictor = StrategyBasedReturnPredictor()
-            logger.info("V4.7.9 (Huber+DART+240d衰减+Top5%头部加权)")
-        elif scoring_version == "v4.7.8":
-            from ml_models.v39.v478_production_scorer import V478ProductionScorer
-            self.scoring_engine_v44 = V478ProductionScorer(model_type='small_data')
-            self.v44_batch_cache = {}
-            from ml_models.v39.strategy_based_return_predictor import StrategyBasedReturnPredictor
-            self.strategy_return_predictor = StrategyBasedReturnPredictor()
-            logger.info("V4.7.8 (Huber+DART+365d衰减 = V475 Top3 + V477 IC)")
-        elif scoring_version == "v4.7.7":
-            from ml_models.v39.v477_production_scorer import V477ProductionScorer
-            self.scoring_engine_v44 = V477ProductionScorer(model_type='small_data')
-            self.v44_batch_cache = {}
-            from ml_models.v39.strategy_based_return_predictor import StrategyBasedReturnPredictor
-            self.strategy_return_predictor = StrategyBasedReturnPredictor()
-            logger.info("V4.7.7 (Huber+DART+180d衰减 + V4.7.6 scorer后处理)")
-        elif scoring_version == "v4.7.6":
-            from ml_models.v39.v476_production_scorer import V476ProductionScorer
-            self.scoring_engine_v44 = V476ProductionScorer(model_type='small_data')
-            self.v44_batch_cache = {}
-            from ml_models.v39.strategy_based_return_predictor import StrategyBasedReturnPredictor
-            self.strategy_return_predictor = StrategyBasedReturnPredictor()
-            logger.info("V4.7.6 (V4.7.5 + Top-K聚焦 + 置信度折扣 + 波动率调整)")
-        elif scoring_version == "v4.7.5":
-            from ml_models.v39.v475_production_scorer import V475ProductionScorer
-            self.scoring_engine_v44 = V475ProductionScorer(model_type='small_data')
-            self.v44_batch_cache = {}
-            from ml_models.v39.strategy_based_return_predictor import StrategyBasedReturnPredictor
-            self.strategy_return_predictor = StrategyBasedReturnPredictor()
-            logger.info("V4.7.5 (V4.7.3 + Top-Quantile Asymmetric Weighting)")
-        elif scoring_version == "v4.7.4":
-            from ml_models.v39.v474_production_scorer import V474ProductionScorer
-            self.scoring_engine_v44 = V474ProductionScorer(model_type='small_data')
-            self.v44_batch_cache = {}
-            from ml_models.v39.strategy_based_return_predictor import StrategyBasedReturnPredictor
-            self.strategy_return_predictor = StrategyBasedReturnPredictor()
-            logger.info("V4.7.4 (连续评分+选择性V4.8+ListNet+严格ICIR约束)")
-        elif scoring_version == "v4.7.3":
-            # V4.7.3: 简化管线+特征精简+放宽正则化 (无Meta-Learner/Combined Isotonic)
-            from ml_models.v39.v473_production_scorer import V473ProductionScorer
-            self.scoring_engine_v44 = V473ProductionScorer(model_type='small_data')
-            self.v44_batch_cache = {}
-            from ml_models.v39.strategy_based_return_predictor import StrategyBasedReturnPredictor
-            self.strategy_return_predictor = StrategyBasedReturnPredictor()
-            logger.info("🚀 已初始化V4.7.3评分系统 (简化管线+精简特征+ICIR权重, 无压缩)")
-        elif scoring_version == "v4.7.2":
-            # V4.7.2: V4.7.1底座 + V4.6管线 (ICIR权重+Meta-Learner+Combined Isotonic)
-            from ml_models.v39.v472_production_scorer import V472ProductionScorer
-            self.scoring_engine_v44 = V472ProductionScorer(model_type='small_data')
-            self.v44_batch_cache = {}
-            from ml_models.v39.strategy_based_return_predictor import StrategyBasedReturnPredictor
-            self.strategy_return_predictor = StrategyBasedReturnPredictor()
-            logger.info("🚀 已初始化V4.7.2评分系统 (V4.7.1底座+V4.6管线: ICIR+MetaLearner+CombinedIsotonic)")
-        elif scoring_version == "v4.7.1":
-            # V4.7.1: V4.4底座 + Bug修复 + 17新特征 + LambdaRank + 时间衰减
-            from ml_models.v39.v471_production_scorer import V471ProductionScorer
-            self.scoring_engine_v44 = V471ProductionScorer(model_type='small_data')
-            self.v44_batch_cache = {}
-            from ml_models.v39.strategy_based_return_predictor import StrategyBasedReturnPredictor
-            self.strategy_return_predictor = StrategyBasedReturnPredictor()
-            logger.info("🚀 已初始化V4.7.1评分系统 (V4.4底座+Bug修复+17新特征+LambdaRank+时间衰减)")
-        elif scoring_version == "v4.6":
-            # V4.6: V4.4底座 + ICIR权重 + Combined Isotonic + Meta-Learner + 增强流动性 + 小盘加成
-            from ml_models.v39.v46_production_scorer import V46ProductionScorer
-            self.scoring_engine_v44 = V46ProductionScorer(model_type='small_data')
-            self.v44_batch_cache = {}
-            from ml_models.v39.strategy_based_return_predictor import StrategyBasedReturnPredictor
-            self.strategy_return_predictor = StrategyBasedReturnPredictor()
-            logger.info("🚀 已初始化V4.6评分系统 (V4.4+ICIR权重+CombinedIsotonic+MetaLearner+增强流动性+小盘加成)")
-        elif scoring_version == "v4.5":
-            # V4.5: V4.4.1 scorer + CPPI exposure overlay (cppi_floor=0.10, m=10)
-            from ml_models.v39.v44_production_scorer import V44ProductionScorer
-            self.scoring_engine_v44 = V44ProductionScorer(model_type='small_data')
-            self.v44_batch_cache = {}
-            from ml_models.v39.strategy_based_return_predictor import StrategyBasedReturnPredictor
-            self.strategy_return_predictor = StrategyBasedReturnPredictor()
-            self.cppi_floor = 0.10
-            self.cppi_multiplier = 10
-            self.cppi_decay = 0.995  # peak decay per day, half-life ~139d
-            logger.info("🚀 已初始化V4.5评分系统 (V4.4.1+CPPI Trailing Floor, floor=10%, m=10)")
-        elif scoring_version == "v4.4.2":
-            # V4.4.2: V4.4.1 + 三层组合风控 (Module G/H/I)
-            from ml_models.v39.v44_production_scorer import V442ProductionScorer
-            self.scoring_engine_v44 = V442ProductionScorer(model_type='small_data')
-            self.v44_batch_cache = {}
-            from ml_models.v39.strategy_based_return_predictor import StrategyBasedReturnPredictor
-            self.strategy_return_predictor = StrategyBasedReturnPredictor()
-            logger.info("🛡️ 已初始化V4.4.2评分系统 (V4.4.1+市况压缩+置信度门槛+行业集中度)")
-        elif scoring_version == "v4.4":
-            # V4.4: V4.3信号底座 + 6增强模块
-            from ml_models.v39.v44_production_scorer import V44ProductionScorer
-            self.scoring_engine_v44 = V44ProductionScorer(model_type='small_data')
-            self.v44_batch_cache = {}
-            from ml_models.v39.strategy_based_return_predictor import StrategyBasedReturnPredictor
-            self.strategy_return_predictor = StrategyBasedReturnPredictor()
-            logger.info("🚀 已初始化V4.4评分系统 (V4.3信号+单调性校准+流动性+熊市专家+可执行性过滤)")
-        elif scoring_version == "v4.3":
-            # 初始化v4.3 扩展特征+强正则+等权+4目标 评分系统
-            from ml_models.v39.v43_production_scorer import V43ProductionScorer
-            self.scoring_engine_v43 = V43ProductionScorer(model_type='small_data')
-            self.v43_batch_cache = {}
-            from ml_models.v39.strategy_based_return_predictor import StrategyBasedReturnPredictor
-            self.strategy_return_predictor = StrategyBasedReturnPredictor()
-            logger.info("🚀 已初始化V4.3评分系统 (59特征, 强正则, Walk-Forward, 4目标, 等权集成)")
-        elif scoring_version == "v4.2":
-            # 初始化v4.2 Hybrid Alpha评分系统 (同一个scorer class, 自动检测v42模型)
-            from ml_models.v40.v400_production_scorer import V400ProductionScorer
-            self.scoring_engine_v40 = V400ProductionScorer()
-            logger.info("🔬 已初始化V4.2 Hybrid Alpha评分系统（行业超额+RobustZScore+V39市场+5模型）")
-        elif scoring_version == "v4.0":
-            # 初始化v4.0 Cross-Sectional Alpha评分系统
-            from ml_models.v40.v400_production_scorer import V400ProductionScorer
-            self.scoring_engine_v40 = V400ProductionScorer()
-            logger.info("🔬 已初始化V4.0 Cross-Sectional Alpha评分系统（超额收益预测，~55个cross-sectional特征）")
-        elif scoring_version == "v3.96":
-            # 初始化v3.96 Robust Z-Score + Industry-Excess 评分系统
-            from ml_models.v39.v396_production_scorer import V396ProductionScorer
-            self.scoring_engine_v396 = V396ProductionScorer(model_type='small_data')
-            self.v396_batch_cache = {}
-            from ml_models.v39.strategy_based_return_predictor import StrategyBasedReturnPredictor
-            self.strategy_return_predictor = StrategyBasedReturnPredictor()
-            logger.info("🚀 已初始化V3.96 Robust Z-Score评分系统 (49特征, ICIR全周期>0.2)")
-        elif scoring_version == "v3.95":
-            # 初始化v3.9.5生产版评分系统 - 🚀 MULTI-TARGET PREDICTION MODEL
-            from ml_models.v39.v395_production_scorer import V395ProductionScorer
-            self.scoring_engine_v395 = V395ProductionScorer(model_type='small_data')
-            # 🎯 初始化策略驱动预测器（基于12,655历史样本统计）
-            from ml_models.v39.strategy_based_return_predictor import StrategyBasedReturnPredictor
-            self.strategy_return_predictor = StrategyBasedReturnPredictor()
-            logger.info("🚀 已初始化V3.9.5多目标预测评分系统 + 策略驱动收益预测器")
-        elif scoring_version == "v3.94":
-            # 初始化v3.9.4生产版评分系统 - 🏆 PRODUCTION A+ GRADE MODEL (带活跃市值特征)
-            from ml_models.v39.v394_production_scorer import V394ProductionScorer
-            self.scoring_engine_v394 = V394ProductionScorer()
-            logger.info("🏆 已初始化V3.9.4生产版评分系统（48特征=42基础+6活跃市值，IC+166%，Top20胜率56.43%）")
-        elif scoring_version == "v3.9":
-            # 初始化v3.9.0生产版评分系统 - 🏆 PRODUCTION A-GRADE MODEL
-            from ml_models.v39.v390_production_scorer import V390ProductionScorer
-            self.scoring_engine_v39 = V390ProductionScorer()
-            logger.info("🏆 已初始化V3.9.0生产版评分系统（81.2/100 A级，67.30%方向准确率，95%Top20胜率，42基础特征）")
-        elif scoring_version == "v3.81":
-            raise ValueError("v3.81已弃用并删除，请使用v3.9或v3.95")
-        elif scoring_version == "v3.8":
-            # 初始化v3.80高级机器学习评分引擎 - 🚀 ADVANCED ML SYSTEM
-            from ml_models.v38 import V380AdvancedIncrementalMLSystem
-            self.scoring_engine_v38 = V380AdvancedIncrementalMLSystem()
-            logger.info("🚀 已初始化V3.80高级机器学习系统（三层Ensemble+增量学习+自适应评分）")
-        elif scoring_version == "v3.7":
-            raise ValueError("v3.7已弃用并删除，请使用v3.9或v3.95")
-        elif scoring_version == "v3.6":
-            # 初始化v3.6机器学习评分引擎 - 🆕 MACHINE LEARNING
-            from v360_ml_scoring_system import V360MLScoringSystem
-            self.scoring_engine_v36 = V360MLScoringSystem()
-            # 强制加载模型
-            model_loaded = self.scoring_engine_v36.load_models('ml_models/trained_models/v360')
-            if not model_loaded:
-                logger.warning("⚠️  V3.6模型未找到，将使用实时训练模式")
-            else:
-                logger.info("✅ V3.6模型加载成功")
-            logger.info("🤖 已初始化v3.6机器学习评分系统（LightGBM+XGBoost双模型ensemble，非线性建模）")
-        elif scoring_version == "v4":
-            # 初始化v4评分引擎
-            sys.path.append(os.path.join(os.path.dirname(__file__), 'scoring_improvements'))
-            from quantitative_scorer_v4 import QuantitativeScorerV4
-            self.scoring_engine_v4 = QuantitativeScorerV4()
-            logger.info("🚀 已初始化挤压动量增强评分系统 v4.0")
-        elif scoring_version == "v3.53":
-            # 初始化v3.53 多时间周期IC优化评分引擎 - 🆕 MULTI-PERIOD
-            sys.path.append(os.path.join(os.path.dirname(__file__), 'scoring', 'v3.5'))
-            from quantitative_scorer_v3_53 import QuantitativeScorerV353MultiPeriod
-            self.scoring_engine_v353_multiperiod = QuantitativeScorerV353MultiPeriod()
-            logger.info("🚀 已初始化v3.53 多时间周期IC优化评分系统（分层权重架构，1日IC=6.5%，3日IC=5.7%）")
-        elif scoring_version == "v3.52":
-            # 初始化v3.5 全面优化评分引擎 - 🆕 COMPREHENSIVE
-            sys.path.append(os.path.join(os.path.dirname(__file__), 'scoring', 'v3.5'))
-            from quantitative_scorer_v3_52 import QuantitativeScorerV35Comprehensive
-            self.scoring_engine_v35_comprehensive = QuantitativeScorerV35Comprehensive()
-            logger.info("🚀 已初始化v3.5 全面优化评分系统（38个参数全面优化，基于21,744条样本数据）")
-        elif scoring_version == "v3.51":
-            # 初始化v3.5 Qlib优化评分引擎 - 🆕 OPTIMIZED
-            sys.path.append(os.path.join(os.path.dirname(__file__), 'scoring', 'v3.5'))
-            from quantitative_scorer_v3_51 import QuantitativeScorerV35Optimized
-            self.scoring_engine_v35_optimized = QuantitativeScorerV35Optimized()
-            logger.info("🚀 已初始化v3.5 Qlib优化评分系统（Phase 2权重+知行参数，+3.12% IC，知行指标权重降至7.4%）")
-        elif scoring_version == "v3.5":
-            # 初始化v3.5知行指标集成评分引擎 - 🆕
-            sys.path.append(os.path.join(os.path.dirname(__file__), 'scoring', 'v3.5'))
-            from quantitative_scorer_v3_5 import QuantitativeScorerV35
-            self.scoring_engine_v35 = QuantitativeScorerV35()
-            logger.info("🚀 已初始化v3.5知行指标集成评分系统（知行趋势线+多空线，权重20%）")
-        elif scoring_version == "v3.41":
-            # 初始化v3.41反向工程重构评分引擎 - 🆕
-            sys.path.append(os.path.join(os.path.dirname(__file__), 'scoring', 'v3.4'))
-            from quantitative_scorer_v3_41 import QuantitativeScorerV341
-            self.scoring_engine_v341 = QuantitativeScorerV341()
-            logger.info("🔄 已初始化v3.41反向工程重构评分系统（基于负相关发现的革命性改进）")
-        elif scoring_version == "v3.4":
-            # 初始化v3.4基于v3.0优化的评分引擎 - 🆕  
-            sys.path.append(os.path.join(os.path.dirname(__file__), 'scoring', 'v3.4'))
-            from quantitative_scorer_v3_4 import QuantitativeScorerV34
-            self.scoring_engine_v34 = QuantitativeScorerV34()
-            logger.info("🚀 已初始化v3.4增强评分系统（基于v3.0成功经验优化，新增ROE和营收增长）")
-        elif scoring_version == "v3.3":
-            # 初始化v3.3相关性优化评分引擎 - 🆕
-            from scoring.v3.quantitative_scorer_v3_3 import QuantitativeScorerV33
-            self.scoring_engine_v33 = QuantitativeScorerV33()
-            logger.info("🚀 已初始化v3.3相关性优化评分系统（基于相关性分析深度优化）")
-        elif scoring_version == "v3.2":
-            # 初始化v3.2挤压动量评分引擎 - 🆕
-            from scoring.v3.quantitative_scorer_v3_2 import QuantitativeScorerV32
-            self.scoring_engine_v32 = QuantitativeScorerV32()
-            logger.info("🚀 已初始化v3.2挤压动量增强评分系统（集成v4.0挤压动量因子）")
-        elif scoring_version == "v3.1":
-            # 初始化v3.1优化评分引擎
-            from scoring.v3.quantitative_scorer_v3_1 import QuantitativeScorerV31
-            self.scoring_engine_v31 = QuantitativeScorerV31()
-            logger.info("🚀 已初始化v3.1优化评分系统（基于214万条数据优化权重）")
-        elif scoring_version == "v3":
-            # 初始化v3评分引擎
-            from scoring.v3.quantitative_scorer_v3 import QuantitativeScorerV3
-            self.scoring_engine_v3 = QuantitativeScorerV3()
-            logger.info("🚀 已初始化智能动态权重评分系统 v3.0")
+        # 根据版本初始化评分引擎 — 使用 SCORER_REGISTRY 动态导入
+        if scoring_version in SCORER_REGISTRY:
+            module_path, class_name, engine_attr, cache_attr, ctor_kwargs, has_predictor = SCORER_REGISTRY[scoring_version]
+            mod = importlib.import_module(module_path)
+            ScorerClass = getattr(mod, class_name)
+            setattr(self, engine_attr, ScorerClass(**ctor_kwargs))
+            setattr(self, cache_attr, {})
+            if has_predictor:
+                from ml_models.v39.strategy_based_return_predictor import StrategyBasedReturnPredictor
+                self.strategy_return_predictor = StrategyBasedReturnPredictor()
+            # V4.5 特殊: CPPI 参数
+            if scoring_version == 'v4.5':
+                self.cppi_floor = 0.10
+                self.cppi_multiplier = 10
+                self.cppi_decay = 0.995  # peak decay per day, half-life ~139d
+            logger.info(f"已初始化 {scoring_version} 评分系统 ({class_name})")
+        elif scoring_version in DEPRECATED_VERSIONS:
+            # 弃用版本: 保留旧式初始化以维持向后兼容
+            self._init_deprecated_scorer(scoring_version)
         else:
-            # 初始化优化后的评分引擎v2
-            if ScoringEngine is None:
-                raise ValueError(f"评分版本 {scoring_version} 需要 scoring 模块，但该模块已移除。请使用 v3.9 或 v3.95。")
-            self.scoring_engine = ScoringEngine()
-            logger.info("🚀 已初始化基于实际数据优化的评分系统 v2.0")
+            raise ValueError(
+                f"未知评分版本: {scoring_version}. "
+                f"活跃版本: {sorted(ACTIVE_VERSIONS)}, 弃用版本: {sorted(DEPRECATED_VERSIONS)}"
+            )
         
         # 导入选股器
         self._import_selectors()
         # 加载证券基本信息
         self._load_securities_info()
         
+    def _init_deprecated_scorer(self, scoring_version: str):
+        """初始化弃用版本的评分引擎 (保留向后兼容)"""
+        if scoring_version == "v3.81":
+            raise ValueError("v3.81已弃用并删除，请使用v3.9或v3.95")
+        elif scoring_version == "v3.8":
+            from ml_models.v38 import V380AdvancedIncrementalMLSystem
+            self.scoring_engine_v38 = V380AdvancedIncrementalMLSystem()
+            logger.info("已初始化V3.80高级机器学习系统（三层Ensemble+增量学习+自适应评分）")
+        elif scoring_version == "v3.7":
+            raise ValueError("v3.7已弃用并删除，请使用v3.9或v3.95")
+        elif scoring_version == "v3.6":
+            from v360_ml_scoring_system import V360MLScoringSystem
+            self.scoring_engine_v36 = V360MLScoringSystem()
+            model_loaded = self.scoring_engine_v36.load_models('ml_models/trained_models/v360')
+            if not model_loaded:
+                logger.warning("V3.6模型未找到，将使用实时训练模式")
+            else:
+                logger.info("V3.6模型加载成功")
+            logger.info("已初始化v3.6机器学习评分系统")
+        elif scoring_version == "v4":
+            sys.path.append(os.path.join(os.path.dirname(__file__), 'scoring_improvements'))
+            from quantitative_scorer_v4 import QuantitativeScorerV4
+            self.scoring_engine_v4 = QuantitativeScorerV4()
+            logger.info("已初始化挤压动量增强评分系统 v4.0")
+        elif scoring_version == "v3.53":
+            sys.path.append(os.path.join(os.path.dirname(__file__), 'scoring', 'v3.5'))
+            from quantitative_scorer_v3_53 import QuantitativeScorerV353MultiPeriod
+            self.scoring_engine_v353_multiperiod = QuantitativeScorerV353MultiPeriod()
+            logger.info("已初始化v3.53 多时间周期IC优化评分系统")
+        elif scoring_version == "v3.52":
+            sys.path.append(os.path.join(os.path.dirname(__file__), 'scoring', 'v3.5'))
+            from quantitative_scorer_v3_52 import QuantitativeScorerV35Comprehensive
+            self.scoring_engine_v35_comprehensive = QuantitativeScorerV35Comprehensive()
+            logger.info("已初始化v3.5 全面优化评分系统")
+        elif scoring_version == "v3.51":
+            sys.path.append(os.path.join(os.path.dirname(__file__), 'scoring', 'v3.5'))
+            from quantitative_scorer_v3_51 import QuantitativeScorerV35Optimized
+            self.scoring_engine_v35_optimized = QuantitativeScorerV35Optimized()
+            logger.info("已初始化v3.5 Qlib优化评分系统")
+        elif scoring_version == "v3.5":
+            sys.path.append(os.path.join(os.path.dirname(__file__), 'scoring', 'v3.5'))
+            from quantitative_scorer_v3_5 import QuantitativeScorerV35
+            self.scoring_engine_v35 = QuantitativeScorerV35()
+            logger.info("已初始化v3.5知行指标集成评分系统")
+        elif scoring_version == "v3.41":
+            sys.path.append(os.path.join(os.path.dirname(__file__), 'scoring', 'v3.4'))
+            from quantitative_scorer_v3_41 import QuantitativeScorerV341
+            self.scoring_engine_v341 = QuantitativeScorerV341()
+            logger.info("已初始化v3.41反向工程重构评分系统")
+        elif scoring_version == "v3.4":
+            sys.path.append(os.path.join(os.path.dirname(__file__), 'scoring', 'v3.4'))
+            from quantitative_scorer_v3_4 import QuantitativeScorerV34
+            self.scoring_engine_v34 = QuantitativeScorerV34()
+            logger.info("已初始化v3.4增强评分系统")
+        elif scoring_version == "v3.3":
+            from scoring.v3.quantitative_scorer_v3_3 import QuantitativeScorerV33
+            self.scoring_engine_v33 = QuantitativeScorerV33()
+            logger.info("已初始化v3.3相关性优化评分系统")
+        elif scoring_version == "v3.2":
+            from scoring.v3.quantitative_scorer_v3_2 import QuantitativeScorerV32
+            self.scoring_engine_v32 = QuantitativeScorerV32()
+            logger.info("已初始化v3.2挤压动量增强评分系统")
+        elif scoring_version == "v3.1":
+            from scoring.v3.quantitative_scorer_v3_1 import QuantitativeScorerV31
+            self.scoring_engine_v31 = QuantitativeScorerV31()
+            logger.info("已初始化v3.1优化评分系统")
+        elif scoring_version == "v3":
+            from scoring.v3.quantitative_scorer_v3 import QuantitativeScorerV3
+            self.scoring_engine_v3 = QuantitativeScorerV3()
+            logger.info("已初始化智能动态权重评分系统 v3.0")
+        else:
+            # v2 fallback
+            if ScoringEngine is None:
+                raise ValueError(f"评分版本 {scoring_version} 需要 scoring 模块，但该模块已移除。请使用 v3.9 或 v3.95。")
+            self.scoring_engine = ScoringEngine()
+            logger.info("已初始化基于实际数据优化的评分系统 v2.0")
+
     @classmethod
     def create_for_batch(cls, scoring_version: str, stocks_only: bool = True,
                          scorer=None, data_loader=None, securities_info=None):
