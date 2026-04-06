@@ -4,44 +4,64 @@
 
 ## 版本演化
 
-| 版本 | 指标数 | 满分 | 分档 | 时间 |
+| 版本 | 指标数 | 满分 | 评分方式 | 时间 |
 |---|---|---|---|---|
-| V1 | 11 | 33 | A+/A/B/C | 2026-02 |
-| V2 | 21 | 105 | S/A+/A/B/C/D | 2026-02 |
-| V5 | ~21 | 百分比 | S/A+/A/B/C/D | 2026-04 |
-| V5.2 | ~21 | 百分比 | S/A+/A/B/C/D | 2026-04 (当前) |
+| V1 | 11 | 33 | 离散(0-3) | 2026-02 |
+| V2 | 21 | 105 | 离散(0-5) | 2026-02 |
+| V3 | 25 | 125 | 离散(0-5) | 2026-03 |
+| V4 | 31 | 155 | 离散(0-5) | 2026-03 |
+| V5 | 39 | 195 | **连续插值(0.0-5.0)** | 2026-03 |
+| V5.1 | 48 | 240 | 连续插值 | 2026-03 |
+| V5.2 | 59 | 295 | 连续插值 + 风格自适应 | 2026-04 (当前) |
+
+**V5+ 关键突破**: 从离散5档改为连续浮点插值 `np.interp`，0.01分精度，消除同分聚集效应。
 
 ## V5.2 评分体系（当前生产）
 
-### 四层结构
+### 九层结构（59指标，295满分）
 
-**L1 信号检测 (30分, 权重最高)**
-- IC均值: Information Coefficient 均值
-- ICIR: IC 的 Sharpe Ratio（IC均值/IC标准差）
-- IC>0 比例: 有多少天模型预测方向正确
-- 年化超额: 模型选股 vs 基准的年化超额收益
-- 月度胜率: 每月跑赢基准的比例
+| 层 | 名称 | 权重 | 指标数 | 满分 |
+|---|---|---|---|---|
+| L1 | 信号质量 Signal Quality | 22% | 10 | 50 |
+| L2 | 组合效率 Portfolio Efficiency | 10% | 5 | 25 |
+| L3 | 风险控制 Risk Control | 15% | 9 | 45 |
+| L4 | OOS鲁棒性 OOS Robustness | 12% | 8 | 40 |
+| L5 | 超额收益 Excess Returns | 8% | 5 | 25 |
+| L6 | 因子归因 Factor Attribution | 8% | 6 | 30 |
+| L7 | 容量限制 Strategy Capacity | 8% | 7 | 35 |
+| L8 | 执行质量 Execution Quality | 8% | 5 | 25 |
+| L9 | 条件稳健 Regime Robustness | 9% | 4 | 20 |
 
-**L2 组合效率 (25分)**
-- Sharpe Ratio: 风险调整收益
-- Sortino Ratio: 下行风险调整收益
-- 最大回撤: MaxDD
-- 平均回撤: 回撤均值
-- 波动率: 日收益标准差年化
+**L1 信号质量 (22%, 10指标)** — 权重最高
+- daily_ic, icir, ic_positive_pct, ic_monotonicity, ic_time_stability
+- signal_half_life, bear_icir, ic_decay_ratio, ic_autocorr_1d, transfer_coefficient
 
-**L3 风险控制 (25分)**
-- 单仓占比: 最大单只持仓比例
-- 行业集中度: HHI 指数
-- 涨停失败率: 买入当天涨停被撤的比例
-- 前后半段一致性: 前半段和后半段评分一致
-- 最差60日 ICIR: 最差连续60日的信号质量
+**L2 组合效率 (10%, 5指标)**
+- annual_turnover, annual_cost_drag, net_gross_ratio, limit_up_fail_rate, liquidity_coverage
 
-**L4 执行纪律 (25分)**
-- 年化收益: 毛收益和净收益
-- 月度胜率: 绝对收益月度胜率
-- 一致性: 滚动窗口评分稳定性
-- 市值均衡: 不过度偏向大盘/小盘
-- 中位市值: 选股的中位市值
+**L3 风险控制 (15%, 9指标)**
+- max_drawdown, sharpe_ratio, worst_rolling_60d_icir, tail_ratio, cvar_5pct
+- max_dd_duration, underwater_ratio, monthly_win_rate, volatility
+
+**L4 OOS 鲁棒性 (12%, 8指标)**
+- annual_return, monthly_win_rate, probabilistic_sharpe(PSR), deflated_sharpe(DSR)
+- wfer(WF效率比), oos_ic_half_life, monthly_consistency ×2
+
+**L5 超额收益 (8%, 5指标)**
+- excess_annual_return, information_ratio, excess_win_rate, excess_max_drawdown, up_capture_ratio
+
+**L6 因子归因 (8%, 6指标)** — Fama-French 4因子日回归
+- residual_alpha_t, factor_r_squared, active_share, max_factor_loading, smb_beta, mom_beta
+
+**L7 容量限制 (8%, 7指标)**
+- strategy_capacity_mn, participation_rate_p90, effective_n_corr, hurst_exponent
+- regime_transition_dd, cscv_pbo, adv_coverage
+
+**L8 执行质量 (8%, 5指标)** — V5.2新增
+- delay_cost, execution_fill_rate, realized_vs_theoretical, turnover_efficiency, implementation_shortfall
+
+**L9 条件稳健 (9%, 4指标)** — V5.2新增，需≥200交易日
+- regime_ic_consistency, regime_sharpe_floor, multi_benchmark_excess, regime_drawdown_ratio
 
 ### 分档标准
 
