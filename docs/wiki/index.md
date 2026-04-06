@@ -1,0 +1,27 @@
+# StockTradebyZ Wiki
+
+项目知识库 — 记录系统演化决策、模型实验结论、踩坑教训。
+
+## 架构
+- [系统架构总览](architecture/system-overview.md) — 整体架构、数据流、组件关系图
+- [数据管线](architecture/data-pipeline.md) — Tushare API → SQLite → Feature Cache 全链路
+- [ML 管线](architecture/ml-pipeline.md) — 特征工程 → 训练 → 推理 → 报告生成
+
+## 模型演化
+- [模型世代总览](models/evolution.md) — V3.8 → V3.9 → V4.x → NG 系列演化路径与关键转折
+- [NG 系列详解](models/ng-series.md) — NG 1.0.0 → 1.0.1 → 1.0.2 → 1.1.0 每版本改动与性能
+- [V4.x 实验总结](models/v4x-series.md) — V4.4 → V4.9.0.1 实验迭代、成功与失败
+- [V3.9/3.95 旧版参考](models/v39-series.md) — 旧版 ensemble 系统说明（保留参考）
+
+## 评估体系
+- [北极星评估体系](evaluation/north-star.md) — V1 → V5.2 演化、评分规则、如何解读
+- [回测方法论](evaluation/backtesting.md) — 无泄露原则、交易成本建模、CPPI 风控
+
+## 教训
+- [已知陷阱](lessons/known-pitfalls.md) — 数据泄露、过拟合、pipe 死锁等踩坑汇总
+
+## 特征工程
+- [特征指南](features/feature-guide.md) — 69 个特征的含义、来源、选择逻辑
+
+---
+*维护规则见 [schema.md](schema.md) | 里程碑时间线见 [log.md](log.md)*

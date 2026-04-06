@@ -27,6 +27,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - 每次任务完成后主动 commit（除非用户说不要）
 - commit message 用中文简要描述改动内容
 
+### 📚 Wiki 维护（必须遵守）
+- Wiki 位于 `docs/wiki/`，维护规则详见 `docs/wiki/schema.md`
+- **开始改动前**：读取 `docs/wiki/index.md`，查阅与当前任务相关的 Wiki 页面，了解历史决策和已知陷阱
+- **完成改动后**：评估是否需要更新 Wiki（模型/架构/教训/特征相关则必须更新），同时更新 CLAUDE.md 中受影响的章节
+- 闭环：**查 Wiki → 做改动 → 更新 Wiki → 更新 CLAUDE.md**
+
 ## 🏗️ System Architecture Overview
 
 **StockTradebyZ** is a sophisticated Chinese A-share trading system combining:
