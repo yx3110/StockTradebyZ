@@ -25,6 +25,8 @@ from typing import Dict, List, Optional, Tuple
 import bisect
 import time
 
+from fetch_data.label_utils import compute_aligned_labels
+
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -1105,7 +1107,6 @@ class V40FeatureCacheUpdater:
         if pos >= len(dates_list) or dates_list[pos] != date:
             return labels
 
-        closes = stock_df_full['close'].values
         volumes = stock_df_full['volume'].values
 
         # 报告日停牌检测
@@ -1117,10 +1118,16 @@ class V40FeatureCacheUpdater:
         if remaining < 3:
             return labels
 
-        # base = 买入日 (pos+1) 的开盘价
-        opens = stock_df_full['open'].values
-        buy_open = opens[pos + 1]
-        if buy_open <= 0 or volumes[pos + 1] == 0:
+        # 使用统一标签计算个股收益 (current_idx=pos 即报告日)
+        stock_labels = compute_aligned_labels(
+            opens=stock_df_full['open'].values,
+            closes=stock_df_full['close'].values,
+            volumes=volumes,
+            current_idx=pos,
+            horizons=(3, 5, 10),
+        )
+        # 如果个股标签全为 nan，说明买入日无法交易
+        if all(np.isnan(stock_labels.get(f'label_{n}d', np.nan)) for n in (3, 5, 10)):
             return labels
 
         # 沪深300基准: 同持仓期 close[T+1] → close[T+1+N]
@@ -1138,8 +1145,8 @@ class V40FeatureCacheUpdater:
         hs300_remaining = len(hs300_closes) - hs300_buy_pos
 
         for n, key in [(3, 'label_3d_excess'), (5, 'label_5d_excess'), (10, 'label_10d_excess')]:
-            if remaining > 1 + n and hs300_remaining > n:
-                stock_ret = closes[pos + 1 + n] / buy_open - 1
+            stock_ret = stock_labels.get(f'label_{n}d', np.nan)
+            if not np.isnan(stock_ret) and hs300_remaining > n:
                 market_ret = hs300_closes[hs300_buy_pos + n] / hs300_base - 1
                 labels[key] = float(stock_ret - market_ret)
 

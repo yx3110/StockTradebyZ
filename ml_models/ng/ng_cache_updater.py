@@ -40,6 +40,7 @@ from ml_models.ng.ng_feature_calculator import (
     compute_interaction_features,
 )
 from sklearn.linear_model import LinearRegression
+from fetch_data.label_utils import compute_labels_from_future_prices
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -616,16 +617,17 @@ class NGCacheUpdater:
             if np.isnan(base) or base < 1e-8:
                 continue
 
-            labels = {}
+            # 构造 {horizon: close_price} 字典
+            future_closes = {}
             for n in LABEL_HORIZONS:
                 if n < len(future_dates) and future_dates[n] in fp:
-                    future_close = fp[future_dates[n]].get('close', np.nan)
-                    if not np.isnan(future_close) and future_close > 0:
-                        labels[f'label_{n}d'] = future_close / base - 1.0
-                    else:
-                        labels[f'label_{n}d'] = np.nan
-                else:
-                    labels[f'label_{n}d'] = np.nan
+                    future_closes[n] = fp[future_dates[n]].get('close', np.nan)
+
+            labels = compute_labels_from_future_prices(
+                base_open=base,
+                future_closes=future_closes,
+                horizons=tuple(LABEL_HORIZONS),
+            )
             result[sid] = labels
 
         return result

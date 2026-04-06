@@ -27,6 +27,8 @@ import bisect
 import time
 import signal
 
+from fetch_data.label_utils import compute_aligned_labels
+
 # 添加项目路径
 try:
     from core.config import PROJECT_ROOT, get_db_path
@@ -288,26 +290,17 @@ class V39FeatureCacheUpdaterOptimized:
         if df.iloc[0]['volume'] == 0:
             return labels
 
-        # base = 买入日 (T+1) 的开盘价
-        buy_open = df.iloc[1]['open']
-        if buy_open is None or buy_open <= 0:
-            return labels
-
-        # 买入日成交量为0 (停牌无法买入)
-        if df.iloc[1]['volume'] == 0:
-            return labels
-
-        closes = df['close'].tolist()
-
-        # label_Nd = close[1+N] / open[1] - 1  (从买入日起算第N个交易日)
-        if len(closes) > 1 + 3:
-            labels['label_3d'] = (closes[1 + 3] / buy_open - 1)
-        if len(closes) > 1 + 5:
-            labels['label_5d'] = (closes[1 + 5] / buy_open - 1)
-        if len(closes) > 1 + 10:
-            labels['label_10d'] = (closes[1 + 10] / buy_open - 1)
-        if len(closes) > 1 + 15:
-            labels['label_15d'] = (closes[1 + 15] / buy_open - 1)
+        # 使用统一标签计算 (current_idx=0 即报告日)
+        computed = compute_aligned_labels(
+            opens=df['open'].values,
+            closes=df['close'].values,
+            volumes=df['volume'].values,
+            current_idx=0,
+            horizons=(3, 5, 10, 15),
+        )
+        # 将 nan 转为 None 以保持原接口
+        for k, v in computed.items():
+            labels[k] = None if (v is None or np.isnan(v)) else v
 
         return labels
 
@@ -1451,27 +1444,17 @@ class V39FeatureCacheUpdaterOptimized:
         if remaining < 3:
             return labels
 
-        # base = 买入日 (pos+1) 的开盘价
-        opens = stock_df_full['open'].values
-        buy_open = opens[pos + 1]
-        if buy_open <= 0:
-            return labels
-
-        # 买入日停牌检测
-        if volumes[pos + 1] == 0:
-            return labels
-
-        closes = stock_df_full['close'].values
-
-        # label_Nd = close[pos+1+N] / open[pos+1] - 1
-        if remaining > 1 + 3:
-            labels['label_3d'] = float(closes[pos + 1 + 3] / buy_open - 1)
-        if remaining > 1 + 5:
-            labels['label_5d'] = float(closes[pos + 1 + 5] / buy_open - 1)
-        if remaining > 1 + 10:
-            labels['label_10d'] = float(closes[pos + 1 + 10] / buy_open - 1)
-        if remaining > 1 + 15:
-            labels['label_15d'] = float(closes[pos + 1 + 15] / buy_open - 1)
+        # 使用统一标签计算 (current_idx=pos 即报告日)
+        computed = compute_aligned_labels(
+            opens=stock_df_full['open'].values,
+            closes=stock_df_full['close'].values,
+            volumes=volumes,
+            current_idx=pos,
+            horizons=(3, 5, 10, 15),
+        )
+        # 将 nan 转为 None 以保持原接口
+        for k, v in computed.items():
+            labels[k] = None if (v is None or np.isnan(v)) else v
 
         return labels
 

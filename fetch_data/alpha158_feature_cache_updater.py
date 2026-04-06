@@ -32,6 +32,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from fetch_data.label_utils import compute_aligned_labels
+
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -224,16 +226,20 @@ class Alpha158FeatureCacheUpdater:
                 if idx is None:
                     continue
 
-                label_3d = label_5d = label_10d = None
-                buy_idx = idx + 1
-                if buy_idx < len(opens) and opens[buy_idx] > 0 and volumes[buy_idx] > 0:
-                    buy_open = opens[buy_idx]
-                    if buy_idx + 3 < len(closes):
-                        label_3d = float(np.log(closes[buy_idx + 3] / buy_open))
-                    if buy_idx + 5 < len(closes):
-                        label_5d = float(np.log(closes[buy_idx + 5] / buy_open))
-                    if buy_idx + 10 < len(closes):
-                        label_10d = float(np.log(closes[buy_idx + 10] / buy_open))
+                computed = compute_aligned_labels(
+                    opens=opens, closes=closes, volumes=volumes,
+                    current_idx=idx, horizons=(3, 5, 10), log_return=True,
+                )
+                label_3d = computed.get('label_3d')
+                label_5d = computed.get('label_5d')
+                label_10d = computed.get('label_10d')
+                # nan → None for DB insertion
+                if label_3d is not None and np.isnan(label_3d):
+                    label_3d = None
+                if label_5d is not None and np.isnan(label_5d):
+                    label_5d = None
+                if label_10d is not None and np.isnan(label_10d):
+                    label_10d = None
 
                 # JSON 序列化特征
                 feat_dict = {name: float(row[name]) for name in feature_names}
@@ -306,21 +312,25 @@ class Alpha158FeatureCacheUpdater:
             if len(rows) < 3:
                 continue
 
-            # 买入日 (T+1) 的开盘价作为 base
-            buy_open = rows[1][1]  # open
-            buy_volume = rows[1][3]  # volume
-            if buy_open is None or buy_open <= 0:
-                continue
-            if buy_volume is not None and buy_volume == 0:
-                continue
+            # 构造 numpy 数组用于统一标签计算
+            opens_arr = np.array([r[1] for r in rows], dtype=float)
+            closes_arr = np.array([r[2] for r in rows], dtype=float)
+            volumes_arr = np.array([r[3] if r[3] is not None else 0 for r in rows], dtype=float)
 
-            label_3d = label_5d = label_10d = None
-            if len(rows) > 1 + 3:
-                label_3d = float(np.log(rows[1 + 3][2] / buy_open))  # [2]=close
-            if len(rows) > 1 + 5:
-                label_5d = float(np.log(rows[1 + 5][2] / buy_open))
-            if len(rows) > 1 + 10:
-                label_10d = float(np.log(rows[1 + 10][2] / buy_open))
+            computed = compute_aligned_labels(
+                opens=opens_arr, closes=closes_arr, volumes=volumes_arr,
+                current_idx=0, horizons=(3, 5, 10), log_return=True,
+            )
+            label_3d = computed.get('label_3d')
+            label_5d = computed.get('label_5d')
+            label_10d = computed.get('label_10d')
+            # nan → None
+            if label_3d is not None and np.isnan(label_3d):
+                label_3d = None
+            if label_5d is not None and np.isnan(label_5d):
+                label_5d = None
+            if label_10d is not None and np.isnan(label_10d):
+                label_10d = None
 
             if label_3d is not None:
                 cursor.execute("""
