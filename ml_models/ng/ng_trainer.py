@@ -806,12 +806,21 @@ if __name__ == '__main__':
                         help='Target WF windows (3 or 8)')
     parser.add_argument('--regime-weight', action='store_true',
                         help='Enable market regime sample weighting')
+    parser.add_argument('--seed', type=int, default=None,
+                        help='Global random seed (for multi-seed ensemble)')
     args = parser.parse_args()
 
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s [%(levelname)s] %(message)s'
     )
+
+    # Set global random seed if specified (for multi-seed ensemble)
+    if args.seed is not None:
+        import random
+        random.seed(args.seed)
+        np.random.seed(args.seed)
+        logger.info(f"Global random seed set to {args.seed}")
 
     trainer = NGTrainer()
 
