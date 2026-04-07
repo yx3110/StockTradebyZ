@@ -96,17 +96,31 @@ def get_trading_dates(start_date, end_date, cache_table='ng102_feature_cache'):
 
 
 def load_securities_info():
-    """Load securities basic info."""
+    """Load securities basic info from securities + stock_basic_info tables."""
     conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.execute("PRAGMA busy_timeout = 30000")
+    info = {}
     try:
+        # Primary: securities table (most complete, has industry for A-stocks)
         rows = conn.execute("""
-            SELECT code, name, industry FROM stock_basic_info
+            SELECT code, name, industry FROM securities WHERE industry IS NOT NULL AND industry != ''
         """).fetchall()
-        return {r[0]: {'name': r[1], 'industry': r[2]} for r in rows}
+        for r in rows:
+            code = r[0].split('.')[0] if '.' in r[0] else r[0]
+            info[code] = {'name': r[1] or '', 'industry': r[2] or ''}
+        # Fallback: stock_basic_info for any missing
+        rows2 = conn.execute("""
+            SELECT code, name, industry FROM stock_basic_info WHERE industry IS NOT NULL AND industry != ''
+        """).fetchall()
+        for r in rows2:
+            code = r[0].split('.')[0] if '.' in r[0] else r[0]
+            if code not in info:
+                info[code] = {'name': r[1] or '', 'industry': r[2] or ''}
     except Exception:
-        return {}
+        pass
     finally:
         conn.close()
+    return info
 
 
 def build_report_json(scored_stocks, date, securities_info):
