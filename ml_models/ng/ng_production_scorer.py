@@ -60,7 +60,7 @@ REC_THRESHOLDS = {
 class NGProductionScorer:
     """NG Production Scorer — self-contained scoring from ng_feature_cache."""
 
-    def __init__(self, db_path: str = None, model_path: str = None):
+    def __init__(self, db_path: str = None, model_path: str = None, version: str = None):
         self.db_path = db_path or DB_PATH
         self.model_dir = PROJECT_ROOT / 'ml_models' / 'trained_models' / 'ng'
 
@@ -76,8 +76,12 @@ class NGProductionScorer:
         self.cache_table = get_table_name(NG_VERSION)  # default, updated by model version
         self.downside_model = None
         self.lambda_risk = 0.5
+        self._ensemble_scorers = None  # NEW: multi-seed ensemble list
 
-        self._load_model(model_path)
+        if version and version >= 'ng1.0.4' and model_path is None:
+            self._load_ensemble_models(version)
+        else:
+            self._load_model(model_path)
 
     def _load_model(self, model_path: str = None):
         if model_path:
@@ -173,6 +177,50 @@ class NGProductionScorer:
         print(f"  composite weights: {self.target_weights}")
         if self.downside_model is not None:
             print(f"  downside model: loaded (lambda_risk={self.lambda_risk})")
+
+    def _load_ensemble_models(self, version: str):
+        """Load all seed models for a given version and set up ensemble averaging."""
+        ver_tag = version.replace('.', '').replace('ng', 'ng')  # ng104
+
+        seed_files = sorted(
+            self.model_dir.glob(f'{ver_tag}_seed*_multi_target_*.pkl'),
+            key=lambda f: f.stat().st_mtime
+        )
+
+        if not seed_files:
+            # Fallback: look for single model without seed tag
+            single_files = sorted(
+                self.model_dir.glob(f'{ver_tag}*_multi_target_*.pkl'),
+                key=lambda f: f.stat().st_mtime
+            )
+            if single_files:
+                self._load_model(str(single_files[-1]))
+                return
+            # Final fallback: load latest ng model
+            logger.warning(f"No {ver_tag} models found, falling back to latest")
+            self._load_model(None)
+            return
+
+        # Load each seed model as an independent scorer
+        self._ensemble_scorers = []
+        for sf in seed_files:
+            scorer = NGProductionScorer(db_path=self.db_path, model_path=str(sf))
+            scorer._ensemble_scorers = None  # prevent recursion
+            self._ensemble_scorers.append(scorer)
+
+        # Copy metadata from first scorer
+        first = self._ensemble_scorers[0]
+        self.feature_names = first.feature_names
+        self.stock_feature_cols = first.stock_feature_cols
+        self.macro_feature_cols = first.macro_feature_cols
+        self.cache_table = first.cache_table
+        self.target_weights = first.target_weights
+        self.winsorize_bounds = first.winsorize_bounds
+        self.global_quantiles = first.global_quantiles
+        self.models = first.models  # for single-stock fallback
+        self.weights = first.weights
+
+        print(f"  Multi-seed ensemble: {len(self._ensemble_scorers)} models loaded")
 
     # ------------------------------------------------------------------
     # Feature loading
@@ -320,7 +368,47 @@ class NGProductionScorer:
     # Main scoring API
     # ------------------------------------------------------------------
 
+    def _ensemble_predict_scores(self, stock_codes: List[str], date: str) -> Dict[str, Dict]:
+        """Average predictions from all seed models."""
+        # Load features once (all scorers share same cache table)
+        features_df = self._load_features(stock_codes, date)
+
+        all_results = []
+        for scorer in self._ensemble_scorers:
+            if features_df is not None and len(features_df) > 0:
+                results = scorer.predict_scores_from_preloaded(
+                    stock_codes, date, features_df.copy())
+            else:
+                results = scorer.predict_scores(stock_codes, date)
+            all_results.append(results)
+
+        # Average numeric fields across seed models
+        merged = {}
+        for code in stock_codes:
+            preds = [r.get(code, {}) for r in all_results
+                     if code in r and r[code].get('exec_filter') != 'no_data']
+            if not preds:
+                merged[code] = {
+                    'score': 50.0, 'pred_3d': 0, 'pred_5d': 0,
+                    'pred_10d': 0, 'pred_15d': 0, 'rank_score': 0,
+                    'recommendation': '观望', 'exec_filter': 'no_data',
+                }
+                continue
+
+            avg = {}
+            for key in ['pred_3d', 'pred_5d', 'pred_10d', 'pred_15d', 'rank_score', 'score']:
+                vals = [float(p.get(key, 0) or 0) for p in preds]
+                avg[key] = float(np.mean(vals)) if vals else 0.0
+            avg['recommendation'] = self._get_recommendation(avg['score'])
+            merged[code] = avg
+
+        return merged
+
     def predict_scores(self, stock_codes: List[str], date: str) -> Dict[str, Dict]:
+        # Multi-seed ensemble mode
+        if self._ensemble_scorers:
+            return self._ensemble_predict_scores(stock_codes, date)
+
         if isinstance(date, str) and len(date) == 8 and date.isdigit():
             date = f"{date[:4]}-{date[4:6]}-{date[6:]}"
 
