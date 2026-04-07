@@ -15,11 +15,18 @@
   },
 
   "portfolio": {
-    "top_n": 10,
-    "focus_days": 10,
-    "cppi_floor": 0.05,
+    "top_n": 5,
+    "rebal_days": 10,
+    "weighting": "score_weighted",
+    "holding_buffer": 3,
+    "atr_stop_mult": 0,
+    "max_loss_pct": 0,
+    "cppi_floor": 0,
     "cppi_multiplier": 20,
-    "_cppi_explanation": "净值接近floor时自动减仓: exposure = min(1.0, 20 × (净值 - floor净值))"
+    "_grid_search": "2026-04-07, 1296 combos, 10 valid (IS+OOS Sharpe>0 & excess>0)",
+    "_is_result": "年化超额+59.1%, Sharpe=1.89, MaxDD=-26.9%",
+    "_oos_result": "年化超额+2.9%, Sharpe=0.65, MaxDD=-34.8%",
+    "_baseline": "等权Top5 rebal10: IS超额+107% OOS超额+2.2%"
   },
 
   "recommendation_ranks": {
