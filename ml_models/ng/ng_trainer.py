@@ -80,6 +80,19 @@ MARKET_FEATURE_NAMES: List[str] = [
 
 ALL_FEATURE_NAMES: List[str] = STOCK_FEATURE_NAMES + MARKET_FEATURE_NAMES  # 66 total (56 stock + 10 market)
 
+SMOOTHING_FEATURE_NAMES: List[str] = [
+    # Long-horizon trend (3)
+    'trend_strength_60d', 'ma60_distance', 'price_channel_pos_40d',
+    # Volatility regime (3)
+    'vol_ratio_5d_60d', 'vol_regime', 'downside_vol_20d',
+    # Drawdown state (3)
+    'current_drawdown', 'recovery_speed_20d', 'gap_risk_20d',
+]
+
+# ng1.0.4 = ng1.0.3 base (56 stock) + 9 smoothing = 65 stock + 10 market = 75 total
+NG104_STOCK_FEATURES: List[str] = STOCK_FEATURE_NAMES + SMOOTHING_FEATURE_NAMES
+NG104_ALL_FEATURES: List[str] = NG104_STOCK_FEATURES + MARKET_FEATURE_NAMES
+
 MONEYFLOW_FEATURE_NAMES: List[str] = [
     'net_mf_ratio_5d', 'big_order_ratio', 'big_order_trend_5d',
     'small_vs_big_divergence', 'mf_concentration', 'mf_momentum_10d',
@@ -95,6 +108,7 @@ INTERACTION_FEATURE_NAMES: List[str] = [
 # v1.0.0 constants (for backward compatibility reference)
 NG_V1_VERSION = 'ng1.0.0'
 NG_VERSION = 'ng1.0.3'
+NG104_VERSION = 'ng1.0.4'
 
 
 # ---------------------------------------------------------------------------
@@ -114,14 +128,20 @@ class NGTrainer(V485Trainer):
         'label_15d': 0.35,
     }
 
-    def __init__(self, db_path: str = DB_PATH):
+    def __init__(self, db_path: str = DB_PATH, version: str = None):
         super().__init__(db_path)
+        self._ng_version = version or NG_VERSION
         self.target_weights = dict(self.TARGET_WEIGHTS)
         self._turbo_skip_etf = True
-        self.cache_table = get_table_name(NG_VERSION)
-        # Initialize feature names (may be extended in load_data based on CLI switches)
-        self.feature_names = list(ALL_FEATURE_NAMES)
-        self.stock_feature_cols = list(STOCK_FEATURE_NAMES)
+        self.cache_table = get_table_name(self._ng_version)
+        # Select feature set by version
+        if self._ng_version >= 'ng1.0.4':
+            self.feature_names = list(NG104_ALL_FEATURES)
+            self.stock_feature_cols = list(NG104_STOCK_FEATURES)
+        else:
+            # Initialize feature names (may be extended in load_data based on CLI switches)
+            self.feature_names = list(ALL_FEATURE_NAMES)
+            self.stock_feature_cols = list(STOCK_FEATURE_NAMES)
         self.macro_feature_cols = list(MARKET_FEATURE_NAMES)
         # Stub market_calculator for V475 model_data serialization
         class _StubMC:
@@ -216,7 +236,7 @@ class NGTrainer(V485Trainer):
         Returns the summary dict.
         """
         summary = {
-            'version': NG_VERSION,
+            'version': self._ng_version,
             'generated_at': datetime.now().isoformat(),
             'wf_windows': [],
             'aggregate': {},
@@ -386,7 +406,7 @@ class NGTrainer(V485Trainer):
         v1.0.3: Labels are now industry excess returns.
         Features include 10 CS rank + 5 residual + 3 sector activity.
         """
-        logger.info(f"NG {NG_VERSION} Trainer: Loading data from {self.cache_table} ...")
+        logger.info(f"NG {self._ng_version} Trainer: Loading data from {self.cache_table} ...")
 
         conn = sqlite3.connect(self.db_path, timeout=30)
 
@@ -399,10 +419,15 @@ class NGTrainer(V485Trainer):
             date_filter += " AND trade_date <= ?"
             params.append(end_date)
 
+        # Build query based on version — ng1.0.4 also loads RA label columns
+        extra_select = ""
+        if self._ng_version >= 'ng1.0.4':
+            extra_select = ", ra_label_3d, ra_label_5d, ra_label_10d, ra_label_15d"
+
         query = f"""
         SELECT code, trade_date, features_json,
                label_3d, label_5d, label_10d, label_15d,
-               downside_10d,
+               downside_10d{extra_select},
                market_return_5d, market_return_20d, market_volatility_20d,
                market_breadth, market_new_high_ratio, northbound_flow_5d,
                market_volume_ratio, market_drawdown, vix_proxy,
@@ -462,6 +487,17 @@ class NGTrainer(V485Trainer):
         result['label_10d'] = pd.to_numeric(df_raw['label_10d'], errors='coerce').values
         result['label_15d'] = pd.to_numeric(df_raw.get('label_15d'), errors='coerce').values
 
+        # ng1.0.4: Override labels with risk-adjusted (RA) versions where available
+        if self._ng_version >= 'ng1.0.4':
+            for h in ['3d', '5d', '10d', '15d']:
+                ra_col = f'ra_label_{h}'
+                if ra_col in df_raw.columns:
+                    ra_vals = pd.to_numeric(df_raw[ra_col], errors='coerce')
+                    mask = ra_vals.notna()
+                    if mask.any():
+                        result.loc[mask.values, f'label_{h}'] = ra_vals[mask].values
+                        logger.info(f"  Using risk-adjusted label_{h}: {mask.sum():,} values")
+
         # downside_10d (v1.0.2): backward compat with ng101 cache
         if 'downside_10d' in df_raw.columns:
             result['downside_10d'] = pd.to_numeric(df_raw['downside_10d'], errors='coerce').fillna(0.0).values
@@ -504,7 +540,7 @@ class NGTrainer(V485Trainer):
         """Prepare NG v1.0.3 feature matrix (dynamic: base + moneyflow + interaction)."""
         active_stock_features = self._get_active_stock_features()
 
-        logger.info(f"NG {NG_VERSION} prepare_features: "
+        logger.info(f"NG {self._ng_version} prepare_features: "
                      f"{len(active_stock_features)} stock + {len(MARKET_FEATURE_NAMES)} market "
                      f"= {len(active_stock_features) + len(MARKET_FEATURE_NAMES)} total")
 
@@ -585,11 +621,11 @@ class NGTrainer(V485Trainer):
                            purge_days: int = 15, min_train_days: int = 900,
                            val_days: int = 120, test_days: int = 120,
                            step_days: int = 120):
-        """NG v1.0.3 Walk-Forward Training with ICIR adaptive weights and WF summary."""
+        """NG Walk-Forward Training with ICIR adaptive weights and WF summary."""
         import shutil
 
         logger.info("=" * 60)
-        logger.info(f"NG {NG_VERSION} Walk-Forward Training")
+        logger.info(f"NG {self._ng_version} Walk-Forward Training")
         logger.info("=" * 60)
         logger.info(f"  Base: V4.8.5 machinery (6-model ensemble, LambdaRank, Bear Specialist)")
         logger.info(f"  Data: {self.cache_table}")
@@ -691,14 +727,22 @@ class NGTrainer(V485Trainer):
         if v485_files:
             latest = v485_files[-1]
             timestamp = latest.stem.replace('v485_multi_target_', '')
-            new_path = ng_dir / f'ng_multi_target_{timestamp}.pkl'
+            version_tag = self._ng_version.replace('.', '').replace('ng', 'ng')  # e.g. ng104
+            # Include seed tag in filename if a global seed was set
+            try:
+                import ml_models.training.train_v395_multi_target as _tm
+                seed_val = getattr(_tm, '_GLOBAL_RANDOM_SEED', 42)
+                seed_tag = f'_seed{seed_val}'
+            except Exception:
+                seed_tag = ''
+            new_path = ng_dir / f'{version_tag}{seed_tag}_multi_target_{timestamp}.pkl'
 
             # Update model metadata
-            model_data['version'] = NG_VERSION
+            model_data['version'] = self._ng_version
             model_data['lambda_risk'] = getattr(self, '_lambda_risk', 0.5)
             model_data['ng_innovations'] = {
                 'base': 'V4.8.5 ensemble machinery',
-                'version': NG_VERSION,
+                'version': self._ng_version,
                 'prev_version': NG_V1_VERSION,
                 'data_source': f'{self.cache_table} (industry excess labels)',
                 'feature_set': f'{len(self.stock_feature_cols)} stock + {len(self.macro_feature_cols)} market features',
@@ -732,7 +776,7 @@ class NGTrainer(V485Trainer):
             model_data['target_weights'] = adaptive_weights
 
             joblib.dump(model_data, new_path)
-            logger.info(f"\nNG {NG_VERSION} model saved: {new_path}")
+            logger.info(f"\nNG {self._ng_version} model saved: {new_path}")
             logger.info(f"  Size: {new_path.stat().st_size / 1024 / 1024:.1f} MB")
 
             # Copy auxiliary files
@@ -747,8 +791,8 @@ class NGTrainer(V485Trainer):
                 hf.unlink()
 
             # Save training history
-            history['version'] = NG_VERSION
-            history['base'] = f'NG {NG_VERSION} ({len(self.feature_names)} features, industry excess labels)'
+            history['version'] = self._ng_version
+            history['base'] = f'NG {self._ng_version} ({len(self.feature_names)} features, industry excess labels)'
             history['ng_innovations'] = model_data['ng_innovations']
             history['adaptive_weights'] = adaptive_weights
 
@@ -762,7 +806,7 @@ class NGTrainer(V485Trainer):
             # Generate WF summary (v1.0.3)
             wf_summary = self._generate_wf_summary(history, ng_dir)
 
-            logger.info(f"\nNG {NG_VERSION} training complete!")
+            logger.info(f"\nNG {self._ng_version} training complete!")
             logger.info(f"  Features: {len(self.feature_names)}")
             logger.info(f"  ICIR weights: {', '.join(f'{k}={v:.3f}' for k, v in adaptive_weights.items())}")
             logger.info(f"  Model: {new_path.name}")
@@ -808,6 +852,13 @@ if __name__ == '__main__':
                         help='Enable market regime sample weighting')
     parser.add_argument('--seed', type=int, default=None,
                         help='Global random seed (for multi-seed ensemble)')
+    # ng1.0.4 new arguments
+    parser.add_argument('--version', default=None,
+                        help='NG version to train (e.g., ng1.0.3, ng1.0.4)')
+    parser.add_argument('--penalty-power', type=float, default=1.5,
+                        help='Risk-adjusted label penalty power (ng1.0.4)')
+    parser.add_argument('--seeds', type=str, default=None,
+                        help='Comma-separated seeds for multi-seed training (e.g., 42,123,456,789,2024)')
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -815,45 +866,72 @@ if __name__ == '__main__':
         format='%(asctime)s [%(levelname)s] %(message)s'
     )
 
-    # Set global random seed if specified (for multi-seed ensemble)
-    if args.seed is not None:
-        import random
-        random.seed(args.seed)
-        np.random.seed(args.seed)
-        import ml_models.training.train_v395_multi_target as _trainer_mod
-        _trainer_mod._GLOBAL_RANDOM_SEED = args.seed
-        logger.info(f"Global random seed set to {args.seed} (numpy + LGB/XGB/CB/RF/HGB)")
+    version = args.version or NG_VERSION
 
-    trainer = NGTrainer()
-
-    # ng switches
-    trainer._enable_moneyflow = args.enable_moneyflow
-    trainer._enable_interaction = args.enable_interaction
-    trainer._regime_weight = args.regime_weight
+    def _apply_trainer_switches(trainer):
+        """Apply CLI switches to a trainer instance."""
+        trainer._enable_moneyflow = args.enable_moneyflow
+        trainer._enable_interaction = args.enable_interaction
+        trainer._regime_weight = args.regime_weight
+        trainer._lambda_risk = args.lambda_risk
+        if args.fast_check:
+            trainer._fast_check = True
+            trainer._fast_check_max_windows = 2
+            trainer._fast_check_min_train = min(args.min_train_days, 600)
+            trainer._fast_check_val_days = 60
+            trainer._fast_check_test_days = 60
+            trainer._fast_check_step_days = 60
+        if args.parallel > 1:
+            trainer._parallel_wf_workers = args.parallel
 
     if args.wf_windows > 3:
         args.step_days = 90
         logger.info(f"WF windows target: {args.wf_windows}, step_days=90")
 
-    if args.fast_check:
-        trainer._fast_check = True
-        trainer._fast_check_max_windows = 2
-        trainer._fast_check_min_train = min(args.min_train_days, 600)
-        trainer._fast_check_val_days = 60
-        trainer._fast_check_test_days = 60
-        trainer._fast_check_step_days = 60
+    if args.seeds:
+        # Multi-seed training loop
+        import random
+        import ml_models.training.train_v395_multi_target as _trainer_mod
+        seed_list = [int(s.strip()) for s in args.seeds.split(',')]
+        for i, seed_val in enumerate(seed_list):
+            logger.info(f"\n{'='*60}")
+            logger.info(f"Training seed {seed_val} ({i+1}/{len(seed_list)})")
+            logger.info(f"{'='*60}")
+            random.seed(seed_val)
+            np.random.seed(seed_val)
+            _trainer_mod._GLOBAL_RANDOM_SEED = seed_val
 
-    if args.parallel > 1:
-        trainer._parallel_wf_workers = args.parallel
+            trainer = NGTrainer(version=version)
+            _apply_trainer_switches(trainer)
 
-    trainer._lambda_risk = args.lambda_risk
+            model_data, history = trainer.walk_forward_train(
+                start_date=args.start_date,
+                end_date=args.end_date,
+                purge_days=args.purge_days,
+                min_train_days=args.min_train_days,
+                val_days=args.val_days,
+                test_days=args.test_days,
+                step_days=args.step_days,
+            )
+    else:
+        # Single-seed training
+        if args.seed is not None:
+            import random
+            random.seed(args.seed)
+            np.random.seed(args.seed)
+            import ml_models.training.train_v395_multi_target as _trainer_mod
+            _trainer_mod._GLOBAL_RANDOM_SEED = args.seed
+            logger.info(f"Global random seed set to {args.seed} (numpy + LGB/XGB/CB/RF/HGB)")
 
-    model_data, history = trainer.walk_forward_train(
-        start_date=args.start_date,
-        end_date=args.end_date,
-        purge_days=args.purge_days,
-        min_train_days=args.min_train_days,
-        val_days=args.val_days,
-        test_days=args.test_days,
-        step_days=args.step_days,
-    )
+        trainer = NGTrainer(version=version)
+        _apply_trainer_switches(trainer)
+
+        model_data, history = trainer.walk_forward_train(
+            start_date=args.start_date,
+            end_date=args.end_date,
+            purge_days=args.purge_days,
+            min_train_days=args.min_train_days,
+            val_days=args.val_days,
+            test_days=args.test_days,
+            step_days=args.step_days,
+        )
