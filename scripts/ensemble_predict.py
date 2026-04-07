@@ -123,7 +123,7 @@ def load_securities_info():
     return info
 
 
-def build_report_json(scored_stocks, date, securities_info):
+def build_report_json(scored_stocks, date, securities_info, version='ng_ensemble'):
     """Build analysis_data JSON from scored stocks."""
     stocks_list = []
     for code, data in scored_stocks.items():
@@ -147,15 +147,19 @@ def build_report_json(scored_stocks, date, securities_info):
 
     return {
         'analysis_date': date,
-        'scoring_version': 'ng1.0.2_ensemble',
+        'scoring_version': f'{version}_ensemble',
         'all_stocks_with_scores': stocks_list,
     }
 
 
 def main():
     parser = argparse.ArgumentParser(description='Multi-seed ensemble predictor')
-    parser.add_argument('--models', nargs='+', required=True,
-                        help='Model .pkl file paths')
+    parser.add_argument('--models', nargs='+', default=None,
+                        help='Model .pkl file paths (auto-discovered if --version used)')
+    parser.add_argument('--version', default=None,
+                        help='NG version for auto model discovery (e.g., ng1.0.4)')
+    parser.add_argument('--seeds', default='42,123,456,789,2024',
+                        help='Seed list for auto-discovery (comma-separated)')
     parser.add_argument('--start-date', required=True)
     parser.add_argument('--end-date', required=True)
     parser.add_argument('--output-dir', required=True)
@@ -163,21 +167,41 @@ def main():
                         help='Overwrite existing reports')
     args = parser.parse_args()
 
+    if args.models:
+        model_paths = args.models
+    elif args.version:
+        ver_tag = args.version.replace('.', '').replace('ng', 'ng')  # ng104
+        model_dir = Path(PROJECT_ROOT) / 'ml_models' / 'trained_models' / 'ng'
+        model_paths = sorted(model_dir.glob(f'{ver_tag}_seed*_multi_target_*.pkl'))
+        if not model_paths:
+            model_paths = sorted(model_dir.glob(f'{ver_tag}*_multi_target_*.pkl'))
+        model_paths = [str(p) for p in model_paths]
+        if not model_paths:
+            print(f"No models found for version {args.version}")
+            return
+        print(f"Auto-discovered {len(model_paths)} models for {args.version}")
+    else:
+        parser.error("Either --models or --version is required")
+
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Load scorers
-    print(f"Loading {len(args.models)} models...")
+    print(f"Loading {len(model_paths)} models...")
     scorers = []
-    for mp in args.models:
+    for mp in model_paths:
         print(f"  Loading: {mp}")
         scorer = load_scorer(mp)
         scorers.append(scorer)
     print(f"  Ensemble of {len(scorers)} models ready\n")
 
     # Get trading dates
-    # Use the cache table from the first scorer
-    cache_table = scorers[0].cache_table
+    if args.version:
+        sys.path.insert(0, PROJECT_ROOT)
+        from ml_models.ng.ng_schema import get_table_name
+        cache_table = get_table_name(args.version)
+    else:
+        cache_table = scorers[0].cache_table
     dates = get_trading_dates(args.start_date, args.end_date, cache_table)
     print(f"Trading dates: {len(dates)} ({dates[0]} ~ {dates[-1]})")
 
@@ -214,7 +238,8 @@ def main():
         scored = ensemble_predict(scorers, codes, date)
 
         # Build and save JSON
-        analysis = build_report_json(scored, date, securities_info)
+        analysis = build_report_json(scored, date, securities_info,
+                                      version=args.version or 'ng')
         date_str = date.replace('-', '')
         json_file = output_dir / f'analysis_data_{date_str}.json'
         with open(json_file, 'w', encoding='utf-8') as f:
