@@ -16,17 +16,28 @@
 
   "portfolio": {
     "top_n": 5,
-    "rebal_days": 10,
-    "weighting": "score_weighted",
+    "rebal_days": 5,
+    "weighting": "equal",
     "holding_buffer": 3,
     "atr_stop_mult": 0,
     "max_loss_pct": 0,
     "cppi_floor": 0,
     "cppi_multiplier": 20,
-    "_grid_search": "2026-04-07, 1296 combos, 10 valid (IS+OOS Sharpe>0 & excess>0)",
-    "_is_result": "年化超额+59.1%, Sharpe=1.89, MaxDD=-26.9%",
-    "_oos_result": "年化超额+2.9%, Sharpe=0.65, MaxDD=-34.8%",
-    "_baseline": "等权Top5 rebal10: IS超额+107% OOS超额+2.2%"
+    "_grid_search": "2026-04-08, 3-seed ensemble, 1296 combos, 10 valid",
+    "_is_result": "年化超额+223.4%, Sharpe=3.72, MaxDD=-9.6%",
+    "_oos_result": "年化超额+37.3%, Sharpe=1.38, MaxDD=-42.9%"
+  },
+
+  "ensemble": {
+    "enabled": true,
+    "seeds": [42, 123, 456],
+    "model_files": [
+      "ml_models/trained_models/ng/ng102_seed42.pkl",
+      "ml_models/trained_models/ng/ng102_seed123.pkl",
+      "ml_models/trained_models/ng/ng102_seed456.pkl"
+    ],
+    "_method": "Average predictions from 3 models trained with different random seeds",
+    "_effect": "IS Sharpe 1.95→3.72, OOS excess -13%→+37%, MaxDD -25%→-10% (IS)"
   },
 
   "recommendation_ranks": {

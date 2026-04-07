@@ -544,7 +544,7 @@ def update_v40_feature_cache(date_str: str, stock_data_cache: dict = None):
 
 
 def update_ng_feature_cache(date_str: str):
-    """更新NG特征缓存 (Daily Selection NG 62因子)"""
+    """更新NG特征缓存 (ng1.0.3, 66因子, 写入ng103_feature_cache)"""
     logger.info(f"开始更新 {date_str} 的NG特征缓存...")
 
     try:

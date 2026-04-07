@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-NG v1.1.0 Production Scorer — loads NG model, scores all stocks for a date.
+NG v1.0.3 Production Scorer — loads NG model, scores all stocks for a date.
 
-v1.1.0 changes:
+v1.0.3 changes:
   - Dynamic feature list from model pkl (moneyflow + interaction support)
   - 68+ features (58+ stock + 10 market), extensible via model pkl
   - ICIR adaptive composite weights from model (not hardcoded)
   - Labels are industry excess returns
-  - Backward compatible: auto-detects v1.0.0 / v1.0.1 / v1.1.0 models
+  - Backward compatible: auto-detects v1.0.0 / v1.0.1 / v1.0.3 models
 """
 
 import json
@@ -58,7 +58,7 @@ REC_THRESHOLDS = {
 
 
 class NGProductionScorer:
-    """NG v1.1.0 Production Scorer — self-contained scoring from ng_feature_cache."""
+    """NG Production Scorer — self-contained scoring from ng_feature_cache."""
 
     def __init__(self, db_path: str = None, model_path: str = None):
         self.db_path = db_path or DB_PATH
@@ -84,7 +84,7 @@ class NGProductionScorer:
             path = Path(model_path)
         else:
             ng_files = sorted(
-                self.model_dir.glob('ng_*.pkl'),
+                self.model_dir.glob('ng*.pkl'),
                 key=lambda f: f.stat().st_mtime
             )
             if not ng_files:
@@ -141,7 +141,7 @@ class NGProductionScorer:
                 with open(rec_path, 'r') as f:
                     self.recommendation_thresholds = json.load(f)
 
-        # Target weights from model (ICIR adaptive in v1.1.0)
+        # Target weights from model (ICIR adaptive in v1.0.3)
         stored_weights = model_data.get('target_weights', {})
         if stored_weights:
             self.target_weights = {}
@@ -204,7 +204,7 @@ class NGProductionScorer:
         parsed = df_raw['features_json'].apply(_json_loads).tolist()
         df_stock = pd.DataFrame(parsed)
 
-        # Ensure expected columns (handles v1.0.0 / v1.1.0 / v1.1.0+ data)
+        # Ensure expected columns (handles v1.0.0 / v1.0.3 / v1.0.3+ data)
         # Fill missing moneyflow/interaction features with 0 for older cache entries
         for col in self.stock_feature_cols:
             if col not in df_stock.columns:

@@ -1,6 +1,6 @@
 """Daily Selection NG — Next Generation trend-following factor model.
 
-v1.1.0: Moneyflow factors, style-residual labels, WF upgrade, regime weighting.
+v1.0.3: Moneyflow factors, style-residual labels, WF upgrade, regime weighting.
 """
 
 from .ng_trainer import (

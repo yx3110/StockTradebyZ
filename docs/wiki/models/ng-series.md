@@ -63,40 +63,48 @@ Next Generation（NG）系列是从 V4.x 代码中独立重构的新一代模型
 
 ---
 
-## NG 1.1.0 — 资金流 + 残差标签 (2026-04-05, 开发中)
+## NG 1.0.3 — 去翻转因子 (2026-04-07)
 
-**升级动机**: 1.0.2 的 V5.2=74.0%，目标突破 76%+
+**升级动机**: 1.0.2 在 2018-2020 OOS 评估中存在 cache 不匹配 bug（pred_10d 全0）。修复后发现去掉 3 个 IC 方向翻转的因子可以大幅提升跨周期泛化能力。
 
-**三方向联合升级**:
+**核心改动**:
+- 66 特征（56 股票 + 10 市场）— 从 69 中去掉 3 个翻转因子
+- 去掉的因子：`log_market_cap`, `cs_rank_market_cap`, `pullback_from_high`
+  - 这些因子在 2020 年前后 IC 方向翻转（大盘→小盘偏好切换）
+  - GBDT 学到了训练期的方向，但在 OOS 上方向错误
+- 共享缓存表 `ng103_feature_cache`（features 是 ng1.1.0 的严格子集）
 
-### 方向1：信号质量
-- 8 资金流因子（moneyflow）: 主力净流入比、大单占比等
-- 8 交互因子: 通过 IC 筛选保留有效交互
-- 新表 `moneyflow_daily` 存储日资金流数据
+**2018-2020 OOS 评估 (score ranking, Top-5, 10d持仓)**:
+| 指标 | ng1.0.2 baseline | **ng1.0.3** |
+|------|:---:|:---:|
+| 年化(毛) | +1.3% | **+18.1%** |
+| 超额年化 | +6.8% | **+24.8%** |
+| Sharpe | -0.02 | **0.45** |
+| Alpha | +7.6% | **+25.0%** |
+| IR | 0.28 | **0.89** |
+| V5.2 | 49.1% B | **55.5% B** |
 
-### 方向2：标签工程
-- 风格因子残差标签：去除 size / momentum / volatility 暴露
-- 目标：让模型学习纯 alpha 信号而非风格β
+**6 配置鲁棒性验证**：所有 Top-N × hold-days 组合一致提升 12-39pp。
 
-### 方向3：训练框架
-- 6-8 个 WF 窗口（vs 之前 4 个）
-- 市况样本加权：牛市 0.8 / 震荡 1.0 / 熊市 1.2
-- CLI 开关独立控制每个方向
+**模型**: `ng103_multi_target_20260407_005245.pkl`
 
-**CLI 开关**:
+**训练命令**:
 ```bash
---enable-moneyflow      # 启用资金流因子
---enable-interaction    # 启用交互因子
---residual-label        # 启用风格残差标签
---wf-windows N          # WF窗口数
---regime-weight         # 启用市况加权
+python3 ml_models/ng/ng_trainer.py --start-date 2020-01-01 --purge-days 15
 ```
 
-**当前状态**: 代码完成（Tasks 1-7），moneyflow 回填中，待 fast-check 验证
+**选股命令**:
+```bash
+python3 tomorrow_stock_selector.py 2026-04-07 --scoring-version ng1.0.3
+```
 
-**初步结果**: V5.2 = 69.6% A（残差标签 ICIR +14.6%，但整体低于 1.0.2）
+---
 
-**缓存表**: `ng110_feature_cache`
+## NG 1.1.0 — 已废弃
+
+ng1.1.0 的三方向实验（资金流因子、残差标签、WF框架升级）评估后发现仅"去翻转因子"方向有效，已合并为 ng1.0.3。其余方向（残差标签=无效、WF8+regime=无效、moneyflow=10d退步）废弃。
+
+**数据资产保留**：`ng103_feature_cache`（3.6M行）、`moneyflow_daily`（8.8M行）由 ng1.0.3 继续使用。
 
 ---
 

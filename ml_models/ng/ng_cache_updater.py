@@ -1,7 +1,7 @@
 """
-Daily Selection NG v1.1.0 — Batch Feature Cache Updater
+Daily Selection NG v1.0.3 — Batch Feature Cache Updater
 ========================================================
-v1.1.0 changes from v1.0.0:
+v1.0.3 changes from v1.0.0:
   - Labels are now INDUSTRY EXCESS returns (stock_return - industry_median_return)
   - Cross-sectional rank factors computed per-industry
   - Residual factors (market/industry-neutralized)
@@ -85,14 +85,14 @@ def _safe_float(val, default=np.nan) -> float:
 # ---------------------------------------------------------------------------
 
 class NGCacheUpdater:
-    """Batch compute NG v1.0.1/v1.0.2/v1.1.0 factors and write to version-specific cache table."""
+    """Batch compute NG factors and write to version-specific cache table."""
 
-    def __init__(self, db_path: str = None, version: str = 'ng1.1.0'):
+    def __init__(self, db_path: str = None, version: str = 'ng1.0.3'):
         self.db_path = db_path or DB_PATH
         self.version = version
         self.table_name = get_table_name(version)
         create_table(self.db_path, version=version)
-        if version >= 'ng1.1.0':
+        if version >= 'ng1.0.3':
             create_moneyflow_table(self.db_path)
         self._pro = None  # lazy-init Tushare API
 
@@ -361,7 +361,7 @@ class NGCacheUpdater:
         return np.array([float(r['total_amount'] or 0) for r in rows])
 
     # ------------------------------------------------------------------
-    # Moneyflow data (v1.1.0)
+    # Moneyflow data (v1.0.3)
     # ------------------------------------------------------------------
 
     def _fetch_and_store_moneyflow(self, conn: sqlite3.Connection, date: str) -> int:
@@ -593,7 +593,7 @@ class NGCacheUpdater:
                 'amounts_20d': np.array(amounts_20d) if amounts_20d else np.array([]),
                 'mean_return_5d': float(np.mean(ind_ret5d)) if ind_ret5d else np.nan,
                 'mean_return_20d': float(np.mean(ind_ret20d)) if ind_ret20d else np.nan,
-                # v1.1.0: industry average volume (for residual_volume)
+                # v1.0.3: industry average volume (for residual_volume)
                 'avg_volume_5d': float(np.mean(amounts_5d)) if amounts_5d else np.nan,
             }
 
@@ -638,7 +638,7 @@ class NGCacheUpdater:
         universe: Dict[int, dict],
     ) -> Dict[int, Dict[str, float]]:
         """
-        v1.1.0: Convert absolute labels to INDUSTRY EXCESS labels.
+        v1.0.3: Convert absolute labels to INDUSTRY EXCESS labels.
         label_Nd_excess = label_Nd_stock - median(label_Nd for same industry)
         """
         # Group by industry
@@ -694,7 +694,7 @@ class NGCacheUpdater:
         stock_volatilities: Dict[int, float],
     ) -> Dict[int, Dict[str, float]]:
         """
-        v1.1.0: Convert industry-excess labels to STYLE RESIDUAL labels.
+        v1.0.3: Convert industry-excess labels to STYLE RESIDUAL labels.
         Regress out [log_market_cap, momentum_20d, volatility_20d] cross-sectionally.
         Original excess labels stored as label_raw_Xd; residuals become label_Xd.
         """
@@ -781,7 +781,7 @@ class NGCacheUpdater:
 
     def update_single_date(self, date: str) -> int:
         """
-        Compute NG v1.1.0 factors for all eligible A-stocks on the given date.
+        Compute NG v1.0.3 factors for all eligible A-stocks on the given date.
         Returns the number of stocks processed.
         """
         t0 = time.time()
@@ -848,14 +848,14 @@ class NGCacheUpdater:
             # 7. Load benchmark
             benchmark_closes = self._load_benchmark_data(conn, date)
 
-            # v1.1.0: Load benchmark daily returns for residual factors
+            # v1.0.3: Load benchmark daily returns for residual factors
             benchmark_daily_returns = self._load_benchmark_daily_returns(conn, date, 25)
 
             # 8. Load northbound flow
             nb_5d, nb_std = self._load_northbound_data(conn, date)
 
-            # 8.5. Load moneyflow data (v1.1.0)
-            if self.version >= 'ng1.1.0':
+            # 8.5. Load moneyflow data (v1.0.3)
+            if self.version >= 'ng1.0.3':
                 mf_count = self._fetch_and_store_moneyflow(conn, date)
                 if mf_count > 0:
                     print(f"  [{date}] Fetched {mf_count} moneyflow records")
@@ -872,7 +872,7 @@ class NGCacheUpdater:
             returns_20d = self._compute_stock_returns(price_data, 20)
             highs_20d_ratio = self._compute_highs_20d_ratio(price_data)
 
-            # v1.1.0: Stock-level daily returns and volatilities for residual/CS rank
+            # v1.0.3: Stock-level daily returns and volatilities for residual/CS rank
             stock_daily_returns = self._compute_stock_daily_returns(price_data, 20)
             stock_volatilities = self._compute_stock_volatilities(price_data, 20)
 
@@ -899,7 +899,7 @@ class NGCacheUpdater:
                 if not np.isnan(v['mean_return_5d'])
             ])
 
-            # 13. Compute labels + convert to INDUSTRY EXCESS (v1.1.0)
+            # 13. Compute labels + convert to INDUSTRY EXCESS (v1.0.3)
             future_dates = self._get_future_dates(conn, date, max(LABEL_HORIZONS) + 1)
             future_prices: Dict[int, Dict[str, dict]] = {}
             if future_dates:
@@ -913,8 +913,8 @@ class NGCacheUpdater:
             # Convert to industry excess returns
             labels_all = self._convert_labels_to_excess(labels_abs, universe)
 
-            # v1.1.0: Convert to style residual labels
-            if self.version >= 'ng1.1.0':
+            # v1.0.3: Convert to style residual labels
+            if self.version >= 'ng1.0.3':
                 # Inject circ_mv into universe for residual regression
                 for sid in active_sids:
                     db = daily_basic.get(sid)
@@ -925,7 +925,7 @@ class NGCacheUpdater:
                 )
 
             # ---------------------------------------------------------------
-            # v1.1.0: Pre-compute per-industry peer arrays for CS rank factors
+            # v1.0.3: Pre-compute per-industry peer arrays for CS rank factors
             # ---------------------------------------------------------------
             # We need raw values for each metric, grouped by industry
             # First pass: compute raw metrics for all eligible stocks
@@ -1070,7 +1070,7 @@ class NGCacheUpdater:
                         industry_amounts_20d=ind_agg.get('amounts_20d', np.array([])),
                         all_industry_returns_5d=all_ind_ret5d,
                         sw_index_return_5d=sw_ret_5d if not np.isnan(sw_ret_5d) else 0.0,
-                        # v1.1.0: sector activity params
+                        # v1.0.3: sector activity params
                         market_breadth=market_feats.get('market_breadth', np.nan),
                         market_volume_ratio=market_feats.get('market_volume_ratio', np.nan),
                     )
@@ -1078,9 +1078,9 @@ class NGCacheUpdater:
                     print(f"    WARN: industry_features failed for {code}: {e}")
                     ind_feats = {}
 
-                # --- Compute moneyflow features (8, v1.1.0) ---
+                # --- Compute moneyflow features (8, v1.0.3) ---
                 mf_feats = {}
-                if self.version >= 'ng1.1.0':
+                if self.version >= 'ng1.0.3':
                     code_for_mf = info['code']
                     mf_rows_for_stock = mf_data.get(code_for_mf, [])
                     if len(closes) >= 2:
@@ -1207,9 +1207,9 @@ class NGCacheUpdater:
                     print(f"    WARN: residual_features failed for {data['code']}: {e}")
                     res_feats = {}
 
-                # --- Interaction features (8, v1.1.0) ---
+                # --- Interaction features (8, v1.0.3) ---
                 ix_feats = {}
-                if self.version >= 'ng1.1.0':
+                if self.version >= 'ng1.0.3':
                     try:
                         ix_feats = compute_interaction_features(
                             data['stock_feats'],
@@ -1230,7 +1230,7 @@ class NGCacheUpdater:
                 all_feats.update(data['ind_feats'])
                 all_feats.update(cs_feats)
                 all_feats.update(res_feats)
-                if self.version >= 'ng1.1.0':
+                if self.version >= 'ng1.0.3':
                     all_feats.update(data.get('mf_feats', {}))
                     all_feats.update(ix_feats)
 
@@ -1272,8 +1272,8 @@ class NGCacheUpdater:
                     _to_sql(stock_labels.get('downside_10d')),
                 )
 
-                # v1.1.0: add label_raw columns
-                if self.version >= 'ng1.1.0':
+                # v1.0.3: add label_raw columns
+                if self.version >= 'ng1.0.3':
                     raw_cols = (
                         _to_sql(stock_labels.get('label_raw_3d')),
                         _to_sql(stock_labels.get('label_raw_5d')),
@@ -1301,7 +1301,7 @@ class NGCacheUpdater:
             # Write to database
             if insert_rows:
                 conn.row_factory = None
-                if self.version >= 'ng1.1.0':
+                if self.version >= 'ng1.0.3':
                     # 22 columns: includes downside_10d + 4 label_raw columns
                     conn.executemany(
                         f'''INSERT OR REPLACE INTO {self.table_name}
@@ -1386,7 +1386,7 @@ def main():
     parser.add_argument('--start-date', help='Backfill start date (YYYY-MM-DD)')
     parser.add_argument('--end-date', help='Backfill end date (YYYY-MM-DD)')
     parser.add_argument('--db-path', help='Override database path')
-    parser.add_argument('--version', default='ng1.1.0', help='NG version (default: ng1.1.0)')
+    parser.add_argument('--version', default='ng1.0.3', help='NG version (default: ng1.0.3)')
     args = parser.parse_args()
 
     updater = NGCacheUpdater(db_path=args.db_path, version=args.version)

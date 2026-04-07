@@ -4,7 +4,8 @@ NG Feature Cache Schema — version-specific tables for backward compatibility.
 Table naming convention:
   - ng_feature_cache       → ng1.0.0 (original, 62 features, absolute labels)
   - ng101_feature_cache    → ng1.0.1 (69 features, industry excess labels)
-  - ng102_feature_cache    → ng1.0.2 (future)
+  - ng102_feature_cache    → ng1.0.2
+  - ng103_feature_cache    → ng1.0.3 (66 features, drop 3 flipping factors)
 
 All tables share the same column schema; only the content differs.
 Old version tables are never deleted.
@@ -19,10 +20,10 @@ VERSION_TABLE_MAP = {
     'ng1.0.0': 'ng_feature_cache',
     'ng1.0.1': 'ng101_feature_cache',
     'ng1.0.2': 'ng102_feature_cache',
-    'ng1.1.0': 'ng110_feature_cache',
+    'ng1.0.3': 'ng103_feature_cache',
 }
 
-DEFAULT_VERSION = 'ng1.0.2'
+DEFAULT_VERSION = 'ng1.0.3'
 
 
 def get_table_name(version: str = None) -> str:
@@ -37,7 +38,7 @@ def _schema_sql(table_name: str, version: str = None) -> str:
     extra_cols = ''
     if ver >= 'ng1.0.2':
         extra_cols = '\n    downside_10d REAL,'
-    if ver >= 'ng1.1.0':
+    if ver >= 'ng1.0.3':
         extra_cols += '\n    label_raw_3d REAL,'
         extra_cols += '\n    label_raw_5d REAL,'
         extra_cols += '\n    label_raw_10d REAL,'

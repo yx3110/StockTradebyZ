@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-NG v1.1.0 Trainer — inherits V485Trainer, overrides feature loading to use ng_feature_cache.
+NG v1.0.3 Trainer — inherits V485Trainer, overrides feature loading to use ng_feature_cache.
 
-v1.1.0 changes from v1.0.0 (ng1.0.0):
+v1.0.3 changes from v1.0.0 (ng1.0.0):
   - 58 stock features + 10 market = 68 total (was 52+10=62)
   - Labels are industry excess returns (not absolute)
   - ICIR adaptive composite weights (not hardcoded)
@@ -41,33 +41,33 @@ logger = logging.getLogger(__name__)
 DB_PATH = str(PROJECT_ROOT / 'data_adapter' / 'stock_data.db')
 
 # ---------------------------------------------------------------------------
-# Feature name constants — NG v1.1.0 (68 total = 58 stock + 10 market)
+# Feature name constants — NG v1.0.3 (66 total = 56 stock + 10 market)
 # ---------------------------------------------------------------------------
 
 STOCK_FEATURE_NAMES: List[str] = [
-    # Trend state (5)
+    # Trend state (4, was 5 — removed pullback_from_high: IC flips pre/post-2020)
     'trend_strength_20d', 'days_since_breakout', 'adx_proxy',
-    'pullback_from_high', 'volume_contraction',
-    # Pullback entry (6, was 10 — removed bollinger_position, consecutive_down_days)
+    'volume_contraction',
+    # Pullback entry (6)
     'pullback_to_ma10', 'pullback_to_ma20', 'rsi_14',
     'kdj_j_value', 'lower_shadow_ratio', 'intraday_recovery',
-    # Volume confirmation (7, was 8 — no change in v1.1.0 for this group)
+    # Volume confirmation (8)
     'volume_ratio_5d', 'volume_price_corr', 'obv_trend', 'volume_breakout',
     'log_amount_ma5', 'turnover_rate', 'up_volume_ratio', 'volume_cv',
-    # Fundamental quality (14, unchanged)
+    # Fundamental quality (13, was 14 — removed log_market_cap: IC flips pre/post-2020)
     'roe_ttm', 'roe_change', 'revenue_growth', 'net_profit_margin', 'ocf_quality',
     'pe_ttm', 'pb', 'pe_percentile_60d', 'debt_to_assets', 'current_ratio',
-    'log_market_cap', 'log_adv_20d', 'free_float_ratio', 'dv_ratio',
-    # Industry rotation (11, was 8 — +3 sector activity features)
+    'log_adv_20d', 'free_float_ratio', 'dv_ratio',
+    # Industry rotation (11)
     'industry_return_5d', 'industry_return_20d', 'industry_relative_strength',
     'industry_breadth', 'industry_volume_change', 'industry_rank_return_5d',
     'sw_index_return_5d', 'industry_hhi',
     'sector_breadth_vs_market', 'sector_volume_vs_market', 'n_sectors_strong',
-    # Cross-sectional rank (10, NEW in v1.1.0)
+    # Cross-sectional rank (9, was 10 — removed cs_rank_market_cap: IC flips pre/post-2020)
     'cs_rank_return_5d', 'cs_rank_return_20d', 'cs_rank_volume_surge',
     'cs_rank_turnover', 'cs_rank_rsi', 'cs_rank_new_high',
-    'cs_rank_pullback', 'cs_rank_volatility', 'cs_rank_market_cap', 'cs_rank_pe',
-    # Residual factors (5, NEW in v1.1.0)
+    'cs_rank_pullback', 'cs_rank_volatility', 'cs_rank_pe',
+    # Residual factors (5)
     'residual_return_20d', 'residual_volume', 'idiosyncratic_volatility',
     'residual_skewness', 'relative_strength_vs_peers',
 ]
@@ -78,7 +78,7 @@ MARKET_FEATURE_NAMES: List[str] = [
     'market_volume_ratio', 'market_drawdown', 'vix_proxy', 'market_momentum_diff',
 ]
 
-ALL_FEATURE_NAMES: List[str] = STOCK_FEATURE_NAMES + MARKET_FEATURE_NAMES  # 68 total
+ALL_FEATURE_NAMES: List[str] = STOCK_FEATURE_NAMES + MARKET_FEATURE_NAMES  # 66 total (56 stock + 10 market)
 
 MONEYFLOW_FEATURE_NAMES: List[str] = [
     'net_mf_ratio_5d', 'big_order_ratio', 'big_order_trend_5d',
@@ -94,7 +94,7 @@ INTERACTION_FEATURE_NAMES: List[str] = [
 
 # v1.0.0 constants (for backward compatibility reference)
 NG_V1_VERSION = 'ng1.0.0'
-NG_VERSION = 'ng1.0.2'
+NG_VERSION = 'ng1.0.3'
 
 
 # ---------------------------------------------------------------------------
@@ -102,7 +102,7 @@ NG_VERSION = 'ng1.0.2'
 # ---------------------------------------------------------------------------
 
 class NGTrainer(V485Trainer):
-    """NG v1.1.0 Trainer — loads from ng_feature_cache, delegates training to V485."""
+    """NG v1.0.3 Trainer — 66 features (3 flipping factors removed), delegates training to V485."""
 
     VERSION_TAG = NG_VERSION
 
@@ -147,7 +147,7 @@ class NGTrainer(V485Trainer):
 
     def _get_active_stock_features(self) -> List[str]:
         """Build active stock feature list based on CLI switches."""
-        features = list(STOCK_FEATURE_NAMES)
+        features = list(self.stock_feature_cols)
         if getattr(self, '_enable_moneyflow', False):
             features += MONEYFLOW_FEATURE_NAMES
         if getattr(self, '_enable_interaction', False):
@@ -313,7 +313,7 @@ class NGTrainer(V485Trainer):
         return summary
 
     # ------------------------------------------------------------------
-    # IC Screening for Interaction Features (ng1.1.0)
+    # IC Screening for Interaction Features (ng1.0.3)
     # ------------------------------------------------------------------
 
     def _select_interaction_features(self, df, label_col='label_10d', min_ic=0.02, max_corr=0.7):
@@ -356,7 +356,7 @@ class NGTrainer(V485Trainer):
         return selected
 
     # ------------------------------------------------------------------
-    # Market Regime Sample Weighting (ng1.1.0)
+    # Market Regime Sample Weighting (ng1.0.3)
     # ------------------------------------------------------------------
 
     def _compute_regime_weights(self, df):
@@ -369,7 +369,7 @@ class NGTrainer(V485Trainer):
         return weights
 
     def compute_sample_weights(self, df, y):
-        """NG v1.1.0: parent weights + optional regime weighting."""
+        """NG v1.0.3: parent weights + optional regime weighting."""
         weights = super().compute_sample_weights(df, y)
         if getattr(self, '_regime_weight', False):
             regime_w = self._compute_regime_weights(df)
@@ -383,7 +383,7 @@ class NGTrainer(V485Trainer):
     def load_data(self, start_date: str = None, end_date: str = None) -> pd.DataFrame:
         """Load training data from ng_feature_cache.
 
-        v1.1.0: Labels are now industry excess returns.
+        v1.0.3: Labels are now industry excess returns.
         Features include 10 CS rank + 5 residual + 3 sector activity.
         """
         logger.info(f"NG {NG_VERSION} Trainer: Loading data from {self.cache_table} ...")
@@ -456,7 +456,7 @@ class NGTrainer(V485Trainer):
             else:
                 result[col] = np.nan
 
-        # Labels (industry excess returns in v1.1.0)
+        # Labels (industry excess returns in v1.0.3)
         result['label_3d'] = pd.to_numeric(df_raw['label_3d'], errors='coerce').values
         result['label_5d'] = pd.to_numeric(df_raw['label_5d'], errors='coerce').values
         result['label_10d'] = pd.to_numeric(df_raw['label_10d'], errors='coerce').values
@@ -501,7 +501,7 @@ class NGTrainer(V485Trainer):
     # ------------------------------------------------------------------
 
     def prepare_features(self, df: pd.DataFrame) -> tuple:
-        """Prepare NG v1.1.0 feature matrix (dynamic: base + moneyflow + interaction)."""
+        """Prepare NG v1.0.3 feature matrix (dynamic: base + moneyflow + interaction)."""
         active_stock_features = self._get_active_stock_features()
 
         logger.info(f"NG {NG_VERSION} prepare_features: "
@@ -585,7 +585,7 @@ class NGTrainer(V485Trainer):
                            purge_days: int = 15, min_train_days: int = 900,
                            val_days: int = 120, test_days: int = 120,
                            step_days: int = 120):
-        """NG v1.1.0 Walk-Forward Training with ICIR adaptive weights and WF summary."""
+        """NG v1.0.3 Walk-Forward Training with ICIR adaptive weights and WF summary."""
         import shutil
 
         logger.info("=" * 60)
@@ -721,7 +721,7 @@ class NGTrainer(V485Trainer):
                     'moneyflow': getattr(self, '_enable_moneyflow', False),
                     'interaction': getattr(self, '_enable_interaction', False),
                     'interaction_selected': self._selected_ix if getattr(self, '_enable_interaction', False) else [],
-                    'residual_label': True,  # ng1.1.0 cache always has residual labels
+                    'residual_label': True,  # ng1.0.3 cache always has residual labels
                     'regime_weight': getattr(self, '_regime_weight', False),
                     'wf_step_days': step_days,
                 },
@@ -759,7 +759,7 @@ class NGTrainer(V485Trainer):
             with open(latest_hist_path, 'w', encoding='utf-8') as f:
                 json.dump(history, f, indent=2, ensure_ascii=False)
 
-            # Generate WF summary (v1.1.0)
+            # Generate WF summary (v1.0.3)
             wf_summary = self._generate_wf_summary(history, ng_dir)
 
             logger.info(f"\nNG {NG_VERSION} training complete!")
@@ -795,13 +795,13 @@ if __name__ == '__main__':
                         help='Number of parallel WF workers')
     parser.add_argument('--lambda-risk', type=float, default=0.5,
                         help='Risk discount factor for downside model (default: 0.5)')
-    # ng1.1.0 new switches
+    # ng1.0.3 new switches
     parser.add_argument('--enable-moneyflow', action='store_true',
                         help='Enable moneyflow features (8 factors)')
     parser.add_argument('--enable-interaction', action='store_true',
                         help='Enable interaction features with IC screening')
     parser.add_argument('--residual-label', action='store_true',
-                        help='Use style-residual labels (ng1.1.0 default)')
+                        help='Use style-residual labels (ng1.0.3 default)')
     parser.add_argument('--wf-windows', type=int, default=3,
                         help='Target WF windows (3 or 8)')
     parser.add_argument('--regime-weight', action='store_true',
@@ -826,7 +826,7 @@ if __name__ == '__main__':
 
     trainer = NGTrainer()
 
-    # ng1.1.0 switches
+    # ng switches
     trainer._enable_moneyflow = args.enable_moneyflow
     trainer._enable_interaction = args.enable_interaction
     trainer._regime_weight = args.regime_weight

@@ -1,6 +1,6 @@
 # 特征指南
 
-NG 系列模型使用的特征体系。当前 v1.1.0 共 68 个基础特征（58 股票级 + 10 市场级），外加 v1.1.0 新增的资金流和交互因子。
+NG 系列模型使用的特征体系。当前 v1.0.3 共 66 个基础特征（56 股票级 + 10 市场级）。v1.0.3 去掉了 3 个 IC 方向翻转的因子（log_market_cap, cs_rank_market_cap, pullback_from_high）。
 
 所有特征计算在 `ml_models/ng/ng_feature_calculator.py` 中实现。
 
