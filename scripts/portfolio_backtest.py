@@ -581,12 +581,15 @@ class PortfolioBacktester:
             return {'error': 'Not enough data'}
 
         daily_rets = np.diff(navs) / navs[:-1]
-        years = n_days / 252.0
+        # Use calendar days for annualization (not trading days / 252)
+        from datetime import datetime as _dt
+        cal_days = (_dt.strptime(dates_list[-1], '%Y-%m-%d') - _dt.strptime(dates_list[0], '%Y-%m-%d')).days
+        years = cal_days / 365.25 if cal_days > 0 else 1.0
 
         total_ret = navs[-1] / navs[0] - 1
         annual_ret = (1 + total_ret) ** (1 / years) - 1 if years > 0 else 0
 
-        # Benchmark returns
+        # Benchmark returns (use same calendar-year annualization)
         bench_navs = []
         for d in dates_list:
             if d in self.benchmark:
