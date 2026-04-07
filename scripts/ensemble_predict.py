@@ -41,10 +41,17 @@ def load_scorer(model_path):
 
 
 def ensemble_predict(scorers, stock_codes, date):
-    """Average predictions from multiple scorers."""
+    """Average predictions from multiple scorers.
+    Loads features once, then calls predict_scores_from_preloaded for each scorer."""
+    # Load features once (all scorers use same cache table)
+    features_df = scorers[0]._load_features(stock_codes, date)
+
     all_results = []
     for scorer in scorers:
-        results = scorer.predict_scores(stock_codes, date)
+        if features_df is not None and len(features_df) > 0:
+            results = scorer.predict_scores_from_preloaded(stock_codes, date, features_df.copy())
+        else:
+            results = scorer.predict_scores(stock_codes, date)
         all_results.append(results)
 
     # Merge: average numeric fields across scorers
@@ -138,8 +145,6 @@ def main():
     parser.add_argument('--start-date', required=True)
     parser.add_argument('--end-date', required=True)
     parser.add_argument('--output-dir', required=True)
-    parser.add_argument('--cache-table', default='ng102_feature_cache',
-                        help='Feature cache table (default: ng102_feature_cache)')
     parser.add_argument('--force', action='store_true',
                         help='Overwrite existing reports')
     args = parser.parse_args()

@@ -820,7 +820,9 @@ if __name__ == '__main__':
         import random
         random.seed(args.seed)
         np.random.seed(args.seed)
-        logger.info(f"Global random seed set to {args.seed}")
+        import ml_models.training.train_v395_multi_target as _trainer_mod
+        _trainer_mod._GLOBAL_RANDOM_SEED = args.seed
+        logger.info(f"Global random seed set to {args.seed} (numpy + LGB/XGB/CB/RF/HGB)")
 
     trainer = NGTrainer()
 

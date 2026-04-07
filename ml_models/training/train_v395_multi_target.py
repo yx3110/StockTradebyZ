@@ -36,6 +36,9 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 warnings.filterwarnings('ignore')
 
+# Global random seed — set via _GLOBAL_RANDOM_SEED for multi-seed ensemble
+_GLOBAL_RANDOM_SEED = 42
+
 # ML库
 import lightgbm as lgb
 import xgboost as xgb
@@ -120,7 +123,7 @@ def _train_prod_target_worker(target_idx):
     df_train_f = d['df_train_f']
     target_key, y_tr, y_va = d['targets'][target_idx]
 
-    np.random.seed(42 + target_idx)
+    np.random.seed(_GLOBAL_RANDOM_SEED + target_idx)
     logger.info(f"  [并行] 训练生产模型目标: {target_key}")
 
     sample_w = trainer.compute_sample_weights(df_train_f, y_tr)
@@ -152,7 +155,7 @@ def _wf_window_worker(wi):
     w = d['windows'][wi]
     n_windows = len(d['windows'])
 
-    np.random.seed(42 + wi)
+    np.random.seed(_GLOBAL_RANDOM_SEED + wi)
     logger.info(f"\n{'='*50}")
     logger.info(f"[并行] Walk-Forward 窗口 {wi+1}/{n_windows}")
     logger.info(f"{'='*50}")
@@ -1109,7 +1112,7 @@ class V395MultiTargetTrainer:
                 learning_rate=0.05,
                 depth=6,
                 l2_leaf_reg=3,
-                random_seed=42,
+                random_seed=_GLOBAL_RANDOM_SEED,
                 verbose=False,
                 early_stopping_rounds=50
             )
@@ -1129,7 +1132,7 @@ class V395MultiTargetTrainer:
             max_features=0.8,
             min_samples_leaf=20,
             n_jobs=-1,
-            random_state=42,
+            random_state=_GLOBAL_RANDOM_SEED,
             verbose=0
         )
         rf_model.fit(X_train, y_train)
@@ -1146,7 +1149,7 @@ class V395MultiTargetTrainer:
             max_leaf_nodes=31,
             l2_regularization=0.1,
             early_stopping=False,
-            random_state=42,
+            random_state=_GLOBAL_RANDOM_SEED,
             verbose=0
         )
         hgb_model.fit(X_train, y_train)
@@ -2149,7 +2152,7 @@ class V43Trainer(V395MultiTargetTrainer):
                 learning_rate=0.02,
                 depth=5,
                 l2_leaf_reg=10,
-                random_seed=42,
+                random_seed=_GLOBAL_RANDOM_SEED,
                 verbose=False,
                 early_stopping_rounds=30,
                 min_data_in_leaf=500,
@@ -2174,7 +2177,7 @@ class V43Trainer(V395MultiTargetTrainer):
             max_features=0.6,
             min_samples_leaf=500,
             n_jobs=-1,
-            random_state=42,
+            random_state=_GLOBAL_RANDOM_SEED,
             verbose=0,
         )
         rf_model.fit(X_train, y_train, sample_weight=sample_weights_train)
@@ -2192,7 +2195,7 @@ class V43Trainer(V395MultiTargetTrainer):
             l2_regularization=5.0,
             min_samples_leaf=500,
             early_stopping=False,
-            random_state=42,
+            random_state=_GLOBAL_RANDOM_SEED,
             verbose=0,
         )
         # HGB 通过 sample_weight 参数传入
@@ -2825,7 +2828,7 @@ class V44Trainer(V43Trainer):
         # 用随机20%做early stopping
         n = len(X_bear)
         split = int(n * 0.8)
-        idx = np.random.RandomState(42).permutation(n)
+        idx = np.random.RandomState(_GLOBAL_RANDOM_SEED).permutation(n)
         train_idx, val_idx = idx[:split], idx[split:]
 
         lgb_train = lgb.Dataset(X_bear[train_idx], label=y_bear[train_idx], free_raw_data=True)
@@ -6061,7 +6064,7 @@ class V473Trainer(V472Trainer):
                 learning_rate=0.02,
                 depth=6,                    # 5→6
                 l2_leaf_reg=10,
-                random_seed=42,
+                random_seed=_GLOBAL_RANDOM_SEED,
                 verbose=False,
                 early_stopping_rounds=30,
                 min_data_in_leaf=200,       # 500→200
@@ -6086,7 +6089,7 @@ class V473Trainer(V472Trainer):
             max_features=0.6,
             min_samples_leaf=200,       # 500→200
             n_jobs=-1,
-            random_state=42,
+            random_state=_GLOBAL_RANDOM_SEED,
             verbose=0,
         )
         rf_model.fit(X_train, y_train, sample_weight=sample_weights_train)
@@ -6104,7 +6107,7 @@ class V473Trainer(V472Trainer):
             l2_regularization=3.0,      # 5.0→3.0
             min_samples_leaf=200,       # 500→200
             early_stopping=False,
-            random_state=42,
+            random_state=_GLOBAL_RANDOM_SEED,
             verbose=0,
         )
         hgb_model.fit(X_train, y_train, sample_weight=sample_weights_train)
@@ -8435,7 +8438,7 @@ class V477Trainer(V475Trainer):
             logger.info(f"  训练 CatBoost ({target_name}, V4.7.3)...")
             cb_model = cb.CatBoostRegressor(
                 iterations=1000, learning_rate=0.02, depth=6,
-                l2_leaf_reg=10, random_seed=42, verbose=False,
+                l2_leaf_reg=10, random_seed=_GLOBAL_RANDOM_SEED, verbose=False,
                 early_stopping_rounds=30, min_data_in_leaf=200,
             )
             cb_pool_train = cb.Pool(X_train, label=y_train, weight=sample_weights_train)
@@ -8454,7 +8457,7 @@ class V477Trainer(V475Trainer):
         rf_model = RandomForestRegressor(
             n_estimators=100, max_depth=15, max_samples=rf_max_samples,
             max_features=0.6, min_samples_leaf=200, n_jobs=-1,
-            random_state=42, verbose=0,
+            random_state=_GLOBAL_RANDOM_SEED, verbose=0,
         )
         rf_model.fit(X_train, y_train, sample_weight=sample_weights_train)
         models['rf'] = rf_model
@@ -8467,7 +8470,7 @@ class V477Trainer(V475Trainer):
             max_iter=1000, learning_rate=0.02, max_depth=6,
             max_leaf_nodes=47, l2_regularization=3.0,
             min_samples_leaf=200, early_stopping=False,
-            random_state=42, verbose=0,
+            random_state=_GLOBAL_RANDOM_SEED, verbose=0,
         )
         hgb_model.fit(X_train, y_train, sample_weight=sample_weights_train)
         models['hgb'] = hgb_model

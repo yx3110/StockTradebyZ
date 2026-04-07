@@ -142,21 +142,34 @@ def load_reports(report_dir: str) -> dict:
     return reports
 
 
-def load_price_data(db_path: str, start_date: str, end_date: str) -> dict:
+def load_price_data(db_path: str, start_date: str, end_date: str,
+                    code_universe: set = None) -> dict:
     """加载价格数据, 返回 {code: {date: {open, close, high, low, pct}}}
 
     code: 6位裸代码 (去掉.SZ/.SH后缀)
     date: 'YYYY-MM-DD'
+    code_universe: 只加载这些代码的数据(大幅减少内存和IO)
     """
     conn = sqlite3.connect(db_path, timeout=30)
     conn.execute("PRAGMA busy_timeout = 30000")
-    cursor = conn.execute("""
-        SELECT s.code, dq.trade_date, dq.open, dq.close, dq.high, dq.low, dq.price_change_pct
-        FROM daily_quotes dq JOIN securities s ON s.id = dq.security_id
-        WHERE dq.trade_date >= ? AND dq.trade_date <= ?
-          AND s.code NOT LIKE '%.%'
-        ORDER BY s.code, dq.trade_date
-    """, (start_date, end_date))
+
+    if code_universe and len(code_universe) < 5000:
+        placeholders = ','.join('?' for _ in code_universe)
+        cursor = conn.execute(f"""
+            SELECT s.code, dq.trade_date, dq.open, dq.close, dq.high, dq.low, dq.price_change_pct
+            FROM daily_quotes dq JOIN securities s ON s.id = dq.security_id
+            WHERE dq.trade_date >= ? AND dq.trade_date <= ?
+              AND s.code IN ({placeholders})
+            ORDER BY s.code, dq.trade_date
+        """, (start_date, end_date, *code_universe))
+    else:
+        cursor = conn.execute("""
+            SELECT s.code, dq.trade_date, dq.open, dq.close, dq.high, dq.low, dq.price_change_pct
+            FROM daily_quotes dq JOIN securities s ON s.id = dq.security_id
+            WHERE dq.trade_date >= ? AND dq.trade_date <= ?
+              AND s.code NOT LIKE '%.%'
+            ORDER BY s.code, dq.trade_date
+        """, (start_date, end_date))
 
     prices = defaultdict(dict)
     for row in cursor:
@@ -235,14 +248,19 @@ class PortfolioBacktester:
         if not self.trading_days:
             raise ValueError("No valid trading days found")
 
+        # Collect code universe from reports (only load prices for these stocks)
+        code_universe = set()
+        for picks in self.reports.values():
+            for code, _ in picks[:200]:  # top 200 per day is enough
+                code_universe.add(code)
+
         # Date range with buffer for ATR warmup
         first, last = self.trading_days[0], self.trading_days[-1]
-        # Extend start back ~30 calendar days for ATR warmup
         from datetime import datetime, timedelta
         start_dt = datetime.strptime(first, '%Y-%m-%d') - timedelta(days=60)
         start_ext = start_dt.strftime('%Y-%m-%d')
 
-        self.prices = load_price_data(db_path, start_ext, last)
+        self.prices = load_price_data(db_path, start_ext, last, code_universe)
         self.benchmark = load_benchmark(db_path, start_ext, last)
         self.atr = compute_atr14(self.prices)
         print(f"  Trading period: {first} ~ {last} ({len(self.trading_days)} days)\n")

@@ -15,6 +15,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **禁止**花整个session只读代码和规划而不产出任何修改
 - 如果范围太大无法一次完成，先执行最高优先级的部分，而不是继续规划
 
+### 代码质量
+- **所有新写的代码在运行前必须先用 `/simplify` 检查修复**，包括脚本、训练代码、回测框架等
+- OOS评估前必须验证报告pred_10d有非零值: `sum(1 for s in data['all_stocks_with_scores'] if float(s.get('pred_10d',0) or 0)!=0)`
+
 ### 已知陷阱 (避免反复踩坑)
 - 股票代码必须带交易所后缀，如 `000001.SZ`、`600519.SH`
 - SQLite并发操作必须设置 `busy_timeout=30000`（至少30秒）
