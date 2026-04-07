@@ -268,6 +268,127 @@ def compute_stock_features(
 
 
 # ---------------------------------------------------------------------------
+# Function 1b: Signal smoothing features (9 factors, ng1.0.4)
+# ---------------------------------------------------------------------------
+
+def compute_smoothing_features(
+    closes: np.ndarray,
+    opens: np.ndarray,
+    highs: np.ndarray,
+    lows: np.ndarray,
+    volumes: np.ndarray,
+) -> Dict[str, float]:
+    """
+    Compute 9 signal smoothing features for ng1.0.4:
+      Group 1 - Long-horizon trend (3): trend_strength_60d, ma60_distance, price_channel_pos_40d
+      Group 2 - Volatility regime (3): vol_ratio_5d_60d, vol_regime, downside_vol_20d
+      Group 3 - Drawdown state (3): current_drawdown, recovery_speed_20d, gap_risk_20d
+    """
+    result: Dict[str, float] = {}
+    close = float(closes[-1])
+
+    # ---- Group 1: Long-Horizon Trend (3) ----
+
+    # 1. trend_strength_60d — linear regression slope normalized by std
+    if len(closes) >= 60:
+        c60 = closes[-60:].astype(float)
+        slope = _linreg_slope(c60)
+        std60 = c60.std()
+        result['trend_strength_60d'] = slope / (std60 + 1e-8) if not np.isnan(slope) else np.nan
+    else:
+        result['trend_strength_60d'] = np.nan
+
+    # 2. ma60_distance — relative distance from 60-day moving average
+    if len(closes) >= 60:
+        ma60 = float(np.mean(closes[-60:]))
+        result['ma60_distance'] = close / (ma60 + 1e-8) - 1.0
+    else:
+        result['ma60_distance'] = np.nan
+
+    # 3. price_channel_pos_40d — position within 40-day high-low channel [0, 1]
+    if len(closes) >= 40:
+        high_40d = float(np.max(highs[-40:]))
+        low_40d = float(np.min(lows[-40:]))
+        channel_range = high_40d - low_40d
+        result['price_channel_pos_40d'] = (close - low_40d) / (channel_range + 1e-8)
+    else:
+        result['price_channel_pos_40d'] = np.nan
+
+    # ---- Group 2: Volatility Regime (3) ----
+
+    # 4. vol_ratio_5d_60d — short-term vs long-term realized volatility ratio
+    if len(closes) >= 60:
+        rets = np.diff(np.log(closes[-60:].astype(float) + 1e-8))
+        vol_5d = float(np.std(rets[-5:])) if len(rets) >= 5 else np.nan
+        vol_60d = float(np.std(rets))
+        result['vol_ratio_5d_60d'] = vol_5d / (vol_60d + 1e-8) if not np.isnan(vol_5d) else np.nan
+    else:
+        result['vol_ratio_5d_60d'] = np.nan
+
+    # 5. vol_regime — 20d realized vol percentile in 250d history [0, 1]
+    if len(closes) >= 250:
+        log_rets = np.diff(np.log(closes.astype(float) + 1e-8))
+        if len(log_rets) >= 250:
+            vols_history = []
+            for i in range(len(log_rets) - 249, len(log_rets) - 19):
+                vols_history.append(float(np.std(log_rets[i:i+20])))
+            current_vol = float(np.std(log_rets[-20:]))
+            if vols_history:
+                result['vol_regime'] = float(np.mean(np.array(vols_history) < current_vol))
+            else:
+                result['vol_regime'] = np.nan
+        else:
+            result['vol_regime'] = np.nan
+    elif len(closes) >= 60:
+        log_rets = np.diff(np.log(closes[-60:].astype(float) + 1e-8))
+        vol_20d = float(np.std(log_rets[-20:])) if len(log_rets) >= 20 else np.nan
+        vol_60d = float(np.std(log_rets))
+        result['vol_regime'] = 0.5 if np.isnan(vol_20d) else float(vol_20d > vol_60d)
+    else:
+        result['vol_regime'] = np.nan
+
+    # 6. downside_vol_20d — std of negative returns over 20d
+    if len(closes) >= 21:
+        daily_rets = np.diff(closes[-21:].astype(float)) / (closes[-21:-1].astype(float) + 1e-8)
+        neg_rets = daily_rets[daily_rets < 0]
+        result['downside_vol_20d'] = float(np.std(neg_rets)) if len(neg_rets) >= 3 else 0.0
+    else:
+        result['downside_vol_20d'] = np.nan
+
+    # ---- Group 3: Drawdown State (3) ----
+
+    # 7. current_drawdown — distance from 60d peak, in [-1, 0]
+    if len(closes) >= 60:
+        peak_60d = float(np.max(closes[-60:]))
+        result['current_drawdown'] = close / (peak_60d + 1e-8) - 1.0
+    else:
+        result['current_drawdown'] = np.nan
+
+    # 8. recovery_speed_20d — position within 20d high-low range [0, 1]
+    if len(closes) >= 20:
+        high_20d = float(np.max(closes[-20:]))
+        low_20d = float(np.min(closes[-20:]))
+        channel = high_20d - low_20d
+        result['recovery_speed_20d'] = (close - low_20d) / (channel + 1e-8)
+    else:
+        result['recovery_speed_20d'] = np.nan
+
+    # 9. gap_risk_20d — fraction of days with >2% open gap in last 20 days
+    if len(closes) >= 21 and len(opens) >= 20:
+        gap_count = 0
+        for i in range(-20, 0):
+            prev_close = float(closes[i - 1])
+            today_open = float(opens[i])
+            if prev_close > 1e-8 and abs(today_open / prev_close - 1.0) > 0.02:
+                gap_count += 1
+        result['gap_risk_20d'] = gap_count / 20.0
+    else:
+        result['gap_risk_20d'] = np.nan
+
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Function 2: Fundamental / valuation features (14 factors, unchanged)
 # ---------------------------------------------------------------------------
 
