@@ -28,7 +28,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from ml_models.training.train_v395_multi_target import V485Trainer
-from ml_models.ng.ng_schema import get_table_name
+from ml_models.ng.ng_schema import get_table_name, version_ge
 
 try:
     import orjson
@@ -135,7 +135,7 @@ class NGTrainer(V485Trainer):
         self._turbo_skip_etf = True
         self.cache_table = get_table_name(self._ng_version)
         # Select feature set by version
-        if self._ng_version >= 'ng1.0.4':
+        if version_ge(self._ng_version, 'ng1.0.4'):
             self.feature_names = list(NG104_ALL_FEATURES)
             self.stock_feature_cols = list(NG104_STOCK_FEATURES)
         else:
@@ -421,7 +421,7 @@ class NGTrainer(V485Trainer):
 
         # Build query based on version — ng1.0.4 also loads RA label columns
         extra_select = ""
-        if self._ng_version >= 'ng1.0.4':
+        if version_ge(self._ng_version, 'ng1.0.4'):
             extra_select = ", ra_label_3d, ra_label_5d, ra_label_10d, ra_label_15d"
 
         query = f"""
@@ -488,7 +488,7 @@ class NGTrainer(V485Trainer):
         result['label_15d'] = pd.to_numeric(df_raw.get('label_15d'), errors='coerce').values
 
         # ng1.0.4: Override labels with risk-adjusted (RA) versions where available
-        if self._ng_version >= 'ng1.0.4':
+        if version_ge(self._ng_version, 'ng1.0.4'):
             for h in ['3d', '5d', '10d', '15d']:
                 ra_col = f'ra_label_{h}'
                 if ra_col in df_raw.columns:
@@ -727,7 +727,7 @@ class NGTrainer(V485Trainer):
         if v485_files:
             latest = v485_files[-1]
             timestamp = latest.stem.replace('v485_multi_target_', '')
-            version_tag = self._ng_version.replace('.', '').replace('ng', 'ng')  # e.g. ng104
+            version_tag = self._ng_version.replace('.', '')  # e.g. ng104
             # Include seed tag in filename if a global seed was set
             try:
                 import ml_models.training.train_v395_multi_target as _tm

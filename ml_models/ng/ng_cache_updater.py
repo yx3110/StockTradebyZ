@@ -28,7 +28,7 @@ _PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '.
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-from ml_models.ng.ng_schema import create_table, get_table_name, DB_PATH, create_moneyflow_table
+from ml_models.ng.ng_schema import create_table, get_table_name, DB_PATH, create_moneyflow_table, version_ge
 from ml_models.ng.ng_feature_calculator import (
     compute_stock_features,
     compute_fundamental_features,
@@ -38,6 +38,7 @@ from ml_models.ng.ng_feature_calculator import (
     compute_residual_features,
     compute_moneyflow_features,
     compute_interaction_features,
+    compute_smoothing_features,
 )
 from sklearn.linear_model import LinearRegression
 from fetch_data.label_utils import compute_labels_from_future_prices
@@ -123,7 +124,7 @@ class NGCacheUpdater:
         self.version = version
         self.table_name = get_table_name(version)
         create_table(self.db_path, version=version)
-        if version >= 'ng1.0.3':
+        if version_ge(version, 'ng1.0.3'):
             create_moneyflow_table(self.db_path)
         self._pro = None  # lazy-init Tushare API
 
@@ -662,7 +663,7 @@ class NGCacheUpdater:
             result[sid] = labels
 
         # ng1.0.4: Compute max drawdown for each security
-        if getattr(self, 'version', '') >= 'ng1.0.4':
+        if version_ge(getattr(self, 'version', 'ng1.0.0'), 'ng1.0.4'):
             for sid in security_ids:
                 fp = future_prices.get(sid, {})
                 if not fp or future_dates[0] not in fp:
@@ -839,10 +840,10 @@ class NGCacheUpdater:
                 ra_key = f'ra_label_{h}d'
                 excess = labs.get(excess_key, np.nan)
                 maxdd = labs.get(maxdd_key, np.nan)
-                if isinstance(excess, float) and np.isnan(excess):
+                if excess is None or (isinstance(excess, (int, float)) and np.isnan(float(excess))):
                     labs[ra_key] = np.nan
                     continue
-                if isinstance(maxdd, float) and np.isnan(maxdd):
+                if maxdd is None or (isinstance(maxdd, (int, float)) and np.isnan(float(maxdd))):
                     labs[ra_key] = np.nan
                     continue
                 penalty = (1.0 + maxdd) ** penalty_power
@@ -929,7 +930,7 @@ class NGCacheUpdater:
             nb_5d, nb_std = self._load_northbound_data(conn, date)
 
             # 8.5. Load moneyflow data (v1.0.3)
-            if self.version >= 'ng1.0.3':
+            if version_ge(self.version, 'ng1.0.3'):
                 mf_count = self._fetch_and_store_moneyflow(conn, date)
                 if mf_count > 0:
                     print(f"  [{date}] Fetched {mf_count} moneyflow records")
@@ -988,7 +989,7 @@ class NGCacheUpdater:
             labels_all = self._convert_labels_to_excess(labels_abs, universe)
 
             # v1.0.3: Convert to style residual labels
-            if self.version >= 'ng1.0.3':
+            if version_ge(self.version, 'ng1.0.3'):
                 # Inject circ_mv into universe for residual regression
                 for sid in active_sids:
                     db = daily_basic.get(sid)
@@ -999,7 +1000,7 @@ class NGCacheUpdater:
                 )
 
             # ng1.0.4: Compute risk-adjusted labels
-            if self.version >= 'ng1.0.4':
+            if version_ge(self.version, 'ng1.0.4'):
                 pp = getattr(self, 'penalty_power', 1.5)
                 labels_all = self._convert_labels_to_risk_adjusted(labels_all, penalty_power=pp)
 
@@ -1108,12 +1109,11 @@ class NGCacheUpdater:
 
                 # ng1.0.4: Compute smoothing features (9)
                 smooth_feats = {}
-                if self.version >= 'ng1.0.4':
-                    from ml_models.ng.ng_feature_calculator import compute_smoothing_features
+                if version_ge(self.version, 'ng1.0.4'):
                     try:
                         smooth_feats = compute_smoothing_features(
                             closes=closes, opens=opens, highs=highs,
-                            lows=lows, volumes=volumes,
+                            lows=lows,
                         )
                     except Exception as e:
                         print(f"    WARN: smoothing_features failed for {code}: {e}")
@@ -1172,7 +1172,7 @@ class NGCacheUpdater:
 
                 # --- Compute moneyflow features (8, v1.0.3) ---
                 mf_feats = {}
-                if self.version >= 'ng1.0.3':
+                if version_ge(self.version, 'ng1.0.3'):
                     code_for_mf = info['code']
                     mf_rows_for_stock = mf_data.get(code_for_mf, [])
                     if len(closes) >= 2:
@@ -1302,7 +1302,7 @@ class NGCacheUpdater:
 
                 # --- Interaction features (8, v1.0.3) ---
                 ix_feats = {}
-                if self.version >= 'ng1.0.3':
+                if version_ge(self.version, 'ng1.0.3'):
                     try:
                         ix_feats = compute_interaction_features(
                             data['stock_feats'],
@@ -1323,10 +1323,10 @@ class NGCacheUpdater:
                 all_feats.update(data['ind_feats'])
                 all_feats.update(cs_feats)
                 all_feats.update(res_feats)
-                if self.version >= 'ng1.0.3':
+                if version_ge(self.version, 'ng1.0.3'):
                     all_feats.update(data.get('mf_feats', {}))
                     all_feats.update(ix_feats)
-                if self.version >= 'ng1.0.4':
+                if version_ge(self.version, 'ng1.0.4'):
                     all_feats.update(data.get('smooth_feats', {}))
 
                 # Clean NaN/Inf
@@ -1368,7 +1368,7 @@ class NGCacheUpdater:
                 )
 
                 # v1.0.3: add label_raw columns
-                if self.version >= 'ng1.0.3':
+                if version_ge(self.version, 'ng1.0.3'):
                     raw_cols = (
                         _to_sql(stock_labels.get('label_raw_3d')),
                         _to_sql(stock_labels.get('label_raw_5d')),
@@ -1379,7 +1379,7 @@ class NGCacheUpdater:
                     raw_cols = ()
 
                 # ng1.0.4: add maxDD + RA label columns
-                if self.version >= 'ng1.0.4':
+                if version_ge(self.version, 'ng1.0.4'):
                     ng104_cols = (
                         _to_sql(stock_labels.get('maxdd_3d')),
                         _to_sql(stock_labels.get('maxdd_5d')),
@@ -1411,7 +1411,7 @@ class NGCacheUpdater:
             # Write to database
             if insert_rows:
                 conn.row_factory = None
-                if self.version >= 'ng1.0.4':
+                if version_ge(self.version, 'ng1.0.4'):
                     # 30 columns: ng1.0.3 columns + 8 ng1.0.4 columns (maxdd + ra_label)
                     conn.executemany(
                         f'''INSERT OR REPLACE INTO {self.table_name}
@@ -1427,7 +1427,7 @@ class NGCacheUpdater:
                            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
                         insert_rows
                     )
-                elif self.version >= 'ng1.0.3':
+                elif version_ge(self.version, 'ng1.0.3'):
                     # 22 columns: includes downside_10d + 4 label_raw columns
                     conn.executemany(
                         f'''INSERT OR REPLACE INTO {self.table_name}
@@ -1441,7 +1441,7 @@ class NGCacheUpdater:
                            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
                         insert_rows
                     )
-                elif self.version >= 'ng1.0.2':
+                elif version_ge(self.version, 'ng1.0.2'):
                     # 18 columns: includes downside_10d at position 7
                     conn.executemany(
                         f'''INSERT OR REPLACE INTO {self.table_name}

@@ -276,7 +276,6 @@ def compute_smoothing_features(
     opens: np.ndarray,
     highs: np.ndarray,
     lows: np.ndarray,
-    volumes: np.ndarray,
 ) -> Dict[str, float]:
     """
     Compute 9 signal smoothing features for ng1.0.4:
@@ -316,11 +315,15 @@ def compute_smoothing_features(
 
     # ---- Group 2: Volatility Regime (3) ----
 
-    # 4. vol_ratio_5d_60d — short-term vs long-term realized volatility ratio
+    # Pre-compute shared data for volatility features
+    rets_60 = None
     if len(closes) >= 60:
-        rets = np.diff(np.log(closes[-60:].astype(float) + 1e-8))
-        vol_5d = float(np.std(rets[-5:])) if len(rets) >= 5 else np.nan
-        vol_60d = float(np.std(rets))
+        rets_60 = np.diff(np.log(closes[-60:].astype(float) + 1e-8))
+
+    # 4. vol_ratio_5d_60d — short-term vs long-term realized volatility ratio
+    if rets_60 is not None:
+        vol_5d = float(np.std(rets_60[-5:])) if len(rets_60) >= 5 else np.nan
+        vol_60d = float(np.std(rets_60))
         result['vol_ratio_5d_60d'] = vol_5d / (vol_60d + 1e-8) if not np.isnan(vol_5d) else np.nan
     else:
         result['vol_ratio_5d_60d'] = np.nan
@@ -329,20 +332,17 @@ def compute_smoothing_features(
     if len(closes) >= 250:
         log_rets = np.diff(np.log(closes.astype(float) + 1e-8))
         if len(log_rets) >= 250:
-            vols_history = []
-            for i in range(len(log_rets) - 249, len(log_rets) - 19):
-                vols_history.append(float(np.std(log_rets[i:i+20])))
-            current_vol = float(np.std(log_rets[-20:]))
-            if vols_history:
-                result['vol_regime'] = float(np.mean(np.array(vols_history) < current_vol))
-            else:
-                result['vol_regime'] = np.nan
+            # Vectorized: sliding window of 20d std over last 250 returns
+            window_view = np.lib.stride_tricks.sliding_window_view(
+                log_rets[-(250):], 20)
+            all_vols = window_view.std(axis=1)  # shape: (231,)
+            current_vol = all_vols[-1]
+            result['vol_regime'] = float(np.mean(all_vols[:-1] < current_vol))
         else:
             result['vol_regime'] = np.nan
-    elif len(closes) >= 60:
-        log_rets = np.diff(np.log(closes[-60:].astype(float) + 1e-8))
-        vol_20d = float(np.std(log_rets[-20:])) if len(log_rets) >= 20 else np.nan
-        vol_60d = float(np.std(log_rets))
+    elif rets_60 is not None:
+        vol_20d = float(np.std(rets_60[-20:])) if len(rets_60) >= 20 else np.nan
+        vol_60d = float(np.std(rets_60))
         result['vol_regime'] = 0.5 if np.isnan(vol_20d) else float(vol_20d > vol_60d)
     else:
         result['vol_regime'] = np.nan
@@ -373,15 +373,13 @@ def compute_smoothing_features(
     else:
         result['recovery_speed_20d'] = np.nan
 
-    # 9. gap_risk_20d — fraction of days with >2% open gap in last 20 days
+    # 9. gap_risk_20d — vectorized
     if len(closes) >= 21 and len(opens) >= 20:
-        gap_count = 0
-        for i in range(-20, 0):
-            prev_close = float(closes[i - 1])
-            today_open = float(opens[i])
-            if prev_close > 1e-8 and abs(today_open / prev_close - 1.0) > 0.02:
-                gap_count += 1
-        result['gap_risk_20d'] = gap_count / 20.0
+        prev_closes = closes[-21:-1].astype(float)
+        today_opens = opens[-20:].astype(float)
+        valid = prev_closes > 1e-8
+        gaps = np.abs(today_opens / (prev_closes + 1e-8) - 1.0) > 0.02
+        result['gap_risk_20d'] = float(np.sum(gaps & valid)) / 20.0
     else:
         result['gap_risk_20d'] = np.nan
 

@@ -170,7 +170,7 @@ def main():
     if args.models:
         model_paths = args.models
     elif args.version:
-        ver_tag = args.version.replace('.', '').replace('ng', 'ng')  # ng104
+        ver_tag = args.version.replace('.', '')  # ng104
         model_dir = Path(PROJECT_ROOT) / 'ml_models' / 'trained_models' / 'ng'
         model_paths = sorted(model_dir.glob(f'{ver_tag}_seed*_multi_target_*.pkl'))
         if not model_paths:

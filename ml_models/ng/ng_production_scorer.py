@@ -34,7 +34,7 @@ from .ng_trainer import (
     MONEYFLOW_FEATURE_NAMES,
     INTERACTION_FEATURE_NAMES,
 )
-from .ng_schema import get_table_name
+from .ng_schema import get_table_name, version_ge
 
 try:
     import orjson
@@ -78,7 +78,7 @@ class NGProductionScorer:
         self.lambda_risk = 0.5
         self._ensemble_scorers = None  # NEW: multi-seed ensemble list
 
-        if version and version >= 'ng1.0.4' and model_path is None:
+        if version and version_ge(version, 'ng1.0.4') and model_path is None:
             self._load_ensemble_models(version)
         else:
             self._load_model(model_path)
@@ -180,7 +180,7 @@ class NGProductionScorer:
 
     def _load_ensemble_models(self, version: str):
         """Load all seed models for a given version and set up ensemble averaging."""
-        ver_tag = version.replace('.', '').replace('ng', 'ng')  # ng104
+        ver_tag = version.replace('.', '')  # ng104
 
         seed_files = sorted(
             self.model_dir.glob(f'{ver_tag}_seed*_multi_target_*.pkl'),
@@ -377,7 +377,7 @@ class NGProductionScorer:
         for scorer in self._ensemble_scorers:
             if features_df is not None and len(features_df) > 0:
                 results = scorer.predict_scores_from_preloaded(
-                    stock_codes, date, features_df.copy())
+                    stock_codes, date, features_df)
             else:
                 results = scorer.predict_scores(stock_codes, date)
             all_results.append(results)
@@ -524,9 +524,9 @@ class NGProductionScorer:
         if isinstance(date, str) and len(date) == 8 and date.isdigit():
             date = f"{date[:4]}-{date[4:6]}-{date[6:]}"
 
-        for col in self.feature_names:
-            if col not in features_df.columns:
-                features_df[col] = 0.0
+        missing = {col: 0.0 for col in self.feature_names if col not in features_df.columns}
+        if missing:
+            features_df = features_df.assign(**missing)
 
         stock_cols_idx = [
             self.feature_names.index(c) for c in self.stock_feature_cols

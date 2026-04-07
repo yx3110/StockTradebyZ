@@ -27,6 +27,16 @@ VERSION_TABLE_MAP = {
 DEFAULT_VERSION = 'ng1.0.3'
 
 
+def version_ge(v1: str, v2: str) -> bool:
+    """Safe semantic version comparison for 'ngX.Y.Z' strings."""
+    def _parts(v):
+        return tuple(int(x) for x in v.lstrip('ng').split('.'))
+    try:
+        return _parts(v1) >= _parts(v2)
+    except (ValueError, AttributeError):
+        return v1 >= v2  # fallback to string comparison
+
+
 def get_table_name(version: str = None) -> str:
     """Get cache table name for a given NG version."""
     ver = version or DEFAULT_VERSION
@@ -37,14 +47,14 @@ def _schema_sql(table_name: str, version: str = None) -> str:
     """Generate CREATE TABLE SQL for a given table name and version."""
     ver = version or DEFAULT_VERSION
     extra_cols = ''
-    if ver >= 'ng1.0.2':
+    if version_ge(ver, 'ng1.0.2'):
         extra_cols = '\n    downside_10d REAL,'
-    if ver >= 'ng1.0.3':
+    if version_ge(ver, 'ng1.0.3'):
         extra_cols += '\n    label_raw_3d REAL,'
         extra_cols += '\n    label_raw_5d REAL,'
         extra_cols += '\n    label_raw_10d REAL,'
         extra_cols += '\n    label_raw_15d REAL,'
-    if ver >= 'ng1.0.4':
+    if version_ge(ver, 'ng1.0.4'):
         extra_cols += '\n    maxdd_3d REAL,'
         extra_cols += '\n    maxdd_5d REAL,'
         extra_cols += '\n    maxdd_10d REAL,'
