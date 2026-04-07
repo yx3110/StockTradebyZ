@@ -42,6 +42,37 @@ from ml_models.ng.ng_feature_calculator import (
 from sklearn.linear_model import LinearRegression
 from fetch_data.label_utils import compute_labels_from_future_prices
 
+
+def compute_maxdd_from_future_prices(
+    base_open: float,
+    future_closes: Dict[int, float],
+    horizons: tuple = (3, 5, 10, 15),
+) -> Dict[str, float]:
+    """Compute max drawdown for each horizon from future close prices.
+    MaxDD = min over t in [0..N] of (close_t / peak_so_far - 1)
+    Returns dict like {'maxdd_3d': -0.05, ...}. Values in [-1, 0].
+    """
+    result = {}
+    for h in horizons:
+        prices = []
+        for t in range(0, h + 1):
+            if t in future_closes and not np.isnan(future_closes[t]):
+                prices.append(future_closes[t])
+        if not prices:
+            result[f'maxdd_{h}d'] = np.nan
+            continue
+        peak = prices[0]
+        max_dd = 0.0
+        for p in prices:
+            if p > peak:
+                peak = p
+            dd = p / (peak + 1e-8) - 1.0
+            if dd < max_dd:
+                max_dd = dd
+        result[f'maxdd_{h}d'] = float(max_dd)
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -630,6 +661,24 @@ class NGCacheUpdater:
             )
             result[sid] = labels
 
+        # ng1.0.4: Compute max drawdown for each security
+        if getattr(self, 'version', '') >= 'ng1.0.4':
+            for sid in security_ids:
+                fp = future_prices.get(sid, {})
+                if not fp or future_dates[0] not in fp:
+                    continue
+                future_closes_for_dd = {}
+                for n in range(max(LABEL_HORIZONS) + 1):
+                    if n < len(future_dates) and future_dates[n] in fp:
+                        future_closes_for_dd[n] = fp[future_dates[n]].get('close', np.nan)
+                maxdd = compute_maxdd_from_future_prices(
+                    base_open=fp[future_dates[0]].get('open', np.nan),
+                    future_closes=future_closes_for_dd,
+                    horizons=tuple(LABEL_HORIZONS),
+                )
+                if sid in result:
+                    result[sid].update(maxdd)
+
         return result
 
     def _convert_labels_to_excess(
@@ -774,6 +823,31 @@ class NGCacheUpdater:
                 labs['downside_10d'] = np.nan
 
         return excess_labels
+
+    def _convert_labels_to_risk_adjusted(
+        self,
+        labels_all: Dict[int, Dict[str, float]],
+        penalty_power: float = 1.5,
+    ) -> Dict[int, Dict[str, float]]:
+        """ng1.0.4: Convert excess labels to risk-adjusted labels.
+        ra_label_Nd = excess_label_Nd * (1 + maxDD_Nd) ^ penalty_power
+        """
+        for sid, labs in labels_all.items():
+            for h in LABEL_HORIZONS:
+                excess_key = f'label_{h}d'
+                maxdd_key = f'maxdd_{h}d'
+                ra_key = f'ra_label_{h}d'
+                excess = labs.get(excess_key, np.nan)
+                maxdd = labs.get(maxdd_key, np.nan)
+                if isinstance(excess, float) and np.isnan(excess):
+                    labs[ra_key] = np.nan
+                    continue
+                if isinstance(maxdd, float) and np.isnan(maxdd):
+                    labs[ra_key] = np.nan
+                    continue
+                penalty = (1.0 + maxdd) ** penalty_power
+                labs[ra_key] = float(excess * penalty)
+        return labels_all
 
     # ------------------------------------------------------------------
     # Main entry point: process a single date
@@ -924,6 +998,11 @@ class NGCacheUpdater:
                     labels_all, universe, price_data, returns_20d, stock_volatilities
                 )
 
+            # ng1.0.4: Compute risk-adjusted labels
+            if self.version >= 'ng1.0.4':
+                pp = getattr(self, 'penalty_power', 1.5)
+                labels_all = self._convert_labels_to_risk_adjusted(labels_all, penalty_power=pp)
+
             # ---------------------------------------------------------------
             # v1.0.3: Pre-compute per-industry peer arrays for CS rank factors
             # ---------------------------------------------------------------
@@ -1027,6 +1106,19 @@ class NGCacheUpdater:
                     print(f"    WARN: stock_features failed for {code}: {e}")
                     continue
 
+                # ng1.0.4: Compute smoothing features (9)
+                smooth_feats = {}
+                if self.version >= 'ng1.0.4':
+                    from ml_models.ng.ng_feature_calculator import compute_smoothing_features
+                    try:
+                        smooth_feats = compute_smoothing_features(
+                            closes=closes, opens=opens, highs=highs,
+                            lows=lows, volumes=volumes,
+                        )
+                    except Exception as e:
+                        print(f"    WARN: smoothing_features failed for {code}: {e}")
+                        smooth_feats = {}
+
                 # --- Compute fundamental features (14) ---
                 fin = fin_data.get(sid, {})
                 pe_hist = pe_history.get(sid, np.array([]))
@@ -1115,6 +1207,7 @@ class NGCacheUpdater:
                     'fund_feats': fund_feats,
                     'ind_feats': ind_feats,
                     'mf_feats': mf_feats,
+                    'smooth_feats': smooth_feats,
                     # Raw values for CS rank
                     'return_5d': ret_5d_val,
                     'return_20d': ret_20d_val,
@@ -1233,6 +1326,8 @@ class NGCacheUpdater:
                 if self.version >= 'ng1.0.3':
                     all_feats.update(data.get('mf_feats', {}))
                     all_feats.update(ix_feats)
+                if self.version >= 'ng1.0.4':
+                    all_feats.update(data.get('smooth_feats', {}))
 
                 # Clean NaN/Inf
                 clean_feats = {}
@@ -1283,6 +1378,21 @@ class NGCacheUpdater:
                 else:
                     raw_cols = ()
 
+                # ng1.0.4: add maxDD + RA label columns
+                if self.version >= 'ng1.0.4':
+                    ng104_cols = (
+                        _to_sql(stock_labels.get('maxdd_3d')),
+                        _to_sql(stock_labels.get('maxdd_5d')),
+                        _to_sql(stock_labels.get('maxdd_10d')),
+                        _to_sql(stock_labels.get('maxdd_15d')),
+                        _to_sql(stock_labels.get('ra_label_3d')),
+                        _to_sql(stock_labels.get('ra_label_5d')),
+                        _to_sql(stock_labels.get('ra_label_10d')),
+                        _to_sql(stock_labels.get('ra_label_15d')),
+                    )
+                else:
+                    ng104_cols = ()
+
                 market_cols = (
                     _to_sql(market_feats.get('market_return_5d')),
                     _to_sql(market_feats.get('market_return_20d')),
@@ -1296,12 +1406,28 @@ class NGCacheUpdater:
                     _to_sql(market_feats.get('market_momentum_diff')),
                 )
 
-                insert_rows.append(base_row + raw_cols + market_cols)
+                insert_rows.append(base_row + raw_cols + ng104_cols + market_cols)
 
             # Write to database
             if insert_rows:
                 conn.row_factory = None
-                if self.version >= 'ng1.0.3':
+                if self.version >= 'ng1.0.4':
+                    # 30 columns: ng1.0.3 columns + 8 ng1.0.4 columns (maxdd + ra_label)
+                    conn.executemany(
+                        f'''INSERT OR REPLACE INTO {self.table_name}
+                           (code, trade_date, features_json,
+                            label_3d, label_5d, label_10d, label_15d, downside_10d,
+                            label_raw_3d, label_raw_5d, label_raw_10d, label_raw_15d,
+                            maxdd_3d, maxdd_5d, maxdd_10d, maxdd_15d,
+                            ra_label_3d, ra_label_5d, ra_label_10d, ra_label_15d,
+                            market_return_5d, market_return_20d, market_volatility_20d,
+                            market_breadth, market_new_high_ratio, northbound_flow_5d,
+                            market_volume_ratio, market_drawdown, vix_proxy,
+                            market_momentum_diff)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                        insert_rows
+                    )
+                elif self.version >= 'ng1.0.3':
                     # 22 columns: includes downside_10d + 4 label_raw columns
                     conn.executemany(
                         f'''INSERT OR REPLACE INTO {self.table_name}
@@ -1387,9 +1513,12 @@ def main():
     parser.add_argument('--end-date', help='Backfill end date (YYYY-MM-DD)')
     parser.add_argument('--db-path', help='Override database path')
     parser.add_argument('--version', default='ng1.0.3', help='NG version (default: ng1.0.3)')
+    parser.add_argument('--penalty-power', type=float, default=1.5,
+                        help='Risk-adjusted label penalty power (default: 1.5, ng1.0.4)')
     args = parser.parse_args()
 
     updater = NGCacheUpdater(db_path=args.db_path, version=args.version)
+    updater.penalty_power = args.penalty_power
 
     if args.date:
         count = updater.update_single_date(args.date)
