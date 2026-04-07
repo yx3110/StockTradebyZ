@@ -45,7 +45,7 @@ DB_PATH = str(PROJECT_ROOT / 'data_adapter' / 'stock_data.db')
 # ---------------------------------------------------------------------------
 
 STOCK_FEATURE_NAMES: List[str] = [
-    # Trend state (5, was 12 — removed 7 low cross-sectional factors)
+    # Trend state (5)
     'trend_strength_20d', 'days_since_breakout', 'adx_proxy',
     'pullback_from_high', 'volume_contraction',
     # Pullback entry (6, was 10 — removed bollinger_position, consecutive_down_days)
@@ -94,7 +94,7 @@ INTERACTION_FEATURE_NAMES: List[str] = [
 
 # v1.0.0 constants (for backward compatibility reference)
 NG_V1_VERSION = 'ng1.0.0'
-NG_VERSION = 'ng1.1.0'
+NG_VERSION = 'ng1.0.2'
 
 
 # ---------------------------------------------------------------------------
