@@ -808,6 +808,17 @@ def quick_daily_update(date: str = None, skip_financial: bool = True):
         logger.info(f"平均速度: {stats['quotes']/duration:.1f} 只/秒")
     logger.info("="*60)
 
+    # 15. 更新0AMV市场活跃市值指标
+    logger.info("【步骤15/15】更新0AMV活跃市值指标...")
+    try:
+        from indicators.market_amv import compute_and_save
+        compute_and_save()
+        logger.info("  0AMV更新完成")
+    except Exception as e:
+        logger.warning(f"  0AMV更新失败(非关键): {e}")
+
+    logger.info("="*60)
+
     # 显示数据库统计信息
     db_stats = db_manager.get_database_stats()
     logger.info("数据库状态:")
