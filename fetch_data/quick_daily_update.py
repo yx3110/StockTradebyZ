@@ -280,6 +280,7 @@ def update_market_indices(date_str: str):
                             'high': row['high'],
                             'low': row['low'],
                             'volume': row.get('vol', 0),
+                            'amount': row.get('amount'),
                             'price_change_pct': pct_val / 100 if pd.notna(pct_val) else 0,
                             'is_limit_up': False,
                             'is_limit_down': False

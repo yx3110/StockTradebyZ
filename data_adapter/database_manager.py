@@ -168,11 +168,11 @@ class DatabaseManager:
         """批量插入日线行情数据"""
         query = """
         INSERT OR REPLACE INTO daily_quotes (
-            security_id, trade_date, open, high, low, close, volume,
+            security_id, trade_date, open, high, low, close, volume, amount,
             price_change_pct, is_limit_up, is_limit_down, is_suspend
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
-        
+
         rows_data = []
         for item in data:
             rows_data.append((
@@ -183,6 +183,7 @@ class DatabaseManager:
                 item['low'],
                 item['close'],
                 item['volume'],
+                item.get('amount'),
                 item.get('price_change_pct', 0),
                 item.get('is_limit_up', False),
                 item.get('is_limit_down', False),
