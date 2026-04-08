@@ -1,88 +1,65 @@
 {
-  "version": "ng1.0.2",
-  "north_star_v52_score": "74.0% A+ (CPPI后)",
-  "date": "2026-04-05",
-  "description": "NG1.0.2: 69特征 + 行业超额标签 + 下行风险模型 + ICIR自适应 + CPPI(5,20)",
+  "version": "ng1.0.1",
+  "north_star_v52_score": "78.9% A+ (CPPI后, WF-OOS)",
+  "date": "2026-04-08",
+  "description": "NG1.0.1: 69特征 + 行业超额标签 + ICIR自适应权重 + CPPI(8,20) — NG系列WF-OOS最优",
 
   "model": {
-    "scoring_version": "ng1.0.2",
-    "model_path": "ml_models/trained_models/ng/ng_multi_target_20260405_194751.pkl",
+    "scoring_version": "ng1.0.1",
+    "model_path": "ml_models/trained_models/ng/ng101_multi_target_20260405_013038.pkl",
     "features": 69,
-    "rank_field": "composite",
-    "cache_table": "ng102_feature_cache",
-    "downside_model": true,
-    "lambda_risk": 0.5
+    "rank_field": "score",
+    "cache_table": "ng101_feature_cache",
+    "downside_model": false,
+    "lambda_risk": 0
   },
 
   "portfolio": {
-    "top_n": 5,
-    "rebal_days": 5,
+    "top_n": 10,
+    "focus_days": 10,
     "weighting": "equal",
-    "holding_buffer": 3,
-    "atr_stop_mult": 0,
-    "max_loss_pct": 0,
-    "cppi_floor": 0,
-    "cppi_multiplier": 20,
-    "_grid_search": "2026-04-08, 3-seed ensemble, 1296 combos, 10 valid",
-    "_is_result": "年化超额+223.4%, Sharpe=3.72, MaxDD=-9.6%",
-    "_oos_result": "年化超额+37.3%, Sharpe=1.38, MaxDD=-42.9%"
+    "cppi_floor": 0.08,
+    "cppi_multiplier": 20
   },
 
-  "ensemble": {
-    "enabled": true,
-    "seeds": [42, 123, 456],
-    "model_files": [
-      "ml_models/trained_models/ng/ng102_seed42.pkl",
-      "ml_models/trained_models/ng/ng102_seed123.pkl",
-      "ml_models/trained_models/ng/ng102_seed456.pkl"
-    ],
-    "_method": "Average predictions from 3 models trained with different random seeds",
-    "_effect": "IS Sharpe 1.95→3.72, OOS excess -13%→+37%, MaxDD -25%→-10% (IS)"
+  "performance_wf_oos": {
+    "_method": "WF-OOS 2020-2026, CPPI(F0.08, M20), Top-10, focus_days=10",
+    "v52_weighted": "78.9% A+",
+    "annual_gross": "72.2%",
+    "sharpe": 2.339,
+    "maxdd": "-12.6%",
+    "turnover": "24.3x"
   },
 
-  "recommendation_ranks": {
-    "_calibration": "2024-01-01~2026-04-03, 543天, ng1.0.2模型, 基于截面排名的alpha验证",
-    "_evidence": "Top1-5 10d超额+3.4%, 胜率66%; 信号强度与alpha相关系数=0.022(无关); 强熊时Top5超额反而最高(+8.7%)",
-    "strong_buy": 5,
-    "buy": 20,
-    "cautious_buy": 50,
-    "watch": 200,
-    "_strong_buy_10d_excess": "+3.4% (年化~250%)",
-    "_buy_10d_excess": "+1.7% (年化~135%)",
-    "_cautious_10d_excess": "+0.8% (年化~89%)"
-  },
-
-  "cppi_usage": {
-    "_how_to_use": "每日调仓时计算: cushion = 当前净值 - (历史最高净值 × (1 - cppi_floor)), exposure = min(1.0, cppi_multiplier × cushion). 满仓时exposure=1.0, 亏损时自动减仓",
-    "example_full": "净值1.0, floor净值=0.95 → cushion=0.05 → exposure=min(1,20×0.05)=1.0 → 满仓",
-    "example_drawdown": "净值0.97, floor净值=0.95 → cushion=0.02 → exposure=min(1,20×0.02)=0.40 → 40%仓位",
-    "example_deep_dd": "净值0.96, floor净值=0.95 → cushion=0.01 → exposure=0.20 → 20%仓位"
-  },
-
-  "performance_v52": {
-    "_method": "WF OOS无泄露评估 + CPPI(5,20)",
-    "v52_weighted": "74.0% A+",
-    "L1_signal": "81%",
-    "L2_efficiency": "70%",
-    "L3_risk_control": "55%",
-    "L5_excess": "93%",
-    "L9_conditional_robustness": "78%"
+  "pre2020_oos": {
+    "_status": "未评估 — 需回填ng101缓存(2018-2019)后验证",
+    "_risk": "ng1.0.1包含3个IC翻转因子(log_market_cap等), Pre-2020可能退化"
   },
 
   "evolution": {
     "ng1.0.0": "62特征, 绝对标签, V5.2=71.5%",
-    "ng1.0.1": "69特征, 行业超额标签, V5.2=71.5%",
-    "ng1.0.2": "69特征 + downside模型 + CPPI(5,20), V5.2=74.0%"
+    "ng1.0.1": "69特征, 行业超额标签, V5.2=78.9% A+ ← 当前生产",
+    "ng1.0.2": "69特征 + downside模型, V5.2=76.2% A+",
+    "ng1.0.3": "66特征(去翻转因子), V5.2=69.9% A, Pre-2020 OOS最优(Sharpe=1.19)",
+    "ng1.0.4": "75特征 + RA标签 + 5-seed ensemble, V5.2=75.9% A+"
+  },
+
+  "comparison_table": {
+    "_config": "Top-10, focus_days=10, CPPI(F0.08, M20)",
+    "ng1.0.1": {"v52": "78.9%", "annual": "72.2%", "sharpe": 2.339, "maxdd": "-12.6%"},
+    "ng1.0.2_3seed": {"v52": "76.2%", "annual": "82.5%", "sharpe": 1.501, "maxdd": "-15.8%"},
+    "ng1.0.3": {"v52": "69.9%", "annual": "30.4%", "sharpe": 1.163, "maxdd": "-21.9%"},
+    "ng1.0.4_5seed": {"v52": "75.9%", "annual": "47.4%", "sharpe": 1.611, "maxdd": "-16.6%"}
   },
 
   "prev_production": {
-    "version": "v4.9.0.1",
-    "v52_score": "54.1% B级 (WF-OOS)"
+    "version": "ng1.0.2",
+    "v52_score": "74.0% A+"
   },
 
   "cli_commands": {
-    "daily_cache_update": "python3 ml_models/ng/ng_cache_updater.py --date {DATE} --version ng1.0.2",
-    "daily_selection": "python3 backtest/batch_generate_v395_reports.py --version ng1.0.2 --start-date {DATE} --end-date {DATE} --output-dir reports/daily_selection_ng102",
-    "backtest_eval": "python3 backtest/run_north_star_eval.py --backtest --report-dir reports/daily_selection_ng102 --label NG102-PROD --top-n 10 --focus-days 10 --rank-field composite --cppi-floor 0.05 --cppi-multiplier 20"
+    "daily_cache_update": "python3 ml_models/ng/ng_cache_updater.py --date {DATE} --version ng1.0.1",
+    "daily_selection": "python3 backtest/batch_generate_v395_reports.py --version ng1.0.1 --start-date {DATE} --end-date {DATE}",
+    "backtest_eval": "python3 backtest/run_north_star_eval.py --backtest --report-dir reports/daily_selection_ng101 --label NG101-PROD --top-n 10 --focus-days 10 --rank-field score --cppi-floor 0.08 --cppi-multiplier 20"
   }
 }
