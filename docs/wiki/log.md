@@ -6,6 +6,10 @@
 
 ---
 
+2026-04-08 | eval   | NG版本综合排名 — ng1.0.1+CPPI(F0.08,M20) WF-OOS最优(V5.2=78.9% A+, Sharpe=2.339, MaxDD=-12.6%)
+2026-04-08 | model  | 生产切换到ng1.0.1+CPPI(F0.08,M20), 替代ng1.0.2
+2026-04-08 | model  | NG v1.0.4 发布 — RA标签+5-seed ensemble+9新特征+IC分析器, V5.2=75.9% A+
+2026-04-08 | fix    | /simplify审查 — version_ge安全比较+vol_regime向量化+NaN处理+8项修复
 2026-04-07 | model  | NG v1.0.3 发布 — 去3翻转因子(66feat), 2018-2020 OOS年化+18.1%/超额+24.8%
 2026-04-07 | fix    | 发现Pre-2020 OOS评估bug(composite=0→随机选股), 修复后ng1.1.0实验重新评估
 2026-04-07 | model  | NG v1.1.0 废弃 — 三方向仅"去翻转因子"有效, 合并为ng1.0.3
