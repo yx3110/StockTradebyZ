@@ -993,24 +993,28 @@ class NGCacheUpdater:
                                 else:
                                     break
 
-                        # Compute breadth_history_5d in a single batch query
+                        # Compute breadth_history_5d: get dates then batch breadth
                         breadth_arr = np.array([])
-                        breadth_rows = conn.execute(
-                            '''SELECT dq.trade_date,
-                                      AVG(CASE WHEN dq.price_change_pct > 0 THEN 1.0 ELSE 0.0 END) as breadth
-                               FROM daily_quotes dq
-                               JOIN securities s ON dq.security_id = s.id
-                               WHERE s.type = 'A股'
-                                 AND dq.trade_date IN (
-                                     SELECT DISTINCT trade_date FROM daily_quotes
-                                     WHERE trade_date <= ? ORDER BY trade_date DESC LIMIT 6
-                                 )
-                               GROUP BY dq.trade_date ORDER BY dq.trade_date''',
+                        date_rows = conn.execute(
+                            '''SELECT DISTINCT trade_date FROM daily_quotes
+                               WHERE trade_date <= ? ORDER BY trade_date DESC LIMIT 6''',
                             (date,)
                         ).fetchall()
-                        if len(breadth_rows) >= 2:
-                            breadth_arr = np.array([float(r['breadth']) for r in breadth_rows
-                                                    if r['breadth'] is not None])
+                        if len(date_rows) >= 2:
+                            date_list = [r['trade_date'] for r in date_rows]
+                            placeholders = ','.join('?' * len(date_list))
+                            breadth_rows = conn.execute(
+                                f'''SELECT dq.trade_date,
+                                           AVG(CASE WHEN dq.price_change_pct > 0 THEN 1.0 ELSE 0.0 END) as breadth
+                                    FROM daily_quotes dq
+                                    JOIN securities s ON dq.security_id = s.id
+                                    WHERE s.type = 'A股' AND dq.trade_date IN ({placeholders})
+                                    GROUP BY dq.trade_date ORDER BY dq.trade_date''',
+                                date_list
+                            ).fetchall()
+                            if breadth_rows:
+                                breadth_arr = np.array([float(r['breadth']) for r in breadth_rows
+                                                        if r['breadth'] is not None])
 
                         ext_market_feats = compute_extended_market_features(
                             benchmark_closes=benchmark_closes if len(benchmark_closes) > 0 else np.array([1.0]),
@@ -1523,7 +1527,7 @@ class NGCacheUpdater:
                         _to_sql(stock_labels.get('cond_label_15d')),
                         _to_sql(amv_row.get('var1') if amv_row else None),
                         _to_sql(amv_row.get('macd') if amv_row else None),
-                        _to_sql(amv_row.get('regime_days', 0) if amv_row else None),
+                        _to_sql(amv_row.get('regime_days', 0) / 60.0 if amv_row else None),
                     )
                 else:
                     ng107_cols = ()

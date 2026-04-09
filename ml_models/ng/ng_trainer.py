@@ -369,12 +369,14 @@ class NGTrainer(V485Trainer):
     # IC Screening for Interaction Features (ng1.0.3)
     # ------------------------------------------------------------------
 
-    def _select_interaction_features(self, df, label_col='label_10d', min_ic=0.02, max_corr=0.7):
+    def _select_interaction_features(self, df, label_col='label_10d', min_ic=0.02, max_corr=0.7,
+                                      candidate_names=None):
         """IC-based selection of interaction features. Returns list of selected feature names."""
         from scipy.stats import spearmanr
 
-        existing_cols = [c for c in self.feature_names if c in df.columns and c not in INTERACTION_FEATURE_NAMES]
-        candidate_cols = [c for c in INTERACTION_FEATURE_NAMES if c in df.columns]
+        candidates = candidate_names or INTERACTION_FEATURE_NAMES
+        existing_cols = [c for c in self.feature_names if c in df.columns and c not in candidates]
+        candidate_cols = [c for c in candidates if c in df.columns]
 
         if not candidate_cols or label_col not in df.columns:
             return []
@@ -754,6 +756,7 @@ class NGTrainer(V485Trainer):
                         label_col='label_10d',
                         min_ic=0.015,
                         max_corr=0.7,
+                        candidate_names=CONDITIONAL_IX_FEATURE_NAMES,
                     )
                     if self._selected_cx:
                         logger.info(f"  Conditional IX screening: {len(self._selected_cx)} selected "

@@ -280,6 +280,9 @@ class NGProductionScorer:
         for col in self.macro_feature_cols:
             if col in df_raw.columns:
                 result[col] = pd.to_numeric(df_raw[col], errors='coerce').fillna(0.0).values
+            elif col in df_stock.columns:
+                # Extended market features stored in features_json (e.g., market_ret_60d)
+                result[col] = pd.to_numeric(df_stock[col], errors='coerce').fillna(0.0).values
             else:
                 result[col] = 0.0
 
@@ -604,6 +607,13 @@ class NGProductionScorer:
                 combined_pred = combined_pred - self.lambda_risk * pred_downside_scaled
             except Exception as e:
                 logger.warning("Downside prediction failed: %s", e)
+
+        # ng1.0.7: Pareto risk filter (same logic as predict_scores)
+        risk_filtered = np.zeros(len(codes), dtype=bool)
+        if self.risk_filter_quantile > 0 and np.any(pred_downside > 0):
+            threshold = np.quantile(pred_downside, 1.0 - self.risk_filter_quantile)
+            risk_filtered = pred_downside > threshold
+            combined_pred[risk_filtered] = combined_pred.min() - 1.0
 
         scores = self._to_global_score(combined_pred)
 
