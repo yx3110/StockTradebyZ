@@ -19,7 +19,11 @@
     "focus_days": 10,
     "weighting": "equal",
     "cppi_floor": 0.08,
-    "cppi_multiplier": 20
+    "cppi_multiplier": 20,
+    "stop_loss_pct": 0.06,
+    "regime_gate_aggressive": true,
+    "vol_target": 0.20,
+    "_ng105_note": "NG1.0.5三层风控: 止损6%+增强regime门控+vol目标20% → MaxDD=-9.1%"
   },
 
   "performance_wf_oos": {
@@ -60,6 +64,7 @@
   "cli_commands": {
     "daily_cache_update": "python3 ml_models/ng/ng_cache_updater.py --date {DATE} --version ng1.0.1",
     "daily_selection": "python3 backtest/batch_generate_v395_reports.py --version ng1.0.1 --start-date {DATE} --end-date {DATE}",
-    "backtest_eval": "python3 backtest/run_north_star_eval.py --backtest --report-dir reports/daily_selection_ng101 --label NG101-PROD --top-n 10 --focus-days 10 --rank-field score --cppi-floor 0.08 --cppi-multiplier 20"
+    "backtest_eval": "python3 backtest/run_north_star_eval.py --backtest --report-dir reports/daily_selection_ng101 --label NG101-PROD --top-n 10 --focus-days 10 --rank-field score --cppi-floor 0.08 --cppi-multiplier 20",
+    "backtest_eval_ng105": "python3 backtest/run_north_star_eval.py --backtest --report-dir reports/daily_selection_ng101 --label NG105 --top-n 10 --focus-days 15 --rank-field score --cppi-floor 0.08 --cppi-multiplier 20 --stop-loss 0.06 --regime-gate-aggressive --vol-target 0.20 --ema-alpha 0.7 --retention-bonus 0.2 --score-floor 30"
   }
 }

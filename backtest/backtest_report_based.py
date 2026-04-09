@@ -808,6 +808,9 @@ def _load_industry_map_bulk():
 # V4.5 Portfolio Risk Overlays
 # ═══════════════════════════════════════════════════
 
+_market_daily_ret_cache = {}  # (min_date, max_date, index_code) → pd.Series
+
+
 def _load_market_daily_returns_bulk(dates, index_code='000001.SH'):
     """加载市场指数每日收益率 (用于EWMA波动率计算)
 
@@ -820,6 +823,10 @@ def _load_market_daily_returns_bulk(dates, index_code='000001.SH'):
     """
     if not dates:
         return pd.Series(dtype=float)
+
+    cache_key = (min(dates), max(dates), index_code)
+    if cache_key in _market_daily_ret_cache:
+        return _market_daily_ret_cache[cache_key]
 
     conn = sqlite3.connect(DB_PATH)
     try:
@@ -844,6 +851,7 @@ def _load_market_daily_returns_bulk(dates, index_code='000001.SH'):
     df['trade_date'] = df['trade_date'].astype(str)
     df = df.set_index('trade_date').sort_index()
     daily_ret = df['close'].pct_change().dropna()
+    _market_daily_ret_cache[cache_key] = daily_ret
     return daily_ret
 
 
@@ -865,14 +873,22 @@ def _compute_ewma_vol(daily_returns, halflife=20):
     return annualized_vol
 
 
-def _compute_overlay_exposure(date, market_ewma_vol, nav, peak_nav,
+def _build_vol_dict(market_ewma_vol):
+    """将EWMA波动率Series转换为前向填充的dict, 避免hot loop中反复过滤Series (O(N)→O(1))"""
+    if market_ewma_vol.empty:
+        return {}
+    ffilled = market_ewma_vol.ffill()
+    return ffilled.to_dict()
+
+
+def _compute_overlay_exposure(date, vol_dict, nav, peak_nav,
                                vol_target, cppi_floor, cppi_multiplier,
                                regime_damping=1.0):
     """计算组合exposure (0.05~1.0), 两个overlay取min
 
     Args:
         date: 当前日期 (str)
-        market_ewma_vol: EWMA年化波动率序列
+        vol_dict: 前向填充的波动率dict (由_build_vol_dict生成)
         nav: 当前净值
         peak_nav: 历史峰值净值
         vol_target: 年化波动率目标 (0=关闭)
@@ -886,35 +902,23 @@ def _compute_overlay_exposure(date, market_ewma_vol, nav, peak_nav,
     exposure = 1.0
 
     # Overlay A: Vol Targeting (Moreira & Muir 2017)
-    # 高波时降低仓位: exposure = vol_target / realized_vol
-    if vol_target > 0 and not market_ewma_vol.empty:
-        # 找到date当天或之前最近的波动率
-        vol_val = None
-        if date in market_ewma_vol.index:
-            vol_val = market_ewma_vol[date]
-        else:
-            prior = market_ewma_vol[market_ewma_vol.index <= date]
-            if not prior.empty:
-                vol_val = prior.iloc[-1]
-
+    if vol_target > 0 and vol_dict:
+        vol_val = vol_dict.get(date)
         if vol_val is not None and vol_val > 0:
             vol_exposure = vol_target / vol_val
             exposure = min(exposure, vol_exposure)
 
     # Overlay B: CPPI Trailing Floor (Grossman-Zhou)
-    # 接近回撤极限时自动减仓: exposure = m * cushion / nav
     if cppi_floor > 0 and nav > 0 and peak_nav > 0:
         floor = peak_nav * (1 - cppi_floor)
         cushion = nav - floor
         if cushion <= 0:
-            # 已触及floor, 最低仓位
             exposure = min(exposure, 0.05)
         else:
             cppi_exposure = cppi_multiplier * cushion / nav
             exposure = min(exposure, cppi_exposure)
 
     # Overlay C: Regime Transition Damping
-    # 市场regime快速转换时主动降低仓位, 减少转换期回撤放大
     if regime_damping < 1.0:
         exposure = min(exposure, regime_damping)
 
@@ -933,7 +937,9 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
                         gate_dont_buy=0.30, gate_reduce=0.50,
                         drawdown_brake=False,
                         ema_alpha=0.0,
-                        min_market_cap=0.0):
+                        min_market_cap=0.0,
+                        stop_loss_pct=0.0,
+                        regime_gate_aggressive=False):
     """运行单个报告目录的回测（含北极星指标）
 
     Args:
@@ -985,8 +991,8 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
     if hold_buffer > 0:
         print(f"  持仓缓冲: 现有持仓在top {top_n*(1+hold_buffer):.0f}内保留 (buffer={hold_buffer})")
 
-    # V4.5 Risk Overlays
-    overlay_active = vol_target > 0 or cppi_floor > 0
+    # V4.5 Risk Overlays (overlay_active → load market vol + track NAV)
+    overlay_active = vol_target > 0 or cppi_floor > 0 or regime_gate_aggressive
     if overlay_active:
         overlay_parts = []
         if vol_target > 0:
@@ -996,6 +1002,11 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
         print(f"  V4.5 Risk Overlays: {' + '.join(overlay_parts)}")
     if drawdown_brake:
         print(f"  V4.9.2 Drawdown Brake: DD>4%→×0.7, DD>7%→×0.5, DD>10%→×0.3")
+    # NG1.0.5 Risk Overlays
+    if stop_loss_pct > 0:
+        print(f"  NG1.0.5 个股止损: 单只跌破-{stop_loss_pct:.0%}即止损 (cap at checkpoints)")
+    if regime_gate_aggressive:
+        print(f"  NG1.0.5 增强Regime门控: 20d<-5%→50%, 20d<-10%→20%, VIX>P90→60%")
     if ema_alpha > 0:
         print(f"  EMA预测平滑: alpha={ema_alpha} (pred_10d/15d时序平滑)")
 
@@ -1030,11 +1041,13 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
     peak_nav = 1.0
     prev_exposure = 1.0
     exposure_history = []
+    vol_dict = {}  # 前向填充的波动率dict, O(1)查找
     if overlay_active:
         dates_all_overlay = sorted(reports.keys())
         mkt_ret = _load_market_daily_returns_bulk(dates_all_overlay)
         if not mkt_ret.empty:
             market_ewma_vol = _compute_ewma_vol(mkt_ret, halflife=20)
+            vol_dict = _build_vol_dict(market_ewma_vol)
             print(f"  V4.5: 加载市场波动率 {len(market_ewma_vol)}天, "
                   f"均值={market_ewma_vol.mean():.1%}, 当前={market_ewma_vol.iloc[-1]:.1%}")
         else:
@@ -1062,14 +1075,26 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
             print(f"  V5.1: Regime transition damping预计算完成, "
                   f"{len(regime_damping_map)}天触发阻尼 (共{n_mkt}天)")
 
+    # NG1.0.5: 预计算VIX proxy P90阈值 (用于aggressive regime gate)
+    vix_p90 = None
+    if regime_gate_aggressive and not market_ewma_vol.empty:
+        vix_p90 = float(market_ewma_vol.quantile(0.90))
+        print(f"  NG1.0.5: VIX proxy P90={vix_p90:.1%} (基于市场EWMA波动率)")
+
+    # NG1.0.5: 止损统计
+    stop_loss_trigger_count = 0
+
     # 预加载风控数据
     market_ret_20d = {}
     industry_map = {}
-    if risk_control:
+    if risk_control or regime_gate_aggressive:
         dates_all = sorted(reports.keys())
         market_ret_20d = _load_market_return_20d_bulk(dates_all)
-        industry_map = _load_industry_map_bulk()
-        print(f"  风控数据预加载: {len(market_ret_20d)}天市场收益, {len(industry_map)}只行业映射")
+        if risk_control:
+            industry_map = _load_industry_map_bulk()
+            print(f"  风控数据预加载: {len(market_ret_20d)}天市场收益, {len(industry_map)}只行业映射")
+        else:
+            print(f"  Regime门控数据预加载: {len(market_ret_20d)}天市场收益")
     if sector_diversify > 0 and not industry_map:
         industry_map = _load_industry_map_bulk()
         print(f"  行业分散数据: {len(industry_map)}只行业映射")
@@ -1352,7 +1377,7 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
             # V5.1: 查找当日regime transition damping
             rd = regime_damping_map.get(date, 1.0)
             exposure = _compute_overlay_exposure(
-                date, market_ewma_vol, nav, peak_nav,
+                date, vol_dict, nav, peak_nav,
                 vol_target, cppi_floor, cppi_multiplier,
                 regime_damping=rd)
         else:
@@ -1362,14 +1387,43 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
         if drawdown_brake and peak_nav > 0:
             current_dd = (nav - peak_nav) / peak_nav  # 负值
             if current_dd < -0.10:
-                # 深度回撤: 仓位×0.3
                 exposure *= 0.3
             elif current_dd < -0.07:
-                # 中度回撤: 仓位×0.5
                 exposure *= 0.5
             elif current_dd < -0.04:
-                # 轻度回撤: 仓位×0.7
                 exposure *= 0.7
+
+        # NG1.0.5: Aggressive Regime Gate — 20d市场收益阈值 + VIX proxy
+        if regime_gate_aggressive:
+            mret20 = market_ret_20d.get(date)
+            if mret20 is not None:
+                if mret20 < -0.10:
+                    exposure = min(exposure, 0.20)
+                elif mret20 < -0.05:
+                    exposure = min(exposure, 0.50)
+            # VIX proxy: 当前EWMA波动率 > P90 → 仓位上限60%
+            if vix_p90 is not None:
+                vol_now = vol_dict.get(date)
+                if vol_now is not None and vol_now > vix_p90:
+                    exposure = min(exposure, 0.60)
+
+        # Clamp exposure after all overlays
+        exposure = max(0.05, min(1.0, exposure))
+
+        # NG1.0.5: 预计算每只持仓股的止损调整收益
+        # 检查各checkpoint(1d,3d,...), 一旦某checkpoint收益 < -stop_loss_pct,
+        # 后续所有周期锁定为 -stop_loss_pct (视为已卖出)
+        stop_loss_flags = {}  # code → earliest triggered checkpoint day
+        if stop_loss_pct > 0:
+            for c in top_codes:
+                stock_rets = future_returns.get(c, {})
+                for d in HOLDING_DAYS:  # already sorted ascending
+                    ret = stock_rets.get(f'return_{d}d')
+                    if ret is not None and ret < -stop_loss_pct:
+                        stop_loss_flags[c] = d
+                        break
+            if stop_loss_flags:
+                stop_loss_trigger_count += len(stop_loss_flags)
 
         for days in HOLDING_DAYS:
             key = f'return_{days}d'
@@ -1377,7 +1431,13 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
             top_returns = []
             for c in top_codes:
                 if c in future_returns and key in future_returns[c]:
-                    top_returns.append(future_returns[c][key])
+                    ret = future_returns[c][key]
+                    # NG1.0.5: 止损 — 触发checkpoint之后的周期锁定在-stop_loss_pct
+                    if stop_loss_pct > 0 and c in stop_loss_flags:
+                        trigger_day = stop_loss_flags[c]
+                        if days >= trigger_day:
+                            ret = -stop_loss_pct
+                    top_returns.append(ret)
                 elif c not in future_returns:
                     top_returns.append(-0.10)  # 退市惩罚
                 # else: 股票有部分数据但缺该周期(买入日接近数据尾部), 跳过不计入
@@ -1465,6 +1525,12 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
     if gate_skip_count > 0 or gate_reduce_count > 0:
         print(f"  🛡️ 市场门控: {gate_skip_count}天空仓 + {gate_reduce_count}天减仓 "
               f"(共{len(dates)}天, 干预率{(gate_skip_count+gate_reduce_count)/max(len(dates),1):.1%})")
+
+    # NG1.0.5: 止损诊断
+    if stop_loss_pct > 0:
+        print(f"  NG1.0.5 止损诊断: {stop_loss_trigger_count}次触发 "
+              f"(共{len(dates)}天×{top_n}只, "
+              f"触发率{stop_loss_trigger_count/max(len(dates)*top_n,1):.1%})")
 
     # V4.5: Overlay诊断
     if overlay_active and exposure_history:

@@ -225,6 +225,7 @@ def load_or_build_factors(start_date: str, end_date: str,
     lookback_sd_str = lookback_sd.strftime('%Y-%m-%d')
     df = build_factor_returns(lookback_sd_str, ed, db_path)
     df = df[df.index >= sd]
+    df.index = pd.to_datetime(df.index)
     if df.empty:
         return df
     try:

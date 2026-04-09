@@ -189,7 +189,8 @@ def run_backtest(report_dir, label, top_n=20, benchmark='000905.SH', focus_days=
                  sector_diversify=0, rank_field='auto', hold_buffer=0,
                  rerank_dir=None, rerank_pool=100, cache=None,
                  ema_alpha=0.0, wf_summary_path=None,
-                 min_market_cap=0.0):
+                 min_market_cap=0.0,
+                 stop_loss_pct=0.0, regime_gate_aggressive=False):
     """运行单个模型的回测
 
     Args:
@@ -237,6 +238,8 @@ def run_backtest(report_dir, label, top_n=20, benchmark='000905.SH', focus_days=
         cache=cache,
         ema_alpha=ema_alpha,
         min_market_cap=min_market_cap,
+        stop_loss_pct=stop_loss_pct,
+        regime_gate_aggressive=regime_gate_aggressive,
     )
 
     # V5: 注入WF训练摘要 (WFER + OOS IC半衰期)
@@ -615,6 +618,11 @@ def main():
                         help='排名字段: composite=多周期融合(与选股一致,默认), auto=优先pred_10d, score=全局百分位')
     parser.add_argument('--hold-buffer', type=float, default=0,
                         help='持仓缓冲区倍数 (0=关闭, 推荐2-3). 现有持仓在top_n*(1+buffer)内保留')
+    # NG1.0.5 Risk Overlays
+    parser.add_argument('--stop-loss', type=float, default=0.0,
+                        help='NG1.0.5: 个股止损百分比 (0=关闭, 推荐0.08=8%%)')
+    parser.add_argument('--regime-gate-aggressive', action='store_true',
+                        help='NG1.0.5: 增强regime门控 (20d<-5%%→50%%, 20d<-10%%→20%%, VIX>P90→60%%)')
     parser.add_argument('--score-version', type=str, default='both',
                         choices=['v2', 'v3', 'v4', 'v5', 'v51', 'v52', 'both', 'all'],
                         help='评分卡版本: v2/v3/v4/v5/v51/v52/both(v2+v4)/all(全部) (default: both)')
@@ -689,6 +697,13 @@ def main():
     cache = EvalCache()
 
     if args.backtest:
+        _overlay_kwargs = dict(
+            ema_alpha=args.ema_alpha,
+            wf_summary_path=args.wf_summary,
+            min_market_cap=getattr(args, 'min_market_cap', 0.0),
+            stop_loss_pct=args.stop_loss,
+            regime_gate_aggressive=args.regime_gate_aggressive,
+        )
         if args.report_dir:
             result = run_backtest(args.report_dir, args.label, args.top_n, args.benchmark,
                                   args.focus_days, args.retention_bonus,
@@ -697,9 +712,7 @@ def main():
                                   args.vol_target, args.cppi_floor, args.cppi_multiplier,
                                   args.sector_diversify, args.rank_field,
                                   args.hold_buffer, cache=cache,
-                                  ema_alpha=args.ema_alpha,
-                                  wf_summary_path=args.wf_summary,
-                                  min_market_cap=getattr(args, 'min_market_cap', 0.0))
+                                  **_overlay_kwargs)
         else:
             # 默认回测v3.95 RobustZScore
             default_dir = str(PROJECT_ROOT / 'reports' / 'daily_selection_v3.95_robust_zscore')
@@ -710,9 +723,7 @@ def main():
                                   args.vol_target, args.cppi_floor, args.cppi_multiplier,
                                   args.sector_diversify, args.rank_field,
                                   args.hold_buffer, cache=cache,
-                                  ema_alpha=args.ema_alpha,
-                                  wf_summary_path=args.wf_summary,
-                                  min_market_cap=getattr(args, 'min_market_cap', 0.0))
+                                  **_overlay_kwargs)
 
     if args.regime_analysis:
         report_dir = args.report_dir or str(
