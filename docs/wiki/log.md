@@ -6,6 +6,10 @@
 
 ---
 
+2026-04-09 | model  | NG v1.0.6 发布 — 0AMV牛熊切换(ng1.0.1牛+ng1.0.4熊), 年化92.0%, MaxDD=-20.2%, 18次切换
+2026-04-09 | feature| 0AMV全市场活跃市值指标 — 复刻指南针活筹指数, indicators/market_amv.py
+2026-04-09 | fix    | factor_returns.py Build路径string index bug修复(因子归因全零)
+2026-04-09 | eval   | NG裸模型公平对比 — ng1.0.1最强(年化129.7%, Sharpe3.17), ng1.0.4熊市最稳
 2026-04-08 | eval   | NG版本综合排名 — ng1.0.1+CPPI(F0.08,M20) WF-OOS最优(V5.2=78.9% A+, Sharpe=2.339, MaxDD=-12.6%)
 2026-04-08 | model  | 生产切换到ng1.0.1+CPPI(F0.08,M20), 替代ng1.0.2
 2026-04-08 | model  | NG v1.0.4 发布 — RA标签+5-seed ensemble+9新特征+IC分析器, V5.2=75.9% A+
