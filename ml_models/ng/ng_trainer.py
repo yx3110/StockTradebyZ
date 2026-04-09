@@ -788,6 +788,11 @@ class NGTrainer(V485Trainer):
             return model_data, history
 
         # --- v1.0.2: Train downside model ---
+        # Restore feature cols (WF parent may have modified them)
+        if version_ge(self._ng_version, 'ng1.0.7'):
+            self.stock_feature_cols = list(STOCK_FEATURE_NAMES)
+            self.macro_feature_cols = list(NG107_MARKET_FEATURES)
+            self.feature_names = self.stock_feature_cols + self.macro_feature_cols
         logger.info("Training downside_10d model (separate LightGBM pass)...")
         try:
             df_full = self.load_data(start_date=start_date, end_date=end_date)
