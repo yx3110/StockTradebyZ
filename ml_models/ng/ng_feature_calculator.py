@@ -67,6 +67,16 @@ def _percentile_rank(value: float, history: np.ndarray) -> float:
     return float(np.mean(history < value))
 
 
+def _skewness(arr: np.ndarray) -> float:
+    """Compute skewness of an array. Returns 0.0 if std is near zero."""
+    if len(arr) < 3:
+        return np.nan
+    std_r = arr.std()
+    if std_r < 1e-8:
+        return 0.0
+    return float(np.mean(((arr - arr.mean()) / std_r) ** 3))
+
+
 def _industry_percentile_rank(value: float, peer_values: np.ndarray) -> float:
     """Return percentile rank of value among peer_values (0..1).
     Used for cross-sectional rank factors within an industry."""
@@ -724,12 +734,7 @@ def compute_residual_features(
             and len(stock_daily_returns) >= 10 and len(market_daily_returns) >= 10):
         n = min(len(stock_daily_returns), len(market_daily_returns))
         residuals = stock_daily_returns[-n:] - market_daily_returns[-n:]
-        mean_r = residuals.mean()
-        std_r = residuals.std()
-        if std_r > 1e-8:
-            result['residual_skewness'] = float(np.mean(((residuals - mean_r) / std_r) ** 3))
-        else:
-            result['residual_skewness'] = 0.0
+        result['residual_skewness'] = _skewness(residuals)
     else:
         result['residual_skewness'] = np.nan
 
@@ -967,7 +972,6 @@ def compute_interaction_features(
 
 def compute_extended_market_features(
     benchmark_closes: np.ndarray,
-    all_stock_returns_1d: np.ndarray,
     total_market_amount: np.ndarray,
     amv_var1: float,
     amv_macd: float,
@@ -1015,12 +1019,7 @@ def compute_extended_market_features(
     # 7. market_skewness_20d — skewness of 20d market returns
     if len(bm) >= 21:
         log_rets_20 = np.diff(np.log(bm[-21:] + 1e-8))
-        mean_r = log_rets_20.mean()
-        std_r = log_rets_20.std()
-        if std_r > 1e-8:
-            result['market_skewness_20d'] = float(np.mean(((log_rets_20 - mean_r) / std_r) ** 3))
-        else:
-            result['market_skewness_20d'] = 0.0
+        result['market_skewness_20d'] = _skewness(log_rets_20)
     else:
         result['market_skewness_20d'] = np.nan
 

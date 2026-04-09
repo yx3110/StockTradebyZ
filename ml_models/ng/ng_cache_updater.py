@@ -978,7 +978,6 @@ class NGCacheUpdater:
                     if amv_row_data:
                         amv_var1_val = _safe_float(amv_row_data['var1'])
                         amv_macd_val = _safe_float(amv_row_data['amv_macd'])
-                        amv_regime_val = int(amv_row_data['amv_regime']) if amv_row_data['amv_regime'] is not None else -1
 
                         # Compute regime_days: count consecutive days in current regime
                         amv_history = conn.execute(
@@ -994,33 +993,27 @@ class NGCacheUpdater:
                                 else:
                                     break
 
-                        # Compute breadth_history_5d for momentum
-                        breadth_history_rows = conn.execute(
-                            '''SELECT trade_date FROM daily_quotes
-                               JOIN securities s ON daily_quotes.security_id = s.id
-                               WHERE s.type = 'A股' AND trade_date <= ?
-                               GROUP BY trade_date ORDER BY trade_date DESC LIMIT 6''',
+                        # Compute breadth_history_5d in a single batch query
+                        breadth_arr = np.array([])
+                        breadth_rows = conn.execute(
+                            '''SELECT dq.trade_date,
+                                      AVG(CASE WHEN dq.price_change_pct > 0 THEN 1.0 ELSE 0.0 END) as breadth
+                               FROM daily_quotes dq
+                               JOIN securities s ON dq.security_id = s.id
+                               WHERE s.type = 'A股'
+                                 AND dq.trade_date IN (
+                                     SELECT DISTINCT trade_date FROM daily_quotes
+                                     WHERE trade_date <= ? ORDER BY trade_date DESC LIMIT 6
+                                 )
+                               GROUP BY dq.trade_date ORDER BY dq.trade_date''',
                             (date,)
                         ).fetchall()
-                        breadth_arr = np.array([])
-                        if len(breadth_history_rows) >= 2:
-                            breadth_dates = [r['trade_date'] for r in reversed(breadth_history_rows)]
-                            breadth_vals = []
-                            for bd in breadth_dates:
-                                rets_row = conn.execute(
-                                    '''SELECT AVG(CASE WHEN price_change_pct > 0 THEN 1.0 ELSE 0.0 END) as breadth
-                                       FROM daily_quotes dq
-                                       JOIN securities s ON dq.security_id = s.id
-                                       WHERE s.type = 'A股' AND dq.trade_date = ?''',
-                                    (bd,)
-                                ).fetchone()
-                                if rets_row and rets_row['breadth'] is not None:
-                                    breadth_vals.append(float(rets_row['breadth']))
-                            breadth_arr = np.array(breadth_vals) if breadth_vals else np.array([])
+                        if len(breadth_rows) >= 2:
+                            breadth_arr = np.array([float(r['breadth']) for r in breadth_rows
+                                                    if r['breadth'] is not None])
 
                         ext_market_feats = compute_extended_market_features(
                             benchmark_closes=benchmark_closes if len(benchmark_closes) > 0 else np.array([1.0]),
-                            all_stock_returns_1d=all_ret1d,
                             total_market_amount=market_amounts if len(market_amounts) > 0 else np.array([1.0]),
                             amv_var1=amv_var1_val,
                             amv_macd=amv_macd_val,
@@ -1085,7 +1078,6 @@ class NGCacheUpdater:
 
                 for h in [3, 5, 10, 15]:
                     excess_key = f'label_{h}d'
-                    raw_key = f'label_raw_{h}d'
 
                     # Collect all excess labels for this horizon to compute rank
                     all_excess = {}
@@ -1451,7 +1443,11 @@ class NGCacheUpdater:
                 if version_ge(self.version, 'ng1.0.4'):
                     all_feats.update(data.get('smooth_feats', {}))
                 if version_ge(self.version, 'ng1.0.7'):
-                    all_feats.update(ext_market_feats)
+                    # ext_market_feats stored in features_json for scorer access
+                    # (only non-AMV features; AMV values already in dedicated columns)
+                    for k, v in ext_market_feats.items():
+                        if k not in ('amv_var1', 'amv_macd', 'amv_regime_days'):
+                            all_feats[k] = v
                     all_feats.update(cond_ix_feats)
 
                 # Clean NaN/Inf
@@ -1527,7 +1523,7 @@ class NGCacheUpdater:
                         _to_sql(stock_labels.get('cond_label_15d')),
                         _to_sql(amv_row.get('var1') if amv_row else None),
                         _to_sql(amv_row.get('macd') if amv_row else None),
-                        _to_sql(amv_row.get('regime_days', 0) / 60.0 if amv_row else None),
+                        _to_sql(amv_row.get('regime_days', 0) if amv_row else None),
                     )
                 else:
                     ng107_cols = ()

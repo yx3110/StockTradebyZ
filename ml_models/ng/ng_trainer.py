@@ -712,53 +712,56 @@ class NGTrainer(V485Trainer):
             logger.info(f"  Labels: INDUSTRY EXCESS returns (stock - industry median)")
         logger.info(f"  Initial weights: {', '.join(f'{k}={v:.2f}' for k, v in self.target_weights.items())}")
 
-        # IC screening for interaction features (before WF training)
+        # IC screening for interaction + conditional interaction features
+        # Load data once and reuse for both screening passes
         self._selected_ix = []
-        if getattr(self, '_enable_interaction', False):
-            logger.info("Screening interaction features by IC...")
+        self._selected_cx = []
+        need_ix_screen = getattr(self, '_enable_interaction', False)
+        need_cx_screen = version_ge(self._ng_version, 'ng1.0.7')
+
+        if need_ix_screen or need_cx_screen:
+            logger.info("Loading data for IC screening...")
             df_screen = self.load_data(start_date=start_date, end_date=end_date)
             if not df_screen.empty:
-                # Temporarily set feature_names so screening can reference them
-                _tmp_stock = list(STOCK_FEATURE_NAMES)
-                if getattr(self, '_enable_moneyflow', False):
-                    _tmp_stock += MONEYFLOW_FEATURE_NAMES
-                _tmp_stock += INTERACTION_FEATURE_NAMES
-                self.stock_feature_cols = [c for c in _tmp_stock if c in df_screen.columns]
-                self.macro_feature_cols = [c for c in MARKET_FEATURE_NAMES if c in df_screen.columns]
-                self.feature_names = self.stock_feature_cols + self.macro_feature_cols
+                # Interaction feature screening
+                if need_ix_screen:
+                    logger.info("Screening interaction features by IC...")
+                    _tmp_stock = list(STOCK_FEATURE_NAMES)
+                    if getattr(self, '_enable_moneyflow', False):
+                        _tmp_stock += MONEYFLOW_FEATURE_NAMES
+                    _tmp_stock += INTERACTION_FEATURE_NAMES
+                    self.stock_feature_cols = [c for c in _tmp_stock if c in df_screen.columns]
+                    self.macro_feature_cols = [c for c in MARKET_FEATURE_NAMES if c in df_screen.columns]
+                    self.feature_names = self.stock_feature_cols + self.macro_feature_cols
 
-                self._selected_ix = self._select_interaction_features(df_screen)
-                if self._selected_ix:
-                    remove_ix = [c for c in INTERACTION_FEATURE_NAMES if c not in self._selected_ix]
-                    logger.info(f"  Interaction screening: {len(self._selected_ix)} selected, "
-                                 f"{len(remove_ix)} removed")
-                else:
-                    logger.info("  Interaction screening: none passed IC threshold, removing all")
-                del df_screen  # free memory
+                    self._selected_ix = self._select_interaction_features(df_screen)
+                    if self._selected_ix:
+                        remove_ix = [c for c in INTERACTION_FEATURE_NAMES if c not in self._selected_ix]
+                        logger.info(f"  Interaction screening: {len(self._selected_ix)} selected, "
+                                     f"{len(remove_ix)} removed")
+                    else:
+                        logger.info("  Interaction screening: none passed IC threshold, removing all")
 
-        # ng1.0.7: IC screening for conditional interaction features
-        self._selected_cx = []
-        if version_ge(self._ng_version, 'ng1.0.7'):
-            logger.info("Screening conditional interaction features by IC...")
-            df_cx_screen = self.load_data(start_date=start_date, end_date=end_date)
-            if not df_cx_screen.empty:
-                _tmp_stock = list(STOCK_FEATURE_NAMES) + CONDITIONAL_IX_FEATURE_NAMES
-                self.stock_feature_cols = [c for c in _tmp_stock if c in df_cx_screen.columns]
-                self.macro_feature_cols = [c for c in NG107_MARKET_FEATURES if c in df_cx_screen.columns]
-                self.feature_names = self.stock_feature_cols + self.macro_feature_cols
-                self._selected_cx = self._select_interaction_features(
-                    df_cx_screen,
-                    label_col='label_10d',
-                    min_ic=0.015,  # slightly lower threshold for conditional features
-                    max_corr=0.7,
-                )
-                if self._selected_cx:
-                    logger.info(f"  Conditional IX screening: {len(self._selected_cx)} selected "
-                                f"from {len(CONDITIONAL_IX_FEATURE_NAMES)}")
-                else:
-                    logger.info("  Conditional IX screening: none passed, using all as fallback")
-                    self._selected_cx = list(CONDITIONAL_IX_FEATURE_NAMES)
-                del df_cx_screen
+                # Conditional interaction feature screening (ng1.0.7)
+                if need_cx_screen:
+                    logger.info("Screening conditional interaction features by IC...")
+                    _tmp_stock = list(STOCK_FEATURE_NAMES) + CONDITIONAL_IX_FEATURE_NAMES
+                    self.stock_feature_cols = [c for c in _tmp_stock if c in df_screen.columns]
+                    self.macro_feature_cols = [c for c in NG107_MARKET_FEATURES if c in df_screen.columns]
+                    self.feature_names = self.stock_feature_cols + self.macro_feature_cols
+                    self._selected_cx = self._select_interaction_features(
+                        df_screen,
+                        label_col='label_10d',
+                        min_ic=0.015,
+                        max_corr=0.7,
+                    )
+                    if self._selected_cx:
+                        logger.info(f"  Conditional IX screening: {len(self._selected_cx)} selected "
+                                    f"from {len(CONDITIONAL_IX_FEATURE_NAMES)}")
+                    else:
+                        logger.info("  Conditional IX screening: none passed, removing all")
+
+            del df_screen
 
         model_data, history = super().walk_forward_train(
             start_date=start_date, end_date=end_date,
