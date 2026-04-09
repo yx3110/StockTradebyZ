@@ -129,7 +129,7 @@ def compute_regime(var1: np.ndarray, ma60: np.ndarray, macd: np.ndarray,
     转熊 (缓跌): 连续N天 var1<ma60 AND macd<0 → 强制转熊
 
     Args:
-        slow_bear_days: 缓跌转熊的连续天数阈值 (默认20)
+        slow_bear_days: 缓跌转熊的连续天数阈值 (默认10)
     """
     n = len(var1)
     regime = np.zeros(n, dtype=int)
@@ -199,7 +199,6 @@ CREATE TABLE IF NOT EXISTS market_amv (
 def save_to_db(conn: sqlite3.Connection, df: pd.DataFrame):
     """将计算结果写入market_amv表"""
     conn.execute(CREATE_TABLE_SQL)
-    conn.execute('DELETE FROM market_amv')
     rows = []
     for _, r in df.iterrows():
         rows.append((

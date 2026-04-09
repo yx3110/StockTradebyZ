@@ -5724,7 +5724,8 @@ def main(target_date: str = None, scoring_version: str = "v3", stocks_only: bool
         ng106_mode = True
         try:
             import sqlite3 as _sql
-            _conn = _sql.connect('data_adapter/stock_data.db', timeout=30)
+            _db = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data_adapter', 'stock_data.db')
+            _conn = _sql.connect(_db, timeout=30)
             _regime = _conn.execute(
                 'SELECT amv_regime FROM market_amv ORDER BY trade_date DESC LIMIT 1'
             ).fetchone()
