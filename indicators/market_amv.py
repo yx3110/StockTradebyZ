@@ -120,11 +120,16 @@ def compute_amv(market_amount: np.ndarray, market_turnover: np.ndarray) -> dict:
 
 # === 牛熊状态机 ===
 
-def compute_regime(var1: np.ndarray, ma60: np.ndarray, macd: np.ndarray) -> np.ndarray:
+def compute_regime(var1: np.ndarray, ma60: np.ndarray, macd: np.ndarray,
+                   slow_bear_days: int = 10) -> np.ndarray:
     """牛熊体制判断
-    转牛: var1涨>=4.3% AND var1>ma60 AND macd>0
-    转熊: var1跌<=-2.3% AND var1<ma60 AND macd<0
-    注: 用macd正负区域而非当日穿越，避免三条件同日触发概率极低
+
+    转牛 (急涨): var1涨>=4.3% AND var1>ma60 AND macd>0
+    转熊 (急跌): var1跌<=-2.3% AND var1<ma60 AND macd<0
+    转熊 (缓跌): 连续N天 var1<ma60 AND macd<0 → 强制转熊
+
+    Args:
+        slow_bear_days: 缓跌转熊的连续天数阈值 (默认20)
     """
     n = len(var1)
     regime = np.zeros(n, dtype=int)
@@ -134,10 +139,13 @@ def compute_regime(var1: np.ndarray, ma60: np.ndarray, macd: np.ndarray) -> np.n
 
     regime[0] = 1 if var1[0] > ma60[0] else -1
 
+    bear_streak = 0  # 连续满足var1<ma60且macd<0的天数
+
     for i in range(1, n):
         prev_regime = regime[i - 1]
 
         if prev_regime == -1:
+            bear_streak = 0
             bull_signal = (
                 pct_change[i] >= 0.043
                 and var1[i] > ma60[i]
@@ -145,12 +153,23 @@ def compute_regime(var1: np.ndarray, ma60: np.ndarray, macd: np.ndarray) -> np.n
             )
             regime[i] = 1 if bull_signal else -1
         elif prev_regime == 1:
+            # 急跌转熊
             bear_signal = (
                 pct_change[i] <= -0.023
                 and var1[i] < ma60[i]
                 and macd[i] < 0
             )
-            regime[i] = -1 if bear_signal else 1
+            # 缓跌计数
+            if var1[i] < ma60[i] and macd[i] < 0:
+                bear_streak += 1
+            else:
+                bear_streak = 0
+
+            if bear_signal or bear_streak >= slow_bear_days:
+                regime[i] = -1
+                bear_streak = 0
+            else:
+                regime[i] = 1
 
     return regime
 
