@@ -6,6 +6,11 @@
 
 ---
 
+2026-04-10 | model  | NG v1.0.7 发布 — 条件化标签+18市场特征+Pareto过滤, V5.2=76.8% A+, L1信号91.3%(全系列最高), ICIR=0.656(+29%), 熊市ICIR=0.205(解决反转)
+2026-04-10 | fix    | /simplify 3轮审查 — N+1查询(3.7x提速)+4个bug(IX筛选/scorer加载/train-serve skew/Pareto)+features_json列名冲突
+2026-04-09 | fix    | daily update缓存修复 — update_ng_feature_cache()同时更新ng1.0.3/1.0.1/1.0.4三版本缓存
+2026-04-09 | fix    | SCORER_REGISTRY修复 — ng1.0.1/1.0.2显式指定model_path，避免误加载最新pkl
+2026-04-09 | eval   | ng1.0.4 RF权重失衡 — 10d/15d RF占94-95%, Top-10全银行, 银行得分=全市场6.7x
 2026-04-09 | model  | NG v1.0.6 发布 — 0AMV牛熊切换(ng1.0.1牛+ng1.0.4熊), 年化92.0%, MaxDD=-20.2%, 18次切换
 2026-04-09 | feature| 0AMV全市场活跃市值指标 — 复刻指南针活筹指数, indicators/market_amv.py
 2026-04-09 | fix    | factor_returns.py Build路径string index bug修复(因子归因全零)

@@ -214,11 +214,44 @@ python3 tomorrow_stock_selector.py 2026-04-09 --scoring-version ng1.0.6
 
 在NG模型裸信号公平对比中发现 `load_or_build_factors()` 的Build路径返回string类型index，与datetime的portfolio_returns无法交集，导致因子归因全零。已修复（一行 `df.index = pd.to_datetime(df.index)`）。此bug曾导致ng1.0.4的L6因子归因虚高（25.5/30→修复后29.5/30）。
 
+### ng1.0.4 RF权重失衡问题 (2026-04-08 发现)
+
+ng1.0.4 的 Top-10 几乎全是银行股（42只银行占训练集仅1.1%，但平均得分是全市场6.7倍）。
+
+**根因分析**:
+1. **RF主导10d/15d**: ICIR优化后 Random Forest 权重高达 94-95%，其他模型（LGB/XGB/CB）被压到1%
+2. **Composite 70%给长周期**: 10d=35% + 15d=35% 合计70%，而这两个目标几乎100%由RF决定
+3. **RF天然偏好低波动**: 多棵树取平均→预测趋向均值，银行股波动小、特征稳定→RF给出更一致的正面预测
+4. **downside_model + liquidity_discount**: 进一步惩罚高波动中小盘，利好银行
+
+**对比**: ng1.0.1 没有此问题，选股行业分散（机器人、医疗、军工、半导体等），预测收益也更高（1.4-2.0% vs 0.9-1.4%）
+
+**潜在修复方向**:
+- 限制RF在ensemble中的最大权重（如cap 50%）
+- 加入行业分散约束（每行业最多N只）
+- 用行业中性化排名代替绝对排名
+
+### Daily Update 缓存修复 (2026-04-09)
+
+**问题**: `quick_daily_update.py` 只更新 `ng103_feature_cache`（默认版本），ng1.0.1/ng1.0.4 缓存不会自动更新，导致 ng1.0.6 切换后找不到当天数据。
+
+**修复**: `update_ng_feature_cache()` 现在同时更新 3 个版本: ng1.0.3(默认) + ng1.0.1(牛市) + ng1.0.4(熊市)
+
+### SCORER_REGISTRY model_path 修复 (2026-04-08)
+
+**问题**: `NGProductionScorer()` 不指定 model_path 时自动选最新 .pkl，导致指定 ng1.0.1/ng1.0.2 时实际加载了 ng1.1.0 模型。
+
+**修复**: 在 `SCORER_REGISTRY` 中为每个 NG 版本显式指定 `model_path` 或 `version` 参数:
+- ng1.0.1: `model_path='...ng101_multi_target_20260405_013038.pkl'`
+- ng1.0.2: `model_path='...ng_multi_target_20260405_194751.pkl'`
+- ng1.0.4: `version='ng1.0.4'`（自动发现5个seed模型做ensemble）
+
 ### 待解决问题
 
 1. ng1.0.1 / ng1.0.4 缺少 Pre-2020 独立验证
 2. 缓跌转熊阈值(10天)是否需要自适应调整
 3. 牛市切换后是否需要延迟N天确认（避免假突破）
+4. ng1.0.4 RF权重失衡导致银行垄断Top-10，需考虑权重cap或行业分散
 
 ---
 
@@ -227,6 +260,41 @@ python3 tomorrow_stock_selector.py 2026-04-09 --scoring-version ng1.0.6
 ng1.1.0 的三方向实验（资金流因子、残差标签、WF框架升级）评估后发现仅"去翻转因子"方向有效，已合并为 ng1.0.3。其余方向（残差标签=无效、WF8+regime=无效、moneyflow=10d退步）废弃。
 
 **数据资产保留**：`ng103_feature_cache`（3.6M行）、`moneyflow_daily`（8.8M行）由 ng1.0.3 继续使用。
+
+---
+
+## NG 1.0.7 — 条件化单模型 + Pareto回撤过滤 (2026-04-10)
+
+**升级动机**: NG1.0.1裸信号最强(129.7%年化)但MaxDD=-25.4%，熊市信号反转(worst 60d ICIR=-0.249)。需要模型本身感知市场环境，而非依赖后置风控。
+
+**核心设计 (Part A: 条件化模型)**:
+- 56 stock + 18 market (10基础 + 8扩展) = 74 特征 (交叉特征7个全被IC筛选淘汰)
+- 新增8个市场状态连续特征: 0AMV连续值/MACD/regime天数/60d收益/波动比/涨跌面动量/偏度/流动性压力
+- **条件化标签**: 熊市(mkt_ret_20d<-5%)用截面排名blend，牛市用行业超额，连续插值不硬切换
+- 增强样本加权: bull=0.7, sideways=1.0, bear=1.5, crisis(mkt_ret<-10%)=2.0
+
+**核心设计 (Part B: Pareto回撤过滤)**:
+- 独立downside模型预测maxdd_10d
+- 硬过滤最差20%风险标的后按alpha排序
+- 参数: `--risk-filter-quantile 0.20`
+
+**性能** (V5.2评分卡, Top-10, 10日持仓):
+- V5.2: **76.8% A+**
+- 年化(毛): **84.4%** (净: 77.8%)
+- Sharpe: 1.96 (受换手率44x拖累)
+- ICIR: **0.656** (vs NG1.0.1的0.51, **+29%**)
+- IC>0%: **73.5%** (vs 70.1%, +3.4pp)
+- L1信号质量: **91.3%** (全系列最高)
+- L9条件稳健性: **95.0%** (regime自适应)
+- 熊市ICIR: **0.205 > 0** (解决了NG1.0.1的-0.249反转)
+
+**关键发现**:
+1. 7个交叉特征全被IC筛选淘汰(与已有特征corr>0.7或IC<0.015)，说明GBDT已能自动学到交叉效应
+2. 条件化标签+扩展市场特征是核心改进来源(L1从78.9%→91.3%)
+3. 换手率44x过高，需focus_days=15或EMA平滑降低
+
+**缓存表**: `ng107_feature_cache`（318万行, 1515天）
+**模型文件**: `ng107_seed42_multi_target_20260409_224321.pkl`（66MB）
 
 ---
 
