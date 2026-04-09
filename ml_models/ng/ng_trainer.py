@@ -504,6 +504,14 @@ class NGTrainer(V485Trainer):
 
         active_stock_features = self._get_active_stock_features()
 
+        # Exclude market feature names that may appear in features_json
+        # (they are loaded from dedicated SQL columns instead)
+        market_cols_to_load = list(MARKET_FEATURE_NAMES)
+        if version_ge(self._ng_version, 'ng1.0.7'):
+            market_cols_to_load += EXTENDED_MARKET_FEATURE_NAMES
+        market_set = set(market_cols_to_load)
+        active_stock_features = [c for c in active_stock_features if c not in market_set]
+
         for col in active_stock_features:
             if col not in df_stock_features.columns:
                 df_stock_features[col] = np.nan
@@ -524,10 +532,6 @@ class NGTrainer(V485Trainer):
         for col in active_stock_features:
             if col in df_stock_features.columns:
                 result[col] = df_stock_features[col].values
-
-        market_cols_to_load = list(MARKET_FEATURE_NAMES)
-        if version_ge(self._ng_version, 'ng1.0.7'):
-            market_cols_to_load += EXTENDED_MARKET_FEATURE_NAMES
 
         for col in market_cols_to_load:
             if col in df_raw.columns:
