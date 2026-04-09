@@ -727,6 +727,10 @@ class NGTrainer(V485Trainer):
 
         if need_ix_screen or need_cx_screen:
             logger.info("Loading data for IC screening...")
+            # Save original feature cols (screening modifies them temporarily)
+            _orig_stock_cols = list(self.stock_feature_cols)
+            _orig_macro_cols = list(self.macro_feature_cols)
+            _orig_feature_names = list(self.feature_names)
             df_screen = self.load_data(start_date=start_date, end_date=end_date)
             if not df_screen.empty:
                 # Interaction feature screening
@@ -769,6 +773,10 @@ class NGTrainer(V485Trainer):
                         logger.info("  Conditional IX screening: none passed, removing all")
 
             del df_screen
+            # Restore original feature cols after screening
+            self.stock_feature_cols = _orig_stock_cols
+            self.macro_feature_cols = _orig_macro_cols
+            self.feature_names = _orig_feature_names
 
         model_data, history = super().walk_forward_train(
             start_date=start_date, end_date=end_date,
