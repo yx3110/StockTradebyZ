@@ -5007,6 +5007,10 @@ class TomorrowStockSelector:
             "v2": "v2.0 优化版"
         }
         version_title = version_titles.get(self.scoring_version, f"{self.scoring_version} 评分版")
+        # ng1.0.6 覆盖标题
+        if getattr(self, '_ng106_mode', False):
+            regime_label = "牛市→ng1.0.1" if self.scoring_version in ("ng1.0.1",) else "熊市→ng1.0.4"
+            version_title = f"NG1.0.6 0AMV牛熊切换版 (当前{regime_label})"
         
         # 为不同版本添加特殊说明
         if hasattr(self, 'scoring_version') and self.scoring_version == "v3.41":
@@ -5714,6 +5718,26 @@ def main(target_date: str = None, scoring_version: str = "v3", stocks_only: bool
     # v4.8 alias → v4.8.0
     if scoring_version == "v4.8":
         scoring_version = "v4.8.0"
+    # ng1.0.6: 0AMV牛熊切换模型 — 牛市用ng1.0.1, 熊市用ng1.0.4
+    ng106_mode = False
+    if scoring_version == "ng1.0.6":
+        ng106_mode = True
+        try:
+            import sqlite3 as _sql
+            _conn = _sql.connect('data_adapter/stock_data.db', timeout=30)
+            _regime = _conn.execute(
+                'SELECT amv_regime FROM market_amv ORDER BY trade_date DESC LIMIT 1'
+            ).fetchone()
+            _conn.close()
+            if _regime and _regime[0] == 1:
+                scoring_version = "ng1.0.1"
+                print(f"🐂 ng1.0.6: 0AMV判定当前【牛市】→ 使用 ng1.0.1")
+            else:
+                scoring_version = "ng1.0.4"
+                print(f"🐻 ng1.0.6: 0AMV判定当前【熊市】→ 使用 ng1.0.4")
+        except Exception as e:
+            scoring_version = "ng1.0.1"
+            print(f"⚠️ ng1.0.6: 读取AMV regime失败({e})，默认使用 ng1.0.1")
     # v3.6、v3.7、v3.8、v3.9、v3.94、v3.95版本应该只评价股票，因为ETF等因子无法与股票直接对比
     if scoring_version in ["v3.6", "v3.7", "v3.8", "v3.81", "v3.9", "v3.94", "v3.95", "v3.96", "v4.0", "v4.2", "v4.3", "v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.7.9", "v4.8.0", "v4.8.1", "v4.8.2", "v4.8.4", "v4.9.0.2", "v5.0"] and not stocks_only:
         stocks_only = True
@@ -5734,6 +5758,8 @@ def main(target_date: str = None, scoring_version: str = "v3", stocks_only: bool
     # 创建选股器，传入评分版本和股票筛选选项
     selector = TomorrowStockSelector(scoring_version=scoring_version, stocks_only=stocks_only, skip_strategies=skip_strategies,
                                      optimizer_version=optimizer_version, optimizer_params_path=optimizer_params_path)
+    if ng106_mode:
+        selector._ng106_mode = True
     
     # 获取分析日期
     if target_date:
@@ -5959,7 +5985,9 @@ def main(target_date: str = None, scoring_version: str = "v3", stocks_only: bool
     report = selector.generate_report(analysis, latest_date)
     
     # 根据评分版本选择不同的报告目录
-    if scoring_version == "v5.0":
+    if ng106_mode:
+        report_dir = Path("reports/daily_selection_ng106")
+    elif scoring_version == "v5.0":
         report_dir = Path("reports/daily_selection_v5.0")
     elif scoring_version.startswith("ng"):
         report_dir = Path(f"reports/daily_selection_{scoring_version.replace('.', '')}")
@@ -6099,7 +6127,7 @@ if __name__ == "__main__":
                        choices=['v2', 'v3', 'v3.1', 'v3.2', 'v3.3', 'v3.4', 'v3.41',
                                 'v3.5', 'v3.51', 'v3.52', 'v3.53', 'v3.6', 'v3.7',
                                 'v3.8', 'v3.81', 'v3.9', 'v3.94', 'v3.95', 'v3.96',
-                                'v4', 'v4.0', 'v4.2', 'v4.3', 'v4.4', 'v4.4.2', 'v4.5', 'v4.6', 'v4.7.1', 'v4.7.2', 'v4.7.3', 'v4.7.5', 'v4.7.6', 'v4.7.7', 'v4.7.8', 'v4.7.9', 'v4.8', 'v4.8.0', 'v4.8.1', 'v4.8.2', 'v4.8.4', 'v4.8.5', 'v4.8.6', 'v4.8.7', 'v4.8.8', 'v4.9.0', 'v4.9.0.1', 'v4.9.0.2', 'v4.9.1', 'v5.0', 'ng1.0.0', 'ng1.0.1', 'ng1.0.2', 'ng1.0.3', 'ng1.0.4'],
+                                'v4', 'v4.0', 'v4.2', 'v4.3', 'v4.4', 'v4.4.2', 'v4.5', 'v4.6', 'v4.7.1', 'v4.7.2', 'v4.7.3', 'v4.7.5', 'v4.7.6', 'v4.7.7', 'v4.7.8', 'v4.7.9', 'v4.8', 'v4.8.0', 'v4.8.1', 'v4.8.2', 'v4.8.4', 'v4.8.5', 'v4.8.6', 'v4.8.7', 'v4.8.8', 'v4.9.0', 'v4.9.0.1', 'v4.9.0.2', 'v4.9.1', 'v5.0', 'ng1.0.0', 'ng1.0.1', 'ng1.0.2', 'ng1.0.3', 'ng1.0.4', 'ng1.0.6'],
                        default='v4.9.0.1',
                        help='评分版本 (默认v4.9.0.1, 生产推荐, 配合focus_days=15+EMA0.7+CPPI(8,20)+SF30 → V4=92.8%% S级)。'
                             '活跃版本: v3.9(生产A级), v3.96(Robust Z-Score,ICIR>0.2), '
