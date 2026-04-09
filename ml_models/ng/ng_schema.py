@@ -22,6 +22,7 @@ VERSION_TABLE_MAP = {
     'ng1.0.2': 'ng102_feature_cache',
     'ng1.0.3': 'ng103_feature_cache',
     'ng1.0.4': 'ng104_feature_cache',
+    'ng1.0.7': 'ng107_feature_cache',
 }
 
 DEFAULT_VERSION = 'ng1.0.3'
@@ -63,6 +64,14 @@ def _schema_sql(table_name: str, version: str = None) -> str:
         extra_cols += '\n    ra_label_5d REAL,'
         extra_cols += '\n    ra_label_10d REAL,'
         extra_cols += '\n    ra_label_15d REAL,'
+    if version_ge(ver, 'ng1.0.7'):
+        extra_cols += '\n    cond_label_3d REAL,'
+        extra_cols += '\n    cond_label_5d REAL,'
+        extra_cols += '\n    cond_label_10d REAL,'
+        extra_cols += '\n    cond_label_15d REAL,'
+        extra_cols += '\n    amv_var1 REAL,'
+        extra_cols += '\n    amv_macd REAL,'
+        extra_cols += '\n    amv_regime_days REAL,'
     return f"""
 CREATE TABLE IF NOT EXISTS {table_name} (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

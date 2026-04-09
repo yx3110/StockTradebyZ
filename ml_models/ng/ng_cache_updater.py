@@ -39,6 +39,8 @@ from ml_models.ng.ng_feature_calculator import (
     compute_moneyflow_features,
     compute_interaction_features,
     compute_smoothing_features,
+    compute_extended_market_features,
+    compute_conditional_interaction_features,
 )
 from sklearn.linear_model import LinearRegression
 from fetch_data.label_utils import compute_labels_from_future_prices
@@ -964,6 +966,73 @@ class NGCacheUpdater:
                 northbound_std=nb_std,
             )
 
+            # 11.5 ng1.0.7: Load AMV data and compute extended market features
+            ext_market_feats = {}
+            amv_row = None
+            if version_ge(self.version, 'ng1.0.7'):
+                try:
+                    amv_row_data = conn.execute(
+                        'SELECT var1, amv_macd, amv_regime FROM market_amv WHERE trade_date <= ? ORDER BY trade_date DESC LIMIT 1',
+                        (date,)
+                    ).fetchone()
+                    if amv_row_data:
+                        amv_var1_val = _safe_float(amv_row_data['var1'])
+                        amv_macd_val = _safe_float(amv_row_data['amv_macd'])
+                        amv_regime_val = int(amv_row_data['amv_regime']) if amv_row_data['amv_regime'] is not None else -1
+
+                        # Compute regime_days: count consecutive days in current regime
+                        amv_history = conn.execute(
+                            'SELECT amv_regime FROM market_amv WHERE trade_date <= ? ORDER BY trade_date DESC LIMIT 120',
+                            (date,)
+                        ).fetchall()
+                        regime_days = 0
+                        if amv_history:
+                            current_regime = int(amv_history[0]['amv_regime'])
+                            for r in amv_history:
+                                if int(r['amv_regime']) == current_regime:
+                                    regime_days += 1
+                                else:
+                                    break
+
+                        # Compute breadth_history_5d for momentum
+                        breadth_history_rows = conn.execute(
+                            '''SELECT trade_date FROM daily_quotes
+                               JOIN securities s ON daily_quotes.security_id = s.id
+                               WHERE s.type = 'A股' AND trade_date <= ?
+                               GROUP BY trade_date ORDER BY trade_date DESC LIMIT 6''',
+                            (date,)
+                        ).fetchall()
+                        breadth_arr = np.array([])
+                        if len(breadth_history_rows) >= 2:
+                            breadth_dates = [r['trade_date'] for r in reversed(breadth_history_rows)]
+                            breadth_vals = []
+                            for bd in breadth_dates:
+                                rets_row = conn.execute(
+                                    '''SELECT AVG(CASE WHEN price_change_pct > 0 THEN 1.0 ELSE 0.0 END) as breadth
+                                       FROM daily_quotes dq
+                                       JOIN securities s ON dq.security_id = s.id
+                                       WHERE s.type = 'A股' AND dq.trade_date = ?''',
+                                    (bd,)
+                                ).fetchone()
+                                if rets_row and rets_row['breadth'] is not None:
+                                    breadth_vals.append(float(rets_row['breadth']))
+                            breadth_arr = np.array(breadth_vals) if breadth_vals else np.array([])
+
+                        ext_market_feats = compute_extended_market_features(
+                            benchmark_closes=benchmark_closes if len(benchmark_closes) > 0 else np.array([1.0]),
+                            all_stock_returns_1d=all_ret1d,
+                            total_market_amount=market_amounts if len(market_amounts) > 0 else np.array([1.0]),
+                            amv_var1=amv_var1_val,
+                            amv_macd=amv_macd_val,
+                            amv_regime_days=regime_days,
+                            market_breadth_history_5d=breadth_arr,
+                        )
+                        amv_row = {'var1': amv_var1_val, 'macd': amv_macd_val, 'regime_days': regime_days}
+                    else:
+                        print(f"  [{date}] WARN: No AMV data found, ext_market_feats empty")
+                except Exception as e:
+                    print(f"  [{date}] WARN: AMV loading failed: {e}")
+
             # 12. Compute industry aggregates
             industry_agg = self._compute_industry_aggregates(
                 universe, price_data, returns_1d, returns_5d, returns_20d
@@ -1003,6 +1072,43 @@ class NGCacheUpdater:
             if version_ge(self.version, 'ng1.0.4'):
                 pp = getattr(self, 'penalty_power', 1.5)
                 labels_all = self._convert_labels_to_risk_adjusted(labels_all, penalty_power=pp)
+
+            # ng1.0.7: Compute conditional labels
+            # Bear market: rank_pct (relative positioning), Bull: industry excess
+            # Smooth blend based on market_return_20d
+            if version_ge(self.version, 'ng1.0.7'):
+                mkt_ret_20d = market_feats.get('market_return_20d', 0.0)
+                if np.isnan(mkt_ret_20d):
+                    mkt_ret_20d = 0.0
+                # bear_weight: 0 when mkt_ret >= 0, 1 when mkt_ret <= -10%
+                bear_weight = max(0.0, min(1.0, -mkt_ret_20d / 0.10))
+
+                for h in [3, 5, 10, 15]:
+                    excess_key = f'label_{h}d'
+                    raw_key = f'label_raw_{h}d'
+
+                    # Collect all excess labels for this horizon to compute rank
+                    all_excess = {}
+                    for sid, lbl in labels_all.items():
+                        val = lbl.get(excess_key)
+                        if val is not None and not np.isnan(val):
+                            all_excess[sid] = val
+
+                    if all_excess:
+                        # Compute rank percentile (0..1, higher = better)
+                        sorted_sids = sorted(all_excess.keys(), key=lambda s: all_excess[s])
+                        n_total = len(sorted_sids)
+                        rank_map = {sid: i / (n_total - 1) if n_total > 1 else 0.5
+                                   for i, sid in enumerate(sorted_sids)}
+
+                        for sid in labels_all:
+                            excess_val = labels_all[sid].get(excess_key)
+                            rank_val = rank_map.get(sid)
+                            if excess_val is not None and rank_val is not None:
+                                cond_val = (1.0 - bear_weight) * excess_val + bear_weight * (rank_val - 0.5) * 0.1
+                                labels_all[sid][f'cond_label_{h}d'] = cond_val
+                            else:
+                                labels_all[sid][f'cond_label_{h}d'] = None
 
             # ---------------------------------------------------------------
             # v1.0.3: Pre-compute per-industry peer arrays for CS rank factors
@@ -1316,6 +1422,22 @@ class NGCacheUpdater:
                         print(f"    WARN: interaction_features failed for {data['code']}: {e}")
                         ix_feats = {}
 
+                # --- ng1.0.7: Conditional interaction features (7) ---
+                cond_ix_feats = {}
+                if version_ge(self.version, 'ng1.0.7') and ext_market_feats:
+                    try:
+                        cond_ix_feats = compute_conditional_interaction_features(
+                            stock_feats=data['stock_feats'],
+                            fund_feats=data.get('fund_feats', {}),
+                            market_feats=market_feats,
+                            ext_market_feats=ext_market_feats,
+                            industry_feats=data['ind_feats'],
+                            residual_feats=res_feats,
+                        )
+                    except Exception as e:
+                        print(f"    WARN: conditional_ix failed for {data['code']}: {e}")
+                        cond_ix_feats = {}
+
                 # --- Merge all features ---
                 all_feats = {}
                 all_feats.update(data['stock_feats'])
@@ -1328,6 +1450,9 @@ class NGCacheUpdater:
                     all_feats.update(ix_feats)
                 if version_ge(self.version, 'ng1.0.4'):
                     all_feats.update(data.get('smooth_feats', {}))
+                if version_ge(self.version, 'ng1.0.7'):
+                    all_feats.update(ext_market_feats)
+                    all_feats.update(cond_ix_feats)
 
                 # Clean NaN/Inf
                 clean_feats = {}
@@ -1393,6 +1518,20 @@ class NGCacheUpdater:
                 else:
                     ng104_cols = ()
 
+                # ng1.0.7: add conditional label + AMV columns
+                if version_ge(self.version, 'ng1.0.7'):
+                    ng107_cols = (
+                        _to_sql(stock_labels.get('cond_label_3d')),
+                        _to_sql(stock_labels.get('cond_label_5d')),
+                        _to_sql(stock_labels.get('cond_label_10d')),
+                        _to_sql(stock_labels.get('cond_label_15d')),
+                        _to_sql(amv_row.get('var1') if amv_row else None),
+                        _to_sql(amv_row.get('macd') if amv_row else None),
+                        _to_sql(amv_row.get('regime_days', 0) / 60.0 if amv_row else None),
+                    )
+                else:
+                    ng107_cols = ()
+
                 market_cols = (
                     _to_sql(market_feats.get('market_return_5d')),
                     _to_sql(market_feats.get('market_return_20d')),
@@ -1406,12 +1545,30 @@ class NGCacheUpdater:
                     _to_sql(market_feats.get('market_momentum_diff')),
                 )
 
-                insert_rows.append(base_row + raw_cols + ng104_cols + market_cols)
+                insert_rows.append(base_row + raw_cols + ng104_cols + ng107_cols + market_cols)
 
             # Write to database
             if insert_rows:
                 conn.row_factory = None
-                if version_ge(self.version, 'ng1.0.4'):
+                if version_ge(self.version, 'ng1.0.7'):
+                    # 37 columns: ng1.0.4 (30) + 7 ng1.0.7 columns (cond_label + amv)
+                    conn.executemany(
+                        f'''INSERT OR REPLACE INTO {self.table_name}
+                           (code, trade_date, features_json,
+                            label_3d, label_5d, label_10d, label_15d, downside_10d,
+                            label_raw_3d, label_raw_5d, label_raw_10d, label_raw_15d,
+                            maxdd_3d, maxdd_5d, maxdd_10d, maxdd_15d,
+                            ra_label_3d, ra_label_5d, ra_label_10d, ra_label_15d,
+                            cond_label_3d, cond_label_5d, cond_label_10d, cond_label_15d,
+                            amv_var1, amv_macd, amv_regime_days,
+                            market_return_5d, market_return_20d, market_volatility_20d,
+                            market_breadth, market_new_high_ratio, northbound_flow_5d,
+                            market_volume_ratio, market_drawdown, vix_proxy,
+                            market_momentum_diff)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                        insert_rows
+                    )
+                elif version_ge(self.version, 'ng1.0.4'):
                     # 30 columns: ng1.0.3 columns + 8 ng1.0.4 columns (maxdd + ra_label)
                     conn.executemany(
                         f'''INSERT OR REPLACE INTO {self.table_name}

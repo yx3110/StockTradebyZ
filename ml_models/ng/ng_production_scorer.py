@@ -31,6 +31,11 @@ from .ng_trainer import (
     MARKET_FEATURE_NAMES,
     ALL_FEATURE_NAMES,
     NG_VERSION,
+    NG107_VERSION,
+    NG107_MARKET_FEATURES,
+    NG107_ALL_FEATURES,
+    CONDITIONAL_IX_FEATURE_NAMES,
+    EXTENDED_MARKET_FEATURE_NAMES,
     MONEYFLOW_FEATURE_NAMES,
     INTERACTION_FEATURE_NAMES,
 )
@@ -76,6 +81,7 @@ class NGProductionScorer:
         self.cache_table = get_table_name(NG_VERSION)  # default, updated by model version
         self.downside_model = None
         self.lambda_risk = 0.5
+        self.risk_filter_quantile = 0.20  # ng1.0.7: Pareto filter threshold
         self._ensemble_scorers = None  # NEW: multi-seed ensemble list
 
         if version and version_ge(version, 'ng1.0.4') and model_path is None:
@@ -167,6 +173,8 @@ class NGProductionScorer:
         # v1.0.2: downside model
         self.downside_model = model_data.get('downside_model')
         self.lambda_risk = model_data.get('lambda_risk', 0.5)
+        # ng1.0.7: Pareto risk filter
+        self.risk_filter_quantile = model_data.get('risk_filter_quantile', 0.20)
         n_targets = len(self.models)
         n_features = len(self.feature_names)
         scoring_mode = "continuous" if self.global_quantiles is not None else "cross-sectional"
@@ -232,12 +240,17 @@ class NGProductionScorer:
 
         conn = sqlite3.connect(self.db_path, timeout=30)
         try:
+            # ng1.0.7: also load AMV columns from table
+            extra_select = ""
+            if any(c in self.macro_feature_cols for c in EXTENDED_MARKET_FEATURE_NAMES):
+                extra_select = ", amv_var1, amv_macd, amv_regime_days"
+
             query = f"""
             SELECT code, features_json,
                    market_return_5d, market_return_20d, market_volatility_20d,
                    market_breadth, market_new_high_ratio, northbound_flow_5d,
                    market_volume_ratio, market_drawdown, vix_proxy,
-                   market_momentum_diff
+                   market_momentum_diff{extra_select}
             FROM {self.cache_table}
             WHERE trade_date = ?
             """
@@ -482,6 +495,18 @@ class NGProductionScorer:
             except Exception as e:
                 logger.warning("Downside prediction failed: %s", e)
 
+        # ng1.0.7: Pareto risk filter — penalize stocks in worst N% by predicted maxdd
+        risk_filtered = np.zeros(len(codes), dtype=bool)
+        if self.risk_filter_quantile > 0 and np.any(pred_downside > 0):
+            threshold = np.quantile(pred_downside, 1.0 - self.risk_filter_quantile)
+            risk_filtered = pred_downside > threshold
+            # Hard penalty: set filtered stocks to minimum score
+            combined_pred[risk_filtered] = combined_pred.min() - 1.0
+            n_filtered = np.sum(risk_filtered)
+            if n_filtered > 0:
+                logger.info(f"  Pareto filter: {n_filtered} stocks excluded "
+                           f"(pred_maxdd > {threshold:.4f}, q={self.risk_filter_quantile})")
+
         scores = self._to_global_score(combined_pred)
 
         all_results = {}
@@ -495,6 +520,7 @@ class NGProductionScorer:
                 'rank_score': float(combined_pred[i]),
                 'score': float(scores[i]),
                 'recommendation': self._get_recommendation(float(scores[i])),
+                'risk_filtered': bool(risk_filtered[i]),
             }
 
         # Build mapping: strip suffix (.SH/.SZ/.BJ) for matching against cache codes

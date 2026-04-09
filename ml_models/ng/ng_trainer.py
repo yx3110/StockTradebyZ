@@ -105,10 +105,29 @@ INTERACTION_FEATURE_NAMES: List[str] = [
     'ix_north_cap',
 ]
 
+# ng1.0.7: Extended market state features (8)
+EXTENDED_MARKET_FEATURE_NAMES: List[str] = [
+    'amv_var1', 'amv_macd', 'amv_regime_days',
+    'market_ret_60d', 'market_vol_ratio', 'breadth_momentum_5d',
+    'market_skewness_20d', 'liquidity_stress',
+]
+
+# ng1.0.7: Conditional interaction features (7, IC-screened)
+CONDITIONAL_IX_FEATURE_NAMES: List[str] = [
+    'cx_beta_mkt_vol', 'cx_momentum_trend', 'cx_ind_mkt_dir',
+    'cx_vol_stress', 'cx_drawdown_regime', 'cx_value_bear',
+    'cx_quality_stress',
+]
+
+# ng1.0.7 = ng1.0.3 base (56 stock) + 18 market (10 base + 8 extended) + 7 cond_ix = 81 total
+NG107_MARKET_FEATURES: List[str] = MARKET_FEATURE_NAMES + EXTENDED_MARKET_FEATURE_NAMES
+NG107_ALL_FEATURES: List[str] = STOCK_FEATURE_NAMES + NG107_MARKET_FEATURES + CONDITIONAL_IX_FEATURE_NAMES
+
 # v1.0.0 constants (for backward compatibility reference)
 NG_V1_VERSION = 'ng1.0.0'
 NG_VERSION = 'ng1.0.3'
 NG104_VERSION = 'ng1.0.4'
+NG107_VERSION = 'ng1.0.7'
 
 
 # ---------------------------------------------------------------------------
@@ -135,14 +154,21 @@ class NGTrainer(V485Trainer):
         self._turbo_skip_etf = True
         self.cache_table = get_table_name(self._ng_version)
         # Select feature set by version
-        if version_ge(self._ng_version, 'ng1.0.4'):
+        if version_ge(self._ng_version, 'ng1.0.7'):
+            self.feature_names = list(NG107_ALL_FEATURES)
+            self.stock_feature_cols = list(STOCK_FEATURE_NAMES)
+            self.macro_feature_cols = list(NG107_MARKET_FEATURES)
+            self._cond_ix_cols = list(CONDITIONAL_IX_FEATURE_NAMES)
+        elif version_ge(self._ng_version, 'ng1.0.4'):
             self.feature_names = list(NG104_ALL_FEATURES)
             self.stock_feature_cols = list(NG104_STOCK_FEATURES)
+            self.macro_feature_cols = list(MARKET_FEATURE_NAMES)
+            self._cond_ix_cols = []
         else:
-            # Initialize feature names (may be extended in load_data based on CLI switches)
             self.feature_names = list(ALL_FEATURE_NAMES)
             self.stock_feature_cols = list(STOCK_FEATURE_NAMES)
-        self.macro_feature_cols = list(MARKET_FEATURE_NAMES)
+            self.macro_feature_cols = list(MARKET_FEATURE_NAMES)
+            self._cond_ix_cols = []
         # Stub market_calculator for V475 model_data serialization
         class _StubMC:
             class market_features:
@@ -176,6 +202,13 @@ class NGTrainer(V485Trainer):
                 features += selected
             else:
                 features += INTERACTION_FEATURE_NAMES
+        # ng1.0.7: conditional interaction features (IC-screened in prepare_features)
+        if version_ge(self._ng_version, 'ng1.0.7'):
+            selected_cx = getattr(self, '_selected_cx', None)
+            if selected_cx:
+                features += selected_cx
+            else:
+                features += CONDITIONAL_IX_FEATURE_NAMES
         return features
 
     # ------------------------------------------------------------------
@@ -380,12 +413,24 @@ class NGTrainer(V485Trainer):
     # ------------------------------------------------------------------
 
     def _compute_regime_weights(self, df):
-        """Compute sample weights: bull(+5%)=0.8, sideways=1.0, bear(-5%)=1.2"""
+        """Compute sample weights based on market regime.
+        ng1.0.7: enhanced weights (bull=0.7, sideways=1.0, bear=1.5, crisis=2.0)
+        Earlier versions: bull=0.8, sideways=1.0, bear=1.2
+        """
         mkt_ret = df['market_return_20d'].values if 'market_return_20d' in df.columns else np.zeros(len(df))
         weights = np.ones(len(df))
-        weights[mkt_ret > 0.05] = 0.8
-        weights[mkt_ret < -0.05] = 1.2
-        logger.info(f"  Regime weights: bull={np.sum(weights == 0.8):,}, sideways={np.sum(weights == 1.0):,}, bear={np.sum(weights == 1.2):,}")
+        if version_ge(self._ng_version, 'ng1.0.7'):
+            weights[mkt_ret > 0.05] = 0.7
+            weights[(mkt_ret < -0.05) & (mkt_ret >= -0.10)] = 1.5
+            weights[mkt_ret < -0.10] = 2.0
+            logger.info(f"  ng1.0.7 regime weights: bull={np.sum(weights == 0.7):,}, "
+                        f"sideways={np.sum(weights == 1.0):,}, "
+                        f"bear={np.sum(weights == 1.5):,}, "
+                        f"crisis={np.sum(weights == 2.0):,}")
+        else:
+            weights[mkt_ret > 0.05] = 0.8
+            weights[mkt_ret < -0.05] = 1.2
+            logger.info(f"  Regime weights: bull={np.sum(weights == 0.8):,}, sideways={np.sum(weights == 1.0):,}, bear={np.sum(weights == 1.2):,}")
         return weights
 
     def compute_sample_weights(self, df, y):
@@ -423,6 +468,9 @@ class NGTrainer(V485Trainer):
         extra_select = ""
         if version_ge(self._ng_version, 'ng1.0.4'):
             extra_select = ", ra_label_3d, ra_label_5d, ra_label_10d, ra_label_15d"
+        if version_ge(self._ng_version, 'ng1.0.7'):
+            extra_select += ", cond_label_3d, cond_label_5d, cond_label_10d, cond_label_15d"
+            extra_select += ", amv_var1, amv_macd, amv_regime_days"
 
         query = f"""
         SELECT code, trade_date, features_json,
@@ -475,7 +523,11 @@ class NGTrainer(V485Trainer):
             if col in df_stock_features.columns:
                 result[col] = df_stock_features[col].values
 
-        for col in MARKET_FEATURE_NAMES:
+        market_cols_to_load = list(MARKET_FEATURE_NAMES)
+        if version_ge(self._ng_version, 'ng1.0.7'):
+            market_cols_to_load += EXTENDED_MARKET_FEATURE_NAMES
+
+        for col in market_cols_to_load:
             if col in df_raw.columns:
                 result[col] = df_raw[col].values
             else:
@@ -488,7 +540,7 @@ class NGTrainer(V485Trainer):
         result['label_15d'] = pd.to_numeric(df_raw.get('label_15d'), errors='coerce').values
 
         # ng1.0.4: Override labels with risk-adjusted (RA) versions where available
-        if version_ge(self._ng_version, 'ng1.0.4'):
+        if version_ge(self._ng_version, 'ng1.0.4') and not version_ge(self._ng_version, 'ng1.0.7'):
             for h in ['3d', '5d', '10d', '15d']:
                 ra_col = f'ra_label_{h}'
                 if ra_col in df_raw.columns:
@@ -498,6 +550,17 @@ class NGTrainer(V485Trainer):
                         result.loc[mask.values, f'label_{h}'] = ra_vals[mask].values
                         logger.info(f"  Using risk-adjusted label_{h}: {mask.sum():,} values")
 
+        # ng1.0.7: Use conditional labels (bear: rank-based, bull: industry excess)
+        if version_ge(self._ng_version, 'ng1.0.7'):
+            for h in ['3d', '5d', '10d', '15d']:
+                cond_col = f'cond_label_{h}'
+                if cond_col in df_raw.columns:
+                    cond_vals = pd.to_numeric(df_raw[cond_col], errors='coerce')
+                    mask = cond_vals.notna()
+                    if mask.any():
+                        result.loc[mask.values, f'label_{h}'] = cond_vals[mask].values
+                        logger.info(f"  Using conditional label_{h}: {mask.sum():,} values")
+
         # downside_10d (v1.0.2): backward compat with ng101 cache
         if 'downside_10d' in df_raw.columns:
             result['downside_10d'] = pd.to_numeric(df_raw['downside_10d'], errors='coerce').fillna(0.0).values
@@ -506,7 +569,7 @@ class NGTrainer(V485Trainer):
 
         # Market features: ffill
         result = result.sort_values('trade_date')
-        for col in MARKET_FEATURE_NAMES:
+        for col in market_cols_to_load:
             result[col] = pd.to_numeric(result[col], errors='coerce')
             result[col] = result[col].ffill()
         result = result.dropna(subset=MARKET_FEATURE_NAMES)
@@ -537,15 +600,21 @@ class NGTrainer(V485Trainer):
     # ------------------------------------------------------------------
 
     def prepare_features(self, df: pd.DataFrame) -> tuple:
-        """Prepare NG v1.0.3 feature matrix (dynamic: base + moneyflow + interaction)."""
+        """Prepare NG feature matrix (dynamic: base + moneyflow + interaction + conditional_ix)."""
         active_stock_features = self._get_active_stock_features()
 
+        # Determine market feature columns
+        if version_ge(self._ng_version, 'ng1.0.7'):
+            active_market_cols = [c for c in NG107_MARKET_FEATURES if c in df.columns]
+        else:
+            active_market_cols = [c for c in MARKET_FEATURE_NAMES if c in df.columns]
+
         logger.info(f"NG {self._ng_version} prepare_features: "
-                     f"{len(active_stock_features)} stock + {len(MARKET_FEATURE_NAMES)} market "
-                     f"= {len(active_stock_features) + len(MARKET_FEATURE_NAMES)} total")
+                     f"{len(active_stock_features)} stock + {len(active_market_cols)} market "
+                     f"= {len(active_stock_features) + len(active_market_cols)} total")
 
         self.stock_feature_cols = [c for c in active_stock_features if c in df.columns]
-        self.macro_feature_cols = [c for c in MARKET_FEATURE_NAMES if c in df.columns]
+        self.macro_feature_cols = active_market_cols
         self.feature_names = self.stock_feature_cols + self.macro_feature_cols
 
         logger.info(f"  Stock features: {len(self.stock_feature_cols)}, "
@@ -629,10 +698,18 @@ class NGTrainer(V485Trainer):
         logger.info("=" * 60)
         logger.info(f"  Base: V4.8.5 machinery (6-model ensemble, LambdaRank, Bear Specialist)")
         logger.info(f"  Data: {self.cache_table}")
+        # ng1.0.7: auto-enable regime weighting
+        if version_ge(self._ng_version, 'ng1.0.7'):
+            self._regime_weight = True
+
         logger.info(f"  Switches: moneyflow={getattr(self, '_enable_moneyflow', False)}, "
                      f"interaction={getattr(self, '_enable_interaction', False)}, "
                      f"regime_weight={getattr(self, '_regime_weight', False)}")
-        logger.info(f"  Labels: INDUSTRY EXCESS returns (stock - industry median)")
+        if version_ge(self._ng_version, 'ng1.0.7'):
+            logger.info(f"  Labels: CONDITIONAL (bear: rank-blend, bull: industry excess)")
+            logger.info(f"  Features: {len(NG107_ALL_FEATURES)} total (56 stock + 18 market + 7 cond_ix)")
+        else:
+            logger.info(f"  Labels: INDUSTRY EXCESS returns (stock - industry median)")
         logger.info(f"  Initial weights: {', '.join(f'{k}={v:.2f}' for k, v in self.target_weights.items())}")
 
         # IC screening for interaction features (before WF training)
@@ -658,6 +735,30 @@ class NGTrainer(V485Trainer):
                 else:
                     logger.info("  Interaction screening: none passed IC threshold, removing all")
                 del df_screen  # free memory
+
+        # ng1.0.7: IC screening for conditional interaction features
+        self._selected_cx = []
+        if version_ge(self._ng_version, 'ng1.0.7'):
+            logger.info("Screening conditional interaction features by IC...")
+            df_cx_screen = self.load_data(start_date=start_date, end_date=end_date)
+            if not df_cx_screen.empty:
+                _tmp_stock = list(STOCK_FEATURE_NAMES) + CONDITIONAL_IX_FEATURE_NAMES
+                self.stock_feature_cols = [c for c in _tmp_stock if c in df_cx_screen.columns]
+                self.macro_feature_cols = [c for c in NG107_MARKET_FEATURES if c in df_cx_screen.columns]
+                self.feature_names = self.stock_feature_cols + self.macro_feature_cols
+                self._selected_cx = self._select_interaction_features(
+                    df_cx_screen,
+                    label_col='label_10d',
+                    min_ic=0.015,  # slightly lower threshold for conditional features
+                    max_corr=0.7,
+                )
+                if self._selected_cx:
+                    logger.info(f"  Conditional IX screening: {len(self._selected_cx)} selected "
+                                f"from {len(CONDITIONAL_IX_FEATURE_NAMES)}")
+                else:
+                    logger.info("  Conditional IX screening: none passed, using all as fallback")
+                    self._selected_cx = list(CONDITIONAL_IX_FEATURE_NAMES)
+                del df_cx_screen
 
         model_data, history = super().walk_forward_train(
             start_date=start_date, end_date=end_date,
@@ -740,6 +841,7 @@ class NGTrainer(V485Trainer):
             # Update model metadata
             model_data['version'] = self._ng_version
             model_data['lambda_risk'] = getattr(self, '_lambda_risk', 0.5)
+            model_data['risk_filter_quantile'] = getattr(self, '_risk_filter_quantile', 0.20)
             model_data['ng_innovations'] = {
                 'base': 'V4.8.5 ensemble machinery',
                 'version': self._ng_version,
@@ -859,6 +961,9 @@ if __name__ == '__main__':
                         help='Risk-adjusted label penalty power (ng1.0.4)')
     parser.add_argument('--seeds', type=str, default=None,
                         help='Comma-separated seeds for multi-seed training (e.g., 42,123,456,789,2024)')
+    # ng1.0.7 new arguments
+    parser.add_argument('--risk-filter-quantile', type=float, default=0.20,
+                        help='Pareto risk filter: exclude worst N%% stocks by predicted maxdd (ng1.0.7, default: 0.20)')
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -874,6 +979,7 @@ if __name__ == '__main__':
         trainer._enable_interaction = args.enable_interaction
         trainer._regime_weight = args.regime_weight
         trainer._lambda_risk = args.lambda_risk
+        trainer._risk_filter_quantile = args.risk_filter_quantile
         if args.fast_check:
             trainer._fast_check = True
             trainer._fast_check_max_windows = 2

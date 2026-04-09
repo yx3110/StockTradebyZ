@@ -959,3 +959,148 @@ def compute_interaction_features(
     )
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# Function 9: Extended Market State Features (8 factors, NEW in ng1.0.7)
+# ---------------------------------------------------------------------------
+
+def compute_extended_market_features(
+    benchmark_closes: np.ndarray,
+    all_stock_returns_1d: np.ndarray,
+    total_market_amount: np.ndarray,
+    amv_var1: float,
+    amv_macd: float,
+    amv_regime_days: int,
+    market_breadth_history_5d: np.ndarray,
+) -> Dict[str, float]:
+    """
+    Compute 8 extended market-state features for ng1.0.7.
+    These give the model continuous market regime information.
+    """
+    result: Dict[str, float] = {}
+
+    # 1. amv_var1 — 0AMV activity index (continuous)
+    result['amv_var1'] = float(amv_var1) if not np.isnan(amv_var1) else 0.0
+
+    # 2. amv_macd — 0AMV MACD value (momentum of activity)
+    result['amv_macd'] = float(amv_macd) if not np.isnan(amv_macd) else 0.0
+
+    # 3. amv_regime_days — days in current regime, normalized by 60
+    result['amv_regime_days'] = float(amv_regime_days) / 60.0
+
+    # 4. market_ret_60d — 60-day benchmark return
+    bm = benchmark_closes.astype(float) if benchmark_closes is not None else np.array([])
+    if len(bm) >= 61:
+        result['market_ret_60d'] = bm[-1] / (bm[-61] + 1e-8) - 1.0
+    else:
+        result['market_ret_60d'] = np.nan
+
+    # 5. market_vol_ratio — short-term vs long-term market volatility
+    if len(bm) >= 61:
+        log_rets = np.diff(np.log(bm[-61:] + 1e-8))
+        vol_5d = float(np.std(log_rets[-5:])) if len(log_rets) >= 5 else np.nan
+        vol_60d = float(np.std(log_rets))
+        result['market_vol_ratio'] = vol_5d / (vol_60d + 1e-8) if not np.isnan(vol_5d) else np.nan
+    else:
+        result['market_vol_ratio'] = np.nan
+
+    # 6. breadth_momentum_5d — 5-day change in market breadth
+    if market_breadth_history_5d is not None and len(market_breadth_history_5d) >= 2:
+        arr = market_breadth_history_5d.astype(float)
+        result['breadth_momentum_5d'] = arr[-1] - arr[0]
+    else:
+        result['breadth_momentum_5d'] = np.nan
+
+    # 7. market_skewness_20d — skewness of 20d market returns
+    if len(bm) >= 21:
+        log_rets_20 = np.diff(np.log(bm[-21:] + 1e-8))
+        mean_r = log_rets_20.mean()
+        std_r = log_rets_20.std()
+        if std_r > 1e-8:
+            result['market_skewness_20d'] = float(np.mean(((log_rets_20 - mean_r) / std_r) ** 3))
+        else:
+            result['market_skewness_20d'] = 0.0
+    else:
+        result['market_skewness_20d'] = np.nan
+
+    # 8. liquidity_stress — current market amount / 60d average
+    amount = total_market_amount.astype(float) if total_market_amount is not None else np.array([])
+    if len(amount) >= 60:
+        result['liquidity_stress'] = float(amount[-1]) / (float(np.mean(amount[-60:])) + 1e-8)
+    elif len(amount) >= 20:
+        result['liquidity_stress'] = float(amount[-1]) / (float(np.mean(amount[-20:])) + 1e-8)
+    else:
+        result['liquidity_stress'] = np.nan
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Function 10: Conditional Interaction Features (7 factors, NEW in ng1.0.7)
+# ---------------------------------------------------------------------------
+
+def compute_conditional_interaction_features(
+    stock_feats: Dict[str, float],
+    fund_feats: Dict[str, float],
+    market_feats: Dict[str, float],
+    ext_market_feats: Dict[str, float],
+    industry_feats: Dict[str, float],
+    residual_feats: Dict[str, float],
+) -> Dict[str, float]:
+    """
+    Compute 7 stock×market conditional interaction features for ng1.0.7.
+    These let GBDT directly learn regime-conditional stock preferences.
+    """
+    result: Dict[str, float] = {}
+
+    # 1. cx_beta_mkt_vol = idiosyncratic_volatility × market_volatility_20d
+    result['cx_beta_mkt_vol'] = _safe_mul(
+        residual_feats.get('idiosyncratic_volatility'),
+        market_feats.get('market_volatility_20d'),
+    )
+
+    # 2. cx_momentum_trend = cs_rank_return_5d × market_return_20d
+    result['cx_momentum_trend'] = _safe_mul(
+        stock_feats.get('cs_rank_return_5d',
+                        stock_feats.get('pullback_to_ma10', np.nan)),
+        market_feats.get('market_return_20d'),
+    )
+
+    # 3. cx_ind_mkt_dir = industry_relative_strength × sign(market_return_20d)
+    mkt_ret_20d = market_feats.get('market_return_20d', 0.0)
+    ind_rs = industry_feats.get('industry_relative_strength', np.nan)
+    if not np.isnan(ind_rs) and not np.isnan(mkt_ret_20d):
+        result['cx_ind_mkt_dir'] = ind_rs * np.sign(mkt_ret_20d)
+    else:
+        result['cx_ind_mkt_dir'] = np.nan
+
+    # 4. cx_vol_stress = volume_ratio_5d × liquidity_stress
+    result['cx_vol_stress'] = _safe_mul(
+        stock_feats.get('volume_ratio_5d'),
+        ext_market_feats.get('liquidity_stress'),
+    )
+
+    # 5. cx_drawdown_regime = current_drawdown × amv_regime_days
+    #    Use pullback_to_ma20 as drawdown proxy (always available)
+    result['cx_drawdown_regime'] = _safe_mul(
+        stock_feats.get('pullback_to_ma20',
+                        stock_feats.get('current_drawdown', np.nan)),
+        ext_market_feats.get('amv_regime_days'),
+    )
+
+    # 6. cx_value_bear = pe_percentile_60d × (1 - market_breadth)
+    pe_pct = fund_feats.get('pe_percentile_60d', np.nan)
+    mkt_breadth = market_feats.get('market_breadth', np.nan)
+    if not np.isnan(pe_pct) and not np.isnan(mkt_breadth):
+        result['cx_value_bear'] = pe_pct * (1.0 - mkt_breadth)
+    else:
+        result['cx_value_bear'] = np.nan
+
+    # 7. cx_quality_stress = roe_ttm × market_vol_ratio
+    result['cx_quality_stress'] = _safe_mul(
+        fund_feats.get('roe_ttm'),
+        ext_market_feats.get('market_vol_ratio'),
+    )
+
+    return result
