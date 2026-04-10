@@ -1331,69 +1331,76 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
 
         # NG1.0.8 低换手组合: 持仓缓冲+分批调仓+最小持有+成本感知
         if ng108_active:
-            # Rule 4: 成本感知排名 — 对非持仓股扣减成本惩罚后重排
-            if cost_penalty > 0:
-                current_codes = set(ng108_portfolio.keys())
-                adj_stocks = []
-                for s in stocks:
-                    s_copy = dict(s)
-                    if s['code'] not in current_codes:
-                        s_copy['rank_score'] = s['rank_score'] - cost_penalty
-                    adj_stocks.append(s_copy)
-                adj_stocks.sort(key=lambda x: x['rank_score'], reverse=True)
-                stocks_for_ng108 = adj_stocks
-            else:
-                stocks_for_ng108 = stocks
+            # Rule 2: 分批调仓 — 确定调仓间隔和当前活跃组
+            rebal_interval = max(1, focus_days // max(n_groups, 1))
+            is_rebal_day = (i % rebal_interval == 0)
+            active_group = (i // rebal_interval) % max(n_groups, 1) if n_groups > 1 else 0
 
-            # 构建排名查找表 (code → rank, 1-based)
-            rank_map = {s['code']: idx + 1 for idx, s in enumerate(stocks_for_ng108)}
+            if is_rebal_day:
+                # Rule 4: 成本感知排名 — 对非持仓股扣减成本惩罚后重排
+                if cost_penalty > 0:
+                    current_codes = set(ng108_portfolio.keys())
+                    adj_stocks = []
+                    for s in stocks:
+                        s_copy = dict(s)
+                        if s['code'] not in current_codes:
+                            s_copy['rank_score'] = s['rank_score'] - cost_penalty
+                        adj_stocks.append(s_copy)
+                    adj_stocks.sort(key=lambda x: x['rank_score'], reverse=True)
+                    stocks_for_ng108 = adj_stocks
+                else:
+                    stocks_for_ng108 = stocks
 
-            # Rule 2: 分批调仓 — 本轮应处理哪个组
-            rebal_interval = max(1, focus_days // n_groups)
-            active_group = (i // rebal_interval) % n_groups if n_groups > 1 else 0
+                # 构建排名查找表 (code → rank, 1-based)
+                rank_map = {s['code']: idx + 1 for idx, s in enumerate(stocks_for_ng108)}
 
-            # Rule 1+3: 卖出决策 — 仅评估本组持仓
-            codes_to_sell = []
-            for code, info in list(ng108_portfolio.items()):
-                if n_groups > 1 and info.get('group', 0) != active_group:
-                    continue  # 不是本轮组，跳过
-                rank = rank_map.get(code, len(stocks_for_ng108) + 1)
-                held_days = i - info.get('entry_idx', i)
-                sell_rank = sell_threshold if sell_threshold > 0 else effective_top_n + 1
-                if rank > sell_rank and held_days >= min_hold_days:
-                    codes_to_sell.append(code)
+                # Rule 1+3: 卖出决策 — 仅评估本组持仓
+                codes_to_sell = []
+                for code, info in list(ng108_portfolio.items()):
+                    if n_groups > 1 and info.get('group', 0) != active_group:
+                        continue  # 不是本轮组，跳过
+                    rank = rank_map.get(code, len(stocks_for_ng108) + 1)
+                    held_days = i - info.get('entry_idx', i)
+                    sell_rank = sell_threshold if sell_threshold > 0 else effective_top_n + 1
+                    if rank > sell_rank and held_days >= min_hold_days:
+                        codes_to_sell.append(code)
 
-            for code in codes_to_sell:
-                del ng108_portfolio[code]
+                for code in codes_to_sell:
+                    del ng108_portfolio[code]
 
-            # Rule 1: 买入决策 — 用排名前 buy_threshold 的股票补满 effective_top_n
-            buy_limit = buy_threshold if buy_threshold > 0 else effective_top_n
-            n_slots = effective_top_n - len(ng108_portfolio)
-            if n_slots > 0:
-                candidates = [s for s in stocks_for_ng108
-                              if s['code'] not in ng108_portfolio
-                              and rank_map.get(s['code'], 9999) <= buy_limit]
-                candidates = candidates[:n_slots]
-                for s in candidates:
-                    ng108_portfolio[s['code']] = {
-                        'entry_idx': i,
-                        'group': active_group,
-                    }
+                # Rule 1: 买入决策 — 用排名前 buy_threshold 的股票补满 effective_top_n
+                buy_limit = buy_threshold if buy_threshold > 0 else effective_top_n
+                n_slots = effective_top_n - len(ng108_portfolio)
+                if n_slots > 0:
+                    candidates = [s for s in stocks_for_ng108
+                                  if s['code'] not in ng108_portfolio
+                                  and rank_map.get(s['code'], 9999) <= buy_limit]
+                    candidates = candidates[:n_slots]
+                    for s in candidates:
+                        ng108_portfolio[s['code']] = {
+                            'entry_idx': i,
+                            'group': active_group,
+                        }
 
-            # 如果持仓仍不足 effective_top_n, 从剩余候选补入 (无 buy_limit 约束)
-            if len(ng108_portfolio) < effective_top_n:
-                remaining_slots = effective_top_n - len(ng108_portfolio)
-                fallback = [s for s in stocks_for_ng108
-                            if s['code'] not in ng108_portfolio][:remaining_slots]
-                for s in fallback:
-                    ng108_portfolio[s['code']] = {
-                        'entry_idx': i,
-                        'group': active_group,
-                    }
+                # 如果持仓仍不足 effective_top_n, 从剩余候选补入 (无 buy_limit 约束)
+                if len(ng108_portfolio) < effective_top_n:
+                    remaining_slots = effective_top_n - len(ng108_portfolio)
+                    fallback = [s for s in stocks_for_ng108
+                                if s['code'] not in ng108_portfolio][:remaining_slots]
+                    for s in fallback:
+                        ng108_portfolio[s['code']] = {
+                            'entry_idx': i,
+                            'group': active_group,
+                        }
 
-            # 构建 top_stocks 并同步 prev_top_codes
+            # 构建 top_stocks 并同步 prev_top_codes (每天都从当前portfolio构建)
             code_map = {s['code']: s for s in stocks}
             top_stocks = [code_map[c] for c in ng108_portfolio if c in code_map]
+            if not top_stocks:
+                # 首日或portfolio为空: fallback到标准选股
+                top_stocks = stocks[:effective_top_n]
+                for s in top_stocks:
+                    ng108_portfolio[s['code']] = {'entry_idx': i, 'group': i % max(n_groups, 1)}
             top_stocks.sort(key=lambda x: x['rank_score'], reverse=True)
             prev_top_codes = set(s['code'] for s in top_stocks)
 
