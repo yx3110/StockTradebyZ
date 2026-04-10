@@ -6,7 +6,7 @@
 
 ---
 
-2026-04-10 | eval   | Pre-2020全模型评估 — ng1.0.1=A+(Sharpe2.37)跨regime最强, ng1.0.7=C(年化-36%)条件标签过拟合, ng1.0.4=C(年化-9%)RA标签不泛化
+2026-04-10 | eval   | Pre-2020完整排行 — ng1.0.5=A+(Sharpe3.09)风控最强, ng1.0.1=A+(2.37)信号最强, ng1.0.6=C(0.18), ng1.0.7=C(-1.06)过拟合. 结论: ng1.0.1+1.0.5风控是最可靠组合
 2026-04-10 | model  | NG v1.0.7 发布 — 条件化标签+18市场特征+Pareto过滤, V5.2=76.8% A+, L1信号91.3%(全系列最高), ICIR=0.656(+29%), 熊市ICIR=0.205(解决反转)
 2026-04-10 | fix    | /simplify 3轮审查 — N+1查询(3.7x提速)+4个bug(IX筛选/scorer加载/train-serve skew/Pareto)+features_json列名冲突
 2026-04-09 | fix    | daily update缓存修复 — update_ng_feature_cache()同时更新ng1.0.3/1.0.1/1.0.4三版本缓存
