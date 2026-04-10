@@ -6,6 +6,7 @@
 - [系统架构总览](architecture/system-overview.md) — 整体架构、数据流、组件关系图
 - [数据管线](architecture/data-pipeline.md) — Tushare API → SQLite → Feature Cache 全链路
 - [ML 管线](architecture/ml-pipeline.md) — 特征工程 → 训练 → 推理 → 报告生成
+- [自动调仓系统](architecture/auto-rebalancing.md) — EastMoneyTrader联动、NG1.0.5风控、执行策略回测
 
 ## 模型演化
 - [模型世代总览](models/evolution.md) — V3.8 → V3.9 → V4.x → NG 系列演化路径与关键转折
