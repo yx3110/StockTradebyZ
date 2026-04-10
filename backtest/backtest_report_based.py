@@ -939,7 +939,12 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
                         ema_alpha=0.0,
                         min_market_cap=0.0,
                         stop_loss_pct=0.0,
-                        regime_gate_aggressive=False):
+                        regime_gate_aggressive=False,
+                        buy_threshold=0,
+                        sell_threshold=0,
+                        n_groups=1,
+                        min_hold_days=0,
+                        cost_penalty=0.0):
     """运行单个报告目录的回测（含北极星指标）
 
     Args:
@@ -1009,6 +1014,18 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
         print(f"  NG1.0.5 增强Regime门控: 20d<-5%→50%, 20d<-10%→20%, VIX>P90→60%")
     if ema_alpha > 0:
         print(f"  EMA预测平滑: alpha={ema_alpha} (pred_10d/15d时序平滑)")
+    ng108_active = buy_threshold > 0 or n_groups > 1 or min_hold_days > 0 or cost_penalty > 0
+    if ng108_active:
+        parts = []
+        if buy_threshold > 0:
+            parts.append(f"买入≤Top{buy_threshold}/卖出>Top{sell_threshold}")
+        if n_groups > 1:
+            parts.append(f"{n_groups}组分批调仓")
+        if min_hold_days > 0:
+            parts.append(f"最小持有{min_hold_days}天")
+        if cost_penalty > 0:
+            parts.append(f"新股成本惩罚{cost_penalty:.1%}")
+        print(f"  NG1.0.8 低换手: {' + '.join(parts)}")
 
     print(f"{'='*80}\n")
 
@@ -1142,6 +1159,9 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
             _future_returns_cache[_cache_key] = _batch_future_returns
             _next_trading_dates_cache[_cache_key] = _next_trading_date_map
         print(f"  批量预加载未来收益: {len(_batch_future_returns)}天, 耗时{_time.time()-_t0_batch:.1f}秒")
+
+    ng108_portfolio = {}  # {code: {'entry_idx': int, 'group': int}}
+    ng108_rebal_counter = 0
 
     daily_results = []
     all_picks = []
@@ -1308,6 +1328,74 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
                     # 重新按rank_score排序
                     top_stocks.sort(key=lambda x: x['rank_score'], reverse=True)
                     top_stocks = top_stocks[:top_n]
+
+        # NG1.0.8 低换手组合: 持仓缓冲+分批调仓+最小持有+成本感知
+        if ng108_active:
+            # Rule 4: 成本感知排名 — 对非持仓股扣减成本惩罚后重排
+            if cost_penalty > 0:
+                current_codes = set(ng108_portfolio.keys())
+                adj_stocks = []
+                for s in stocks:
+                    s_copy = dict(s)
+                    if s['code'] not in current_codes:
+                        s_copy['rank_score'] = s['rank_score'] - cost_penalty
+                    adj_stocks.append(s_copy)
+                adj_stocks.sort(key=lambda x: x['rank_score'], reverse=True)
+                stocks_for_ng108 = adj_stocks
+            else:
+                stocks_for_ng108 = stocks
+
+            # 构建排名查找表 (code → rank, 1-based)
+            rank_map = {s['code']: idx + 1 for idx, s in enumerate(stocks_for_ng108)}
+
+            # Rule 2: 分批调仓 — 本轮应处理哪个组
+            rebal_interval = max(1, focus_days // n_groups)
+            active_group = (i // rebal_interval) % n_groups if n_groups > 1 else 0
+
+            # Rule 1+3: 卖出决策 — 仅评估本组持仓
+            codes_to_sell = []
+            for code, info in list(ng108_portfolio.items()):
+                if n_groups > 1 and info.get('group', 0) != active_group:
+                    continue  # 不是本轮组，跳过
+                rank = rank_map.get(code, len(stocks_for_ng108) + 1)
+                held_days = i - info.get('entry_idx', i)
+                sell_rank = sell_threshold if sell_threshold > 0 else effective_top_n + 1
+                if rank > sell_rank and held_days >= min_hold_days:
+                    codes_to_sell.append(code)
+
+            for code in codes_to_sell:
+                del ng108_portfolio[code]
+
+            # Rule 1: 买入决策 — 用排名前 buy_threshold 的股票补满 effective_top_n
+            buy_limit = buy_threshold if buy_threshold > 0 else effective_top_n
+            n_slots = effective_top_n - len(ng108_portfolio)
+            if n_slots > 0:
+                candidates = [s for s in stocks_for_ng108
+                              if s['code'] not in ng108_portfolio
+                              and rank_map.get(s['code'], 9999) <= buy_limit]
+                candidates = candidates[:n_slots]
+                for s in candidates:
+                    ng108_portfolio[s['code']] = {
+                        'entry_idx': i,
+                        'group': active_group,
+                    }
+
+            # 如果持仓仍不足 effective_top_n, 从剩余候选补入 (无 buy_limit 约束)
+            if len(ng108_portfolio) < effective_top_n:
+                remaining_slots = effective_top_n - len(ng108_portfolio)
+                fallback = [s for s in stocks_for_ng108
+                            if s['code'] not in ng108_portfolio][:remaining_slots]
+                for s in fallback:
+                    ng108_portfolio[s['code']] = {
+                        'entry_idx': i,
+                        'group': active_group,
+                    }
+
+            # 构建 top_stocks 并同步 prev_top_codes
+            code_map = {s['code']: s for s in stocks}
+            top_stocks = [code_map[c] for c in ng108_portfolio if c in code_map]
+            top_stocks.sort(key=lambda x: x['rank_score'], reverse=True)
+            prev_top_codes = set(s['code'] for s in top_stocks)
 
         # Module J: 评分门槛过滤 + 现金仓位
         actual_top_n = top_n

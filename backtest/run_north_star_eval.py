@@ -190,7 +190,9 @@ def run_backtest(report_dir, label, top_n=20, benchmark='000905.SH', focus_days=
                  rerank_dir=None, rerank_pool=100, cache=None,
                  ema_alpha=0.0, wf_summary_path=None,
                  min_market_cap=0.0,
-                 stop_loss_pct=0.0, regime_gate_aggressive=False):
+                 stop_loss_pct=0.0, regime_gate_aggressive=False,
+                 buy_threshold=0, sell_threshold=0, n_groups=1,
+                 min_hold_days=0, cost_penalty=0.0):
     """运行单个模型的回测
 
     Args:
@@ -240,6 +242,11 @@ def run_backtest(report_dir, label, top_n=20, benchmark='000905.SH', focus_days=
         min_market_cap=min_market_cap,
         stop_loss_pct=stop_loss_pct,
         regime_gate_aggressive=regime_gate_aggressive,
+        buy_threshold=buy_threshold,
+        sell_threshold=sell_threshold,
+        n_groups=n_groups,
+        min_hold_days=min_hold_days,
+        cost_penalty=cost_penalty,
     )
 
     # V5: 注入WF训练摘要 (WFER + OOS IC半衰期)
@@ -293,6 +300,8 @@ def run_comparison(top_n=20, benchmark='000905.SH', focus_days=10):
             reports, label, top_n=top_n,
             benchmark_code=benchmark, focus_days=focus_days,
             cache=shared_cache,
+            buy_threshold=0, sell_threshold=0, n_groups=1,
+            min_hold_days=0, cost_penalty=0.0,
         )
         if result:
             results.append(result)
@@ -390,6 +399,8 @@ def run_extended_backtest(report_dir, extended_dir, label, top_n=20,
         sector_diversify=sector_diversify,
         hold_buffer=hold_buffer,
         cache=cache,
+        buy_threshold=0, sell_threshold=0, n_groups=1,
+        min_hold_days=0, cost_penalty=0.0,
     )
     return result
 
@@ -413,7 +424,9 @@ def run_regime_analysis(report_dir, label, benchmark='000905.SH', focus_days=10,
 
     result = brb.run_single_backtest(
         reports, label, top_n=top_n,
-        benchmark_code=benchmark, focus_days=focus_days
+        benchmark_code=benchmark, focus_days=focus_days,
+        buy_threshold=0, sell_threshold=0, n_groups=1,
+        min_hold_days=0, cost_penalty=0.0,
     )
     if not result:
         return
@@ -623,6 +636,17 @@ def main():
                         help='NG1.0.5: 个股止损百分比 (0=关闭, 推荐0.08=8%%)')
     parser.add_argument('--regime-gate-aggressive', action='store_true',
                         help='NG1.0.5: 增强regime门控 (20d<-5%%→50%%, 20d<-10%%→20%%, VIX>P90→60%%)')
+    # NG1.0.8 低换手规则
+    parser.add_argument('--buy-threshold', type=int, default=0,
+                        help='NG1.0.8 持仓缓冲买入门槛 (0=关闭, 推荐8)')
+    parser.add_argument('--sell-threshold', type=int, default=0,
+                        help='NG1.0.8 持仓缓冲卖出门槛 (0=关闭, 推荐20)')
+    parser.add_argument('--n-groups', type=int, default=1,
+                        help='NG1.0.8 分批调仓组数 (1=不分批, 2=两组错开)')
+    parser.add_argument('--min-hold-days', type=int, default=0,
+                        help='NG1.0.8 最小持有天数 (0=关闭, 推荐5)')
+    parser.add_argument('--cost-penalty', type=float, default=0.0,
+                        help='NG1.0.8 新股成本惩罚 (0=关闭, 推荐0.003)')
     parser.add_argument('--score-version', type=str, default='both',
                         choices=['v2', 'v3', 'v4', 'v5', 'v51', 'v52', 'both', 'all'],
                         help='评分卡版本: v2/v3/v4/v5/v51/v52/both(v2+v4)/all(全部) (default: both)')
@@ -703,6 +727,11 @@ def main():
             min_market_cap=getattr(args, 'min_market_cap', 0.0),
             stop_loss_pct=args.stop_loss,
             regime_gate_aggressive=args.regime_gate_aggressive,
+            buy_threshold=args.buy_threshold,
+            sell_threshold=args.sell_threshold,
+            n_groups=args.n_groups,
+            min_hold_days=args.min_hold_days,
+            cost_penalty=args.cost_penalty,
         )
         if args.report_dir:
             result = run_backtest(args.report_dir, args.label, args.top_n, args.benchmark,
