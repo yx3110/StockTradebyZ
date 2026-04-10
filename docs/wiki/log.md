@@ -6,6 +6,7 @@
 
 ---
 
+2026-04-11 | model  | NG v1.0.9 持久特征 — 22个慢变特征(autocorr≥0.5), fast-check 10d ICIR=1.29(+39% vs ng1.0.1), 去噪反而提升信号
 2026-04-10 | model  | NG v1.0.8 低换手组合 — sell50+cost0.3%最优: 换手45x→36x(-20%), Sharpe=2.52(+6%), 净收益94.6%. 初版bug(每天调仓)已修复
 2026-04-10 | fix    | ng108 is_rebal_day缺失 — 每天执行ng108逻辑导致换手率未降(45→44x), 加i%rebal_interval检查后正常(→36x)
 2026-04-10 | fix    | Pre-2020评估bug — --start-date不过滤backtest日期, 之前"Pre-2020 A+"是全量数据. 真实Pre-2020: ng1.0.1=B(0.40)
