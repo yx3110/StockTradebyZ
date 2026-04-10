@@ -129,6 +129,22 @@ NG_VERSION = 'ng1.0.3'
 NG104_VERSION = 'ng1.0.4'
 NG107_VERSION = 'ng1.0.7'
 
+# ng1.0.9: Persistent features (10-day rank autocorrelation >= 0.5)
+# 22 features that produce stable cross-sectional rankings over 10 days
+PERSISTENT_STOCK_FEATURES: List[str] = [
+    # Fundamentals (autocorr 0.94-1.00)
+    'debt_to_assets', 'current_ratio', 'free_float_ratio', 'pb', 'dv_ratio',
+    'pe_ttm', 'net_profit_margin', 'revenue_growth', 'roe_ttm', 'roe_change', 'ocf_quality',
+    # Liquidity (0.80-0.97)
+    'log_adv_20d', 'log_amount_ma5', 'turnover_rate',
+    # Volatility (0.74-0.79)
+    'idiosyncratic_volatility', 'cs_rank_volatility',
+    # Valuation rank (0.60-0.96)
+    'cs_rank_pe', 'pe_percentile_60d', 'cs_rank_turnover', 'cs_rank_rsi',
+    # Industry structure (0.90-0.95)
+    'industry_hhi', 'residual_volume',
+]
+
 
 # ---------------------------------------------------------------------------
 # NGTrainer
@@ -193,6 +209,11 @@ class NGTrainer(V485Trainer):
 
     def _get_active_stock_features(self) -> List[str]:
         """Build active stock feature list based on CLI switches."""
+        # ng1.0.9: use only persistent features (22 slow-changing features)
+        if getattr(self, '_persistent_features', False):
+            features = [f for f in PERSISTENT_STOCK_FEATURES if f in self.stock_feature_cols
+                        or f in STOCK_FEATURE_NAMES]
+            return features
         features = list(self.stock_feature_cols)
         if getattr(self, '_enable_moneyflow', False):
             features += MONEYFLOW_FEATURE_NAMES
@@ -584,6 +605,20 @@ class NGTrainer(V485Trainer):
         for col in active_stock_features:
             if col in result.columns:
                 result[col] = pd.to_numeric(result[col], errors='coerce').fillna(0.0)
+
+        # ng1.0.9: Smooth labels — average return over entry window
+        smooth_window = getattr(self, '_smooth_label', 0)
+        if smooth_window > 1:
+            logger.info(f"  Smoothing labels over {smooth_window}-day entry window...")
+            result = result.sort_values(['code', 'trade_date']).reset_index(drop=True)
+            for h in ['3d', '5d', '10d', '15d']:
+                col = f'label_{h}'
+                if col in result.columns:
+                    # Rolling mean per stock over smooth_window consecutive dates
+                    result[col] = result.groupby('code')[col].transform(
+                        lambda x: x.rolling(smooth_window, min_periods=1).mean()
+                    )
+            logger.info(f"  Labels smoothed: window={smooth_window}")
 
         result = result.dropna(subset=['label_3d', 'label_5d', 'label_10d'])
         result = result.sort_values(['trade_date', 'code']).reset_index(drop=True)
@@ -987,6 +1022,11 @@ if __name__ == '__main__':
     # ng1.0.7 new arguments
     parser.add_argument('--risk-filter-quantile', type=float, default=0.20,
                         help='Pareto risk filter: exclude worst N%% stocks by predicted maxdd (ng1.0.7, default: 0.20)')
+    # ng1.0.9: signal persistence
+    parser.add_argument('--persistent-features', action='store_true',
+                        help='ng1.0.9: only use 22 persistent features (10d rank autocorr >= 0.5)')
+    parser.add_argument('--smooth-label', type=int, default=0,
+                        help='ng1.0.9: label smoothing window (0=off, 5=average over 5-day entry window)')
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -1003,6 +1043,8 @@ if __name__ == '__main__':
         trainer._regime_weight = args.regime_weight
         trainer._lambda_risk = args.lambda_risk
         trainer._risk_filter_quantile = args.risk_filter_quantile
+        trainer._persistent_features = args.persistent_features
+        trainer._smooth_label = args.smooth_label
         if args.fast_check:
             trainer._fast_check = True
             trainer._fast_check_max_windows = 2
