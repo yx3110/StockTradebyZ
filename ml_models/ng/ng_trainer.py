@@ -207,6 +207,35 @@ class NGTrainer(V485Trainer):
     def get_market_feature_names() -> List[str]:
         return list(MARKET_FEATURE_NAMES)
 
+    # 10-day rank autocorrelation lookup (pre-computed from ng1.0.1 data 2020-2025)
+    _FEATURE_AUTOCORR = {
+        'debt_to_assets': 0.998, 'current_ratio': 0.997, 'free_float_ratio': 0.995,
+        'pb': 0.994, 'dv_ratio': 0.991, 'pe_ttm': 0.988, 'net_profit_margin': 0.986,
+        'revenue_growth': 0.986, 'log_adv_20d': 0.970, 'roe_ttm': 0.970,
+        'roe_change': 0.965, 'cs_rank_pe': 0.955, 'industry_hhi': 0.951,
+        'ocf_quality': 0.940, 'log_amount_ma5': 0.913, 'residual_volume': 0.904,
+        'turnover_rate': 0.797, 'idiosyncratic_volatility': 0.790,
+        'cs_rank_turnover': 0.742, 'cs_rank_volatility': 0.735,
+        'cs_rank_rsi': 0.623, 'pe_percentile_60d': 0.597,
+        'up_volume_ratio': 0.480, 'industry_relative_strength': 0.437,
+        'residual_return_20d': 0.437, 'relative_strength_vs_peers': 0.437,
+        'industry_return_20d': 0.436, 'volume_cv': 0.432,
+        'cs_rank_return_20d': 0.422, 'volume_price_corr': 0.416,
+        'residual_skewness': 0.400, 'cs_rank_new_high': 0.351,
+        'trend_strength_20d': 0.321, 'rsi_14': 0.281, 'obv_trend': 0.270,
+        'pullback_to_ma20': 0.249, 'industry_breadth': 0.051,
+        'sector_breadth_vs_market': 0.051, 'cs_rank_pullback': 0.049,
+        'intraday_recovery': 0.040, 'n_sectors_strong': 0.040,
+        'industry_return_5d': 0.023, 'industry_rank_return_5d': 0.023,
+        'sw_index_return_5d': 0.023, 'days_since_breakout': 0.014,
+        'lower_shadow_ratio': 0.013, 'volume_breakout': 0.011,
+        'adx_proxy': 0.000, 'cs_rank_return_5d': -0.004,
+        'industry_volume_change': -0.014, 'sector_volume_vs_market': -0.014,
+        'pullback_to_ma10': -0.041, 'cs_rank_volume_surge': -0.053,
+        'volume_contraction': -0.058, 'volume_ratio_5d': -0.058,
+        'kdj_j_value': -0.116,
+    }
+
     def _get_active_stock_features(self) -> List[str]:
         """Build active stock feature list based on CLI switches."""
         # ng1.0.9: use only persistent features (22 slow-changing features)
@@ -214,6 +243,17 @@ class NGTrainer(V485Trainer):
             features = [f for f in PERSISTENT_STOCK_FEATURES if f in self.stock_feature_cols
                         or f in STOCK_FEATURE_NAMES]
             return features
+
+        # ng1.0.9: filter by min autocorrelation threshold
+        min_ac = getattr(self, '_min_autocorr', 0.0)
+        if min_ac > 0:
+            base = list(self.stock_feature_cols)
+            features = [f for f in base if self._FEATURE_AUTOCORR.get(f, 0.0) >= min_ac]
+            dropped = len(base) - len(features)
+            if dropped > 0:
+                logger.info(f"  Autocorr filter (>={min_ac}): {len(features)} kept, {dropped} dropped")
+            return features
+
         features = list(self.stock_feature_cols)
         if getattr(self, '_enable_moneyflow', False):
             features += MONEYFLOW_FEATURE_NAMES
@@ -1025,6 +1065,8 @@ if __name__ == '__main__':
     # ng1.0.9: signal persistence
     parser.add_argument('--persistent-features', action='store_true',
                         help='ng1.0.9: only use 22 persistent features (10d rank autocorr >= 0.5)')
+    parser.add_argument('--min-autocorr', type=float, default=0.0,
+                        help='ng1.0.9: minimum 10d rank autocorrelation threshold (0=off, 0.3-0.5 recommended)')
     parser.add_argument('--smooth-label', type=int, default=0,
                         help='ng1.0.9: label smoothing window (0=off, 5=average over 5-day entry window)')
     args = parser.parse_args()
@@ -1045,6 +1087,7 @@ if __name__ == '__main__':
         trainer._risk_filter_quantile = args.risk_filter_quantile
         trainer._persistent_features = args.persistent_features
         trainer._smooth_label = args.smooth_label
+        trainer._min_autocorr = args.min_autocorr
         if args.fast_check:
             trainer._fast_check = True
             trainer._fast_check_max_windows = 2
