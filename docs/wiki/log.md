@@ -6,7 +6,8 @@
 
 ---
 
-2026-04-11 | eval   | NG v1.0.9 完整评估 — 换手45x→14.7x(✅达标!) 但Sharpe 2.37→0.79(❌). 22个慢变特征的ICIR生产推理时0.26(远低于WF的1.29). 换手-收益权衡:慢特征短期alpha弱
+2026-04-11 | eval   | NG v1.0.9 折中方案(31feat,ac≥0.4) — 换手41x/28x(+sell50), Sharpe=1.69/1.54. fast-check ICIR=1.38但生产仅0.3. 最终结论: ng1.0.8(sell50 on 1.0.1)=最优(Sharpe=2.52,换手36x,A+)
+2026-04-11 | eval   | NG v1.0.9 完整评估(22feat) — 换手14.7x达标但Sharpe=0.79. 慢变特征短期alpha不足
 2026-04-11 | model  | NG v1.0.9 持久特征 — 22个慢变特征(autocorr≥0.5), fast-check 10d ICIR=1.29(+39% vs ng1.0.1)
 2026-04-10 | model  | NG v1.0.8 低换手组合 — sell50+cost0.3%最优: 换手45x→36x(-20%), Sharpe=2.52(+6%), 净收益94.6%. 初版bug(每天调仓)已修复
 2026-04-10 | fix    | ng108 is_rebal_day缺失 — 每天执行ng108逻辑导致换手率未降(45→44x), 加i%rebal_interval检查后正常(→36x)
