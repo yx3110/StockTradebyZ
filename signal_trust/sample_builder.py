@@ -5,7 +5,7 @@ import math
 import re
 from pathlib import Path
 from typing import Iterator
-from .constants import PRED_THRESHOLD, VERSION_PRIORITY, HOLD_DAYS
+from .constants import PRED_THRESHOLD, VERSION_PRIORITY, HOLD_DAYS, MARKET_CAP_BUCKETS
 from .db import connect
 
 logger = logging.getLogger(__name__)
@@ -145,5 +145,133 @@ def compute_sample_end_date(db_path: str, trade_date: str) -> str | None:
         if len(rows) < HOLD_DAYS + 1:
             return None
         return rows[HOLD_DAYS]["trade_date"]
+    finally:
+        conn.close()
+
+
+def compute_market_cap_bucket(db_path: str, code: str, trade_date: str) -> str:
+    """查 daily_basic.circ_mv（万元），按 MARKET_CAP_BUCKETS 分档。"""
+    conn = connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT db.circ_mv FROM daily_basic db "
+            "JOIN securities s ON s.id = db.security_id "
+            "WHERE s.code = ? AND db.trade_date = ?",
+            (code, trade_date),
+        ).fetchone()
+        if row is None or row["circ_mv"] is None:
+            return "未知"
+        mv = row["circ_mv"]
+        for lo, hi, label in MARKET_CAP_BUCKETS:
+            if lo <= mv < hi:
+                return label
+        return "未知"
+    finally:
+        conn.close()
+
+
+def compute_liquidity_bucket(
+    db_path: str, code: str, trade_date: str, thresholds: tuple[float, float, float]
+) -> str:
+    """thresholds = (p25, p50, p75); 基于该股 30 日日均成交额分档。"""
+    conn = connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT AVG(amount) AS m FROM ("
+            "  SELECT amount FROM daily_quotes dq "
+            "  JOIN securities s ON s.id = dq.security_id "
+            "  WHERE s.code = ? AND dq.trade_date <= ? "
+            "  ORDER BY dq.trade_date DESC LIMIT 30"
+            ")",
+            (code, trade_date),
+        ).fetchone()
+        if row is None or row["m"] is None:
+            return "未知"
+        m = row["m"]
+        p25, p50, p75 = thresholds
+        if m < p25:
+            return "低"
+        elif m < p50:
+            return "中低"
+        elif m < p75:
+            return "中高"
+        else:
+            return "高"
+    finally:
+        conn.close()
+
+
+def compute_liquidity_thresholds(db_path: str, as_of_date: str) -> tuple[float, float, float]:
+    """基于所有股票的 30 日均成交额，计算 p25/p50/p75。"""
+    conn = connect(db_path)
+    try:
+        rows = conn.execute(
+            "SELECT security_id, AVG(amount) AS m FROM daily_quotes "
+            "WHERE trade_date <= ? AND trade_date >= date(?, '-45 days') "
+            "GROUP BY security_id HAVING COUNT(*) >= 15",
+            (as_of_date, as_of_date),
+        ).fetchall()
+        vals = sorted(float(r["m"]) for r in rows if r["m"] is not None)
+        if len(vals) < 4:
+            return (1e8, 3e8, 1e9)  # 数据不足时回退默认值
+        n = len(vals)
+        return (vals[n // 4], vals[n // 2], vals[3 * n // 4])
+    finally:
+        conn.close()
+
+
+def _industry_lookup(db_path: str, codes: list[str]) -> dict[str, str]:
+    """批量查询股票行业，返回 {code: industry}。"""
+    if not codes:
+        return {}
+    conn = connect(db_path)
+    try:
+        placeholders = ",".join("?" * len(codes))
+        rows = conn.execute(
+            f"SELECT code, industry FROM securities WHERE code IN ({placeholders})",
+            codes,
+        ).fetchall()
+        return {r["code"]: (r["industry"] or "未分类") for r in rows}
+    finally:
+        conn.close()
+
+
+def upsert_samples(db_path: str, rows: list[dict], update_actual: bool = False) -> int:
+    """
+    写入样本表，幂等。
+    update_actual=True 时允许覆盖已有的 actual_10d（用于回填）。
+    返回处理的行数。
+    """
+    if not rows:
+        return 0
+    conn = connect(db_path)
+    try:
+        n = 0
+        for r in rows:
+            if update_actual:
+                conn.execute(
+                    "INSERT INTO signal_trust_samples "
+                    "(code, trade_date, sample_end_date, pred_10d, actual_10d, version, "
+                    " market_cap_bucket, industry, liquidity_bucket) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                    "ON CONFLICT(code, trade_date) DO UPDATE SET "
+                    "  actual_10d = excluded.actual_10d",
+                    (r["code"], r["trade_date"], r["sample_end_date"],
+                     r["pred_10d"], r.get("actual_10d"), r["version"],
+                     r.get("market_cap_bucket"), r.get("industry"), r.get("liquidity_bucket")),
+                )
+            else:
+                conn.execute(
+                    "INSERT OR IGNORE INTO signal_trust_samples "
+                    "(code, trade_date, sample_end_date, pred_10d, actual_10d, version, "
+                    " market_cap_bucket, industry, liquidity_bucket) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (r["code"], r["trade_date"], r["sample_end_date"],
+                     r["pred_10d"], r.get("actual_10d"), r["version"],
+                     r.get("market_cap_bucket"), r.get("industry"), r.get("liquidity_bucket")),
+                )
+            n += 1
+        conn.commit()
+        return n
     finally:
         conn.close()

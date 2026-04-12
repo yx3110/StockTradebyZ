@@ -156,3 +156,87 @@ def test_sample_end_date_insufficient_returns_none(seed_stock, tmp_db):
     quotes = [(f"2026-01-{i+1:02d}", 100.0, 1e8) for i in range(5)]
     seed_stock("A.SZ", "计算机", quotes)
     assert compute_sample_end_date(tmp_db, "2026-01-01") is None
+
+
+# ---------------------------------------------------------------------------
+# compute_market_cap_bucket / compute_liquidity_bucket / upsert_samples tests
+# ---------------------------------------------------------------------------
+from signal_trust.sample_builder import (
+    compute_market_cap_bucket, compute_liquidity_bucket, upsert_samples,
+)
+
+
+def test_market_cap_bucket_thresholds(seed_stock, tmp_db):
+    # daily_basic.circ_mv 单位是万元, 30亿 = 30_0000 万元
+    seed_stock("A.SZ", "计算机",
+               quotes=[("2026-01-01", 100, 1e8)],
+               circ_mv_by_date={"2026-01-01": 20_0000})  # 20亿 → 微盘
+    seed_stock("B.SZ", "计算机",
+               quotes=[("2026-01-01", 100, 1e8)],
+               circ_mv_by_date={"2026-01-01": 50_0000})  # 50亿 → 小盘
+    seed_stock("C.SZ", "计算机",
+               quotes=[("2026-01-01", 100, 1e8)],
+               circ_mv_by_date={"2026-01-01": 200_0000})  # 200亿 → 中盘
+    seed_stock("D.SZ", "计算机",
+               quotes=[("2026-01-01", 100, 1e8)],
+               circ_mv_by_date={"2026-01-01": 800_0000})  # 800亿 → 大盘
+    assert compute_market_cap_bucket(tmp_db, "A.SZ", "2026-01-01") == "微盘"
+    assert compute_market_cap_bucket(tmp_db, "B.SZ", "2026-01-01") == "小盘"
+    assert compute_market_cap_bucket(tmp_db, "C.SZ", "2026-01-01") == "中盘"
+    assert compute_market_cap_bucket(tmp_db, "D.SZ", "2026-01-01") == "大盘"
+
+
+def test_market_cap_bucket_missing_data(seed_stock, tmp_db):
+    seed_stock("X.SZ", "计算机", quotes=[("2026-01-01", 100, 1e8)])
+    assert compute_market_cap_bucket(tmp_db, "X.SZ", "2026-01-01") == "未知"
+
+
+def test_liquidity_bucket_uses_30day_mean(seed_stock, tmp_db):
+    # 股票 X 的 30 日均成交额 5e7, 股票 Y 的 30 日均成交额 5e9
+    qx = [(f"2026-01-{i+1:02d}", 100, 5e7) for i in range(30)]
+    qy = [(f"2026-01-{i+1:02d}", 100, 5e9) for i in range(30)]
+    seed_stock("X.SZ", "计算机", qx)
+    seed_stock("Y.SZ", "计算机", qy)
+    thresholds = (1e8, 3e8, 1e9)  # p25/p50/p75 假设阈值
+    bx = compute_liquidity_bucket(tmp_db, "X.SZ", "2026-01-30", thresholds)
+    by = compute_liquidity_bucket(tmp_db, "Y.SZ", "2026-01-30", thresholds)
+    assert bx == "低"
+    assert by == "高"
+
+
+def test_upsert_samples_idempotent(tmp_db):
+    from signal_trust.db import connect
+    rows = [{
+        "code": "A.SZ", "trade_date": "2026-01-10", "sample_end_date": "2026-01-24",
+        "pred_10d": 0.015, "actual_10d": 0.02, "version": "ng106",
+        "market_cap_bucket": "小盘", "industry": "计算机", "liquidity_bucket": "中高",
+    }]
+    upsert_samples(tmp_db, rows)
+    upsert_samples(tmp_db, rows)  # 重跑
+    conn = connect(tmp_db)
+    try:
+        (n,) = conn.execute("SELECT COUNT(*) FROM signal_trust_samples").fetchone()
+    finally:
+        conn.close()
+    assert n == 1
+
+
+def test_upsert_backfills_actual_10d(tmp_db):
+    from signal_trust.db import connect
+    # 首次入库 actual_10d=None, 二次更新应覆盖
+    rows1 = [{
+        "code": "A.SZ", "trade_date": "2026-01-10", "sample_end_date": "2026-01-24",
+        "pred_10d": 0.015, "actual_10d": None, "version": "ng106",
+        "market_cap_bucket": "小盘", "industry": "计算机", "liquidity_bucket": "中高",
+    }]
+    upsert_samples(tmp_db, rows1)
+    rows2 = [{**rows1[0], "actual_10d": 0.025}]
+    upsert_samples(tmp_db, rows2, update_actual=True)
+    conn = connect(tmp_db)
+    try:
+        row = conn.execute(
+            "SELECT actual_10d FROM signal_trust_samples WHERE code='A.SZ'"
+        ).fetchone()
+    finally:
+        conn.close()
+    assert abs(row["actual_10d"] - 0.025) < 1e-9
