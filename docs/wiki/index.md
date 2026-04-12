@@ -8,6 +8,7 @@
 - [ML 管线](architecture/ml-pipeline.md) — 特征工程 → 训练 → 推理 → 报告生成
 - [自动调仓系统](architecture/auto-rebalancing.md) — EastMoneyTrader联动、NG1.0.5风控、执行策略回测
 - [EMT 量化分析框架](architecture/emt-analysis-framework.md) — Level 1 完整覆盖: IC/中性化/组合优化/回测验证/信号驱动调仓/退市股修复
+- [Signal Trust 信号可信度系统](architecture/signal-trust.md) — 给选股贴 🟢🟡🔴 可信度标签, 识别假信号
 
 ## 模型演化
 - [模型世代总览](models/evolution.md) — V3.8 → V3.9 → V4.x → NG 系列演化路径与关键转折
