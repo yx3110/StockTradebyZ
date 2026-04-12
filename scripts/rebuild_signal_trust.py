@@ -10,11 +10,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from signal_trust.db import migrate
 from signal_trust.sample_builder import (
-    scan_reports, streaming_dedupe, compute_actual_10d,
-    compute_market_cap_bucket, compute_liquidity_bucket,
-    compute_liquidity_thresholds, compute_sample_end_date,
+    scan_reports, streaming_dedupe,
     _industry_lookup, upsert_samples,
 )
+from signal_trust.bulk_loader import BulkEnricher
 from signal_trust.scorer import compute_scores, upsert_scores
 from signal_trust.constants import DEFAULT_DB_PATH
 
@@ -38,7 +37,13 @@ def main(db_path: str = DEFAULT_DB_PATH, reports_root: str = "reports",
     deduped = list(best_map.values())
     logger.info(f"  去重后: {len(deduped):,}")
 
+    # Bulk 预加载市场数据（一次性加载 daily_quotes + daily_basic 到内存）
+    enricher = BulkEnricher(db_path)
+    enricher.load()
+
     # 确定 as_of_date
+    codes = list({r["code"] for r in deduped})
+    industry_map = _industry_lookup(db_path, codes)
     if as_of_date is not None:
         as_of = as_of_date
     elif deduped:
@@ -46,23 +51,19 @@ def main(db_path: str = DEFAULT_DB_PATH, reports_root: str = "reports",
     else:
         logger.warning("无样本, 退出")
         return
-
-    # 计算 sample_end_date + actual_10d + 分组标签
-    logger.info("计算 actual_10d + 分组...")
-    codes = list({r["code"] for r in deduped})
-    industry_map = _industry_lookup(db_path, codes)
-    liq_thresholds = compute_liquidity_thresholds(db_path, as_of)
+    liq_thresholds = enricher.compute_liquidity_thresholds(as_of)
 
     # T+10 未到的样本用哨兵日期占位, 后续 daily update 的 _backfill_actuals 会补齐.
     END_DATE_SENTINEL = "9999-12-31"
     enriched = []
+    logger.info(f"Enrichment 开始 ({len(deduped):,} 条)...")
     for i, r in enumerate(deduped):
-        if i % 10000 == 0 and i > 0:
-            logger.info(f"  进度: {i:,}/{len(deduped):,}")
-        end_date = compute_sample_end_date(db_path, r["trade_date"])
-        actual = compute_actual_10d(db_path, r["code"], r["trade_date"])
-        mc = compute_market_cap_bucket(db_path, r["code"], r["trade_date"])
-        liq = compute_liquidity_bucket(db_path, r["code"], r["trade_date"], liq_thresholds)
+        if i % 100000 == 0 and i > 0:
+            logger.info(f"  Enrichment 进度: {i:,}/{len(deduped):,}")
+        end_date = enricher.sample_end_date(r["trade_date"])
+        actual = enricher.actual_10d(r["code"], r["trade_date"])
+        mc = enricher.market_cap_bucket(r["code"], r["trade_date"])
+        liq = enricher.liquidity_bucket(r["code"], r["trade_date"], liq_thresholds)
         enriched.append({
             "code": r["code"],
             "trade_date": r["trade_date"],
