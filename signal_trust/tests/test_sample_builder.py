@@ -163,6 +163,7 @@ def test_sample_end_date_insufficient_returns_none(seed_stock, tmp_db):
 # ---------------------------------------------------------------------------
 from signal_trust.sample_builder import (
     compute_market_cap_bucket, compute_liquidity_bucket, upsert_samples,
+    compute_liquidity_thresholds,
 )
 
 
@@ -240,3 +241,34 @@ def test_upsert_backfills_actual_10d(tmp_db):
     finally:
         conn.close()
     assert abs(row["actual_10d"] - 0.025) < 1e-9
+
+
+def test_liquidity_bucket_30day_truncation(seed_stock, tmp_db):
+    """30 日以前的老数据不应影响 avg (测试 LIMIT 30 生效)."""
+    # Days 1-10: 老数据大成交额(5e9); Days 11-40: 最近 30 日小成交额(5e7)
+    old = [(f"2026-01-{i+1:02d}", 100, 5e9) for i in range(10)]
+    recent = [(f"2026-02-{i+1:02d}", 100, 5e7) for i in range(28)]  # Feb 只有28天
+    # 接续用3月补足30 recent
+    recent += [(f"2026-03-{i+1:02d}", 100, 5e7) for i in range(2)]
+    seed_stock("Z.SZ", "计算机", old + recent)
+    thresholds = (1e8, 3e8, 1e9)
+    b = compute_liquidity_bucket(tmp_db, "Z.SZ", "2026-03-02", thresholds)
+    assert b == "低"  # 若无 LIMIT 30, 老数据5e9会把均值拉到"高"
+
+
+def test_liquidity_thresholds_returns_tuple_of_three(seed_stock, tmp_db):
+    """基础 smoke test: 种子 5 只股票不同成交额, 期望返回合理的 p25/p50/p75."""
+    amounts = [1e7, 5e7, 2e8, 5e8, 2e9]
+    for i, a in enumerate(amounts):
+        quotes = [(f"2026-01-{d+1:02d}", 100, a) for d in range(20)]
+        seed_stock(f"S{i}.SZ", "计算机", quotes)
+    p25, p50, p75 = compute_liquidity_thresholds(tmp_db, "2026-01-20")
+    assert p25 <= p50 <= p75  # 单调递增
+    assert 1e7 <= p25 and p75 <= 2e9  # 都在输入范围内
+
+
+def test_liquidity_thresholds_fallback_on_sparse_data(tmp_db):
+    """样本少于 4 只 → 返回默认 fallback."""
+    # 空 tmp_db, 无任何股票
+    p25, p50, p75 = compute_liquidity_thresholds(tmp_db, "2026-01-20")
+    assert (p25, p50, p75) == (1e8, 3e8, 1e9)

@@ -202,18 +202,26 @@ def compute_liquidity_bucket(
 
 
 def compute_liquidity_thresholds(db_path: str, as_of_date: str) -> tuple[float, float, float]:
-    """基于所有股票的 30 日均成交额，计算 p25/p50/p75。"""
+    """基于所有股票的 30 日均成交额 p25/p50/p75 (与 compute_liquidity_bucket 一致)."""
     conn = connect(db_path)
     try:
         rows = conn.execute(
-            "SELECT security_id, AVG(amount) AS m FROM daily_quotes "
-            "WHERE trade_date <= ? AND trade_date >= date(?, '-45 days') "
-            "GROUP BY security_id HAVING COUNT(*) >= 15",
+            "WITH ranked AS ("
+            "  SELECT security_id, amount, "
+            "    ROW_NUMBER() OVER (PARTITION BY security_id ORDER BY trade_date DESC) AS rn "
+            "  FROM daily_quotes "
+            "  WHERE trade_date <= ? AND trade_date >= date(?, '-60 days') "
+            ") "
+            "SELECT security_id, AVG(amount) AS m "
+            "FROM ranked "
+            "WHERE rn <= 30 "
+            "GROUP BY security_id "
+            "HAVING COUNT(*) >= 15",
             (as_of_date, as_of_date),
         ).fetchall()
         vals = sorted(float(r["m"]) for r in rows if r["m"] is not None)
         if len(vals) < 4:
-            return (1e8, 3e8, 1e9)  # 数据不足时回退默认值
+            return (1e8, 3e8, 1e9)
         n = len(vals)
         return (vals[n // 4], vals[n // 2], vals[3 * n // 4])
     finally:
