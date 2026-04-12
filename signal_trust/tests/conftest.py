@@ -1,7 +1,6 @@
 """共享 fixtures：临时 DB + mock 报告工厂。"""
 import json
 import sqlite3
-import tempfile
 from pathlib import Path
 
 import pytest
