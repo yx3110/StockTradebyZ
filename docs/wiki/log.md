@@ -6,6 +6,14 @@
 
 ---
 
+2026-04-12 | eval   | 8策略长期回测(2018-2026) — 40,290信号/376采样日. 暴力K最强(+1.59% 10d alpha, Sharpe=1.96), 知行-0.05%纯噪音. Regime分化: 少负=牛市特化(Sharpe=1.75), 暴力K=熊市特化(Sharpe=2.05). 6月窗口结论被长样本推翻. 详见 evaluation/quant-strategies-2018-2026.md
+2026-04-12 | eval   | 退市股对 IC 无影响验证 — 2024 全年 IC 导入前后均 0.1902, 真 Alpha 占比均 47%. 因 StockTradebyZ 生成报告时已过滤退市股, 历史 IC 本无幸存者偏差. 数据价值留给未来重训练
+2026-04-12 | data   | 退市股数据导入 — tushare pro.stock_basic(list_status='D') + pro.daily, 322 只退市股 + 257,416 条日线, 修复 EMT 侧 IC 分析的幸存者偏差
+2026-04-12 | arch   | EMT 组合优化扩展 — markowitz/BL 加换手率约束(LP+trust-constr)+流动性约束(max_position_value/budget), 回退到 current_weights 保证安全
+2026-04-12 | feature| EMT IC 时间趋势监测 — compute_ic_time_trend 滚动60日, 前后半段对比判定因子衰减. 实测 ng1.0.1 在 2024 下半年比上半年 IC 降 42%(轻微下降)
+2026-04-11 | arch   | EMT 信号驱动调仓 — HoldingsStateManager(entry_date/entry_score/cooldowns) 替代日频调仓; 触发: 止损6%|min_hold7天|评分地板25|评分衰减30%|超持有20天. 冷却期7天
+2026-04-11 | feature| EMT 因子中性化诊断 — neutralize_factor(行业/市值 OLS残差), ng1.0.1 双重中性后 IC 保留 53%, 说明约一半收益是 Beta
+2026-04-11 | arch   | EMT analysis/ 模块构建 — 完整 Level 1 量化框架: data_loader/ic_analyzer/portfolio_optimizer/backtest_framework 四个子模块, CLI `trade.py analyze --mode full`. 见 wiki/architecture/emt-analysis-framework.md
 2026-04-11 | eval   | NG v1.0.9 折中方案(31feat,ac≥0.4) — 换手41x/28x(+sell50), Sharpe=1.69/1.54. fast-check ICIR=1.38但生产仅0.3. 最终结论: ng1.0.8(sell50 on 1.0.1)=最优(Sharpe=2.52,换手36x,A+)
 2026-04-11 | eval   | NG v1.0.9 完整评估(22feat) — 换手14.7x达标但Sharpe=0.79. 慢变特征短期alpha不足
 2026-04-11 | model  | NG v1.0.9 持久特征 — 22个慢变特征(autocorr≥0.5), fast-check 10d ICIR=1.29(+39% vs ng1.0.1)

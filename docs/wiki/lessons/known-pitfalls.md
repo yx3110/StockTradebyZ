@@ -142,3 +142,9 @@
 - **现象**: Top-10几乎全是银行股
 - **根因**: ICIR优化后RandomForest权重94-95%，RF天然偏好低波动→银行垄断
 - **解决**: 限制单模型在ensemble中最大权重；或加行业分散约束
+
+### 短期回测窗口得出错误策略排名 (2026-04-12, 8策略评估)
+- **现象**: 6个月窗口(2025-09~2026-02)显示 SuperB1 最强(+2.68%), 暴力K 最差(+0.82%); 2018-2026 长窗口排名完全反转: 暴力K(+1.59% alpha) > SuperB1(+0.12%)
+- **根因**: 策略表现有强 regime 依赖 — 少负=牛市特化(Sharpe=1.75), 暴力K=熊市特化(Sharpe=2.05), 上穿60放量在牛市反而 -1.19%。单一 regime 窗口会把"regime 幸运"伪装成"策略优劣"
+- **教训**: 评价任何选股策略的 alpha 必须跨越至少一个完整市场周期(>=3年, 含牛熊转换)
+- **解决**: 长期回测脚本 `backtest/backtest_strategy_metrics.py` + regime 拆解 `backtest/analyze_strategy_longhorizon.py`; 详见 [8策略长期回测](../evaluation/quant-strategies-2018-2026.md)

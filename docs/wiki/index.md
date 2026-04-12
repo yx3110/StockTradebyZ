@@ -7,6 +7,7 @@
 - [数据管线](architecture/data-pipeline.md) — Tushare API → SQLite → Feature Cache 全链路
 - [ML 管线](architecture/ml-pipeline.md) — 特征工程 → 训练 → 推理 → 报告生成
 - [自动调仓系统](architecture/auto-rebalancing.md) — EastMoneyTrader联动、NG1.0.5风控、执行策略回测
+- [EMT 量化分析框架](architecture/emt-analysis-framework.md) — Level 1 完整覆盖: IC/中性化/组合优化/回测验证/信号驱动调仓/退市股修复
 
 ## 模型演化
 - [模型世代总览](models/evolution.md) — V3.8 → V3.9 → V4.x → NG 系列演化路径与关键转折
@@ -18,6 +19,7 @@
 ## 评估体系
 - [北极星评估体系](evaluation/north-star.md) — V1 → V5.2 演化、评分规则、如何解读
 - [回测方法论](evaluation/backtesting.md) — 无泄露原则、交易成本建模、CPPI 风控
+- [8策略长期回测(2018-2026)](evaluation/quant-strategies-2018-2026.md) — 40K信号: 暴力K最强(+1.59% alpha), 知行是噪音, 策略有强regime分化
 
 ## 教训
 - [已知陷阱](lessons/known-pitfalls.md) — 数据泄露、过拟合、pipe 死锁等踩坑汇总

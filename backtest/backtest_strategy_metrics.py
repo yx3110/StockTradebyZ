@@ -979,23 +979,23 @@ def main():
     logger.info(f"完成! 耗时 {elapsed:.1f}秒")
     logger.info(f"报告已保存: {report_path}")
 
-    # ── 12. 导出CSV ──
+    # ── 12. 导出CSV (向量化merge, 避免O(n²)) ──
     csv_path = Path(output_dir) / f"strategy_signals_{datetime.now().strftime('%Y%m%d')}.csv"
-    all_sig_rows = []
+    frames = []
     for name in STRATEGY_NAMES:
-        for sig in strategy_signals[name]:
-            row = {"strategy": name, "date": sig["date"], "code": sig["code"]}
-            # 查找收益
-            match = ret_df[(ret_df["code"] == sig["code"]) & (ret_df["date"] == sig["date"])]
-            if not match.empty:
-                for hp in args.holding_periods:
-                    row[f"ret_{hp}d"] = match.iloc[0].get(f"ret_{hp}d", np.nan)
-            all_sig_rows.append(row)
+        if not strategy_signals[name]:
+            continue
+        df_sig = pd.DataFrame(strategy_signals[name])
+        df_sig["strategy"] = name
+        df_sig["date"] = pd.to_datetime(df_sig["date"])
+        frames.append(df_sig)
 
-    if all_sig_rows:
-        sig_csv = pd.DataFrame(all_sig_rows)
+    if frames:
+        sig_csv = pd.concat(frames, ignore_index=True)
+        sig_csv = sig_csv.merge(ret_df, on=["code", "date"], how="left")
+        sig_csv = sig_csv[["strategy", "date", "code"] + [f"ret_{hp}d" for hp in args.holding_periods]]
         sig_csv.to_csv(csv_path, index=False)
-        logger.info(f"信号CSV已保存: {csv_path}")
+        logger.info(f"信号CSV已保存: {csv_path} ({len(sig_csv)} rows)")
 
     print(f"\n报告: {report_path}")
     print(f"CSV:  {csv_path}")

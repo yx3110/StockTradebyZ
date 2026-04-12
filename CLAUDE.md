@@ -425,6 +425,13 @@ AI analysis configuration and weights
 8. **🆕 暴力K战法** (BigBullishVolumeSelector): 捕捉大阳线放量但贴近短期均线的股票
    - 四大筛选条件：涨幅>4% + 上影线控制 + 1.5倍放量 + 贴近知行短期线
 
+**长期回测 (2018-2026)** — 见 [docs/wiki/evaluation/quant-strategies-2018-2026.md](docs/wiki/evaluation/quant-strategies-2018-2026.md)
+- 暴力K = 最强(+1.59% 10d alpha, Sharpe=1.96), 熊市特化 Sharpe=2.05
+- 少负 = 牛市特化 (Sharpe=1.75 in bull regime)
+- SuperB1/补票 = 跨regime稳定基线
+- 知行/上穿60放量 = 长期无alpha, 建议退役
+- ⚠️ 不要用8策略做ML的pre-filter — 已实证让v4.7.5从A+降到B
+
 ### ML Scoring Systems (活跃版本)
 1. **🏆 V4.9.0.1 Production** (生产推荐, 北极星V4=92.8% S级):
    - 61特征, Q95 Widen-then-Concentrate头部精筛
