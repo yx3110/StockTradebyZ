@@ -61,7 +61,20 @@ EastMoneyTrader 侧建立了 `analysis/feature_audit.py` 作为**独立于训练
 - 4个feature定义bug已修复: volume_contraction/sw_index_return_5d/industry_relative_strength删除, revenue_growth修正为真or_yoy
 - cx_*僵尸特征根因修复: `_get_active_stock_features()`用`self._cond_ix_cols`代替`version_ge`硬编码
 - ng101_feature_cache已回填profit_margin_ratio + 真revenue_growth + peg_proxy(用真or_yoy)
+- **ng1.0.1重训结果: V5.2=72.1% A+, 年化165.7%, MaxDD=-11.7%, Sharpe=2.753**
 - **ng1.1.0重训结果: V5.2=70.4% A+, 年化122.8%, MaxDD=-12.5%, Sharpe=2.065**
+
+Bug修复效果对比 (同时段2024-2026, 10d持仓, composite排名):
+
+| 指标 | ng1.0.1原版 | ng1.0.1 bugfix | ng1.1.0 bugfix |
+|---|---|---|---|
+| V5.2 | 73.7% A+ | **72.1% A+** | 70.4% A+ |
+| 年化 | 98.3% | **165.7%** | 122.8% |
+| Sharpe | 2.367 | **2.753** | 2.065 |
+| MaxDD | -27.2% | **-11.7%** | -12.5% |
+| 特征数 | 69 | 66 (3冗余NaN) | 68 |
+
+**Bug#4(revenue_growth修正)是最大贡献**: 模型首次获得真正的成长性信号。
 
 ### 审计工具位置
 

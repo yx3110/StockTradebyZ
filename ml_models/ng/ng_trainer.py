@@ -781,7 +781,9 @@ class NGTrainer(V485Trainer):
         elif version_ge(self._ng_version, 'ng1.0.4'):
             extra_select = ", ra_label_3d, ra_label_5d, ra_label_10d, ra_label_15d"
 
-        downside_col = ", downside_10d" if not version_ge(self._ng_version, 'ng1.1.0') else ""
+        # downside_10d only exists in ng1.0.2+ cache tables (not in ng101/ng110)
+        has_downside = version_ge(self._ng_version, 'ng1.0.2') and not version_ge(self._ng_version, 'ng1.1.0')
+        downside_col = ", downside_10d" if has_downside else ""
         query = f"""
         SELECT code, trade_date, features_json,
                label_3d, label_5d, label_10d, label_15d{downside_col}{extra_select},
