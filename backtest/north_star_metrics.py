@@ -177,6 +177,8 @@ def score_metric_v2(current: float, target_info: dict) -> Tuple[int, str]:
     Returns:
         (score: 0-5, grade_str)
     """
+    if not np.isfinite(current):
+        return 0, '☆☆☆☆☆'
     higher = target_info['direction'] == 'higher'
     thresholds = [
         (target_info['target'], 5, '★★★★★'),

@@ -260,8 +260,8 @@ class V500UnifiedTrainer:
             missing = df[col].isnull().sum()
             if missing > 0:
                 df[col] = df.groupby('trade_date')[col].transform(lambda x: x.fillna(x.median()))
-                # Fallback for dates where ALL values are NaN
-                df[col] = df[col].fillna(df[col].median())
+                # 全日缺失用 0 兜底, 避免全期 median 引入未来数据泄露
+                df[col] = df[col].fillna(0.0)
 
         # --- Step 5 (optional): 加载 GRU neural embeddings ---
         if self.include_neural:
