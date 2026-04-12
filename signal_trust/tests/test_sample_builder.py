@@ -101,7 +101,6 @@ def test_scan_reports_skips_nan_pred(tmp_path):
 # compute_actual_10d tests
 # ---------------------------------------------------------------------------
 from signal_trust.sample_builder import compute_actual_10d
-from signal_trust.db import connect
 
 
 def test_actual_10d_normal_case(seed_stock, tmp_db):
@@ -136,3 +135,24 @@ def test_actual_10d_suspended_days_still_count(seed_stock, tmp_db):
 
 def test_actual_10d_stock_not_found(tmp_db):
     assert compute_actual_10d(tmp_db, "NONEXIST.SZ", "2026-01-01") is None
+
+
+# ---------------------------------------------------------------------------
+# compute_sample_end_date tests
+# ---------------------------------------------------------------------------
+from signal_trust.sample_builder import compute_sample_end_date
+
+
+def test_sample_end_date_normal(seed_stock, tmp_db):
+    """12 trading days available, T+10 = idx 10 date."""
+    quotes = [(f"2026-01-{i+1:02d}", 100.0, 1e8) for i in range(12)]
+    seed_stock("A.SZ", "计算机", quotes)
+    end = compute_sample_end_date(tmp_db, "2026-01-01")
+    assert end == "2026-01-11"  # idx 10 of 12
+
+
+def test_sample_end_date_insufficient_returns_none(seed_stock, tmp_db):
+    """Only 5 days → return None."""
+    quotes = [(f"2026-01-{i+1:02d}", 100.0, 1e8) for i in range(5)]
+    seed_stock("A.SZ", "计算机", quotes)
+    assert compute_sample_end_date(tmp_db, "2026-01-01") is None
