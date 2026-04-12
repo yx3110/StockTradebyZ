@@ -176,13 +176,7 @@ def compute_stock_features(
     else:
         result['pullback_from_high'] = np.nan
 
-    # 5. volume_contraction
-    if len(volumes) >= 20:
-        vol5_mean = float(np.mean(volumes[-5:]))
-        vol20_mean = float(np.mean(volumes[-20:]))
-        result['volume_contraction'] = vol5_mean / (vol20_mean + 1e-8)
-    else:
-        result['volume_contraction'] = np.nan
+    # 5. volume_contraction — REMOVED (Bug #1: identical to volume_ratio_5d)
 
     # ---- Group 2: Pullback Entry (6 factors, was 10 in v1.0.0) ---------------
     # REMOVED: bollinger_position, consecutive_down_days
@@ -413,17 +407,20 @@ def compute_fundamental_features(
     roe: float,
     roe_prev_year: float,
     profit_to_gr: float,
-    netprofit_margin: float,
-    ocf_to_profit: float,
-    debt_to_assets: float,
-    current_ratio: float,
+    or_yoy: float = np.nan,          # Bug #4 fix: 真正的营收同比增长率
+    netprofit_margin: float = np.nan,
+    ocf_to_profit: float = np.nan,
+    debt_to_assets: float = np.nan,
+    current_ratio: float = np.nan,
 ) -> Dict[str, float]:
-    """Compute 14 fundamental features. Unchanged from v1.0.0."""
+    """Compute fundamental features."""
     result: Dict[str, float] = {}
 
     result['roe_ttm'] = float(roe)
     result['roe_change'] = float(roe) - float(roe_prev_year)
-    result['revenue_growth'] = float(profit_to_gr)
+    # Bug #4 fix: profit_to_gr is margin ratio, not growth; or_yoy is real revenue growth
+    result['profit_margin_ratio'] = float(profit_to_gr)
+    result['revenue_growth'] = float(or_yoy) if not np.isnan(or_yoy) else np.nan
     result['net_profit_margin'] = float(netprofit_margin)
     result['ocf_quality'] = float(ocf_to_profit)
     result['pe_ttm'] = float(pe_ttm)
@@ -443,6 +440,20 @@ def compute_fundamental_features(
     result['free_float_ratio'] = float(free_share) / (_total + 1e-8)
     result['dv_ratio'] = float(dv_ratio)
     result['turnover_rate'] = float(turnover_rate)
+
+    # ng1.1.0 P2: composition factors
+    _roe = float(roe)
+    _pe = float(pe_ttm)
+    _pb = float(pb)
+    _growth = float(or_yoy) if not np.isnan(or_yoy) else 0.0
+    if abs(_growth) > 1.0 and abs(_pe) < 1000:
+        result['peg_proxy'] = _pe / (_growth + 1e-8)  # PE / revenue_growth% (or_yoy in %)
+    else:
+        result['peg_proxy'] = np.nan
+    if abs(_roe) > 0.01:
+        result['pb_roe_ratio'] = _pb / (_roe + 1e-8)  # PB / ROE
+    else:
+        result['pb_roe_ratio'] = np.nan
 
     return result
 
@@ -566,11 +577,7 @@ def compute_industry_features(
         ind_ret20 = np.nan
         result['industry_return_20d'] = np.nan
 
-    # 3. industry_relative_strength
-    if not np.isnan(ind_ret20):
-        result['industry_relative_strength'] = float(stock_return_20d) - ind_ret20
-    else:
-        result['industry_relative_strength'] = np.nan
+    # 3. industry_relative_strength — REMOVED (Bug #3: identical to residual_return_20d)
 
     # 4. industry_breadth
     if industry_stock_returns_1d is not None and len(industry_stock_returns_1d) > 0:
@@ -598,8 +605,7 @@ def compute_industry_features(
     else:
         result['industry_rank_return_5d'] = np.nan
 
-    # 7. sw_index_return_5d
-    result['sw_index_return_5d'] = float(sw_index_return_5d)
+    # 7. sw_index_return_5d — REMOVED (Bug #2: identical to industry_return_5d)
 
     # 8. industry_hhi
     if industry_stock_returns_20d is not None and len(industry_stock_returns_20d) > 0:
@@ -662,9 +668,14 @@ def compute_cross_sectional_rank_features(
     peer_volatilities: np.ndarray,
     peer_market_caps: np.ndarray,
     peer_pes: np.ndarray,
+    # ng1.1.0 P2: new dimensions (optional for backward compat)
+    stock_pb: float = np.nan,
+    stock_dv: float = np.nan,
+    peer_pbs: np.ndarray = None,
+    peer_dvs: np.ndarray = None,
 ) -> Dict[str, float]:
     """
-    Compute 10 cross-sectional rank features — percentile rank of this stock's
+    Compute cross-sectional rank features — percentile rank of this stock's
     characteristics within its industry peers. Range: [0, 1].
 
     These answer "within the same industry, where does this stock rank?" and
@@ -682,6 +693,12 @@ def compute_cross_sectional_rank_features(
     result['cs_rank_volatility'] = _industry_percentile_rank(stock_volatility, peer_volatilities)
     result['cs_rank_market_cap'] = _industry_percentile_rank(stock_market_cap, peer_market_caps)
     result['cs_rank_pe'] = _industry_percentile_rank(stock_pe, peer_pes)
+
+    # ng1.1.0 P2: additional cs_rank dimensions
+    if peer_pbs is not None and len(peer_pbs) > 0:
+        result['cs_rank_pb'] = _industry_percentile_rank(stock_pb, peer_pbs)
+    if peer_dvs is not None and len(peer_dvs) > 0:
+        result['cs_rank_dv'] = _industry_percentile_rank(stock_dv, peer_dvs)
 
     return result
 

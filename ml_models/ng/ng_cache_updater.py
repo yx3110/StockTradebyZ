@@ -265,7 +265,7 @@ class NGCacheUpdater:
         lookback_start_int = int(lookback_start_dt.strftime('%Y%m%d'))
 
         rows = conn.execute(
-            f'''SELECT security_id, ann_date, end_date, roe, profit_to_gr,
+            f'''SELECT security_id, ann_date, end_date, roe, profit_to_gr, or_yoy,
                        netprofit_margin, ocf_to_profit, debt_to_assets, current_ratio
                 FROM financial_indicator
                 WHERE ann_date BETWEEN ? AND ?
@@ -299,6 +299,7 @@ class NGCacheUpdater:
                 'roe': _safe_float(latest['roe']),
                 'roe_prev_year': roe_prev,
                 'profit_to_gr': _safe_float(latest['profit_to_gr']),
+                'or_yoy': _safe_float(latest['or_yoy']),  # 真正的营收同比增长率
                 'netprofit_margin': _safe_float(latest['netprofit_margin']),
                 'ocf_to_profit': _safe_float(latest['ocf_to_profit']),
                 'debt_to_assets': _safe_float(latest['debt_to_assets']),
@@ -1240,6 +1241,7 @@ class NGCacheUpdater:
                         roe=fin.get('roe', np.nan),
                         roe_prev_year=fin.get('roe_prev_year', np.nan),
                         profit_to_gr=fin.get('profit_to_gr', np.nan),
+                        or_yoy=fin.get('or_yoy', np.nan),
                         netprofit_margin=fin.get('netprofit_margin', np.nan),
                         ocf_to_profit=fin.get('ocf_to_profit', np.nan),
                         debt_to_assets=fin.get('debt_to_assets', np.nan),
@@ -1300,6 +1302,8 @@ class NGCacheUpdater:
                 volatility_val = stock_volatilities.get(sid, np.nan)
                 mcap_val = fund_feats.get('log_market_cap', np.nan) if fund_feats else np.nan
                 pe_val = fund_feats.get('pe_ttm', np.nan) if fund_feats else np.nan
+                pb_val = fund_feats.get('pb', np.nan) if fund_feats else np.nan
+                dv_val = fund_feats.get('dv_ratio', np.nan) if fund_feats else np.nan
                 avg_vol_5d = float(np.mean(amounts[-5:])) if len(amounts) >= 5 else np.nan
 
                 eligible_stocks[sid] = {
@@ -1321,6 +1325,8 @@ class NGCacheUpdater:
                     'volatility': volatility_val,
                     'market_cap': mcap_val,
                     'pe': pe_val,
+                    'pb': pb_val,           # ng1.1.0 P2
+                    'dv_ratio': dv_val,     # ng1.1.0 P2
                     # For residual factors
                     'daily_returns': stock_daily_returns.get(sid),
                     'avg_volume_5d': avg_vol_5d,
@@ -1340,7 +1346,7 @@ class NGCacheUpdater:
             CS_METRICS = [
                 'return_5d', 'return_20d', 'volume_surge', 'turnover',
                 'rsi', 'new_high_dist', 'pullback', 'volatility',
-                'market_cap', 'pe',
+                'market_cap', 'pe', 'pb', 'dv_ratio',
             ]
 
             industry_peer_arrays: Dict[str, Dict[str, np.ndarray]] = {}
@@ -1382,6 +1388,11 @@ class NGCacheUpdater:
                         peer_volatilities=peers.get('volatility', np.array([])),
                         peer_market_caps=peers.get('market_cap', np.array([])),
                         peer_pes=peers.get('pe', np.array([])),
+                        # ng1.1.0 P2: new cs_rank dimensions
+                        stock_pb=data.get('pb', np.nan),
+                        stock_dv=data.get('dv_ratio', np.nan),
+                        peer_pbs=peers.get('pb', np.array([])),
+                        peer_dvs=peers.get('dv_ratio', np.array([])),
                     )
                 except Exception as e:
                     print(f"    WARN: cs_rank failed for {data['code']}: {e}")

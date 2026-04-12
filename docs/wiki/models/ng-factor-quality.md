@@ -2,7 +2,81 @@
 
 记录每个 NG 模型训练后的因子质量指标和权重分布，用于跟踪因子健康度、发现冗余因子、指导特征工程方向。
 
-> **维护规则**: 每次训练新 NG 模型后，运行 `_log_factor_quality` 自动生成 `factor_quality_{timestamp}.json`，据此更新本页。
+> **维护规则**: 每次训练新 NG 模型后，运行 `_log_factor_quality` 自动生成 `factor_quality_{timestamp}.json`，据此更新本页。另外, **EMT 侧的 `scripts/audit_ng_features.py` 提供独立第三方审计** (gain/SHAP/单因子 IC/相关性四维), 用于验证训练日志的声明是否和模型实际行为一致.
+
+---
+
+## EMT 独立审计结果 (2026-04-12)
+
+EastMoneyTrader 侧建立了 `analysis/feature_audit.py` 作为**独立于训练 pipeline 的第三方审计**. 运行在 `ng101_feature_cache` 的 50k 采样 + ng101 / ng110 模型上, 交叉检查模型的 feature_importance 是否与数据一致.
+
+### 审计指标框架
+
+每个特征在 4 个 target (3d/5d/10d/15d) 下分别评估:
+- **gain_importance**: LGB booster 的 gain-based importance (归一化到 sum=1)
+- **shap_importance**: SHAP TreeExplainer 的 mean(|SHAP value|) (归一化到 sum=1)
+- **ic_mean**: 单因子与 label_{target} 的 Rank IC 均值 (绝对值越大越好)
+- **composite_score**: 三维 rank_pct 均值, 决策 STRONG/NORMAL/WEAK
+
+### ng1.0.1 审计结果
+
+| 维度 | 数值 |
+|---|---|
+| 声明特征数 | 69 (59 stock + 10 market) |
+| 实际有效特征 | 66 (减去 3 对冗余) |
+| 全 horizon STRONG | 22 |
+| 全 horizon WEAK | 0 |
+| 冗余特征对 (相关 >= 0.8) | 17 对, 其中 4 对 >= 0.999 (详见 lessons/known-pitfalls.md) |
+
+**核心 alpha 来源** (all-STRONG 前 10):
+1. `market_volatility_20d` (0.986)
+2. `industry_relative_strength` (0.945)
+3. `northbound_flow_5d` (0.940)
+4. `turnover_rate` (0.928)
+5. `cs_rank_volatility` (0.903)
+6. `market_new_high_ratio` (0.900)
+7. `market_drawdown` (0.884)
+8. `vix_proxy` (0.880)
+9. `relative_strength_vs_peers` (0.879)
+10. `market_volume_ratio` (0.870)
+
+→ NG 本质是**技术 + 市场情绪模型**, 基本面只有 `roe_ttm` 和 `pe_ttm` 进榜.
+
+### ng1.1.0 审计结果 (发现问题)
+
+| 维度 | 数值 | 对 ng1.0.1 |
+|---|---|---|
+| 声明特征数 | 77 | +8 |
+| **实际有效特征** | **70** | +4 (cx_* 7 个 gain=0 被剔除) |
+| 全 horizon STRONG | 28 | +6 |
+| 全 horizon WEAK | 1 (`industry_rank_return_5d`) | +1 |
+| UNKNOWN | **7 (全部是 cx_\*)** | +7 |
+| 冗余特征对 | 17 对 | 未修 (ng101 的 4 对完全保留) |
+
+**关键问题**:
+1. 7 个新增的 `cx_*` 交互特征 (cx_beta_mkt_vol, cx_drawdown_regime, cx_ind_mkt_dir, cx_momentum_trend, cx_quality_stress, cx_value_bear, cx_vol_stress) **训练时全 NaN** (cache 未回填), 模型从未用到它们
+2. ng1.0.1 的 4 个 feature 定义 bug 原封不动保留 (volume_contraction=volume_ratio_5d, industry_return_5d=sw_index_return_5d, industry_relative_strength=residual_return_20d, revenue_growth≡profit_to_gr margin)
+
+**修复** (2026-04-12, 已完成):
+- 4个feature定义bug已修复: volume_contraction/sw_index_return_5d/industry_relative_strength删除, revenue_growth修正为真or_yoy
+- cx_*僵尸特征根因修复: `_get_active_stock_features()`用`self._cond_ix_cols`代替`version_ge`硬编码
+- ng101_feature_cache已回填profit_margin_ratio + 真revenue_growth + peg_proxy(用真or_yoy)
+- **ng1.1.0重训结果: V5.2=70.4% A+, 年化122.8%, MaxDD=-12.5%, Sharpe=2.065**
+
+### 审计工具位置
+
+| 工具 | 路径 | 用途 |
+|---|---|---|
+| 审计 CLI | `EastMoneyTrader/scripts/audit_ng_features.py` | 一键审计任意 ng 模型 (支持多 target) |
+| 跨 target 对比 | `EastMoneyTrader/scripts/compare_targets.py` | 找"全 horizon STRONG"核心特征 |
+| 候选特征验证 | `EastMoneyTrader/scripts/validate_feature.py` | 新特征上线前的四关验证 |
+| 审计报告输出 | `EastMoneyTrader/logs/feature_audit/` | Markdown + CSV, 按 date × model_tag × target 存档 |
+
+**建议使用节奏**:
+- 每次新训练一个 NG 版本, 跑 `audit_ng_features.py --model-path <pkl>` 验证:
+  - 没有 gain=0 的僵尸特征
+  - 没有 |相关| >= 0.95 的冗余对
+  - 新加入的特征确实进入 all-STRONG (或至少 NORMAL)
 
 ---
 
@@ -33,17 +107,41 @@
 
 P1 shrinkage 彻底消除了算法独裁问题。
 
-### 北极星评估 (bug修复后重训)
-- **V5.2 = 53.2% B级** (composite排名, 10d持仓, 裸信号无CPPI)
-- 10d持仓: 年化+12.2%, Sharpe=0.242, MaxDD=-20.1%, 换手6.7x, Alpha=15.2%
-- 修复了WF history传递bug后adaptive weights正确生效: 3d=0.200, 5d=0.216, 10d=0.271, 15d=0.313
-- **对比ng1.0.7(A+级)**: 裸信号弱约25pp，原因是V485 pipeline裁剪到41特征后丢失了market因子信息。生产部署需叠加CPPI等风控。
-- 模型文件: `ng110_seed42_multi_target_20260412_114449.pkl` (48.5MB)
-- WFER: 0.588 (OOS/IS效率)
+### 北极星评估 (最终版, 基于ng1.0.1)
+- **V5.2 = 49.9% B级** (composite排名, 10d持仓, 2024-2026)
+- 与ng1.0.1在相同时段表现一致——移除的3个因子权重本就近零(roe_change 0.008%, n_sectors_strong 0%, days_since_breakout 0.012%)
+- ICIR adaptive weights正确生效: 3d=0.200, 5d=0.216, 10d=0.271, 15d=0.313
+- WF ICIR: 3d=0.754, 5d=0.811, 10d=1.018, 15d=1.176, WFER=0.588
+- 模型文件: `ng110_seed42_multi_target_20260412_161546.pkl`
+
+### 关键教训
+1. **P0精简对预测无实际影响**: 移除的3个因子importance≈0，去掉后分数不变。价值在于代码精简
+2. **P1权重均衡化是WF层面有效的改动**: ensemble极差从34.5pp→3.9pp
+3. **V485 pipeline的PRUNE_FEATURES与NG特征互不干扰**: V485裁剪的是V4.7.x命名体系的特征，NG的features_json特征不受影响
+4. **基准版本选择很重要**: ng1.1.0必须基于ng1.0.1(69feat)而非ng1.0.7(81feat)，因为分析是在ng1.0.1上做的
+5. **2024-2026时段(含大熊市)裸信号V5.2≈B级是正常水平**: 和ng1.0.1一致，生产部署需叠加CPPI/止损等风控才能达到A+
+
+### P2/P3 迭代结果 (2026-04-12)
+
+在ng1.1.0(P0+P1)基础上继续:
+- **P2**: 新增4个alpha因子(cs_rank_pb, cs_rank_dv, peg_proxy, pb_roe_ratio), 77特征
+- **P3**: Stock因子对market因子做OLS正交化, 减少market依赖
+
+Fast-check对比 (2窗口平均ICIR):
+
+| 配置 | 3d | 5d | 10d | 15d | 平均 |
+|---|---|---|---|---|---|
+| ng1.0.1 基线 | 0.629 | 0.835 | 0.931 | 1.060 | 0.864 |
+| P2 (77feat) | 0.756 | 0.888 | 1.058 | 0.981 | **0.921 (+7%)** |
+| P3 orth (77feat) | 0.774 | 0.881 | 0.959 | 1.076 | **0.923 (+7%)** |
+
+P2全量WF (3窗口): 3d=0.681, 5d=0.836, 10d=0.879, 15d=1.060 (vs ng1.0.1基本持平)
+
+**结论**: P2和P3各带来约7%提升(vs ng1.0.1)，但增量有限。P3正交化没有额外效果——industry excess标签已部分中性化market。新增的4个P2因子效果中性，可保留不必移除。
 
 ### 后续方向
-- P2(增强个股alpha)和P3(降低market依赖)可继续探索
-- 当前ng1.1.0的P0精简+P1权重修复已验证有效(WF ICIR正面)，但北极星回测不如ng1.0.7/ng1.0.8
+- ng1.1.0最终配置: P0(精简3因子) + P1(权重均衡) + P2(4新alpha因子) + P3(market正交化), 70特征
+- 在ng1.0.8基础上应用P1权重均衡化可能是更有效的方向
 
 ---
 

@@ -6,6 +6,9 @@
 
 ---
 
+2026-04-12 | fix    | ng110 僵尸特征修复 — EMT 审计发现 ng110 声称 77 特征, 7 个新 cx_* 交互特征 (cx_beta_mkt_vol/cx_drawdown_regime/cx_ind_mkt_dir/cx_momentum_trend/cx_quality_stress/cx_value_bear/cx_vol_stress) gain=0/SHAP=0, cache 未回填导致训练时全 NaN. 实际有效特征 70 个. 修复: 回填 ng101_feature_cache.features_json + 重训 ng111
+2026-04-12 | fix    | ng101 4 个特征定义 bug — EMT feature_audit 工具审计发现 4 对特征相关 >= 0.999, 全部定位为代码 bug. (1) volume_contraction ≡ volume_ratio_5d 同公式; (2) sw_index_return_5d 参数名误导, 实际是行业均值; (3) industry_relative_strength ≡ residual_return_20d 同公式; (4) revenue_growth 实际是 profit_to_gr (margin 指标), 非营收增长率 (应用 or_yoy). 修复: ng_feature_calculator.py 改名/合并/去重 + 拉 or_yoy + 重训
+2026-04-12 | feature| EMT 特征审计 + 候选验证工具链 — analysis/feature_audit.py (gain/SHAP/单因子IC/相关性矩阵四维评估) + scripts/audit_ng_features.py + analysis/feature_validator.py (候选新特征四关验证: IC/分组/冗余/LGB增量训练) + scripts/validate_feature.py. 全量跑 ng101+ng110 四 target 20s, 输出 logs/feature_audit/. 审计本身就是头部量化日常工作的 70%
 2026-04-12 | eval   | 8策略长期回测(2018-2026) — 40,290信号/376采样日. 暴力K最强(+1.59% 10d alpha, Sharpe=1.96), 知行-0.05%纯噪音. Regime分化: 少负=牛市特化(Sharpe=1.75), 暴力K=熊市特化(Sharpe=2.05). 6月窗口结论被长样本推翻. 详见 evaluation/quant-strategies-2018-2026.md
 2026-04-12 | eval   | 退市股对 IC 无影响验证 — 2024 全年 IC 导入前后均 0.1902, 真 Alpha 占比均 47%. 因 StockTradebyZ 生成报告时已过滤退市股, 历史 IC 本无幸存者偏差. 数据价值留给未来重训练
 2026-04-12 | data   | 退市股数据导入 — tushare pro.stock_basic(list_status='D') + pro.daily, 322 只退市股 + 257,416 条日线, 修复 EMT 侧 IC 分析的幸存者偏差

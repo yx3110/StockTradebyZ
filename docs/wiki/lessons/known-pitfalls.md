@@ -28,6 +28,36 @@
 
 ---
 
+## 特征工程类
+
+### 特征重复 / 同义重命名
+- **现象**: 两个特征名不同但计算完全相同 (相关系数 1.000), 变成"训练数据的噪声副本", 抢夺 LGB 每棵树的 feature_fraction 采样槽位, 稀释真正有效的特征.
+- **历史案例** (2026-04-12 EMT feature_audit 发现, ng1.0.1 有 4 对):
+  1. `volume_contraction` (`:183`) 和 `volume_ratio_5d` (`:224`) 都是 `vol5_mean / vol20_mean`
+  2. `industry_relative_strength` (`:585`) 和 `residual_return_20d` (`:738`) 都是 `stock_20d - industry_20d`
+  3. `sw_index_return_5d` (`:616`) 参数名暗示 SW 指数收益, 实际接的是 `ind_agg['mean_return_5d']` (行业均值), 和 `industry_return_5d` 等同
+  4. `revenue_growth` (`:426`) 被赋值 `profit_to_gr` (利润总额/营业总收入, 是 margin 指标), 和 `net_profit_margin` 相关 0.999. 真正的营收增长率字段是 `or_yoy`
+- **解决**:
+  1. 每次新增特征后, 跑 EMT 的 `scripts/audit_ng_features.py`, 检查冗余对报告
+  2. 相关 > 0.95 的特征对强制人工 review
+  3. 命名要匹配实际计算 (e.g. `profit_to_gr_ratio` 而不是 `revenue_growth`)
+
+### 僵尸特征 — 声明但训练时全 NaN
+- **现象**: 模型元信息声明 N 特征, 但部分特征的 LGB gain importance = 0 + SHAP = 0, 实际 OOS 不起作用.
+- **历史案例** (2026-04-12 ng1.1.0): 声明 77 特征 (67 stock + 10 market), 但 7 个新增的 `cx_*` 交互特征 (`cx_beta_mkt_vol` 等) 在 `ng101_feature_cache.features_json` 里根本不存在. 训练时这些列全 NaN, LGB 从未分裂, 实际有效特征只有 70 个. 模型部署了一个"纸面规模"虚高的版本.
+- **根因**: feature engineering 升级 (新增 cx_*) 只改了 calculator 和模型代码, **没有同步回填 cache**. 训练时不会报错因为 LGB 容忍 NaN, 但特征的 predictive power 为零.
+- **解决**:
+  1. 新特征上线前, 必须先 backfill `*_feature_cache.features_json` 再重训
+  2. 训练后立即跑 EMT `audit_ng_features.py` 验证: **每个声明的特征都应该有非零 gain 和非零 SHAP**
+  3. 模型签收条件: gain=0 的特征数量应为 0 (或 < 3%)
+
+### `factor_quality_*.json` 只能反映训练数据分布, 不是 OOS
+- **现象**: 训练日志里 ICIR 很高, 但上线后 IC 衰减快
+- **根因**: train_v395 的 factor_quality 字段是训练集内部 IC, 不是 WF-OOS IC
+- **解决**: 始终以 `wf_summary.json` 为准; `factor_quality_*.json` 只能做训练方向性参考
+
+---
+
 ## 数据库类
 
 ### SQLite 并发死锁

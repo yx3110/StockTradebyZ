@@ -130,29 +130,35 @@ NG104_VERSION = 'ng1.0.4'
 NG107_VERSION = 'ng1.0.7'
 
 # ---------------------------------------------------------------------------
-# ng1.1.0: 基于ng1.0.1(69feat)精简 — 移除3个多版本验证无用因子
+# ng1.1.0: 基于ng1.0.1精简 + bug修复 + P2新因子
 # ---------------------------------------------------------------------------
-# ng1.0.1: 59 stock + 10 market = 69, industry_excess_return标签
 # P0移除: roe_change(5版本近零), n_sectors_strong(3版本全零),
 #          days_since_breakout(4版本近零, 被adx_proxy替代)
-# ng1.1.0 = 56 stock + 10 market = 66, 基于ng101_feature_cache
-_NG110_PRUNED = frozenset({'roe_change', 'n_sectors_strong', 'days_since_breakout'})
-# ng1.0.1的59个stock features (在ng1.0.3 STOCK_FEATURE_NAMES基础上加回被1.0.3移除的3个)
+# Bug修复移除: volume_contraction(≡volume_ratio_5d), sw_index_return_5d(≡industry_return_5d),
+#              industry_relative_strength(≡residual_return_20d)
+# Bug修复重命名: revenue_growth→profit_margin_ratio (原值是margin非growth)
+# 新增: revenue_growth(真正的or_yoy) + P2的4个因子
+_NG110_PRUNED = frozenset({
+    'roe_change', 'n_sectors_strong', 'days_since_breakout',   # P0
+    'volume_contraction', 'sw_index_return_5d',                 # Bug #1, #2
+    'industry_relative_strength',                               # Bug #3
+    'revenue_growth',                                           # Bug #4: was margin, replaced by real or_yoy
+})
 _NG101_STOCK_FEATURES: List[str] = [
-    # Trend state (5)
+    # Trend (5→3 after pruning volume_contraction + days_since_breakout)
     'trend_strength_20d', 'days_since_breakout', 'adx_proxy',
     'pullback_from_high', 'volume_contraction',
     # Pullback entry (6)
     'pullback_to_ma10', 'pullback_to_ma20', 'rsi_14',
     'kdj_j_value', 'lower_shadow_ratio', 'intraday_recovery',
-    # Volume confirmation (8)
+    # Volume confirmation (8→7 after pruning volume_contraction)
     'volume_ratio_5d', 'volume_price_corr', 'obv_trend', 'volume_breakout',
     'log_amount_ma5', 'turnover_rate', 'up_volume_ratio', 'volume_cv',
-    # Fundamental quality (14)
+    # Fundamental (14→13 after removing roe_change; revenue_growth renamed)
     'roe_ttm', 'roe_change', 'revenue_growth', 'net_profit_margin', 'ocf_quality',
     'pe_ttm', 'pb', 'pe_percentile_60d', 'debt_to_assets', 'current_ratio',
     'log_market_cap', 'log_adv_20d', 'free_float_ratio', 'dv_ratio',
-    # Industry rotation (11)
+    # Industry (11→9 after removing sw_index_return_5d + industry_relative_strength + n_sectors_strong)
     'industry_return_5d', 'industry_return_20d', 'industry_relative_strength',
     'industry_breadth', 'industry_volume_change', 'industry_rank_return_5d',
     'sw_index_return_5d', 'industry_hhi',
@@ -166,7 +172,18 @@ _NG101_STOCK_FEATURES: List[str] = [
     'residual_skewness', 'relative_strength_vs_peers',
 ]
 NG110_STOCK_FEATURES: List[str] = [f for f in _NG101_STOCK_FEATURES if f not in _NG110_PRUNED]
-NG110_ALL_FEATURES: List[str] = NG110_STOCK_FEATURES + MARKET_FEATURE_NAMES  # 56 stock + 10 market = 66
+# Bug #4 fix: add corrected features + P2 new alpha factors
+NG110_BUGFIX_FEATURES: List[str] = [
+    'profit_margin_ratio',               # Bug #4: renamed from revenue_growth (was margin, not growth)
+    'revenue_growth',                     # Bug #4: now real or_yoy (营收同比增长率)
+]
+NG110_P2_FEATURES: List[str] = [
+    'cs_rank_pb', 'cs_rank_dv',          # industry-within valuation rank
+    'peg_proxy', 'pb_roe_ratio',         # value efficiency composites
+]
+NG110_STOCK_FEATURES = NG110_STOCK_FEATURES + NG110_BUGFIX_FEATURES + NG110_P2_FEATURES
+# ng1.1.0 = 59 base - 7 pruned + 2 bugfix + 4 P2 = 58 stock + 10 market = 68 total
+NG110_ALL_FEATURES: List[str] = NG110_STOCK_FEATURES + MARKET_FEATURE_NAMES
 NG110_VERSION = 'ng1.1.0'
 
 # ng1.0.9: Persistent features (10-day rank autocorrelation >= 0.5)
@@ -174,7 +191,7 @@ NG110_VERSION = 'ng1.1.0'
 PERSISTENT_STOCK_FEATURES: List[str] = [
     # Fundamentals (autocorr 0.94-1.00)
     'debt_to_assets', 'current_ratio', 'free_float_ratio', 'pb', 'dv_ratio',
-    'pe_ttm', 'net_profit_margin', 'revenue_growth', 'roe_ttm', 'roe_change', 'ocf_quality',
+    'pe_ttm', 'net_profit_margin', 'profit_margin_ratio', 'roe_ttm', 'ocf_quality',
     # Liquidity (0.80-0.97)
     'log_adv_20d', 'log_amount_ma5', 'turnover_rate',
     # Volatility (0.74-0.79)
@@ -222,11 +239,21 @@ class NGTrainer(V485Trainer):
                 self.macro_feature_cols = list(macro_f)
                 self._cond_ix_cols = list(cond_f)
                 break
+        # ng1.1.0+: disable V475 PRUNE_FEATURES — NG manages its own feature set
+        if version_ge(self._ng_version, 'ng1.1.0'):
+            self.PRUNE_FEATURES = []
         # Stub market_calculator for V475 model_data serialization
         class _StubMC:
             class market_features:
                 columns = ['date'] + list(MARKET_FEATURE_NAMES)
         self.market_calculator = _StubMC()
+
+    def _compute_cache_key(self, start_date, end_date):
+        """Override: include NG version in cache key to invalidate on version/feature changes."""
+        import hashlib
+        db_mtime = os.path.getmtime(self.db_path) if os.path.exists(self.db_path) else 0
+        key_str = f"{self.__class__.__name__}_{self._ng_version}_{start_date}_{end_date}_{db_mtime:.0f}"
+        return hashlib.md5(key_str.encode()).hexdigest()[:12]
 
     # ------------------------------------------------------------------
     # Feature name accessors
@@ -245,16 +272,17 @@ class NGTrainer(V485Trainer):
         return list(MARKET_FEATURE_NAMES)
 
     # 10-day rank autocorrelation lookup (pre-computed from ng1.0.1 data 2020-2025)
+    # Note: 'revenue_growth' was measured on old profit_to_gr (margin); real or_yoy TBD
     _FEATURE_AUTOCORR = {
         'debt_to_assets': 0.998, 'current_ratio': 0.997, 'free_float_ratio': 0.995,
         'pb': 0.994, 'dv_ratio': 0.991, 'pe_ttm': 0.988, 'net_profit_margin': 0.986,
-        'revenue_growth': 0.986, 'log_adv_20d': 0.970, 'roe_ttm': 0.970,
-        'roe_change': 0.965, 'cs_rank_pe': 0.955, 'industry_hhi': 0.951,
+        'profit_margin_ratio': 0.986, 'log_adv_20d': 0.970, 'roe_ttm': 0.970,
+        'cs_rank_pe': 0.955, 'industry_hhi': 0.951,
         'ocf_quality': 0.940, 'log_amount_ma5': 0.913, 'residual_volume': 0.904,
         'turnover_rate': 0.797, 'idiosyncratic_volatility': 0.790,
         'cs_rank_turnover': 0.742, 'cs_rank_volatility': 0.735,
         'cs_rank_rsi': 0.623, 'pe_percentile_60d': 0.597,
-        'up_volume_ratio': 0.480, 'industry_relative_strength': 0.437,
+        'up_volume_ratio': 0.480,
         'residual_return_20d': 0.437, 'relative_strength_vs_peers': 0.437,
         'industry_return_20d': 0.436, 'volume_cv': 0.432,
         'cs_rank_return_20d': 0.422, 'volume_price_corr': 0.416,
@@ -262,14 +290,13 @@ class NGTrainer(V485Trainer):
         'trend_strength_20d': 0.321, 'rsi_14': 0.281, 'obv_trend': 0.270,
         'pullback_to_ma20': 0.249, 'industry_breadth': 0.051,
         'sector_breadth_vs_market': 0.051, 'cs_rank_pullback': 0.049,
-        'intraday_recovery': 0.040, 'n_sectors_strong': 0.040,
+        'intraday_recovery': 0.040,
         'industry_return_5d': 0.023, 'industry_rank_return_5d': 0.023,
-        'sw_index_return_5d': 0.023, 'days_since_breakout': 0.014,
         'lower_shadow_ratio': 0.013, 'volume_breakout': 0.011,
         'adx_proxy': 0.000, 'cs_rank_return_5d': -0.004,
         'industry_volume_change': -0.014, 'sector_volume_vs_market': -0.014,
         'pullback_to_ma10': -0.041, 'cs_rank_volume_surge': -0.053,
-        'volume_contraction': -0.058, 'volume_ratio_5d': -0.058,
+        'volume_ratio_5d': -0.058,
         'kdj_j_value': -0.116,
     }
 
@@ -300,13 +327,13 @@ class NGTrainer(V485Trainer):
                 features += selected
             else:
                 features += INTERACTION_FEATURE_NAMES
-        # ng1.0.7: conditional interaction features (IC-screened in prepare_features)
-        if version_ge(self._ng_version, 'ng1.0.7'):
+        # Conditional interaction features (set per-version in __init__)
+        if self._cond_ix_cols:
             selected_cx = getattr(self, '_selected_cx', None)
             if selected_cx:
                 features += selected_cx
             else:
-                features += CONDITIONAL_IX_FEATURE_NAMES
+                features += self._cond_ix_cols
         return features
 
     # ------------------------------------------------------------------
@@ -754,10 +781,10 @@ class NGTrainer(V485Trainer):
         elif version_ge(self._ng_version, 'ng1.0.4'):
             extra_select = ", ra_label_3d, ra_label_5d, ra_label_10d, ra_label_15d"
 
+        downside_col = ", downside_10d" if not version_ge(self._ng_version, 'ng1.1.0') else ""
         query = f"""
         SELECT code, trade_date, features_json,
-               label_3d, label_5d, label_10d, label_15d,
-               downside_10d{extra_select},
+               label_3d, label_5d, label_10d, label_15d{downside_col}{extra_select},
                market_return_5d, market_return_20d, market_volatility_20d,
                market_breadth, market_new_high_ratio, northbound_flow_5d,
                market_volume_ratio, market_drawdown, vix_proxy,
@@ -932,6 +959,24 @@ class NGTrainer(V485Trainer):
         self.rank_normalized = False
         self.robust_zscore = True
         self.dual_stream = False
+
+        # P3: Market orthogonalization — regress out market factors from stock factors
+        # so the model must find alpha from stock-level signals, not market timing
+        if version_ge(self._ng_version, 'ng1.1.0') and self.macro_feature_cols:
+            logger.info("  P3: Orthogonalizing stock features against market factors ...")
+            from numpy.linalg import lstsq
+            market_vals = df[self.macro_feature_cols].values
+            stock_vals = df[self.stock_feature_cols].values
+            market_with_intercept = np.column_stack([market_vals, np.ones(len(market_vals))])
+            # Valid mask is the same for all stock features (market side only)
+            market_valid = ~np.any(np.isnan(market_with_intercept), axis=1)
+            # After z-score + fillna, stock features have no NaNs → batched lstsq
+            valid = market_valid & ~np.any(np.isnan(stock_vals), axis=1)
+            if valid.sum() >= 100:
+                beta_all, _, _, _ = lstsq(market_with_intercept[valid], stock_vals[valid], rcond=None)
+                stock_vals[valid] = stock_vals[valid] - market_with_intercept[valid] @ beta_all
+            df[self.stock_feature_cols] = np.nan_to_num(stock_vals, nan=0.0)
+            logger.info(f"  P3: {len(self.stock_feature_cols)} stock features orthogonalized")
 
         X = df[self.feature_names].values
         y_3d = df['label_3d'].values

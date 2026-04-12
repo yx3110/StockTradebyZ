@@ -116,3 +116,20 @@ python3 trade.py --account credit sync-positions --accounts credit  # 确认
 | `backtest/execution_backtest.py` | 执行策略基线对比 + gap扫描 |
 | `backtest/execution_backtest_v2.py` | Smart V2 动态仓位回测 |
 | `backtest/gap_signal_analysis.py` | Gap×Score交叉收益分析 (290万条) |
+
+## EMT 侧量化分析扩展 (2026-04-11/12)
+
+EastMoneyTrader 新增独立的 `analysis/` 模块，不依赖 StockTradebyZ 内部工具：
+
+- **因子诊断**: IC/IR、IC 衰减、分层回测、中性化（行业/市值）、时间趋势、拥挤度
+- **组合优化**: Markowitz、Black-Litterman、风险平价、换手率约束、流动性约束
+- **回测验证**: Walk-Forward、蒙特卡洛、多重检验校正
+- **信号驱动调仓**: `HoldingsStateManager` 替代日频调仓，IC 决定持有期
+- **退市股导入**: 修复幸存者偏差（322 只 + 257K 日线）
+
+详见 [EMT 量化分析框架](emt-analysis-framework.md)。
+
+关键诊断结果（ng1.0.1）:
+- 双重中性后 IC 保留 53% → 模型有约一半 Alpha, 一半行业/市值 Beta
+- IC 衰减峰值在 10 日 → 日频调仓过度, 最优持有 10-20 日
+- 2024 IC 时间趋势 ratio=0.58 → 轻微衰减
