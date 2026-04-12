@@ -23,6 +23,7 @@ VERSION_TABLE_MAP = {
     'ng1.0.3': 'ng103_feature_cache',
     'ng1.0.4': 'ng104_feature_cache',
     'ng1.0.7': 'ng107_feature_cache',
+    'ng1.1.0': 'ng101_feature_cache',  # 基于ng1.0.1(69feat)精简, 复用ng101缓存
 }
 
 DEFAULT_VERSION = 'ng1.0.3'

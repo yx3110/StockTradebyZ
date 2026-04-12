@@ -10,7 +10,8 @@
 
 ## 模型演化
 - [模型世代总览](models/evolution.md) — V3.8 → V3.9 → V4.x → NG 系列演化路径与关键转折
-- [NG 系列详解](models/ng-series.md) — NG 1.0.0 → 1.0.6 每版本改动与性能（含0AMV牛熊切换）
+- [NG 系列详解](models/ng-series.md) — NG 1.0.0 → 1.0.9 每版本改动与性能（ng1.0.8最优:Sharpe=2.52）
+- [NG 因子质量与权重分布](models/ng-factor-quality.md) — 每版本因子重要性排名、组占比、近零因子、跨版本对比
 - [V4.x 实验总结](models/v4x-series.md) — V4.4 → V4.9.0.1 实验迭代、成功与失败
 - [V3.9/3.95 旧版参考](models/v39-series.md) — 旧版 ensemble 系统说明（保留参考）
 

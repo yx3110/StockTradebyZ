@@ -322,9 +322,7 @@ def update_daily_basic(date_str: str):
         with sqlite3.connect(db_path, timeout=30) as conn:
             cursor = conn.cursor()
 
-            # 获取证券ID映射
-            cursor.execute('SELECT code, id FROM securities')
-            security_map = {row[0]: row[1] for row in cursor.fetchall()}
+            security_map = _get_security_map_cached()
 
             formatted_date = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
 
@@ -424,8 +422,7 @@ def save_financial_data_to_db(df):
         with sqlite3.connect(db_path, timeout=30) as conn:
             cursor = conn.cursor()
 
-            cursor.execute('SELECT code, id FROM securities')
-            security_map = {row[0]: row[1] for row in cursor.fetchall()}
+            security_map = _get_security_map_cached()
 
             count = 0
             for _, row in df.iterrows():
@@ -545,22 +542,32 @@ def update_v40_feature_cache(date_str: str, stock_data_cache: dict = None):
 
 
 def update_ng_feature_cache(date_str: str):
-    """更新NG特征缓存 (ng1.0.3, 66因子, 写入ng103_feature_cache)"""
+    """更新NG特征缓存 (ng1.0.3默认 + ng1.0.1/ng1.0.4 for ng1.0.6牛熊切换)"""
     logger.info(f"开始更新 {date_str} 的NG特征缓存...")
 
+    total_count = 0
     try:
         from ml_models.ng.ng_cache_updater import NGCacheUpdater
 
         date_dash = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
-        updater = NGCacheUpdater()
-        count = updater.update_single_date(date_dash)
 
-        if count and count > 0:
-            logger.info(f"✅ NG特征缓存更新成功: {count} 条")
+        # 更新所有ng1.0.6依赖的版本: ng1.0.3(默认), ng1.0.1(牛市), ng1.0.4(熊市)
+        for ver in ['ng1.0.3', 'ng1.0.1', 'ng1.0.4']:
+            try:
+                updater = NGCacheUpdater(version=ver)
+                count = updater.update_single_date(date_dash)
+                if count and count > 0:
+                    logger.info(f"  {ver} 缓存更新: {count} 条")
+                    total_count += count
+            except Exception as e:
+                logger.warning(f"  {ver} 缓存更新失败: {e}")
+
+        if total_count > 0:
+            logger.info(f"✅ NG特征缓存更新成功: {total_count} 条 (3个版本)")
         else:
             logger.info("✅ NG特征缓存更新完成 (无新数据)")
 
-        return count or 0
+        return total_count
 
     except Exception as e:
         logger.warning(f"⚠️ NG特征缓存更新异常: {e}")

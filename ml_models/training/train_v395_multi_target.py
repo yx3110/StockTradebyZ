@@ -693,19 +693,18 @@ class V395MultiTargetTrainer:
 
         # 填充缺失的额外特征 (约5-10%股票可能缺少daily_basic数据)
         # 使用当日截面中位数填充，与推理侧 v395_production_scorer 保持一致
-        for col in ['pe_ttm', 'pb', 'ps_ttm', 'turnover_rate', 'log_market_cap']:
-            missing = df_features[col].isnull().sum()
-            if missing > 0:
-                logger.info(f"    {col}: {missing:,} 缺失 ({missing/len(df_features)*100:.1f}%), 用当日截面中位数填充")
-                df_features[col] = df_features.groupby('trade_date')[col].transform(
-                    lambda x: x.fillna(x.median())
-                )
-                # 如果某天全部缺失，用全局中位数兜底
-                remaining = df_features[col].isnull().sum()
-                if remaining > 0:
-                    df_features[col] = df_features[col].fillna(df_features[col].median())
+        # 0 兜底: 避免全局 median 引入未来数据泄露
+        fill_cols = ['pe_ttm', 'pb', 'ps_ttm', 'turnover_rate', 'log_market_cap']
+        null_mask = df_features[fill_cols].isnull()
+        if null_mask.any().any():
+            for col in fill_cols:
+                n = null_mask[col].sum()
+                if n > 0:
+                    logger.info(f"    {col}: {n:,} 缺失 ({n/len(df_features)*100:.1f}%), 用当日截面中位数填充")
+            medians = df_features.groupby('trade_date')[fill_cols].transform('median')
+            df_features[fill_cols] = df_features[fill_cols].fillna(medians).fillna(0.0)
 
-        logger.info(f"  额外特征合并完成: +5 (pe_ttm, pb, ps_ttm, turnover_rate, log_market_cap)")
+        logger.info(f"  额外特征合并完成: +{len(fill_cols)} ({', '.join(fill_cols)})")
 
         # ===== BRAIN 验证因子 (可选, --brain-features 启用) =====
         if getattr(self, 'use_brain_features', False):

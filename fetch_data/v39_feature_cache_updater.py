@@ -79,9 +79,14 @@ class V39FeatureCacheUpdaterOptimized:
         self._sw_index_return_cache = None  # {l1_name: {return_1d, return_5d}}
         self._northbound_flow_cache = None  # {flow_5d: float}
 
+    def _open_db(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self.db_path)
+        conn.execute("PRAGMA busy_timeout=30000")
+        return conn
+
     def get_stock_list(self) -> List[str]:
         """获取所有A股和ETF代码"""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._open_db()
         cursor = conn.cursor()
         cursor.execute("""
             SELECT code FROM securities
@@ -113,7 +118,7 @@ class V39FeatureCacheUpdaterOptimized:
         end_date = datetime.strptime(date, '%Y-%m-%d')
         start_date = end_date - timedelta(days=lookback_days + 10)
 
-        conn = sqlite3.connect(self.db_path)
+        conn = self._open_db()
 
         # 获取市场数据
         market_query = """
@@ -230,7 +235,7 @@ class V39FeatureCacheUpdaterOptimized:
           target = close[T+1+N] (买入后第N个交易日的收盘价)
           label_Nd = close[T+1+N] / open[T+1] - 1
         """
-        conn = sqlite3.connect(self.db_path)
+        conn = self._open_db()
 
         # 获取当天和未来的行情 (需要 open 和 close)
         query = """
@@ -298,7 +303,7 @@ class V39FeatureCacheUpdaterOptimized:
             self._industry_valuation_cache = {}
             return
 
-        conn = sqlite3.connect(self.db_path)
+        conn = self._open_db()
 
         # 获取当天或最近的daily_basic数据
         query = """
@@ -426,7 +431,7 @@ class V39FeatureCacheUpdaterOptimized:
             return
 
         start_time = time.time()
-        conn = sqlite3.connect(self.db_path)
+        conn = self._open_db()
 
         # --- Query 1: breadth + limit_up_ratio from daily_quotes ---
         breadth_query = """
@@ -547,7 +552,7 @@ class V39FeatureCacheUpdaterOptimized:
         if self._sw_index_return_cache is not None:
             return
 
-        conn = sqlite3.connect(self.db_path)
+        conn = self._open_db()
         cursor = conn.cursor()
 
         # Check table exists
@@ -607,7 +612,7 @@ class V39FeatureCacheUpdaterOptimized:
         if self._northbound_flow_cache is not None:
             return
 
-        conn = sqlite3.connect(self.db_path)
+        conn = self._open_db()
         cursor = conn.cursor()
 
         cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='hsgt_daily'")
@@ -874,7 +879,7 @@ class V39FeatureCacheUpdaterOptimized:
 
     def _batch_insert(self, results: List[Dict], market_features: Dict) -> int:
         """批量插入特征到数据库"""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._open_db()
         cursor = conn.cursor()
 
         # 确保表存在
@@ -973,7 +978,7 @@ class V39FeatureCacheUpdaterOptimized:
         logger.info("=" * 80)
         start_time = time.time()
 
-        conn = sqlite3.connect(self.db_path)
+        conn = self._open_db()
         cursor = conn.cursor()
 
         # 找到最新交易日，往前推 16 个交易日作为截止日期（确保有足够未来数据）
@@ -1152,7 +1157,7 @@ class V39FeatureCacheUpdaterOptimized:
         logger.info("=" * 80)
         start_time = time.time()
 
-        conn = sqlite3.connect(self.db_path)
+        conn = self._open_db()
         cursor = conn.cursor()
 
         # 找出 pct_change 特征为 0 或异常的记录（即需要修复的记录）
@@ -1234,7 +1239,7 @@ class V39FeatureCacheUpdaterOptimized:
 
     def update_date_range(self, start_date: str, end_date: str) -> int:
         """更新日期范围内的特征缓存"""
-        conn = sqlite3.connect(self.db_path)
+        conn = self._open_db()
 
         # 获取交易日列表
         query = """
@@ -1520,7 +1525,7 @@ class V39FeatureCacheUpdaterOptimized:
         overall_start = time.time()
 
         # ========== 获取交易日列表 ==========
-        conn = sqlite3.connect(self.db_path)
+        conn = self._open_db()
         df_dates = pd.read_sql_query(
             "SELECT DISTINCT trade_date FROM daily_quotes "
             "WHERE trade_date >= ? AND trade_date <= ? ORDER BY trade_date",
@@ -1552,7 +1557,7 @@ class V39FeatureCacheUpdaterOptimized:
         lookback_start = lookback_dt.strftime('%Y-%m-%d')
         future_end = future_dt.strftime('%Y-%m-%d')
 
-        conn = sqlite3.connect(self.db_path)
+        conn = self._open_db()
 
         # 1a. 全部A股+ETF行情
         logger.info(f"  加载行情数据 ({lookback_start} ~ {future_end})...")

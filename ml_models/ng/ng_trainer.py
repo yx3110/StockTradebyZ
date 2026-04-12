@@ -129,6 +129,46 @@ NG_VERSION = 'ng1.0.3'
 NG104_VERSION = 'ng1.0.4'
 NG107_VERSION = 'ng1.0.7'
 
+# ---------------------------------------------------------------------------
+# ng1.1.0: 基于ng1.0.1(69feat)精简 — 移除3个多版本验证无用因子
+# ---------------------------------------------------------------------------
+# ng1.0.1: 59 stock + 10 market = 69, industry_excess_return标签
+# P0移除: roe_change(5版本近零), n_sectors_strong(3版本全零),
+#          days_since_breakout(4版本近零, 被adx_proxy替代)
+# ng1.1.0 = 56 stock + 10 market = 66, 基于ng101_feature_cache
+_NG110_PRUNED = frozenset({'roe_change', 'n_sectors_strong', 'days_since_breakout'})
+# ng1.0.1的59个stock features (在ng1.0.3 STOCK_FEATURE_NAMES基础上加回被1.0.3移除的3个)
+_NG101_STOCK_FEATURES: List[str] = [
+    # Trend state (5)
+    'trend_strength_20d', 'days_since_breakout', 'adx_proxy',
+    'pullback_from_high', 'volume_contraction',
+    # Pullback entry (6)
+    'pullback_to_ma10', 'pullback_to_ma20', 'rsi_14',
+    'kdj_j_value', 'lower_shadow_ratio', 'intraday_recovery',
+    # Volume confirmation (8)
+    'volume_ratio_5d', 'volume_price_corr', 'obv_trend', 'volume_breakout',
+    'log_amount_ma5', 'turnover_rate', 'up_volume_ratio', 'volume_cv',
+    # Fundamental quality (14)
+    'roe_ttm', 'roe_change', 'revenue_growth', 'net_profit_margin', 'ocf_quality',
+    'pe_ttm', 'pb', 'pe_percentile_60d', 'debt_to_assets', 'current_ratio',
+    'log_market_cap', 'log_adv_20d', 'free_float_ratio', 'dv_ratio',
+    # Industry rotation (11)
+    'industry_return_5d', 'industry_return_20d', 'industry_relative_strength',
+    'industry_breadth', 'industry_volume_change', 'industry_rank_return_5d',
+    'sw_index_return_5d', 'industry_hhi',
+    'sector_breadth_vs_market', 'sector_volume_vs_market', 'n_sectors_strong',
+    # Cross-sectional rank (10)
+    'cs_rank_return_5d', 'cs_rank_return_20d', 'cs_rank_volume_surge',
+    'cs_rank_turnover', 'cs_rank_rsi', 'cs_rank_new_high',
+    'cs_rank_pullback', 'cs_rank_volatility', 'cs_rank_market_cap', 'cs_rank_pe',
+    # Residual factors (5)
+    'residual_return_20d', 'residual_volume', 'idiosyncratic_volatility',
+    'residual_skewness', 'relative_strength_vs_peers',
+]
+NG110_STOCK_FEATURES: List[str] = [f for f in _NG101_STOCK_FEATURES if f not in _NG110_PRUNED]
+NG110_ALL_FEATURES: List[str] = NG110_STOCK_FEATURES + MARKET_FEATURE_NAMES  # 56 stock + 10 market = 66
+NG110_VERSION = 'ng1.1.0'
+
 # ng1.0.9: Persistent features (10-day rank autocorrelation >= 0.5)
 # 22 features that produce stable cross-sectional rankings over 10 days
 PERSISTENT_STOCK_FEATURES: List[str] = [
@@ -169,22 +209,19 @@ class NGTrainer(V485Trainer):
         self.target_weights = dict(self.TARGET_WEIGHTS)
         self._turbo_skip_etf = True
         self.cache_table = get_table_name(self._ng_version)
-        # Select feature set by version
-        if version_ge(self._ng_version, 'ng1.0.7'):
-            self.feature_names = list(NG107_ALL_FEATURES)
-            self.stock_feature_cols = list(STOCK_FEATURE_NAMES)
-            self.macro_feature_cols = list(NG107_MARKET_FEATURES)
-            self._cond_ix_cols = list(CONDITIONAL_IX_FEATURE_NAMES)
-        elif version_ge(self._ng_version, 'ng1.0.4'):
-            self.feature_names = list(NG104_ALL_FEATURES)
-            self.stock_feature_cols = list(NG104_STOCK_FEATURES)
-            self.macro_feature_cols = list(MARKET_FEATURE_NAMES)
-            self._cond_ix_cols = []
-        else:
-            self.feature_names = list(ALL_FEATURE_NAMES)
-            self.stock_feature_cols = list(STOCK_FEATURE_NAMES)
-            self.macro_feature_cols = list(MARKET_FEATURE_NAMES)
-            self._cond_ix_cols = []
+        version_feature_table = [
+            ('ng1.1.0', NG110_ALL_FEATURES, NG110_STOCK_FEATURES, MARKET_FEATURE_NAMES, []),
+            ('ng1.0.7', NG107_ALL_FEATURES, STOCK_FEATURE_NAMES,  NG107_MARKET_FEATURES, CONDITIONAL_IX_FEATURE_NAMES),
+            ('ng1.0.4', NG104_ALL_FEATURES, NG104_STOCK_FEATURES, MARKET_FEATURE_NAMES,  []),
+            ('ng0.0.0', ALL_FEATURE_NAMES,  STOCK_FEATURE_NAMES,  MARKET_FEATURE_NAMES,  []),
+        ]
+        for min_ver, all_f, stock_f, macro_f, cond_f in version_feature_table:
+            if version_ge(self._ng_version, min_ver):
+                self.feature_names = list(all_f)
+                self.stock_feature_cols = list(stock_f)
+                self.macro_feature_cols = list(macro_f)
+                self._cond_ix_cols = list(cond_f)
+                break
         # Stub market_calculator for V475 model_data serialization
         class _StubMC:
             class market_features:
@@ -273,6 +310,35 @@ class NGTrainer(V485Trainer):
         return features
 
     # ------------------------------------------------------------------
+    # P1: Ensemble weight floor + shrinkage (ng1.1.0+)
+    # ------------------------------------------------------------------
+
+    def calculate_ensemble_weights(self, predictions_val: dict, y_val):
+        """Override: add weight floor and equal-weight shrinkage for ng1.1.0+."""
+        weights, mean_ics = super().calculate_ensemble_weights(predictions_val, y_val)
+
+        if not version_ge(self._ng_version, 'ng1.1.0'):
+            return weights, mean_ics
+
+        n = len(weights)
+        if n <= 1:
+            return weights, mean_ics
+
+        # Shrinkage: blend IC-weights with equal weights (70% IC + 30% equal)
+        shrinkage = 0.3
+        equal_w = 1.0 / n
+        shrunk = {k: (1 - shrinkage) * v + shrinkage * equal_w for k, v in weights.items()}
+
+        # Weight floor: no algorithm below 1/N * 0.3 (roughly 5% for 6 algos)
+        floor = equal_w * 0.3
+        clipped = {k: max(v, floor) for k, v in shrunk.items()}
+        total = sum(clipped.values())
+        final = {k: v / total for k, v in clipped.items()}
+
+        logger.info(f"  P1 shrinkage+floor: {', '.join(f'{k}={v:.3f}' for k, v in final.items())}")
+        return final, mean_ics
+
+    # ------------------------------------------------------------------
     # ICIR Adaptive Composite Weights
     # ------------------------------------------------------------------
 
@@ -281,34 +347,27 @@ class NGTrainer(V485Trainer):
         Compute composite weights proportional to OOS ICIR for each target.
         Falls back to default weights if ICIR data unavailable.
 
+        Reads from history['summary']['walk_forward_summary'] (V475+ format).
+
         Returns dict like {'label_3d': 0.10, 'label_5d': 0.20, ...}
         """
         try:
-            wf_windows = history.get('wf_windows', [])
-            if not wf_windows:
-                logger.warning("No WF windows in history, using default weights")
-                return dict(self.TARGET_WEIGHTS)
+            # V475+ stores WF metrics in summary.walk_forward_summary
+            wf_summary = history.get('summary', {}).get('walk_forward_summary', {})
 
-            # Collect OOS IC values per target across windows
             target_ics: dict = {}
-            for target in ['label_3d', 'label_5d', 'label_10d', 'label_15d']:
-                ics = []
-                for w in wf_windows:
-                    metrics = w.get('test_metrics', w.get('oos_metrics', {}))
-                    ic = metrics.get(f'{target}_ic', metrics.get(f'ic_{target}'))
-                    if ic is not None and not np.isnan(ic):
-                        ics.append(ic)
-                if ics:
-                    mean_ic = np.mean(ics)
-                    std_ic = np.std(ics) if len(ics) > 1 else max(abs(mean_ic) * 0.5, 0.01)
-                    icir = mean_ic / (std_ic + 1e-8)
-                    target_ics[target] = max(icir, 0.0)  # Floor at 0
+            for target_key, wf_key in [('label_3d', '3d'), ('label_5d', '5d'),
+                                        ('label_10d', '10d'), ('label_15d', '15d')]:
+                tw = wf_summary.get(wf_key, {})
+                icir = tw.get('mean_icir')
+                if icir is not None and not np.isnan(icir):
+                    target_ics[target_key] = max(float(icir), 0.0)
                 else:
-                    target_ics[target] = 0.0
+                    target_ics[target_key] = 0.0
 
             total = sum(target_ics.values())
             if total < 1e-8:
-                logger.warning("All ICIR ≤ 0, using default weights")
+                logger.warning("No WF ICIR data in history, using default weights")
                 return dict(self.TARGET_WEIGHTS)
 
             weights = {k: v / total for k, v in target_ics.items()}
@@ -319,6 +378,214 @@ class NGTrainer(V485Trainer):
         except Exception as e:
             logger.warning(f"ICIR adaptive weights failed: {e}, using defaults")
             return dict(self.TARGET_WEIGHTS)
+
+    # ------------------------------------------------------------------
+    # Factor Quality Analysis
+    # ------------------------------------------------------------------
+
+    # Group mapping derived from module-level feature name constants
+    _FEATURE_GROUP_MAP: dict = {}
+    for _f in STOCK_FEATURE_NAMES[:4]:
+        _FEATURE_GROUP_MAP[_f] = 'trend'
+    # v1.0.0 had pullback_from_high in trend; keep mapping for older models
+    _FEATURE_GROUP_MAP['pullback_from_high'] = 'trend'
+    for _f in STOCK_FEATURE_NAMES[4:10]:
+        _FEATURE_GROUP_MAP[_f] = 'pullback'
+    for _f in STOCK_FEATURE_NAMES[10:18]:
+        _FEATURE_GROUP_MAP[_f] = 'volume'
+    for _f in STOCK_FEATURE_NAMES[18:31]:
+        _FEATURE_GROUP_MAP[_f] = 'fundamental'
+    # v1.0.0 had log_market_cap; keep mapping for older models
+    _FEATURE_GROUP_MAP['log_market_cap'] = 'fundamental'
+    _FEATURE_GROUP_MAP['turnover_rate'] = 'fundamental'
+    for _f in STOCK_FEATURE_NAMES[31:42]:
+        _FEATURE_GROUP_MAP[_f] = 'industry'
+    for _f in STOCK_FEATURE_NAMES[42:51]:
+        _FEATURE_GROUP_MAP[_f] = 'cs_rank'
+    # v1.0.0 had cs_rank_market_cap; keep mapping for older models
+    _FEATURE_GROUP_MAP['cs_rank_market_cap'] = 'cs_rank'
+    for _f in STOCK_FEATURE_NAMES[51:]:
+        _FEATURE_GROUP_MAP[_f] = 'residual'
+    for _f in MARKET_FEATURE_NAMES:
+        _FEATURE_GROUP_MAP[_f] = 'market'
+    for _f in SMOOTHING_FEATURE_NAMES:
+        _FEATURE_GROUP_MAP[_f] = 'smoothing'
+    for _f in MONEYFLOW_FEATURE_NAMES:
+        _FEATURE_GROUP_MAP[_f] = 'moneyflow'
+    for _f in INTERACTION_FEATURE_NAMES + CONDITIONAL_IX_FEATURE_NAMES:
+        _FEATURE_GROUP_MAP[_f] = 'interaction'
+    for _f in EXTENDED_MARKET_FEATURE_NAMES:
+        _FEATURE_GROUP_MAP[_f] = 'market'
+    del _f  # clean up loop variable from class namespace
+
+    @staticmethod
+    def _detect_trained_feature_count(models_dict: dict, fallback: int) -> int:
+        """Detect actual feature count from first available model importance."""
+        for target_data in models_dict.values():
+            if not isinstance(target_data, dict):
+                continue
+            for m in target_data.get('models', {}).values():
+                tp = type(m).__name__
+                try:
+                    if tp == 'Booster' and hasattr(m, 'feature_importance'):
+                        return len(m.feature_importance(importance_type='gain'))
+                    elif hasattr(m, 'feature_importances_'):
+                        return len(m.feature_importances_)
+                except Exception:
+                    continue
+        return fallback
+
+    def _log_factor_quality(self, model_data: dict, adaptive_weights: dict,
+                            history: dict, model_dir: Path, timestamp: str):
+        """Extract and log per-factor weighted importance after training.
+
+        Saves factor_quality_{timestamp}.json alongside the model, and prints
+        a summary to the training log.  The JSON is the canonical source for
+        updating docs/wiki/models/ng-factor-quality.md.
+        """
+        feature_names = model_data.get('feature_names', [])
+        n_feat = len(feature_names)
+        if n_feat == 0:
+            return
+
+        # V485 pipeline trains on a pruned feature subset — detect actual
+        # training features from the first model's importance length
+        models_dict = model_data.get('models', {})
+        trained_feat_count = self._detect_trained_feature_count(models_dict, n_feat)
+        if trained_feat_count < n_feat:
+            # Models were trained on V485 pruned features, not the full NG set.
+            # Use only the first trained_feat_count feature names (they match
+            # the V485 training order).
+            feature_names = feature_names[:trained_feat_count]
+            n_feat = trained_feat_count
+            logger.info(f"  Factor quality: using {n_feat} features (V485 pruned)")
+
+        all_imp = {feat: 0.0 for feat in feature_names}
+
+        for target, target_data in models_dict.items():
+            if not isinstance(target_data, dict):
+                continue
+            inner = target_data.get('models', {})
+            algo_weights = target_data.get('weights', {})
+            target_w = adaptive_weights.get(f'label_{target}',
+                                            adaptive_weights.get(target, 0.25))
+
+            for algo, m in inner.items():
+                tp = type(m).__name__
+                algo_w = algo_weights.get(algo, 0.2)
+                imp_arr = np.zeros(n_feat)
+
+                try:
+                    if tp == 'Booster' and 'lgb' in algo:
+                        raw = m.feature_importance(importance_type='gain')
+                        s = raw.sum()
+                        if s > 0:
+                            imp_arr = raw / s
+                    elif algo == 'xgb' or (tp == 'Booster' and 'xgb' in algo):
+                        score = m.get_score(importance_type='gain')
+                        raw = np.zeros(n_feat)
+                        for feat_key, val in score.items():
+                            idx = int(feat_key.replace('f', ''))
+                            if idx < n_feat:
+                                raw[idx] = val
+                        s = raw.sum()
+                        if s > 0:
+                            imp_arr = raw / s
+                    elif 'CatBoost' in tp:
+                        if hasattr(m, 'get_feature_importance'):
+                            raw = np.array(m.get_feature_importance(), dtype=float)
+                        elif hasattr(m, 'feature_importances_'):
+                            raw = m.feature_importances_
+                        else:
+                            raw = None
+                        if raw is not None:
+                            s = raw.sum()
+                            if s > 0:
+                                imp_arr = raw / s
+                    elif hasattr(m, 'feature_importances_'):
+                        # RF, HGB, and other sklearn estimators (already normalized)
+                        imp_arr = m.feature_importances_
+                except Exception as e:
+                    logger.debug(f"  Factor quality: {target}/{algo} importance extraction failed: {e}")
+                    continue
+
+                imp_len = len(imp_arr) if hasattr(imp_arr, '__len__') else 0
+                if imp_len == 0:
+                    continue
+                for i in range(min(n_feat, imp_len)):
+                    all_imp[feature_names[i]] += float(imp_arr[i]) * algo_w * target_w
+
+        total_imp = sum(all_imp.values())
+        if total_imp == 0:
+            logger.warning("Factor quality: all importances are zero, skipping")
+            return
+
+        # Sort and compute ranks
+        sorted_factors = sorted(all_imp.items(), key=lambda x: x[1], reverse=True)
+        factor_list = []
+        cum = 0.0
+        for rank, (fname, imp) in enumerate(sorted_factors, 1):
+            pct = imp / total_imp * 100
+            cum += pct
+            factor_list.append({
+                'rank': rank, 'feature': fname,
+                'weighted_importance': round(imp, 8),
+                'pct': round(pct, 3), 'cum_pct': round(cum, 3),
+            })
+
+        # Group summary using class-level mapping
+        group_pcts = {}
+        for feat, imp in all_imp.items():
+            g = self._FEATURE_GROUP_MAP.get(feat, 'other')
+            group_pcts[g] = group_pcts.get(g, 0.0) + imp / total_imp * 100
+
+        # WF ICIR from history
+        wf = history.get('summary', {}).get('walk_forward_summary', {})
+        icir_summary = {}
+        for t in ['3d', '5d', '10d', '15d']:
+            wf_entry = wf.get(t, {})
+            if 'mean_icir' in wf_entry:
+                icir_summary[t] = {'ic': round(wf_entry['mean_ic'], 4),
+                                   'icir': round(wf_entry['mean_icir'], 4)}
+
+        near_zero = [entry for entry in factor_list if entry['pct'] < 0.1]
+
+        quality_data = {
+            'version': self._ng_version,
+            'timestamp': timestamp,
+            'n_features': n_feat,
+            'wf_icir': icir_summary,
+            'adaptive_weights': {k: round(v, 4) for k, v in adaptive_weights.items()},
+            'group_pcts': {k: round(v, 1) for k, v in sorted(group_pcts.items(), key=lambda x: -x[1])},
+            'top_10': factor_list[:10],
+            'near_zero': near_zero,
+            'all_factors': factor_list,
+        }
+
+        # Save JSON
+        out_path = model_dir / f'factor_quality_{timestamp}.json'
+        with open(out_path, 'w', encoding='utf-8') as fh:
+            json.dump(quality_data, fh, indent=2, ensure_ascii=False)
+
+        # Log summary
+        logger.info(f"\n{'='*60}")
+        logger.info(f"Factor Quality Report — NG {self._ng_version}")
+        logger.info(f"{'='*60}")
+        logger.info(f"  Features: {n_feat}")
+        for t, v in icir_summary.items():
+            logger.info(f"  {t} ICIR: {v['icir']}")
+        logger.info(f"\n  Group weights:")
+        for g, pct in sorted(group_pcts.items(), key=lambda x: -x[1]):
+            logger.info(f"    {g:15s}: {pct:5.1f}%")
+        logger.info(f"\n  Top 10 factors:")
+        for entry in factor_list[:10]:
+            logger.info(f"    {entry['rank']:2d}. {entry['feature']:35s} {entry['pct']:5.1f}% (cum {entry['cum_pct']:5.1f}%)")
+        if near_zero:
+            logger.info(f"\n  Near-zero factors (<0.1%): {len(near_zero)}")
+            for entry in near_zero:
+                logger.info(f"    {entry['feature']:35s} {entry['pct']:.3f}%")
+        logger.info(f"\n  Saved: {out_path}")
+        logger.info(f"  → Update docs/wiki/models/ng-factor-quality.md with this data")
 
     # ------------------------------------------------------------------
     # WF Summary Generation
@@ -337,83 +604,72 @@ class NGTrainer(V485Trainer):
         }
 
         try:
-            wf_windows = history.get('wf_windows', [])
-            if not wf_windows:
-                logger.warning("No WF windows for summary generation")
+            # V475+ stores WF metrics in summary.walk_forward_summary
+            wf_data = history.get('summary', {}).get('walk_forward_summary', {})
+            if not wf_data:
+                logger.warning("No WF summary for wf_summary generation")
                 return summary
 
-            # Per-window metrics
-            window_summaries = []
+            # Build per-window summaries from OOS monthly ICs
             all_oos_ics = {'label_3d': [], 'label_5d': [], 'label_10d': [], 'label_15d': []}
+            n_windows = wf_data.get('3d', {}).get('n_windows', 0)
+            window_summaries = []
 
-            for i, w in enumerate(wf_windows):
-                train_period = w.get('train_period', '')
-                test_period = w.get('test_period', '')
-                metrics = w.get('test_metrics', w.get('oos_metrics', {}))
-
-                ws = {
-                    'window_id': i,
-                    'train_period': train_period,
-                    'test_period': test_period,
-                    'metrics': {},
-                }
-
-                for target in ['label_3d', 'label_5d', 'label_10d', 'label_15d']:
-                    ic = metrics.get(f'{target}_ic', metrics.get(f'ic_{target}'))
-                    if ic is not None and not np.isnan(ic):
-                        ws['metrics'][f'{target}_ic'] = float(ic)
-                        all_oos_ics[target].append(float(ic))
-
-                # Train/test sample counts
-                ws['n_train'] = w.get('n_train', 0)
-                ws['n_test'] = w.get('n_test', 0)
-
+            for i in range(n_windows):
+                ws = {'window_id': i, 'metrics': {}}
+                for target_key, wf_key in [('label_3d', '3d'), ('label_5d', '5d'),
+                                            ('label_10d', '10d'), ('label_15d', '15d')]:
+                    tw = wf_data.get(wf_key, {})
+                    oos_icirs = tw.get('oos_icir_per_window', [])
+                    oos_ics = tw.get('oos_monthly_ics', [])
+                    if i < len(oos_icirs):
+                        ws['metrics'][f'{target_key}_icir'] = float(oos_icirs[i])
+                    if i < len(oos_ics):
+                        monthly = oos_ics[i]
+                        mean_ic = float(np.mean(monthly)) if monthly else 0.0
+                        ws['metrics'][f'{target_key}_ic'] = mean_ic
+                        all_oos_ics[target_key].append(mean_ic)
                 window_summaries.append(ws)
 
             summary['wf_windows'] = window_summaries
 
-            # Aggregate metrics
-            for target in ['label_3d', 'label_5d', 'label_10d', 'label_15d']:
-                ics = all_oos_ics[target]
+            # Aggregate metrics from pre-computed walk_forward_summary values
+            for target_key, wf_key in [('label_3d', '3d'), ('label_5d', '5d'),
+                                        ('label_10d', '10d'), ('label_15d', '15d')]:
+                tw = wf_data.get(wf_key, {})
+                if 'mean_ic' in tw:
+                    summary['aggregate'][f'{target_key}_mean_ic'] = float(tw['mean_ic'])
+                    summary['aggregate'][f'{target_key}_std_ic'] = float(tw.get('std_ic', 0))
+                    summary['aggregate'][f'{target_key}_icir'] = float(tw.get('mean_icir', 0))
+                # Also compute from per-window OOS ICs if available
+                ics = all_oos_ics.get(target_key, [])
                 if ics:
-                    mean_ic = np.mean(ics)
-                    std_ic = np.std(ics) if len(ics) > 1 else 0.01
-                    icir = mean_ic / (std_ic + 1e-8)
-                    summary['aggregate'][f'{target}_mean_ic'] = float(mean_ic)
-                    summary['aggregate'][f'{target}_std_ic'] = float(std_ic)
-                    summary['aggregate'][f'{target}_icir'] = float(icir)
-                    summary['aggregate'][f'{target}_ic_positive_ratio'] = float(np.mean(np.array(ics) > 0))
+                    summary['aggregate'][f'{target_key}_ic_positive_ratio'] = float(np.mean(np.array(ics) > 0))
 
-            # WF Efficiency Ratio (WFER): mean OOS IC / mean train IC
-            train_ics = []
-            for w in wf_windows:
-                train_m = w.get('train_metrics', {})
-                ic = train_m.get('label_10d_ic', train_m.get('ic_label_10d'))
-                if ic is not None and not np.isnan(ic):
-                    train_ics.append(float(ic))
-
-            oos_ics_10d = all_oos_ics.get('label_10d', [])
-            if train_ics and oos_ics_10d:
-                wfer = np.mean(oos_ics_10d) / (np.mean(train_ics) + 1e-8)
-                summary['aggregate']['wfer'] = float(wfer)
+            # WF Efficiency Ratio (WFER) from IS vs OOS ICIR
+            is_icirs = wf_data.get('10d', {}).get('is_icir_per_window', [])
+            oos_icirs = wf_data.get('10d', {}).get('oos_icir_per_window', [])
+            if is_icirs and oos_icirs:
+                wfer = float(np.mean(oos_icirs) / (np.mean(is_icirs) + 1e-8))
+                summary['aggregate']['wfer'] = wfer
             else:
                 summary['aggregate']['wfer'] = None
 
             # OOS IC half-life (months until IC decays to half)
+            oos_ics_10d = all_oos_ics.get('label_10d', [])
             if len(oos_ics_10d) >= 3:
                 initial_ic = oos_ics_10d[0]
                 half_target = initial_ic / 2
                 half_life_months = None
                 for j, ic in enumerate(oos_ics_10d[1:], 1):
                     if ic <= half_target:
-                        half_life_months = j * 4  # ~4 months per window (120 days)
+                        half_life_months = j * 4
                         break
                 summary['aggregate']['oos_ic_half_life_months'] = half_life_months
             else:
                 summary['aggregate']['oos_ic_half_life_months'] = None
 
-            summary['n_windows'] = len(wf_windows)
-            summary['total_oos_days'] = sum(w.get('n_test', 0) for w in wf_windows)
+            summary['n_windows'] = n_windows
 
             # Save to file
             summary_path = model_dir / 'wf_summary.json'
@@ -429,47 +685,6 @@ class NGTrainer(V485Trainer):
     # ------------------------------------------------------------------
     # IC Screening for Interaction Features (ng1.0.3)
     # ------------------------------------------------------------------
-
-    def _select_interaction_features(self, df, label_col='label_10d', min_ic=0.02, max_corr=0.7,
-                                      candidate_names=None):
-        """IC-based selection of interaction features. Returns list of selected feature names."""
-        from scipy.stats import spearmanr
-
-        candidates = candidate_names or INTERACTION_FEATURE_NAMES
-        existing_cols = [c for c in self.feature_names if c in df.columns and c not in candidates]
-        candidate_cols = [c for c in candidates if c in df.columns]
-
-        if not candidate_cols or label_col not in df.columns:
-            return []
-
-        y = df[label_col].values
-        valid = ~np.isnan(y)
-        selected = []
-
-        for col in candidate_cols:
-            x = df[col].values
-            both_valid = valid & ~np.isnan(x)
-            if both_valid.sum() < 1000:
-                continue
-            ic, _ = spearmanr(x[both_valid], y[both_valid])
-            if abs(ic) < min_ic:
-                logger.info(f"  IX {col}: IC={ic:.4f} < {min_ic}, SKIP")
-                continue
-            max_abs_corr = 0.0
-            for ecol in existing_cols:
-                ex = df[ecol].values
-                both = both_valid & ~np.isnan(ex)
-                if both.sum() < 100:
-                    continue
-                corr, _ = spearmanr(x[both], ex[both])
-                max_abs_corr = max(max_abs_corr, abs(corr))
-            if max_abs_corr > max_corr:
-                logger.info(f"  IX {col}: IC={ic:.4f}, max_corr={max_abs_corr:.3f} > {max_corr}, SKIP")
-                continue
-            logger.info(f"  IX {col}: IC={ic:.4f}, max_corr={max_abs_corr:.3f} → SELECTED")
-            selected.append(col)
-
-        return selected
 
     # ------------------------------------------------------------------
     # Market Regime Sample Weighting (ng1.0.3)
@@ -528,12 +743,16 @@ class NGTrainer(V485Trainer):
             params.append(end_date)
 
         # Build query based on version — ng1.0.4 also loads RA label columns
+        # ng1.1.0 is based on ng1.0.1 (no RA/cond labels, no AMV columns)
         extra_select = ""
-        if version_ge(self._ng_version, 'ng1.0.4'):
+        if version_ge(self._ng_version, 'ng1.1.0'):
+            pass  # ng1.1.0 based on ng1.0.1 cache: industry excess labels only
+        elif version_ge(self._ng_version, 'ng1.0.7'):
             extra_select = ", ra_label_3d, ra_label_5d, ra_label_10d, ra_label_15d"
-        if version_ge(self._ng_version, 'ng1.0.7'):
             extra_select += ", cond_label_3d, cond_label_5d, cond_label_10d, cond_label_15d"
             extra_select += ", amv_var1, amv_macd, amv_regime_days"
+        elif version_ge(self._ng_version, 'ng1.0.4'):
+            extra_select = ", ra_label_3d, ra_label_5d, ra_label_10d, ra_label_15d"
 
         query = f"""
         SELECT code, trade_date, features_json,
@@ -568,7 +787,7 @@ class NGTrainer(V485Trainer):
         # Exclude market feature names that may appear in features_json
         # (they are loaded from dedicated SQL columns instead)
         market_cols_to_load = list(MARKET_FEATURE_NAMES)
-        if version_ge(self._ng_version, 'ng1.0.7'):
+        if version_ge(self._ng_version, 'ng1.0.7') and not version_ge(self._ng_version, 'ng1.1.0'):
             market_cols_to_load += EXTENDED_MARKET_FEATURE_NAMES
         market_set = set(market_cols_to_load)
         active_stock_features = [c for c in active_stock_features if c not in market_set]
@@ -793,65 +1012,15 @@ class NGTrainer(V485Trainer):
             logger.info(f"  Labels: INDUSTRY EXCESS returns (stock - industry median)")
         logger.info(f"  Initial weights: {', '.join(f'{k}={v:.2f}' for k, v in self.target_weights.items())}")
 
-        # IC screening for interaction + conditional interaction features
-        # Load data once and reuse for both screening passes
+        # 数据泄露修复 (2026-04-12): 禁用全期 IC screening
+        # 之前会用 [start_date, end_date] 全量数据 (含未来的 walk-forward test 窗口)
+        # 计算 IC 来选 interaction/conditional_ix 特征, 导致 OOS IC 虚高 5-15%.
+        # 现在保持 _selected_ix/_selected_cx 为空, 下游 get_active_feature_names()
+        # 会自动 fallback 到 INTERACTION_FEATURE_NAMES / CONDITIONAL_IX_FEATURE_NAMES 全集.
         self._selected_ix = []
         self._selected_cx = []
-        need_ix_screen = getattr(self, '_enable_interaction', False)
-        need_cx_screen = version_ge(self._ng_version, 'ng1.0.7')
-
-        if need_ix_screen or need_cx_screen:
-            logger.info("Loading data for IC screening...")
-            # Save original feature cols (screening modifies them temporarily)
-            _orig_stock_cols = list(self.stock_feature_cols)
-            _orig_macro_cols = list(self.macro_feature_cols)
-            _orig_feature_names = list(self.feature_names)
-            df_screen = self.load_data(start_date=start_date, end_date=end_date)
-            if not df_screen.empty:
-                # Interaction feature screening
-                if need_ix_screen:
-                    logger.info("Screening interaction features by IC...")
-                    _tmp_stock = list(STOCK_FEATURE_NAMES)
-                    if getattr(self, '_enable_moneyflow', False):
-                        _tmp_stock += MONEYFLOW_FEATURE_NAMES
-                    _tmp_stock += INTERACTION_FEATURE_NAMES
-                    self.stock_feature_cols = [c for c in _tmp_stock if c in df_screen.columns]
-                    self.macro_feature_cols = [c for c in MARKET_FEATURE_NAMES if c in df_screen.columns]
-                    self.feature_names = self.stock_feature_cols + self.macro_feature_cols
-
-                    self._selected_ix = self._select_interaction_features(df_screen)
-                    if self._selected_ix:
-                        remove_ix = [c for c in INTERACTION_FEATURE_NAMES if c not in self._selected_ix]
-                        logger.info(f"  Interaction screening: {len(self._selected_ix)} selected, "
-                                     f"{len(remove_ix)} removed")
-                    else:
-                        logger.info("  Interaction screening: none passed IC threshold, removing all")
-
-                # Conditional interaction feature screening (ng1.0.7)
-                if need_cx_screen:
-                    logger.info("Screening conditional interaction features by IC...")
-                    _tmp_stock = list(STOCK_FEATURE_NAMES) + CONDITIONAL_IX_FEATURE_NAMES
-                    self.stock_feature_cols = [c for c in _tmp_stock if c in df_screen.columns]
-                    self.macro_feature_cols = [c for c in NG107_MARKET_FEATURES if c in df_screen.columns]
-                    self.feature_names = self.stock_feature_cols + self.macro_feature_cols
-                    self._selected_cx = self._select_interaction_features(
-                        df_screen,
-                        label_col='label_10d',
-                        min_ic=0.015,
-                        max_corr=0.7,
-                        candidate_names=CONDITIONAL_IX_FEATURE_NAMES,
-                    )
-                    if self._selected_cx:
-                        logger.info(f"  Conditional IX screening: {len(self._selected_cx)} selected "
-                                    f"from {len(CONDITIONAL_IX_FEATURE_NAMES)}")
-                    else:
-                        logger.info("  Conditional IX screening: none passed, removing all")
-
-            del df_screen
-            # Restore original feature cols after screening
-            self.stock_feature_cols = _orig_stock_cols
-            self.macro_feature_cols = _orig_macro_cols
-            self.feature_names = _orig_feature_names
+        if getattr(self, '_enable_interaction', False) or version_ge(self._ng_version, 'ng1.0.7'):
+            logger.info("IC screening disabled (data leakage fix) — using full INTERACTION/CONDITIONAL_IX feature lists")
 
         model_data, history = super().walk_forward_train(
             start_date=start_date, end_date=end_date,
@@ -864,7 +1033,11 @@ class NGTrainer(V485Trainer):
 
         # --- v1.0.2: Train downside model ---
         # Restore feature cols (WF parent may have modified them)
-        if version_ge(self._ng_version, 'ng1.0.7'):
+        if version_ge(self._ng_version, 'ng1.1.0'):
+            self.stock_feature_cols = list(NG110_STOCK_FEATURES)
+            self.macro_feature_cols = list(MARKET_FEATURE_NAMES)
+            self.feature_names = list(NG110_ALL_FEATURES)
+        elif version_ge(self._ng_version, 'ng1.0.7'):
             self.stock_feature_cols = list(STOCK_FEATURE_NAMES)
             self.macro_feature_cols = list(NG107_MARKET_FEATURES)
             self.feature_names = self.stock_feature_cols + self.macro_feature_cols
@@ -1005,6 +1178,9 @@ class NGTrainer(V485Trainer):
 
             # Generate WF summary (v1.0.3)
             wf_summary = self._generate_wf_summary(history, ng_dir)
+
+            # Factor quality analysis
+            self._log_factor_quality(model_data, adaptive_weights, history, ng_dir, timestamp)
 
             logger.info(f"\nNG {self._ng_version} training complete!")
             logger.info(f"  Features: {len(self.feature_names)}")
