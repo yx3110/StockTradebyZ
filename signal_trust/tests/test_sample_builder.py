@@ -56,3 +56,42 @@ def test_dedupe_preserves_different_dates():
     ]
     out = dedupe_by_version(records)
     assert len(out) == 2
+
+
+def test_scan_reports_skips_malformed_json(tmp_path):
+    """坏JSON文件不应崩溃, 静默跳过."""
+    d = tmp_path / "reports" / "daily_selection_ng101"
+    d.mkdir(parents=True)
+    (d / "analysis_data_20260110.json").write_text("{not valid json")
+    records = list(scan_reports([str(tmp_path / "reports")]))
+    assert records == []
+
+
+def test_scan_reports_date_fallback_from_filename(tmp_path):
+    """JSON 缺 analysis_date 字段时, 从文件名 YYYYMMDD 推断."""
+    d = tmp_path / "reports" / "daily_selection_ng101"
+    d.mkdir(parents=True)
+    import json as _json
+    (d / "analysis_data_20260115.json").write_text(_json.dumps({
+        "scoring_version": "ng101",
+        "all_stocks_with_scores": [{"stock_code": "A.SZ", "pred_10d": 0.02}],
+    }, ensure_ascii=False))
+    records = list(scan_reports([str(tmp_path / "reports")]))
+    assert len(records) == 1
+    assert records[0]["trade_date"] == "2026-01-15"
+
+
+def test_scan_reports_skips_nan_pred(tmp_path):
+    """NaN 的 pred_10d 不应通过阈值过滤."""
+    d = tmp_path / "reports" / "daily_selection_ng101"
+    d.mkdir(parents=True)
+    # float("nan") 是 NaN；用字符串 "nan" 触发该路径
+    (d / "analysis_data_20260115.json").write_text(
+        '{"analysis_date": "2026-01-15", "all_stocks_with_scores": ['
+        '{"stock_code": "A.SZ", "pred_10d": "nan"},'
+        '{"stock_code": "B.SZ", "pred_10d": 0.02}'
+        ']}'
+    )
+    records = list(scan_reports([str(tmp_path / "reports")]))
+    codes = {r["code"] for r in records}
+    assert codes == {"B.SZ"}  # NaN A.SZ 被跳过, 正常 B.SZ 通过

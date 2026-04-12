@@ -1,6 +1,7 @@
 """样本池构建器。"""
 import json
 import logging
+import math
 import re
 from pathlib import Path
 from typing import Iterator
@@ -69,7 +70,7 @@ def scan_reports(report_parent_dirs: list[str]) -> Iterator[dict]:
                         pred_val = float(pred) if pred is not None else 0.0
                     except (TypeError, ValueError):
                         continue
-                    if pred_val <= PRED_THRESHOLD:
+                    if math.isnan(pred_val) or pred_val <= PRED_THRESHOLD:
                         continue
                     code = stock.get("stock_code")
                     if not code:
