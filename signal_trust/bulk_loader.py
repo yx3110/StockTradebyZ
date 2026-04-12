@@ -34,7 +34,8 @@ class BulkEnricher:
             where = " WHERE dq.trade_date >= ?" if min_date else ""
             params: list = [min_date] if min_date else []
             rows = conn.execute(
-                "SELECT s.code, dq.trade_date, dq.close, dq.amount "
+                "SELECT s.code, dq.trade_date, dq.close, "
+                "       COALESCE(dq.amount, dq.volume * dq.close) AS amount "
                 "FROM daily_quotes dq JOIN securities s ON s.id = dq.security_id"
                 + where
                 + " ORDER BY s.code, dq.trade_date",

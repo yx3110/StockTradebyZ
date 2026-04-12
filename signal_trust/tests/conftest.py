@@ -24,6 +24,7 @@ def tmp_db(tmp_path):
         security_id INTEGER NOT NULL,
         trade_date TEXT NOT NULL,
         close REAL,
+        volume REAL,
         amount REAL,
         UNIQUE(security_id, trade_date)
     )""")
