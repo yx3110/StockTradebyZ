@@ -96,6 +96,27 @@ def dedupe_by_version(records: list[dict]) -> list[dict]:
     return list(best.values())
 
 
+def streaming_dedupe(records_iter) -> dict[tuple[str, str], dict]:
+    """
+    流式版 dedupe_by_version: 边扫边去重, 内存 O(唯一 (code, trade_date) 对) 而非 O(总记录数).
+    对 67K JSON/154GB 规模的首次建库必需.
+    Returns: {(code, trade_date): record} — 调用方用 .values() 拿列表.
+    """
+    best: dict[tuple[str, str], dict] = {}
+    n_seen = 0
+    for r in records_iter:
+        n_seen += 1
+        if n_seen % 100000 == 0:
+            logger.info(f"  流式扫描: {n_seen:,} 条原始记录, {len(best):,} 条去重后")
+        key = (r["code"], r["trade_date"])
+        new_p = _PRIORITY_MAP.get(r["version"], _UNKNOWN_PRIORITY)
+        cur = best.get(key)
+        if cur is None or new_p < _PRIORITY_MAP.get(cur["version"], _UNKNOWN_PRIORITY):
+            best[key] = r
+    logger.info(f"  流式扫描完成: {n_seen:,} 条原始记录 → {len(best):,} 条去重后")
+    return best
+
+
 def compute_actual_10d(db_path: str, code: str, trade_date: str) -> float | None:
     """
     用 daily_quotes 查 T 日 close 和 T+HOLD_DAYS 个交易日后的 close.

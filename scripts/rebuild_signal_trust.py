@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from signal_trust.db import migrate
 from signal_trust.sample_builder import (
-    scan_reports, dedupe_by_version, compute_actual_10d,
+    scan_reports, streaming_dedupe, compute_actual_10d,
     compute_market_cap_bucket, compute_liquidity_bucket,
     compute_liquidity_thresholds, compute_sample_end_date,
     _industry_lookup, upsert_samples,
@@ -18,19 +18,24 @@ from signal_trust.sample_builder import (
 from signal_trust.scorer import compute_scores, upsert_scores
 from signal_trust.constants import DEFAULT_DB_PATH
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s",
+                    force=True)
 logger = logging.getLogger(__name__)
 
 
 def main(db_path: str = DEFAULT_DB_PATH, reports_root: str = "reports",
          as_of_date: str | None = None):
+    import sys
+    sys.stdout.reconfigure(line_buffering=True)
+    sys.stderr.reconfigure(line_buffering=True)
+
     logger.info("迁移 DB schema...")
     migrate(db_path)
 
     logger.info(f"扫描报告目录: {reports_root}")
-    raw = list(scan_reports([reports_root]))
-    logger.info(f"  原始记录: {len(raw):,}")
-    deduped = dedupe_by_version(raw)
+    logger.info("流式扫描+去重中 (大量 JSON 可能需要数分钟)...")
+    best_map = streaming_dedupe(scan_reports([reports_root]))
+    deduped = list(best_map.values())
     logger.info(f"  去重后: {len(deduped):,}")
 
     # 确定 as_of_date

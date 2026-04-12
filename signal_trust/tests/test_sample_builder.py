@@ -272,3 +272,17 @@ def test_liquidity_thresholds_fallback_on_sparse_data(tmp_db):
     # 空 tmp_db, 无任何股票
     p25, p50, p75 = compute_liquidity_thresholds(tmp_db, "2026-01-20")
     assert (p25, p50, p75) == (1e8, 3e8, 1e9)
+
+
+def test_streaming_dedupe_keeps_highest_priority():
+    """streaming_dedupe 等价于 dedupe_by_version 但可接受 iterator."""
+    from signal_trust.sample_builder import streaming_dedupe
+    records = [
+        {"code": "A.SZ", "trade_date": "2026-01-10", "pred_10d": 0.02, "version": "ng101"},
+        {"code": "A.SZ", "trade_date": "2026-01-10", "pred_10d": 0.03, "version": "ng106"},
+        {"code": "B.SZ", "trade_date": "2026-01-10", "pred_10d": 0.025, "version": "ng101"},
+    ]
+    best = streaming_dedupe(iter(records))
+    assert len(best) == 2
+    assert best[("A.SZ", "2026-01-10")]["version"] == "ng106"
+    assert best[("B.SZ", "2026-01-10")]["version"] == "ng101"
