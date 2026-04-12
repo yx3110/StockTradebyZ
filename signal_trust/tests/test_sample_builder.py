@@ -95,3 +95,44 @@ def test_scan_reports_skips_nan_pred(tmp_path):
     records = list(scan_reports([str(tmp_path / "reports")]))
     codes = {r["code"] for r in records}
     assert codes == {"B.SZ"}  # NaN A.SZ 被跳过, 正常 B.SZ 通过
+
+
+# ---------------------------------------------------------------------------
+# compute_actual_10d tests
+# ---------------------------------------------------------------------------
+from signal_trust.sample_builder import compute_actual_10d
+from signal_trust.db import connect
+
+
+def test_actual_10d_normal_case(seed_stock, tmp_db):
+    # 10 个交易日后, close 上涨 5%
+    quotes = []
+    start_close = 100.0
+    for i in range(15):
+        d = f"2026-01-{i+1:02d}"
+        quotes.append((d, start_close * (1 + 0.005 * i), 1e8))
+    seed_stock("A.SZ", "计算机", quotes)
+    # T = 2026-01-01 (idx 0), T+10 trading days = 2026-01-11 (idx 10)
+    actual = compute_actual_10d(tmp_db, "A.SZ", "2026-01-01")
+    expected = (quotes[10][1] - quotes[0][1]) / quotes[0][1]
+    assert abs(actual - expected) < 1e-9
+
+
+def test_actual_10d_missing_future_returns_none(seed_stock, tmp_db):
+    # 只有 5 个交易日数据, T+10 不存在
+    quotes = [(f"2026-01-{i+1:02d}", 100.0 + i, 1e8) for i in range(5)]
+    seed_stock("A.SZ", "计算机", quotes)
+    assert compute_actual_10d(tmp_db, "A.SZ", "2026-01-01") is None
+
+
+def test_actual_10d_suspended_days_still_count(seed_stock, tmp_db):
+    # 数据库里只存在交易日(停牌日无记录). T+10 指的是"数据库里第 10 个后续交易日"
+    quotes = [(f"2026-01-{i+1:02d}", 100.0 + i * 2, 1e8) for i in range(12)]
+    seed_stock("A.SZ", "计算机", quotes)
+    actual = compute_actual_10d(tmp_db, "A.SZ", "2026-01-01")
+    expected = (quotes[10][1] - quotes[0][1]) / quotes[0][1]
+    assert abs(actual - expected) < 1e-9
+
+
+def test_actual_10d_stock_not_found(tmp_db):
+    assert compute_actual_10d(tmp_db, "NONEXIST.SZ", "2026-01-01") is None

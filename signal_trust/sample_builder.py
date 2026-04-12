@@ -5,7 +5,8 @@ import math
 import re
 from pathlib import Path
 from typing import Iterator
-from .constants import PRED_THRESHOLD, VERSION_PRIORITY
+from .constants import PRED_THRESHOLD, VERSION_PRIORITY, HOLD_DAYS
+from .db import connect
 
 logger = logging.getLogger(__name__)
 
@@ -93,3 +94,56 @@ def dedupe_by_version(records: list[dict]) -> list[dict]:
         if cur is None or new_p < _PRIORITY_MAP.get(cur["version"], _UNKNOWN_PRIORITY):
             best[key] = r
     return list(best.values())
+
+
+def compute_actual_10d(db_path: str, code: str, trade_date: str) -> float | None:
+    """
+    用 daily_quotes 查 T 日 close 和 T+HOLD_DAYS 个交易日后的 close.
+    返回实际收益率, 查不到返回 None.
+    """
+    conn = connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT id FROM securities WHERE code = ?", (code,)
+        ).fetchone()
+        if row is None:
+            return None
+        sid = row["id"]
+        quotes = conn.execute(
+            "SELECT trade_date, close FROM daily_quotes "
+            "WHERE security_id = ? AND trade_date >= ? "
+            "ORDER BY trade_date ASC LIMIT ?",
+            (sid, trade_date, HOLD_DAYS + 1),
+        ).fetchall()
+        if len(quotes) < HOLD_DAYS + 1:
+            return None
+        if quotes[0]["trade_date"] != trade_date:
+            # T 日本身也需是交易日
+            return None
+        p0 = quotes[0]["close"]
+        pN = quotes[HOLD_DAYS]["close"]
+        if p0 is None or pN is None or p0 == 0:
+            return None
+        return (pN - p0) / p0
+    finally:
+        conn.close()
+
+
+def compute_sample_end_date(db_path: str, trade_date: str) -> str | None:
+    """
+    给定 trade_date, 返回 sample_end_date = 市场第 HOLD_DAYS 个交易日后的日期.
+    用 daily_quotes 中的不重复交易日来推(大盘行情日期一致).
+    若无法确定(如未来日期), 返回 None.
+    """
+    conn = connect(db_path)
+    try:
+        rows = conn.execute(
+            "SELECT DISTINCT trade_date FROM daily_quotes "
+            "WHERE trade_date >= ? ORDER BY trade_date ASC LIMIT ?",
+            (trade_date, HOLD_DAYS + 1),
+        ).fetchall()
+        if len(rows) < HOLD_DAYS + 1:
+            return None
+        return rows[HOLD_DAYS]["trade_date"]
+    finally:
+        conn.close()
