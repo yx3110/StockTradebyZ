@@ -79,7 +79,7 @@ def batch_update_stocks(date_str: str, batch_size: int = 500):
         # 一次API调用获取所有A股数据
         df = pro.daily(
             trade_date=date_str,
-            fields='ts_code,trade_date,open,close,high,low,vol,pct_chg,limit'
+            fields='ts_code,trade_date,open,close,high,low,vol,amount,pct_chg,limit'
         )
 
         if df.empty:
@@ -132,6 +132,7 @@ def batch_update_stocks(date_str: str, batch_size: int = 500):
                         'high': row['high'],
                         'low': row['low'],
                         'volume': vol,
+                        'amount': row.get('amount'),
                         'price_change_pct': None if is_suspended else (pct_val / 100 if pd.notna(pct_val) else 0),
                         'is_limit_up': row.get('limit') == 'U' if row.get('limit') else False,
                         'is_limit_down': row.get('limit') == 'D' if row.get('limit') else False,
