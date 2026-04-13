@@ -28,7 +28,7 @@ VERSION_TABLE_MAP = {
 
 DEFAULT_VERSION = 'ng1.0.3'
 
-PRODUCTION_VERSION = 'ng1.1.0'
+PRODUCTION_VERSION = 'ng1.0.1'
 
 # Versions that reuse another version's cache schema (table columns + feature semantics)
 # ng1.1.0 is a pruning+bugfix iteration on top of ng1.0.1, uses identical ng101_feature_cache schema
