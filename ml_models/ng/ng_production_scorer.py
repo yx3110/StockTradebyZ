@@ -617,10 +617,12 @@ class NGProductionScorer:
 
         scores = self._to_global_score(combined_pred)
 
+        # Build code→index mapping (cache codes have no suffix)
+        stock_codes_short = {c.split('.')[0] if '.' in c else c for c in stock_codes}
         results = {}
         for i, code in enumerate(codes):
-            if code in stock_codes:
-                results[code] = {
+            if code in stock_codes or code in stock_codes_short:
+                entry = {
                     'pred_3d': float(predictions['3d'][i]),
                     'pred_5d': float(predictions['5d'][i]),
                     'pred_10d': float(predictions['10d'][i]),
@@ -630,13 +632,19 @@ class NGProductionScorer:
                     'score': float(scores[i]),
                     'recommendation': self._get_recommendation(float(scores[i])),
                 }
+                results[code] = entry
 
+        # Map results back to original stock_codes (handle .SH/.SZ/.BJ suffix)
         for code in stock_codes:
             if code not in results:
-                results[code] = {
-                    'score': 50.0, 'pred_3d': 0, 'pred_5d': 0, 'pred_10d': 0,
-                    'pred_15d': 0, 'rank_score': 0, 'recommendation': '观望',
-                    'exec_filter': 'no_data',
-                }
+                short_code = code.split('.')[0] if '.' in code else code
+                if short_code in results:
+                    results[code] = results[short_code]
+                else:
+                    results[code] = {
+                        'score': 50.0, 'pred_3d': 0, 'pred_5d': 0, 'pred_10d': 0,
+                        'pred_15d': 0, 'rank_score': 0, 'recommendation': '观望',
+                        'exec_filter': 'no_data',
+                    }
 
         return results
