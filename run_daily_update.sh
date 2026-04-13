@@ -148,7 +148,19 @@ run_main_program() {
                 print_error "选股报告生成失败"
                 exit 1
             fi
-            
+
+            # 步骤 2.5: Signal Trust 增量 + 贴标签
+            print_info "步骤2.5: 更新信号可信度"
+            $PYTHON_CMD $SCRIPT_DIR/scripts/update_signal_trust_daily.py
+            if [ $? -ne 0 ]; then
+                print_warning "Signal Trust 更新失败(非阻塞)"
+            fi
+            # 查找今日最新的选股 JSON 并贴标签
+            LATEST_JSON=$(ls -t $SCRIPT_DIR/reports/daily_selection_*/analysis_data_$(date +%Y%m%d).json 2>/dev/null | head -1)
+            if [ -n "$LATEST_JSON" ]; then
+                $PYTHON_CMD -c "from signal_trust.report_appender import append_trust_tags; n = append_trust_tags('$LATEST_JSON', 'data_adapter/stock_data.db'); print(f'已为 {n} 只股票贴可信度标签')"
+            fi
+
             # 步骤3: AI增强分析（可选）
             if [ "$ENABLE_AI" = "true" ]; then
                 print_info "步骤3: 生成AI增强分析报告"

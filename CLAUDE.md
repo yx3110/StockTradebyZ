@@ -55,6 +55,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   (30-45 sec)    10+ tables        selector.py        ML scoring      integration   subdirectories
 ```
 
+### 🆕 Signal Trust 信号可信度
+- 独立模块 `signal_trust/`, 基于历史 "预测 vs 实际" 统计给选股贴可信度标签
+- 详见 `docs/wiki/architecture/signal-trust.md`
+- 日报 JSON 的 Top-50 会追加 `trust_tag`/`trust_samples`/`trust_details` 字段
+- 周度全局统计: `python3 scripts/weekly_signal_trust_stats.py` → `reports/signal_trust/`
+
 ### Daily Data Update Components (🆕 已扩展支持大盘分析 + v3.9财务指标)
 1. **Market Quotes**: Open, High, Low, Close, Volume (7000+ stocks/ETFs)
 2. **🆕 Market Indices**: 10个重要指数数据 (上证指数、深证成指、创业板指、科创50、上证50、沪深300、中证500、中证1000、中证2000、中证全指)
