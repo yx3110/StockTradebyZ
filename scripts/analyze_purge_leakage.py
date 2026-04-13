@@ -130,8 +130,7 @@ def _fmt_minutes(seconds: float | int | None) -> str:
     return f"{seconds/60:.1f} min"
 
 
-def render_report(rows: list[dict], runs: dict, audit_date: str) -> str:
-    """Render Markdown report from computed rows and run metadata."""
+def _count_verdicts(rows: list[dict]) -> Counter:
     counts = Counter()
     for r in rows:
         v = r["verdict"]
@@ -143,6 +142,15 @@ def render_report(rows: list[dict], runs: dict, audit_date: str) -> str:
             counts["RED"] += 1
         else:
             counts["NA"] += 1
+    return counts
+
+
+def render_report(rows: list[dict], runs: dict, audit_date: str) -> tuple[str, Counter]:
+    """Render Markdown report from computed rows and run metadata.
+
+    Returns (markdown_body, verdict_counts).
+    """
+    counts = _count_verdicts(rows)
     total = len(rows)
 
     lines = [
@@ -213,7 +221,7 @@ def render_report(rows: list[dict], runs: dict, audit_date: str) -> str:
         )
 
     lines.append("")
-    return "\n".join(lines)
+    return "\n".join(lines), counts
 
 
 def _find_latest_audit_dir() -> Path | None:
@@ -242,14 +250,13 @@ def main():
 
     rows = compute_delta_rows(runs)
     date_str = audit_dir.name.replace("purge_audit_", "")
-    body = render_report(rows, runs, audit_date=date_str)
+    body, counts = render_report(rows, runs, audit_date=date_str)
 
     out_path = audit_dir / "REPORT.md"
     out_path.write_text(body, encoding="utf-8")
     print(f"Wrote report: {out_path}")
-    print(f"Rows: {len(rows)} | Green: {sum(1 for r in rows if 'GREEN' in r['verdict'])} | "
-          f"Yellow: {sum(1 for r in rows if 'YELLOW' in r['verdict'])} | "
-          f"Red: {sum(1 for r in rows if 'RED' in r['verdict'])}")
+    print(f"Rows: {len(rows)} | Green: {counts['GREEN']} | "
+          f"Yellow: {counts['YELLOW']} | Red: {counts['RED']} | N/A: {counts['NA']}")
     return 0
 
 

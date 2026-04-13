@@ -19,6 +19,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
 from analyze_purge_leakage import (
     extract_per_label_mean_oos_ic,
     extract_n_windows,
+    LABELS,
     REPORTS_ROOT,
 )
 
@@ -120,7 +121,7 @@ def run_single(
     post_snapshot = _snapshot_wf_summaries(TRAINED_MODELS_DIR)
     new_wf_path = _find_new_wf_summary(pre_snapshot, post_snapshot)
 
-    oos_ics = {"label_3d": None, "label_5d": None, "label_10d": None, "label_15d": None}
+    oos_ics = {f"label_{d}": None for d in LABELS}
     n_windows = 0
     if new_wf_path and new_wf_path.exists():
         try:
