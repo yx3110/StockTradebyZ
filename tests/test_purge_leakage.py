@@ -242,3 +242,50 @@ class TestRenderReport:
         assert "⚪ N/A" in body
         assert "ng106" in body
         assert "—" in body
+
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+from run_purge_experiment import _snapshot_wf_summaries, _find_new_wf_summary
+
+
+class TestSnapshotWfSummaries:
+    def test_empty_dir(self, tmp_path):
+        assert _snapshot_wf_summaries(tmp_path) == {}
+
+    def test_nonexistent_root(self, tmp_path):
+        assert _snapshot_wf_summaries(tmp_path / "nope") == {}
+
+    def test_finds_nested_summaries(self, tmp_path):
+        (tmp_path / "sub1").mkdir()
+        (tmp_path / "sub1" / "wf_summary.json").write_text("{}")
+        (tmp_path / "sub2").mkdir()
+        (tmp_path / "sub2" / "wf_summary.json").write_text("{}")
+        snap = _snapshot_wf_summaries(tmp_path)
+        assert len(snap) == 2
+
+
+class TestFindNewWfSummary:
+    def test_new_file(self, tmp_path):
+        pre = {}
+        new_path = (tmp_path / "sub" / "wf_summary.json").resolve()
+        post = {new_path: 1234567890.0}
+        assert _find_new_wf_summary(pre, post) == new_path
+
+    def test_updated_mtime(self, tmp_path):
+        p = (tmp_path / "sub" / "wf_summary.json").resolve()
+        pre = {p: 1000.0}
+        post = {p: 2000.0}
+        assert _find_new_wf_summary(pre, post) == p
+
+    def test_no_change(self, tmp_path):
+        p = (tmp_path / "sub" / "wf_summary.json").resolve()
+        pre = {p: 1000.0}
+        post = {p: 1000.0}
+        assert _find_new_wf_summary(pre, post) is None
+
+    def test_multiple_changes_picks_latest_mtime(self, tmp_path):
+        p1 = (tmp_path / "s1" / "wf_summary.json").resolve()
+        p2 = (tmp_path / "s2" / "wf_summary.json").resolve()
+        pre = {}
+        post = {p1: 1000.0, p2: 2000.0}
+        assert _find_new_wf_summary(pre, post) == p2
