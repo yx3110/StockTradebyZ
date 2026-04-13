@@ -17,6 +17,7 @@ from analyze_purge_leakage import (
     extract_n_windows,
 )
 from analyze_purge_leakage import load_runs, compute_delta_rows
+from analyze_purge_leakage import render_report
 
 
 # --- classify_verdict ---
@@ -168,3 +169,44 @@ class TestComputeDeltaRows:
         assert len(rows) == 8
         versions = {r["version"] for r in rows}
         assert versions == {"ng1.0.1", "ng106"}
+
+
+class TestRenderReport:
+    def test_contains_expected_sections(self):
+        rows = [
+            {"version": "ng1.0.1", "label": "5d", "baseline_ic": 0.07,
+             "control_ic": 0.065, "delta_abs": 0.005, "delta_pct": 0.0714,
+             "verdict": "🟢 GREEN"},
+            {"version": "ng1.0.1", "label": "15d", "baseline_ic": 0.06,
+             "control_ic": 0.02, "delta_abs": 0.04, "delta_pct": 0.6667,
+             "verdict": "🔴 RED"},
+        ]
+        runs = {
+            ("ng1.0.1", 15): {"run_id": "ng1.0.1_purge15", "elapsed_seconds": 2400,
+                              "returncode": 0, "n_windows": 3},
+            ("ng1.0.1", 30): {"run_id": "ng1.0.1_purge30", "elapsed_seconds": 2500,
+                              "returncode": 0, "n_windows": 3},
+        }
+        body = render_report(rows, runs, audit_date="20260413")
+        assert "Purge Leakage Audit" in body
+        assert "ng1.0.1" in body
+        assert "🟢 GREEN" in body
+        assert "🔴 RED" in body
+        assert "7.1%" in body or "+7.1" in body
+        assert "66.7%" in body or "+66.7" in body
+        assert "GREEN: 1" in body
+        assert "RED: 1" in body
+
+    def test_handles_none_values_gracefully(self):
+        rows = [{
+            "version": "ng106", "label": "3d",
+            "baseline_ic": None, "control_ic": None,
+            "delta_abs": None, "delta_pct": None,
+            "verdict": "⚪ N/A",
+        }]
+        runs = {("ng106", 15): {"run_id": "ng106_purge15", "elapsed_seconds": 0,
+                                 "returncode": 1, "n_windows": 0}}
+        body = render_report(rows, runs, audit_date="20260413")
+        assert "⚪ N/A" in body
+        assert "ng106" in body
+        assert "—" in body
