@@ -24,13 +24,11 @@ RED_THRESHOLD = 0.30
 LOW_IC_CUTOFF = 0.005
 
 
-class Verdict(str, Enum):
-    """Leakage verdict. str subclass → `"GREEN" in Verdict.GREEN` still works."""
+class Verdict(Enum):
     GREEN = "GREEN"
     YELLOW = "YELLOW"
     RED = "RED"
     NA = "N/A"
-    NA_LOW_IC = "N/A (baseline IC 过低)"
 
 
 VERDICT_DISPLAY = {
@@ -38,30 +36,39 @@ VERDICT_DISPLAY = {
     Verdict.YELLOW: "🟡 YELLOW",
     Verdict.RED: "🔴 RED",
     Verdict.NA: "⚪ N/A",
-    Verdict.NA_LOW_IC: "⚪ N/A (baseline IC 过低)",
 }
 
 
-def classify_verdict(baseline_ic: float | None, delta_pct: float | None) -> str:
-    """Classify leakage severity. Returns display string (emoji + label).
+def classify_verdict(baseline_ic: float | None, delta_pct: float | None) -> Verdict:
+    """Classify leakage severity.
 
     Rules:
-      baseline_ic None, NaN, or < LOW_IC_CUTOFF → ⚪ N/A (baseline IC 过低)
-      delta_pct None or NaN → ⚪ N/A
-      delta_pct < GREEN_THRESHOLD → 🟢 GREEN
-      GREEN_THRESHOLD <= delta_pct < RED_THRESHOLD → 🟡 YELLOW
-      delta_pct >= RED_THRESHOLD → 🔴 RED
-    (delta_pct < 0 means control IC ≥ baseline, treat as GREEN)
+      baseline_ic None, NaN, or < LOW_IC_CUTOFF → Verdict.NA
+      delta_pct None or NaN → Verdict.NA
+      delta_pct < GREEN_THRESHOLD → Verdict.GREEN  (including negative: control ≥ baseline)
+      GREEN_THRESHOLD <= delta_pct < RED_THRESHOLD → Verdict.YELLOW
+      delta_pct >= RED_THRESHOLD → Verdict.RED
     """
     if baseline_ic is None or math.isnan(baseline_ic) or baseline_ic < LOW_IC_CUTOFF:
-        return VERDICT_DISPLAY[Verdict.NA_LOW_IC]
+        return Verdict.NA
     if delta_pct is None or math.isnan(delta_pct):
-        return VERDICT_DISPLAY[Verdict.NA]
+        return Verdict.NA
     if delta_pct < GREEN_THRESHOLD:
-        return VERDICT_DISPLAY[Verdict.GREEN]
+        return Verdict.GREEN
     if delta_pct < RED_THRESHOLD:
-        return VERDICT_DISPLAY[Verdict.YELLOW]
-    return VERDICT_DISPLAY[Verdict.RED]
+        return Verdict.YELLOW
+    return Verdict.RED
+
+
+def verdict_display(row: dict) -> str:
+    """Render verdict for a row with contextual annotation (low-IC marker)."""
+    v = row["verdict"]
+    base = VERDICT_DISPLAY[v]
+    if v is Verdict.NA:
+        b = row.get("baseline_ic")
+        if b is None or (isinstance(b, float) and math.isnan(b)) or b < LOW_IC_CUTOFF:
+            return base + " (baseline IC 过低)"
+    return base
 
 
 def extract_per_label_mean_oos_ic(wf_summary: dict) -> dict[str, float | None]:
@@ -149,17 +156,9 @@ def _fmt_minutes(seconds: float | int | None) -> str:
     return f"{seconds/60:.1f} min"
 
 
-def _bucket_verdict(verdict: str) -> str:
-    """Map a display-string verdict to its bucket key (GREEN/YELLOW/RED/NA)."""
-    for v in (Verdict.GREEN, Verdict.YELLOW, Verdict.RED):
-        if v.value in verdict:
-            return v.value
-    return Verdict.NA.value
-
-
 def count_verdicts(rows: list[dict]) -> Counter:
-    """Tally verdict buckets across rows."""
-    return Counter(_bucket_verdict(r["verdict"]) for r in rows)
+    """Tally verdict buckets across rows, keyed by Verdict.name ('GREEN'/'YELLOW'/'RED'/'NA')."""
+    return Counter(r["verdict"].name for r in rows)
 
 
 def render_report(rows: list[dict], runs: dict, audit_date: str, counts: Counter) -> str:
@@ -183,7 +182,7 @@ def render_report(rows: list[dict], runs: dict, audit_date: str, counts: Counter
         lines.append(
             f"| {r['version']} | {r['label']} | "
             f"{_fmt_ic(r['baseline_ic'])} | {_fmt_ic(r['control_ic'])} | "
-            f"{_fmt_pct(r['delta_pct'])} | {r['verdict']} |"
+            f"{_fmt_pct(r['delta_pct'])} | {verdict_display(r)} |"
         )
 
     lines += [
@@ -199,8 +198,8 @@ def render_report(rows: list[dict], runs: dict, audit_date: str, counts: Counter
         "",
     ]
 
-    red_rows = [r for r in rows if "RED" in r["verdict"]]
-    yellow_rows = [r for r in rows if "YELLOW" in r["verdict"]]
+    red_rows = [r for r in rows if r["verdict"] is Verdict.RED]
+    yellow_rows = [r for r in rows if r["verdict"] is Verdict.YELLOW]
     if red_rows:
         for r in red_rows:
             lines.append(

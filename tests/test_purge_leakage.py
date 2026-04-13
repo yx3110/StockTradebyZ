@@ -12,47 +12,51 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
 
-from analyze_purge_leakage import classify_verdict
 from analyze_purge_leakage import (
-    extract_per_label_mean_oos_ic,
+    Verdict,
+    classify_verdict,
+    compute_delta_rows,
+    count_verdicts,
     extract_n_windows,
+    extract_per_label_mean_oos_ic,
+    load_runs,
+    render_report,
 )
-from analyze_purge_leakage import load_runs, compute_delta_rows
-from analyze_purge_leakage import render_report
+from run_purge_experiment import _snapshot_wf_summaries, _find_new_wf_summary
 
 
 # --- classify_verdict ---
 
 class TestClassifyVerdict:
     def test_baseline_too_low_returns_na(self):
-        assert "N/A" in classify_verdict(0.004, 0.05)
-        assert "N/A" in classify_verdict(0.0049, 0.50)
-        assert "N/A" in classify_verdict(None, 0.05)
+        assert classify_verdict(0.004, 0.05) is Verdict.NA
+        assert classify_verdict(0.0049, 0.50) is Verdict.NA
+        assert classify_verdict(None, 0.05) is Verdict.NA
 
     def test_delta_none_returns_na(self):
-        assert "N/A" in classify_verdict(0.06, None)
+        assert classify_verdict(0.06, None) is Verdict.NA
 
     def test_green(self):
-        assert "GREEN" in classify_verdict(0.06, 0.05)
-        assert "GREEN" in classify_verdict(0.06, 0.0)
-        assert "GREEN" in classify_verdict(0.06, -0.05)  # control > baseline
-        assert "GREEN" in classify_verdict(0.06, 0.099)
+        assert classify_verdict(0.06, 0.05) is Verdict.GREEN
+        assert classify_verdict(0.06, 0.0) is Verdict.GREEN
+        assert classify_verdict(0.06, -0.05) is Verdict.GREEN  # control > baseline
+        assert classify_verdict(0.06, 0.099) is Verdict.GREEN
 
     def test_yellow(self):
-        assert "YELLOW" in classify_verdict(0.06, 0.10)
-        assert "YELLOW" in classify_verdict(0.06, 0.29)
+        assert classify_verdict(0.06, 0.10) is Verdict.YELLOW
+        assert classify_verdict(0.06, 0.29) is Verdict.YELLOW
 
     def test_red(self):
-        assert "RED" in classify_verdict(0.06, 0.30)
-        assert "RED" in classify_verdict(0.06, 1.0)
-        assert "RED" in classify_verdict(0.06, 0.999)
+        assert classify_verdict(0.06, 0.30) is Verdict.RED
+        assert classify_verdict(0.06, 1.0) is Verdict.RED
+        assert classify_verdict(0.06, 0.999) is Verdict.RED
 
     def test_nan_inputs_return_na(self):
         """NaN in baseline or delta → N/A (not fall through to RED)."""
         import math
-        assert "N/A" in classify_verdict(math.nan, 0.05)
-        assert "N/A" in classify_verdict(0.06, math.nan)
-        assert "N/A" in classify_verdict(math.nan, math.nan)
+        assert classify_verdict(math.nan, 0.05) is Verdict.NA
+        assert classify_verdict(0.06, math.nan) is Verdict.NA
+        assert classify_verdict(math.nan, math.nan) is Verdict.NA
 
 
 class TestExtractPerLabelMeanOOSIC:
@@ -151,10 +155,10 @@ class TestComputeDeltaRows:
         assert abs(row_3d["baseline_ic"] - 0.060) < 1e-9
         assert abs(row_3d["control_ic"] - 0.058) < 1e-9
         assert abs(row_3d["delta_pct"] - (0.002 / 0.060)) < 1e-9
-        assert "GREEN" in row_3d["verdict"]
+        assert row_3d["verdict"] is Verdict.GREEN
         row_15d = next(r for r in rows if r["label"] == "15d")
         assert abs(row_15d["delta_pct"] - 0.6) < 1e-9
-        assert "RED" in row_15d["verdict"]
+        assert row_15d["verdict"] is Verdict.RED
 
     def test_missing_control_yields_na(self):
         runs = {
@@ -164,7 +168,7 @@ class TestComputeDeltaRows:
         row_5d = next(r for r in rows if r["version"] == "ng1.0.1" and r["label"] == "5d")
         assert row_5d["control_ic"] is None
         assert row_5d["delta_pct"] is None
-        assert "N/A" in row_5d["verdict"]
+        assert row_5d["verdict"] is Verdict.NA
 
     def test_multiple_versions(self):
         runs = {
@@ -198,10 +202,10 @@ class TestComputeDeltaRows:
         row_3d = next(r for r in rows if r["label"] == "3d")
         # delta_pct computes fine (baseline > 0), but verdict should be N/A due to low baseline
         assert row_3d["baseline_ic"] == 0.003
-        assert "N/A" in row_3d["verdict"]
+        assert row_3d["verdict"] is Verdict.NA
         # label_5d has healthy baseline → normal verdict
         row_5d = next(r for r in rows if r["label"] == "5d")
-        assert "N/A" not in row_5d["verdict"]
+        assert row_5d["verdict"] is not Verdict.NA
 
 
 class TestRenderReport:
@@ -209,10 +213,10 @@ class TestRenderReport:
         rows = [
             {"version": "ng1.0.1", "label": "5d", "baseline_ic": 0.07,
              "control_ic": 0.065, "delta_abs": 0.005, "delta_pct": 0.0714,
-             "verdict": "🟢 GREEN"},
+             "verdict": Verdict.GREEN},
             {"version": "ng1.0.1", "label": "15d", "baseline_ic": 0.06,
              "control_ic": 0.02, "delta_abs": 0.04, "delta_pct": 0.6667,
-             "verdict": "🔴 RED"},
+             "verdict": Verdict.RED},
         ]
         runs = {
             ("ng1.0.1", 15): {"run_id": "ng1.0.1_purge15", "elapsed_seconds": 2400,
@@ -220,7 +224,6 @@ class TestRenderReport:
             ("ng1.0.1", 30): {"run_id": "ng1.0.1_purge30", "elapsed_seconds": 2500,
                               "returncode": 0, "n_windows": 3},
         }
-        from analyze_purge_leakage import count_verdicts
         counts = count_verdicts(rows)
         body = render_report(rows, runs, audit_date="20260413", counts=counts)
         assert "Purge Leakage Audit" in body
@@ -237,19 +240,15 @@ class TestRenderReport:
             "version": "ng106", "label": "3d",
             "baseline_ic": None, "control_ic": None,
             "delta_abs": None, "delta_pct": None,
-            "verdict": "⚪ N/A",
+            "verdict": Verdict.NA,
         }]
         runs = {("ng106", 15): {"run_id": "ng106_purge15", "elapsed_seconds": 0,
                                  "returncode": 1, "n_windows": 0}}
-        from analyze_purge_leakage import count_verdicts
         counts = count_verdicts(rows)
         body = render_report(rows, runs, audit_date="20260413", counts=counts)
         assert "⚪ N/A" in body
         assert "ng106" in body
         assert "—" in body
-
-
-from run_purge_experiment import _snapshot_wf_summaries, _find_new_wf_summary
 
 
 class TestSnapshotWfSummaries:
