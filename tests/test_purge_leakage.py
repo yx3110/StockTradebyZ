@@ -46,6 +46,13 @@ class TestClassifyVerdict:
         assert "RED" in classify_verdict(0.06, 1.0)
         assert "RED" in classify_verdict(0.06, 0.999)
 
+    def test_nan_inputs_return_na(self):
+        """NaN in baseline or delta → N/A (not fall through to RED)."""
+        import math
+        assert "N/A" in classify_verdict(math.nan, 0.05)
+        assert "N/A" in classify_verdict(0.06, math.nan)
+        assert "N/A" in classify_verdict(math.nan, math.nan)
+
 
 class TestExtractPerLabelMeanOOSIC:
     def test_happy_path(self):
@@ -169,6 +176,31 @@ class TestComputeDeltaRows:
         assert len(rows) == 8
         versions = {r["version"] for r in rows}
         assert versions == {"ng1.0.1", "ng106"}
+
+    def test_baseline_too_low_yields_na_verdict(self):
+        """Low baseline IC (< LOW_IC_CUTOFF=0.005) → N/A verdict even if delta computable."""
+        runs = {
+            ("ng_weak", 15): {"per_label_mean_oos_ic": {
+                "label_3d": 0.003,  # below 0.005 threshold
+                "label_5d": 0.06,
+                "label_10d": None,
+                "label_15d": 0.0,
+            }},
+            ("ng_weak", 30): {"per_label_mean_oos_ic": {
+                "label_3d": 0.002,
+                "label_5d": 0.055,
+                "label_10d": None,
+                "label_15d": 0.0,
+            }},
+        }
+        rows = compute_delta_rows(runs)
+        row_3d = next(r for r in rows if r["label"] == "3d")
+        # delta_pct computes fine (baseline > 0), but verdict should be N/A due to low baseline
+        assert row_3d["baseline_ic"] == 0.003
+        assert "N/A" in row_3d["verdict"]
+        # label_5d has healthy baseline → normal verdict
+        row_5d = next(r for r in rows if r["label"] == "5d")
+        assert "N/A" not in row_5d["verdict"]
 
 
 class TestRenderReport:

@@ -4,7 +4,11 @@ Design doc: docs/superpowers/specs/2026-04-12-purge-leakage-audit-design.md
 """
 from __future__ import annotations
 
+import argparse
 import json
+import math
+import sys
+from collections import Counter
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -23,16 +27,16 @@ def classify_verdict(baseline_ic: float | None, delta_pct: float | None) -> str:
     """Classify leakage severity.
 
     Rules:
-      baseline_ic None or < LOW_IC_CUTOFF → ⚪ N/A (baseline IC 过低)
-      delta_pct None → ⚪ N/A
+      baseline_ic None, NaN, or < LOW_IC_CUTOFF → ⚪ N/A (baseline IC 过低)
+      delta_pct None or NaN → ⚪ N/A
       delta_pct < GREEN_THRESHOLD → 🟢 GREEN
       GREEN_THRESHOLD <= delta_pct < RED_THRESHOLD → 🟡 YELLOW
       delta_pct >= RED_THRESHOLD → 🔴 RED
     (delta_pct < 0 means control IC ≥ baseline, treat as GREEN)
     """
-    if baseline_ic is None or baseline_ic < LOW_IC_CUTOFF:
+    if baseline_ic is None or math.isnan(baseline_ic) or baseline_ic < LOW_IC_CUTOFF:
         return "⚪ N/A (baseline IC 过低)"
-    if delta_pct is None:
+    if delta_pct is None or math.isnan(delta_pct):
         return "⚪ N/A"
     if delta_pct < GREEN_THRESHOLD:
         return "🟢 GREEN"
@@ -59,7 +63,10 @@ def extract_n_windows(wf_summary: dict) -> int:
 
 
 def load_runs(audit_dir: Path) -> dict[tuple[str, int], dict]:
-    """Scan audit_dir/*/run.json and organize by (version, purge_days) key."""
+    """Scan audit_dir/*/run.json and organize by (version, purge_days) key.
+
+    Malformed JSON or missing required keys are skipped with a warning to stderr.
+    """
     runs = {}
     for run_dir in sorted(audit_dir.iterdir()) if audit_dir.exists() else []:
         if not run_dir.is_dir():
@@ -67,8 +74,12 @@ def load_runs(audit_dir: Path) -> dict[tuple[str, int], dict]:
         run_path = run_dir / "run.json"
         if not run_path.exists():
             continue
-        data = json.loads(run_path.read_text())
-        key = (data["version"], int(data["purge_days"]))
+        try:
+            data = json.loads(run_path.read_text())
+            key = (data["version"], int(data["purge_days"]))
+        except (json.JSONDecodeError, KeyError, ValueError, TypeError) as exc:
+            print(f"WARN: skipping {run_path}: {exc}", file=sys.stderr)
+            continue
         runs[key] = data
     return runs
 
@@ -121,7 +132,6 @@ def _fmt_minutes(seconds: float | int | None) -> str:
 
 def render_report(rows: list[dict], runs: dict, audit_date: str) -> str:
     """Render Markdown report from computed rows and run metadata."""
-    from collections import Counter
     counts = Counter()
     for r in rows:
         v = r["verdict"]
@@ -212,7 +222,6 @@ def _find_latest_audit_dir() -> Path | None:
 
 
 def main():
-    import argparse
     parser = argparse.ArgumentParser(description="Purge Leakage Analyzer")
     parser.add_argument("--date", default=None,
                         help="YYYYMMDD; default = latest purge_audit_* dir")
@@ -245,5 +254,4 @@ def main():
 
 
 if __name__ == "__main__":
-    import sys
     sys.exit(main())
