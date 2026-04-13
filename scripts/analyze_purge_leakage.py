@@ -56,3 +56,50 @@ def extract_n_windows(wf_summary: dict) -> int:
     if "n_windows" in wf_summary:
         return int(wf_summary["n_windows"])
     return len(wf_summary.get("wf_windows", []))
+
+
+def load_runs(audit_dir: Path) -> dict[tuple[str, int], dict]:
+    """Scan audit_dir/*/run.json and organize by (version, purge_days) key."""
+    runs = {}
+    for run_dir in sorted(audit_dir.iterdir()) if audit_dir.exists() else []:
+        if not run_dir.is_dir():
+            continue
+        run_path = run_dir / "run.json"
+        if not run_path.exists():
+            continue
+        data = json.loads(run_path.read_text())
+        key = (data["version"], int(data["purge_days"]))
+        runs[key] = data
+    return runs
+
+
+def compute_delta_rows(runs: dict[tuple[str, int], dict]) -> list[dict]:
+    """For each (version, label), compare baseline (purge=15) vs control (purge=30).
+
+    Returns list of dicts with keys:
+      version, label, baseline_ic, control_ic, delta_abs, delta_pct, verdict
+    """
+    versions_found = sorted({v for (v, _) in runs.keys()})
+    rows = []
+    for version in versions_found:
+        baseline = runs.get((version, 15), {}).get("per_label_mean_oos_ic", {})
+        control = runs.get((version, 30), {}).get("per_label_mean_oos_ic", {})
+        for label in LABELS:
+            b = baseline.get(f"label_{label}")
+            c = control.get(f"label_{label}")
+            if b is not None and c is not None and b > 0:
+                delta_abs = b - c
+                delta_pct = delta_abs / b
+            else:
+                delta_abs = None
+                delta_pct = None
+            rows.append({
+                "version": version,
+                "label": label,
+                "baseline_ic": b,
+                "control_ic": c,
+                "delta_abs": delta_abs,
+                "delta_pct": delta_pct,
+                "verdict": classify_verdict(b, delta_pct),
+            })
+    return rows
