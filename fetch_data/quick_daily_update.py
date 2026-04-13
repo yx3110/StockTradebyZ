@@ -162,9 +162,11 @@ def batch_update_funds(date_str: str):
 
     try:
         # 一次API调用获取所有基金数据
+        # 注意: fields 必须覆盖 daily_quotes schema 的非空列 (open/close/high/low/vol/amount)
+        # 若漏字段, insert 时会写 NULL (amount 字段曾因此漏了多年, 2026-04-13 修复)
         df = pro.fund_daily(
             trade_date=date_str,
-            fields='ts_code,trade_date,open,close,high,low,vol,pct_chg'
+            fields='ts_code,trade_date,open,close,high,low,vol,amount,pct_chg'
         )
 
         if df.empty:
@@ -212,6 +214,7 @@ def batch_update_funds(date_str: str):
                         'high': row['high'],
                         'low': row['low'],
                         'volume': row['vol'],
+                        'amount': row.get('amount'),
                         'price_change_pct': pct_val / 100 if pd.notna(pct_val) else 0,
                         'is_limit_up': False,
                         'is_limit_down': False
@@ -841,6 +844,47 @@ def quick_daily_update(date: str = None, skip_financial: bool = True):
     logger.info(f"  证券总数: {db_stats['total_securities']:,}")
     logger.info(f"  数据记录: {db_stats['total_quotes']:,}")
     logger.info(f"  数据库大小: {db_stats['db_size_mb']:.2f} MB")
+
+    # 关键字段 NULL 防复发 smoke-test
+    # 历史上 amount 字段因 fields 漏字段多年写入 NULL, 2026-04-13 修复.
+    # 每次更新后验证当天写入的关键列非 NULL 比例, 异常时 WARN.
+    _daily_update_smoke_check(date)
+
+
+def _daily_update_smoke_check(trade_date_str: str):
+    """Verify key columns (amount, volume, close) non-NULL for today's data.
+
+    If any column has > 5% NULL for A股, log WARN. This catches fetch-pipeline
+    field drops (e.g., fields string missing 'amount') before they silently
+    corrupt months of data.
+    """
+    import sqlite3
+    td = f"{trade_date_str[:4]}-{trade_date_str[4:6]}-{trade_date_str[6:8]}" if len(trade_date_str) == 8 else trade_date_str
+    try:
+        with sqlite3.connect(str(db_manager.db_path), timeout=30) as conn:
+            row = conn.execute("""
+                SELECT COUNT(*) AS n,
+                       SUM(CASE WHEN amount IS NULL THEN 1 ELSE 0 END) AS null_amount,
+                       SUM(CASE WHEN volume IS NULL THEN 1 ELSE 0 END) AS null_volume,
+                       SUM(CASE WHEN close  IS NULL THEN 1 ELSE 0 END) AS null_close
+                FROM daily_quotes dq
+                JOIN securities s ON dq.security_id = s.id
+                WHERE dq.trade_date = ? AND s.type IN ('A股', 'ETF_基金')
+            """, (td,)).fetchone()
+            if not row or row[0] == 0:
+                logger.warning(f"[smoke-check] {td} 无 A股/ETF 数据写入, 跳过验证")
+                return
+            n, null_amt, null_vol, null_close = row
+            pct_amt = null_amt / n * 100
+            pct_vol = null_vol / n * 100
+            pct_close = null_close / n * 100
+            msg = f"[smoke-check] {td} n={n}, NULL: amount={pct_amt:.1f}%, volume={pct_vol:.1f}%, close={pct_close:.1f}%"
+            if pct_amt > 5 or pct_vol > 5 or pct_close > 5:
+                logger.warning(f"⚠️  {msg} — 有字段 NULL 比例>5%, 检查 fetch fields 字符串是否漏字段")
+            else:
+                logger.info(f"✅ {msg}")
+    except Exception as e:
+        logger.warning(f"[smoke-check] 失败(非关键): {e}")
 
 if __name__ == "__main__":
     import argparse
