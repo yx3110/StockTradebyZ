@@ -204,3 +204,46 @@ def render_report(rows: list[dict], runs: dict, audit_date: str) -> str:
 
     lines.append("")
     return "\n".join(lines)
+
+
+def _find_latest_audit_dir() -> Path | None:
+    candidates = sorted(REPORTS_ROOT.glob("purge_audit_*"))
+    return candidates[-1] if candidates else None
+
+
+def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="Purge Leakage Analyzer")
+    parser.add_argument("--date", default=None,
+                        help="YYYYMMDD; default = latest purge_audit_* dir")
+    args = parser.parse_args()
+
+    if args.date:
+        audit_dir = REPORTS_ROOT / f"purge_audit_{args.date}"
+    else:
+        audit_dir = _find_latest_audit_dir()
+    if audit_dir is None or not audit_dir.exists():
+        print(f"ERROR: audit dir not found: {audit_dir}", flush=True)
+        return 1
+
+    runs = load_runs(audit_dir)
+    if not runs:
+        print(f"ERROR: no run.json files found in {audit_dir}", flush=True)
+        return 1
+
+    rows = compute_delta_rows(runs)
+    date_str = audit_dir.name.replace("purge_audit_", "")
+    body = render_report(rows, runs, audit_date=date_str)
+
+    out_path = audit_dir / "REPORT.md"
+    out_path.write_text(body, encoding="utf-8")
+    print(f"Wrote report: {out_path}")
+    print(f"Rows: {len(rows)} | Green: {sum(1 for r in rows if 'GREEN' in r['verdict'])} | "
+          f"Yellow: {sum(1 for r in rows if 'YELLOW' in r['verdict'])} | "
+          f"Red: {sum(1 for r in rows if 'RED' in r['verdict'])}")
+    return 0
+
+
+if __name__ == "__main__":
+    import sys
+    sys.exit(main())
