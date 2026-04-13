@@ -220,7 +220,9 @@ class TestRenderReport:
             ("ng1.0.1", 30): {"run_id": "ng1.0.1_purge30", "elapsed_seconds": 2500,
                               "returncode": 0, "n_windows": 3},
         }
-        body, counts = render_report(rows, runs, audit_date="20260413")
+        from analyze_purge_leakage import count_verdicts
+        counts = count_verdicts(rows)
+        body = render_report(rows, runs, audit_date="20260413", counts=counts)
         assert "Purge Leakage Audit" in body
         assert "ng1.0.1" in body
         assert "🟢 GREEN" in body
@@ -239,7 +241,9 @@ class TestRenderReport:
         }]
         runs = {("ng106", 15): {"run_id": "ng106_purge15", "elapsed_seconds": 0,
                                  "returncode": 1, "n_windows": 0}}
-        body, counts = render_report(rows, runs, audit_date="20260413")
+        from analyze_purge_leakage import count_verdicts
+        counts = count_verdicts(rows)
+        body = render_report(rows, runs, audit_date="20260413", counts=counts)
         assert "⚪ N/A" in body
         assert "ng106" in body
         assert "—" in body

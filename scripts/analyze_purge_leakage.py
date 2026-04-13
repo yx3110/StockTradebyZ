@@ -9,6 +9,7 @@ import json
 import math
 import sys
 from collections import Counter
+from enum import Enum
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -23,8 +24,26 @@ RED_THRESHOLD = 0.30
 LOW_IC_CUTOFF = 0.005
 
 
+class Verdict(str, Enum):
+    """Leakage verdict. str subclass → `"GREEN" in Verdict.GREEN` still works."""
+    GREEN = "GREEN"
+    YELLOW = "YELLOW"
+    RED = "RED"
+    NA = "N/A"
+    NA_LOW_IC = "N/A (baseline IC 过低)"
+
+
+VERDICT_DISPLAY = {
+    Verdict.GREEN: "🟢 GREEN",
+    Verdict.YELLOW: "🟡 YELLOW",
+    Verdict.RED: "🔴 RED",
+    Verdict.NA: "⚪ N/A",
+    Verdict.NA_LOW_IC: "⚪ N/A (baseline IC 过低)",
+}
+
+
 def classify_verdict(baseline_ic: float | None, delta_pct: float | None) -> str:
-    """Classify leakage severity.
+    """Classify leakage severity. Returns display string (emoji + label).
 
     Rules:
       baseline_ic None, NaN, or < LOW_IC_CUTOFF → ⚪ N/A (baseline IC 过低)
@@ -35,14 +54,14 @@ def classify_verdict(baseline_ic: float | None, delta_pct: float | None) -> str:
     (delta_pct < 0 means control IC ≥ baseline, treat as GREEN)
     """
     if baseline_ic is None or math.isnan(baseline_ic) or baseline_ic < LOW_IC_CUTOFF:
-        return "⚪ N/A (baseline IC 过低)"
+        return VERDICT_DISPLAY[Verdict.NA_LOW_IC]
     if delta_pct is None or math.isnan(delta_pct):
-        return "⚪ N/A"
+        return VERDICT_DISPLAY[Verdict.NA]
     if delta_pct < GREEN_THRESHOLD:
-        return "🟢 GREEN"
+        return VERDICT_DISPLAY[Verdict.GREEN]
     if delta_pct < RED_THRESHOLD:
-        return "🟡 YELLOW"
-    return "🔴 RED"
+        return VERDICT_DISPLAY[Verdict.YELLOW]
+    return VERDICT_DISPLAY[Verdict.RED]
 
 
 def extract_per_label_mean_oos_ic(wf_summary: dict) -> dict[str, float | None]:
@@ -130,27 +149,21 @@ def _fmt_minutes(seconds: float | int | None) -> str:
     return f"{seconds/60:.1f} min"
 
 
-def _count_verdicts(rows: list[dict]) -> Counter:
-    counts = Counter()
-    for r in rows:
-        v = r["verdict"]
-        if "GREEN" in v:
-            counts["GREEN"] += 1
-        elif "YELLOW" in v:
-            counts["YELLOW"] += 1
-        elif "RED" in v:
-            counts["RED"] += 1
-        else:
-            counts["NA"] += 1
-    return counts
+def _bucket_verdict(verdict: str) -> str:
+    """Map a display-string verdict to its bucket key (GREEN/YELLOW/RED/NA)."""
+    for v in (Verdict.GREEN, Verdict.YELLOW, Verdict.RED):
+        if v.value in verdict:
+            return v.value
+    return Verdict.NA.value
 
 
-def render_report(rows: list[dict], runs: dict, audit_date: str) -> tuple[str, Counter]:
-    """Render Markdown report from computed rows and run metadata.
+def count_verdicts(rows: list[dict]) -> Counter:
+    """Tally verdict buckets across rows."""
+    return Counter(_bucket_verdict(r["verdict"]) for r in rows)
 
-    Returns (markdown_body, verdict_counts).
-    """
-    counts = _count_verdicts(rows)
+
+def render_report(rows: list[dict], runs: dict, audit_date: str, counts: Counter) -> str:
+    """Render Markdown report from computed rows, run metadata, and pre-computed counts."""
     total = len(rows)
 
     lines = [
@@ -221,7 +234,7 @@ def render_report(rows: list[dict], runs: dict, audit_date: str) -> tuple[str, C
         )
 
     lines.append("")
-    return "\n".join(lines), counts
+    return "\n".join(lines)
 
 
 def _find_latest_audit_dir() -> Path | None:
@@ -249,8 +262,9 @@ def main():
         return 1
 
     rows = compute_delta_rows(runs)
+    counts = count_verdicts(rows)
     date_str = audit_dir.name.replace("purge_audit_", "")
-    body, counts = render_report(rows, runs, audit_date=date_str)
+    body = render_report(rows, runs, audit_date=date_str, counts=counts)
 
     out_path = audit_dir / "REPORT.md"
     out_path.write_text(body, encoding="utf-8")
