@@ -6121,7 +6121,8 @@ def main(target_date: str = None, scoring_version: str = "v3", stocks_only: bool
 if __name__ == "__main__":
     import sys
     import argparse
-    
+    from ml_models.ng.ng_schema import PRODUCTION_VERSION
+
     parser = argparse.ArgumentParser(description='量化选股分析器')
     parser.add_argument('date', nargs='?', help='分析日期 (YYYY-MM-DD格式)')
     parser.add_argument('--scoring-version', '-v',
@@ -6129,8 +6130,8 @@ if __name__ == "__main__":
                                 'v3.5', 'v3.51', 'v3.52', 'v3.53', 'v3.6', 'v3.7',
                                 'v3.8', 'v3.81', 'v3.9', 'v3.94', 'v3.95', 'v3.96',
                                 'v4', 'v4.0', 'v4.2', 'v4.3', 'v4.4', 'v4.4.2', 'v4.5', 'v4.6', 'v4.7.1', 'v4.7.2', 'v4.7.3', 'v4.7.5', 'v4.7.6', 'v4.7.7', 'v4.7.8', 'v4.7.9', 'v4.8', 'v4.8.0', 'v4.8.1', 'v4.8.2', 'v4.8.4', 'v4.8.5', 'v4.8.6', 'v4.8.7', 'v4.8.8', 'v4.9.0', 'v4.9.0.1', 'v4.9.0.2', 'v4.9.1', 'v5.0', 'ng1.0.0', 'ng1.0.1', 'ng1.0.2', 'ng1.0.3', 'ng1.0.4', 'ng1.0.6', 'ng1.0.7', 'ng1.1.0'],
-                       default='v4.9.0.1',
-                       help='评分版本 (默认v4.9.0.1, 生产推荐, 配合focus_days=15+EMA0.7+CPPI(8,20)+SF30 → V4=92.8%% S级)。'
+                       default=PRODUCTION_VERSION,
+                       help=f'评分版本 (默认{PRODUCTION_VERSION}, 生产推荐, 68特征bugfix后重训, V5.2=70.4%% A+, 年化122.8%%, Sharpe=2.065, MaxDD=-12.5%%)。'
                             '活跃版本: v3.9(生产A级), v3.96(Robust Z-Score,ICIR>0.2), '
                             'v4.3(Walk-Forward+强正则), v4.4(V4.3+6增强模块), '
                             'v4.4.2(V4.4+三层组合风控), '

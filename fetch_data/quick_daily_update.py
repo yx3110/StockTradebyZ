@@ -542,17 +542,25 @@ def update_v40_feature_cache(date_str: str, stock_data_cache: dict = None):
 
 
 def update_ng_feature_cache(date_str: str):
-    """更新NG特征缓存 (ng1.0.3默认 + ng1.0.1/ng1.0.4 for ng1.0.6牛熊切换)"""
+    """更新NG特征缓存 (生产版本 + ng1.0.6 regime-switch依赖版本)"""
     logger.info(f"开始更新 {date_str} 的NG特征缓存...")
 
     total_count = 0
     try:
         from ml_models.ng.ng_cache_updater import NGCacheUpdater
+        from ml_models.ng.ng_schema import PRODUCTION_VERSION, get_table_name
 
         date_dash = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
 
-        # 更新所有ng1.0.6依赖的版本: ng1.0.3(默认), ng1.0.1(牛市), ng1.0.4(熊市)
-        for ver in ['ng1.0.3', 'ng1.0.1', 'ng1.0.4']:
+        # 生产版本优先; ng1.0.3/ng1.0.4 供 ng1.0.6 牛熊切换回退使用
+        # 多版本共表时 (如 ng1.1.0/ng1.0.1 同写 ng101_feature_cache) 仅跑一次避免重复I/O
+        versions = [PRODUCTION_VERSION, 'ng1.0.3', 'ng1.0.4']
+        seen_tables: set[str] = set()
+        for ver in versions:
+            table = get_table_name(ver)
+            if table in seen_tables:
+                continue
+            seen_tables.add(table)
             try:
                 updater = NGCacheUpdater(version=ver)
                 count = updater.update_single_date(date_dash)
@@ -563,7 +571,7 @@ def update_ng_feature_cache(date_str: str):
                 logger.warning(f"  {ver} 缓存更新失败: {e}")
 
         if total_count > 0:
-            logger.info(f"✅ NG特征缓存更新成功: {total_count} 条 (3个版本)")
+            logger.info(f"✅ NG特征缓存更新成功: {total_count} 条 ({len(seen_tables)}张表)")
         else:
             logger.info("✅ NG特征缓存更新完成 (无新数据)")
 

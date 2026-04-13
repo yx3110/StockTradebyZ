@@ -80,8 +80,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 # Individual components
 python3 fetch_data/quick_daily_update.py --date 20250930  # Complete data update (30-45 sec)
   # 🆕 Includes: Market quotes, market indices, daily basic, financial indicators, technical indicators
-python3 tomorrow_stock_selector.py 2025-09-30                             # Stock selection (默认v4.9.0.1)
-python3 tomorrow_stock_selector.py 2025-09-30 --scoring-version v4.9.0.1  # 🏆 生产推荐 V4=92.8% S级
+python3 tomorrow_stock_selector.py 2025-09-30                             # Stock selection (默认ng1.1.0)
+python3 tomorrow_stock_selector.py 2025-09-30 --scoring-version ng1.1.0   # 🏆 生产推荐 68特征 V5.2=70.4% A+ Sharpe=2.065
+python3 tomorrow_stock_selector.py 2025-09-30 --scoring-version v4.9.0.1  # v4.9.0.1 (含数据泄露, 仅内部参考)
 python3 tomorrow_stock_selector.py 2025-09-30 --scoring-version v3.9      # v3.9 旧版
 # 生产回测评估:
 python3 backtest/run_north_star_eval.py --production
@@ -439,17 +440,22 @@ AI analysis configuration and weights
 - ⚠️ 不要用8策略做ML的pre-filter — 已实证让v4.7.5从A+降到B
 
 ### ML Scoring Systems (活跃版本)
-1. **🏆 V4.9.0.1 Production** (生产推荐, 北极星V4=92.8% S级):
-   - 61特征, Q95 Widen-then-Concentrate头部精筛
-   - LightGBM + XGBoost + CatBoost + RF + HGB + LambdaRank(trunc=10) Ensemble
-   - 推理: EMA平滑(alpha=0.7) + 市场门控(GateV2, AUC=0.714)
-   - 组合: Top10 + Focus15d + Ret0.2 + CPPI(8,20) + SF30
-   - 性能: 年化124.5%, Sharpe=3.14, MaxDD=-6.4%, 超额胜率68.6%
-   - Scorer: `ml_models/v39/v492_production_scorer.py` (V490+EMA) 或 `v490_production_scorer.py`
-   - 配置: `production_config.json`
-   - 回测: `python3 backtest/run_north_star_eval.py --production`
+1. **🏆 NG v1.1.0 Production** (生产推荐, bugfix后重训, 特征与模型对齐):
+   - 68特征 (58 stock + 10 market), 基于 ng1.0.1 cache schema
+   - 4 个特征 bug 修复: 删冗余(volume_contraction/sw_index_return_5d/industry_relative_strength) + revenue_growth 改用真 or_yoy
+   - P0-P3 因子迭代: Ensemble 权重 shrinkage + 4 新 alpha (peg_proxy/pb_roe_ratio/cs_rank_pb/cs_rank_dv) + Market 正交化
+   - 性能: V5.2=70.4% A+, 年化122.8%, Sharpe=2.065, MaxDD=-12.5%, 月度胜率76.9%
+   - Scorer: `ml_models/ng/ng_production_scorer.py` (version='ng1.1.0')
+   - 模型: `ml_models/trained_models/ng/ng110_seed42_multi_target_20260412_214553.pkl`
+   - 缓存表: `ng101_feature_cache` (与 ng1.0.1 共表, 内部 `_cache_version='ng1.0.1'`)
+   - 日常缓存更新: `quick_daily_update.py` 已包含 `['ng1.1.0', 'ng1.0.3', 'ng1.0.1', 'ng1.0.4']`
 
-2. **V3.9 Production Scorer** (旧版):
+2. **V4.9.0.1** (仅内部参考, 含数据泄露):
+   - 61特征, Q95 Widen-then-Concentrate, V4=92.8% S级但 V5.2 只有 54.1% B 级
+   - Scorer: `ml_models/v39/v492_production_scorer.py` / `v490_production_scorer.py`
+   - 配置: `production_config.json`, 回测: `python3 backtest/run_north_star_eval.py --production`
+
+3. **V3.9 Production Scorer** (旧版):
    - 42个增强特征 + 17个扩展财务指标
    - 训练脚本: `ml_models/training/train_v390_from_cache.py`
 

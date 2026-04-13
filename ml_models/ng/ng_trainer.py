@@ -28,7 +28,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from ml_models.training.train_v395_multi_target import V485Trainer
-from ml_models.ng.ng_schema import get_table_name, version_ge
+from ml_models.ng.ng_schema import get_table_name, version_ge, get_schema_version
 
 try:
     import orjson
@@ -223,6 +223,7 @@ class NGTrainer(V485Trainer):
     def __init__(self, db_path: str = DB_PATH, version: str = None):
         super().__init__(db_path)
         self._ng_version = version or NG_VERSION
+        self.schema_version = get_schema_version(self._ng_version)
         self.target_weights = dict(self.TARGET_WEIGHTS)
         self._turbo_skip_etf = True
         self.cache_table = get_table_name(self._ng_version)
@@ -769,21 +770,15 @@ class NGTrainer(V485Trainer):
             date_filter += " AND trade_date <= ?"
             params.append(end_date)
 
-        # Build query based on version — ng1.0.4 also loads RA label columns
-        # ng1.1.0 is based on ng1.0.1 (no RA/cond labels, no AMV columns)
         extra_select = ""
-        if version_ge(self._ng_version, 'ng1.1.0'):
-            pass  # ng1.1.0 based on ng1.0.1 cache: industry excess labels only
-        elif version_ge(self._ng_version, 'ng1.0.7'):
+        if version_ge(self.schema_version, 'ng1.0.7'):
             extra_select = ", ra_label_3d, ra_label_5d, ra_label_10d, ra_label_15d"
             extra_select += ", cond_label_3d, cond_label_5d, cond_label_10d, cond_label_15d"
             extra_select += ", amv_var1, amv_macd, amv_regime_days"
-        elif version_ge(self._ng_version, 'ng1.0.4'):
+        elif version_ge(self.schema_version, 'ng1.0.4'):
             extra_select = ", ra_label_3d, ra_label_5d, ra_label_10d, ra_label_15d"
 
-        # downside_10d only exists in ng1.0.2+ cache tables (not in ng101/ng110)
-        has_downside = version_ge(self._ng_version, 'ng1.0.2') and not version_ge(self._ng_version, 'ng1.1.0')
-        downside_col = ", downside_10d" if has_downside else ""
+        downside_col = ", downside_10d" if version_ge(self.schema_version, 'ng1.0.2') else ""
         query = f"""
         SELECT code, trade_date, features_json,
                label_3d, label_5d, label_10d, label_15d{downside_col}{extra_select},
@@ -816,7 +811,7 @@ class NGTrainer(V485Trainer):
         # Exclude market feature names that may appear in features_json
         # (they are loaded from dedicated SQL columns instead)
         market_cols_to_load = list(MARKET_FEATURE_NAMES)
-        if version_ge(self._ng_version, 'ng1.0.7') and not version_ge(self._ng_version, 'ng1.1.0'):
+        if version_ge(self.schema_version, 'ng1.0.7'):
             market_cols_to_load += EXTENDED_MARKET_FEATURE_NAMES
         market_set = set(market_cols_to_load)
         active_stock_features = [c for c in active_stock_features if c not in market_set]

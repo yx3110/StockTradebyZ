@@ -10,6 +10,7 @@ from .ng_trainer import (
     NG_VERSION, NG_V1_VERSION, NG104_VERSION,
 )
 from .ng_production_scorer import NGProductionScorer
+from .ng_schema import PRODUCTION_VERSION
 
 __all__ = [
     'NGTrainer', 'NGProductionScorer',
@@ -17,4 +18,5 @@ __all__ = [
     'MONEYFLOW_FEATURE_NAMES', 'INTERACTION_FEATURE_NAMES',
     'SMOOTHING_FEATURE_NAMES', 'NG104_STOCK_FEATURES', 'NG104_ALL_FEATURES',
     'NG_VERSION', 'NG_V1_VERSION', 'NG104_VERSION',
+    'PRODUCTION_VERSION',
 ]

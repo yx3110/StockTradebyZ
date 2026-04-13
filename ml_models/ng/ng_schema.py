@@ -28,6 +28,19 @@ VERSION_TABLE_MAP = {
 
 DEFAULT_VERSION = 'ng1.0.3'
 
+PRODUCTION_VERSION = 'ng1.1.0'
+
+# Versions that reuse another version's cache schema (table columns + feature semantics)
+# ng1.1.0 is a pruning+bugfix iteration on top of ng1.0.1, uses identical ng101_feature_cache schema
+SCHEMA_VERSION_MAP = {
+    'ng1.1.0': 'ng1.0.1',
+}
+
+
+def get_schema_version(version: str) -> str:
+    """Return the underlying cache schema version (handles reuse like ng1.1.0 → ng1.0.1)."""
+    return SCHEMA_VERSION_MAP.get(version, version)
+
 
 def version_ge(v1: str, v2: str) -> bool:
     """Safe semantic version comparison for 'ngX.Y.Z' strings."""

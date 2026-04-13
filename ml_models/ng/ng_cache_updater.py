@@ -28,7 +28,7 @@ _PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '.
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-from ml_models.ng.ng_schema import create_table, get_table_name, DB_PATH, create_moneyflow_table, version_ge
+from ml_models.ng.ng_schema import create_table, get_table_name, DB_PATH, create_moneyflow_table, version_ge, get_schema_version, DEFAULT_VERSION
 from ml_models.ng.ng_feature_calculator import (
     compute_stock_features,
     compute_fundamental_features,
@@ -121,12 +121,13 @@ def _safe_float(val, default=np.nan) -> float:
 class NGCacheUpdater:
     """Batch compute NG factors and write to version-specific cache table."""
 
-    def __init__(self, db_path: str = None, version: str = 'ng1.0.3'):
+    def __init__(self, db_path: str = None, version: str = DEFAULT_VERSION):
         self.db_path = db_path or DB_PATH
         self.version = version
+        self.schema_version = get_schema_version(version)
         self.table_name = get_table_name(version)
-        create_table(self.db_path, version=version)
-        if version_ge(version, 'ng1.0.3'):
+        create_table(self.db_path, version=self.schema_version)
+        if version_ge(self.schema_version, 'ng1.0.3'):
             create_moneyflow_table(self.db_path)
         self._pro = None  # lazy-init Tushare API
 
@@ -666,7 +667,7 @@ class NGCacheUpdater:
             result[sid] = labels
 
         # ng1.0.4: Compute max drawdown for each security
-        if version_ge(getattr(self, 'version', 'ng1.0.0'), 'ng1.0.4'):
+        if version_ge(getattr(self, 'schema_version', 'ng1.0.0'), 'ng1.0.4'):
             for sid in security_ids:
                 fp = future_prices.get(sid, {})
                 if not fp or future_dates[0] not in fp:
@@ -933,7 +934,7 @@ class NGCacheUpdater:
             nb_5d, nb_std = self._load_northbound_data(conn, date)
 
             # 8.5. Load moneyflow data (v1.0.3)
-            if version_ge(self.version, 'ng1.0.3'):
+            if version_ge(self.schema_version, 'ng1.0.3'):
                 mf_count = self._fetch_and_store_moneyflow(conn, date)
                 if mf_count > 0:
                     print(f"  [{date}] Fetched {mf_count} moneyflow records")
@@ -970,7 +971,7 @@ class NGCacheUpdater:
             # 11.5 ng1.0.7: Load AMV data and compute extended market features
             ext_market_feats = {}
             amv_row = None
-            if version_ge(self.version, 'ng1.0.7'):
+            if version_ge(self.schema_version, 'ng1.0.7'):
                 try:
                     amv_row_data = conn.execute(
                         'SELECT var1, amv_macd, amv_regime FROM market_amv WHERE trade_date <= ? ORDER BY trade_date DESC LIMIT 1',
@@ -1056,7 +1057,7 @@ class NGCacheUpdater:
             labels_all = self._convert_labels_to_excess(labels_abs, universe)
 
             # v1.0.3: Convert to style residual labels
-            if version_ge(self.version, 'ng1.0.3'):
+            if version_ge(self.schema_version, 'ng1.0.3'):
                 # Inject circ_mv into universe for residual regression
                 for sid in active_sids:
                     db = daily_basic.get(sid)
@@ -1067,14 +1068,14 @@ class NGCacheUpdater:
                 )
 
             # ng1.0.4: Compute risk-adjusted labels
-            if version_ge(self.version, 'ng1.0.4'):
+            if version_ge(self.schema_version, 'ng1.0.4'):
                 pp = getattr(self, 'penalty_power', 1.5)
                 labels_all = self._convert_labels_to_risk_adjusted(labels_all, penalty_power=pp)
 
             # ng1.0.7: Compute conditional labels
             # Bear market: rank_pct (relative positioning), Bull: industry excess
             # Smooth blend based on market_return_20d
-            if version_ge(self.version, 'ng1.0.7'):
+            if version_ge(self.schema_version, 'ng1.0.7'):
                 mkt_ret_20d = market_feats.get('market_return_20d', 0.0)
                 if np.isnan(mkt_ret_20d):
                     mkt_ret_20d = 0.0
@@ -1212,7 +1213,7 @@ class NGCacheUpdater:
 
                 # ng1.0.4: Compute smoothing features (9)
                 smooth_feats = {}
-                if version_ge(self.version, 'ng1.0.4'):
+                if version_ge(self.schema_version, 'ng1.0.4'):
                     try:
                         smooth_feats = compute_smoothing_features(
                             closes=closes, opens=opens, highs=highs,
@@ -1276,7 +1277,7 @@ class NGCacheUpdater:
 
                 # --- Compute moneyflow features (8, v1.0.3) ---
                 mf_feats = {}
-                if version_ge(self.version, 'ng1.0.3'):
+                if version_ge(self.schema_version, 'ng1.0.3'):
                     code_for_mf = info['code']
                     mf_rows_for_stock = mf_data.get(code_for_mf, [])
                     if len(closes) >= 2:
@@ -1415,7 +1416,7 @@ class NGCacheUpdater:
 
                 # --- Interaction features (8, v1.0.3) ---
                 ix_feats = {}
-                if version_ge(self.version, 'ng1.0.3'):
+                if version_ge(self.schema_version, 'ng1.0.3'):
                     try:
                         ix_feats = compute_interaction_features(
                             data['stock_feats'],
@@ -1431,7 +1432,7 @@ class NGCacheUpdater:
 
                 # --- ng1.0.7: Conditional interaction features (7) ---
                 cond_ix_feats = {}
-                if version_ge(self.version, 'ng1.0.7') and ext_market_feats:
+                if version_ge(self.schema_version, 'ng1.0.7') and ext_market_feats:
                     try:
                         cond_ix_feats = compute_conditional_interaction_features(
                             stock_feats=data['stock_feats'],
@@ -1452,12 +1453,12 @@ class NGCacheUpdater:
                 all_feats.update(data['ind_feats'])
                 all_feats.update(cs_feats)
                 all_feats.update(res_feats)
-                if version_ge(self.version, 'ng1.0.3'):
+                if version_ge(self.schema_version, 'ng1.0.3'):
                     all_feats.update(data.get('mf_feats', {}))
                     all_feats.update(ix_feats)
-                if version_ge(self.version, 'ng1.0.4'):
+                if version_ge(self.schema_version, 'ng1.0.4'):
                     all_feats.update(data.get('smooth_feats', {}))
-                if version_ge(self.version, 'ng1.0.7'):
+                if version_ge(self.schema_version, 'ng1.0.7'):
                     # ext_market_feats stored in features_json for scorer access
                     # (only non-AMV features; AMV values already in dedicated columns)
                     for k, v in ext_market_feats.items():
@@ -1504,7 +1505,7 @@ class NGCacheUpdater:
                 )
 
                 # v1.0.3: add label_raw columns
-                if version_ge(self.version, 'ng1.0.3'):
+                if version_ge(self.schema_version, 'ng1.0.3'):
                     raw_cols = (
                         _to_sql(stock_labels.get('label_raw_3d')),
                         _to_sql(stock_labels.get('label_raw_5d')),
@@ -1515,7 +1516,7 @@ class NGCacheUpdater:
                     raw_cols = ()
 
                 # ng1.0.4: add maxDD + RA label columns
-                if version_ge(self.version, 'ng1.0.4'):
+                if version_ge(self.schema_version, 'ng1.0.4'):
                     ng104_cols = (
                         _to_sql(stock_labels.get('maxdd_3d')),
                         _to_sql(stock_labels.get('maxdd_5d')),
@@ -1530,7 +1531,7 @@ class NGCacheUpdater:
                     ng104_cols = ()
 
                 # ng1.0.7: add conditional label + AMV columns
-                if version_ge(self.version, 'ng1.0.7'):
+                if version_ge(self.schema_version, 'ng1.0.7'):
                     ng107_cols = (
                         _to_sql(stock_labels.get('cond_label_3d')),
                         _to_sql(stock_labels.get('cond_label_5d')),
@@ -1561,7 +1562,7 @@ class NGCacheUpdater:
             # Write to database
             if insert_rows:
                 conn.row_factory = None
-                if version_ge(self.version, 'ng1.0.7'):
+                if version_ge(self.schema_version, 'ng1.0.7'):
                     # 37 columns: ng1.0.4 (30) + 7 ng1.0.7 columns (cond_label + amv)
                     conn.executemany(
                         f'''INSERT OR REPLACE INTO {self.table_name}
@@ -1579,7 +1580,7 @@ class NGCacheUpdater:
                            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
                         insert_rows
                     )
-                elif version_ge(self.version, 'ng1.0.4'):
+                elif version_ge(self.schema_version, 'ng1.0.4'):
                     # 30 columns: ng1.0.3 columns + 8 ng1.0.4 columns (maxdd + ra_label)
                     conn.executemany(
                         f'''INSERT OR REPLACE INTO {self.table_name}
@@ -1595,7 +1596,7 @@ class NGCacheUpdater:
                            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
                         insert_rows
                     )
-                elif version_ge(self.version, 'ng1.0.3'):
+                elif version_ge(self.schema_version, 'ng1.0.3'):
                     # 22 columns: includes downside_10d + 4 label_raw columns
                     conn.executemany(
                         f'''INSERT OR REPLACE INTO {self.table_name}
@@ -1609,7 +1610,7 @@ class NGCacheUpdater:
                            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
                         insert_rows
                     )
-                elif version_ge(self.version, 'ng1.0.2'):
+                elif version_ge(self.schema_version, 'ng1.0.2'):
                     # 18 columns: includes downside_10d at position 7
                     conn.executemany(
                         f'''INSERT OR REPLACE INTO {self.table_name}
