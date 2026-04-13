@@ -12,6 +12,10 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
 
 from analyze_purge_leakage import classify_verdict
+from analyze_purge_leakage import (
+    extract_per_label_mean_oos_ic,
+    extract_n_windows,
+)
 
 
 # --- classify_verdict ---
@@ -39,3 +43,48 @@ class TestClassifyVerdict:
         assert "RED" in classify_verdict(0.06, 0.30)
         assert "RED" in classify_verdict(0.06, 1.0)
         assert "RED" in classify_verdict(0.06, 0.999)
+
+
+class TestExtractPerLabelMeanOOSIC:
+    def test_happy_path(self):
+        wf_summary = {
+            "aggregate": {
+                "label_3d_mean_ic": 0.0567,
+                "label_5d_mean_ic": 0.0693,
+                "label_10d_mean_ic": 0.0852,
+                "label_15d_mean_ic": 0.0868,
+                "label_3d_std_ic": 0.01,
+                "other_key": "ignored",
+            }
+        }
+        result = extract_per_label_mean_oos_ic(wf_summary)
+        assert result == {
+            "label_3d": 0.0567,
+            "label_5d": 0.0693,
+            "label_10d": 0.0852,
+            "label_15d": 0.0868,
+        }
+
+    def test_missing_label_returns_none(self):
+        wf_summary = {"aggregate": {"label_3d_mean_ic": 0.05}}
+        result = extract_per_label_mean_oos_ic(wf_summary)
+        assert result == {"label_3d": 0.05, "label_5d": None,
+                          "label_10d": None, "label_15d": None}
+
+    def test_missing_aggregate(self):
+        assert extract_per_label_mean_oos_ic({}) == {
+            "label_3d": None, "label_5d": None,
+            "label_10d": None, "label_15d": None,
+        }
+
+
+class TestExtractNWindows:
+    def test_happy_path(self):
+        assert extract_n_windows({"n_windows": 3}) == 3
+
+    def test_missing_returns_zero(self):
+        assert extract_n_windows({}) == 0
+
+    def test_fallback_to_wf_windows_list(self):
+        """If n_windows not present, fall back to len(wf_windows)."""
+        assert extract_n_windows({"wf_windows": [{}, {}, {}]}) == 3

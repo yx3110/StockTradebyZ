@@ -39,3 +39,20 @@ def classify_verdict(baseline_ic: float | None, delta_pct: float | None) -> str:
     if delta_pct < RED_THRESHOLD:
         return "🟡 YELLOW"
     return "🔴 RED"
+
+
+def extract_per_label_mean_oos_ic(wf_summary: dict) -> dict[str, float | None]:
+    """Pull {label_Xd: mean_oos_ic} from wf_summary['aggregate'].
+
+    Missing labels return None (not 0 — distinguishes "training produced
+    this label" from "label missing").
+    """
+    agg = wf_summary.get("aggregate", {})
+    return {f"label_{d}": agg.get(f"label_{d}_mean_ic") for d in LABELS}
+
+
+def extract_n_windows(wf_summary: dict) -> int:
+    """Pull window count. Prefer top-level n_windows, fall back to len(wf_windows)."""
+    if "n_windows" in wf_summary:
+        return int(wf_summary["n_windows"])
+    return len(wf_summary.get("wf_windows", []))
