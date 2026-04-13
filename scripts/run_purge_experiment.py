@@ -58,3 +58,147 @@ def _find_new_wf_summary(pre: dict[Path, float], post: dict[Path, float]) -> Pat
         return None
     changed.sort(reverse=True)  # latest mtime first
     return changed[0][1]
+
+
+def run_single(
+    version: str,
+    purge_days: int,
+    audit_dir: Path,
+    force: bool = False,
+    extra_args: list[str] | None = None,
+) -> dict:
+    """Run one (version, purge) combination. Returns the run.json content.
+
+    If output already exists and force=False, loads and returns it.
+    """
+    run_id = f"{version}_purge{purge_days}"
+    run_dir = audit_dir / run_id
+    run_json_path = run_dir / "run.json"
+
+    if run_json_path.exists() and not force:
+        logger.info("skip %s (already exists, use --force to rerun)", run_id)
+        return json.loads(run_json_path.read_text())
+
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    # Snapshot existing wf_summary files before training
+    pre_snapshot = _snapshot_wf_summaries(TRAINED_MODELS_DIR)
+
+    cmd = [
+        sys.executable, str(PROJECT_ROOT / "ml_models" / "ng" / "ng_trainer.py"),
+        "--version", version,
+        "--purge-days", str(purge_days),
+        "--start-date", "2020-01-01",
+    ]
+    if extra_args:
+        cmd.extend(extra_args)
+
+    logger.info("start %s: %s", run_id, " ".join(cmd))
+    start_iso = datetime.now().isoformat(timespec="seconds")
+    t0 = time.time()
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=TRAIN_TIMEOUT_SECONDS,
+            cwd=str(PROJECT_ROOT),
+        )
+        returncode = proc.returncode
+        stdout = proc.stdout
+        stderr = proc.stderr
+    except subprocess.TimeoutExpired as exc:
+        logger.error("TIMEOUT %s after %d seconds", run_id, TRAIN_TIMEOUT_SECONDS)
+        returncode = -1
+        stdout = exc.stdout or ""
+        stderr = (exc.stderr or "") + f"\n---TIMEOUT after {TRAIN_TIMEOUT_SECONDS}s---"
+
+    elapsed = time.time() - t0
+    (run_dir / "trainer.log").write_text(
+        stdout + "\n---STDERR---\n" + stderr, encoding="utf-8"
+    )
+
+    # Locate new wf_summary
+    post_snapshot = _snapshot_wf_summaries(TRAINED_MODELS_DIR)
+    new_wf_path = _find_new_wf_summary(pre_snapshot, post_snapshot)
+
+    oos_ics = {"label_3d": None, "label_5d": None, "label_10d": None, "label_15d": None}
+    n_windows = 0
+    if new_wf_path and new_wf_path.exists():
+        try:
+            wf = json.loads(new_wf_path.read_text())
+            oos_ics = extract_per_label_mean_oos_ic(wf)
+            n_windows = extract_n_windows(wf)
+        except Exception as exc:
+            logger.warning("Failed to parse %s: %s", new_wf_path, exc)
+
+    run_json = {
+        "run_id": run_id,
+        "version": version,
+        "purge_days": purge_days,
+        "started_at": start_iso,
+        "elapsed_seconds": elapsed,
+        "returncode": returncode,
+        "wf_summary_path": str(new_wf_path) if new_wf_path else None,
+        "n_windows": n_windows,
+        "per_label_mean_oos_ic": oos_ics,
+    }
+    run_json_path.write_text(json.dumps(run_json, indent=2, ensure_ascii=False))
+    logger.info("done %s: rc=%d elapsed=%.1fmin oos_ics=%s",
+                run_id, returncode, elapsed / 60, oos_ics)
+    return run_json
+
+
+def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="Purge Leakage Runner")
+    parser.add_argument("--date", default=None,
+                        help="YYYYMMDD; default = today")
+    parser.add_argument("--force", action="store_true",
+                        help="Rerun even if run.json exists")
+    parser.add_argument("--fast-check", action="store_true",
+                        help="Pass --fast-check to ng_trainer (2-window smoke)")
+    parser.add_argument("--only-version", default=None,
+                        help="Limit to one version (for debugging)")
+    parser.add_argument("--only-purge", type=int, default=None,
+                        help="Limit to one purge value (for debugging)")
+    parser.add_argument("-v", "--verbose", action="store_true")
+    args = parser.parse_args()
+
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
+
+    date_str = args.date if args.date else datetime.now().strftime("%Y%m%d")
+    audit_dir = REPORTS_ROOT / f"purge_audit_{date_str}"
+    audit_dir.mkdir(parents=True, exist_ok=True)
+
+    versions = [args.only_version] if args.only_version else VERSIONS
+    purges = [args.only_purge] if args.only_purge is not None else PURGE_VALUES
+    extra = ["--fast-check"] if args.fast_check else None
+
+    total = len(versions) * len(purges)
+    logger.info("Running %d combinations into %s", total, audit_dir)
+
+    completed = []
+    for i, version in enumerate(versions):
+        for j, purge in enumerate(purges):
+            idx = i * len(purges) + j + 1
+            logger.info("[%d/%d] %s purge=%d", idx, total, version, purge)
+            try:
+                result = run_single(
+                    version, purge, audit_dir,
+                    force=args.force, extra_args=extra,
+                )
+                completed.append(result)
+            except Exception as exc:
+                logger.error("run_single %s/%d failed: %s", version, purge, exc, exc_info=True)
+
+    print(f"\nDone. {len(completed)}/{total} runs completed.")
+    print(f"Next: python3 scripts/analyze_purge_leakage.py --date {date_str}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
