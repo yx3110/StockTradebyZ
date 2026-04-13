@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -289,3 +290,55 @@ class TestFindNewWfSummary:
         pre = {}
         post = {p1: 1000.0, p2: 2000.0}
         assert _find_new_wf_summary(pre, post) == p2
+
+
+class TestRunSingleTimeout:
+    def test_timeout_writes_trainer_log_and_run_json(self, tmp_path, monkeypatch):
+        """TimeoutExpired should still produce trainer.log and run.json with returncode=-1."""
+        import run_purge_experiment
+
+        # Prepare: create a fake model dir so pre_snapshot works
+        fake_models = tmp_path / "trained_models"
+        fake_models.mkdir()
+
+        # Patch TRAINED_MODELS_DIR to tmp_path
+        monkeypatch.setattr(run_purge_experiment, "TRAINED_MODELS_DIR", fake_models)
+
+        # Patch TRAIN_TIMEOUT_SECONDS to a tiny value so real Popen times out fast
+        monkeypatch.setattr(run_purge_experiment, "TRAIN_TIMEOUT_SECONDS", 1)
+
+        # Patch the subprocess call to run a command that sleeps longer than timeout
+        # We invoke a trivial python subprocess that never exits
+        real_popen = subprocess.Popen
+
+        def fake_popen(cmd, **kwargs):
+            # Replace command with a sleep that will be killed
+            fake_cmd = [sys.executable, "-c", "import time; time.sleep(10)"]
+            return real_popen(fake_cmd, **kwargs)
+
+        monkeypatch.setattr(run_purge_experiment.subprocess, "Popen", fake_popen)
+
+        audit_dir = tmp_path / "audit"
+        result = run_purge_experiment.run_single(
+            version="ng1.0.1",
+            purge_days=15,
+            audit_dir=audit_dir,
+            force=False,
+            extra_args=None,
+        )
+
+        # Verify run.json and trainer.log both exist
+        run_dir = audit_dir / "ng1.0.1_purge15"
+        assert (run_dir / "run.json").exists(), "run.json should be written even on timeout"
+        assert (run_dir / "trainer.log").exists(), "trainer.log should be written even on timeout"
+
+        # Verify run.json contents
+        assert result["returncode"] == -1
+        assert result["version"] == "ng1.0.1"
+        assert result["purge_days"] == 15
+        # oos_ics stays at None defaults since no wf_summary
+        assert result["per_label_mean_oos_ic"]["label_5d"] is None
+
+        # Verify trainer.log contains timeout marker
+        log_body = (run_dir / "trainer.log").read_text()
+        assert "TIMEOUT" in log_body

@@ -95,28 +95,26 @@ def run_single(
 
     logger.info("start %s: %s", run_id, " ".join(cmd))
     start_iso = datetime.now().isoformat(timespec="seconds")
+    trainer_log_path = run_dir / "trainer.log"
     t0 = time.time()
-    try:
-        proc = subprocess.run(
+    with open(trainer_log_path, "w", encoding="utf-8", errors="replace") as log_f:
+        proc = subprocess.Popen(
             cmd,
-            capture_output=True,
-            text=True,
-            timeout=TRAIN_TIMEOUT_SECONDS,
+            stdout=log_f,
+            stderr=subprocess.STDOUT,  # merge stderr into same log file
             cwd=str(PROJECT_ROOT),
+            text=True,
         )
-        returncode = proc.returncode
-        stdout = proc.stdout
-        stderr = proc.stderr
-    except subprocess.TimeoutExpired as exc:
-        logger.error("TIMEOUT %s after %d seconds", run_id, TRAIN_TIMEOUT_SECONDS)
-        returncode = -1
-        stdout = exc.stdout or ""
-        stderr = (exc.stderr or "") + f"\n---TIMEOUT after {TRAIN_TIMEOUT_SECONDS}s---"
+        try:
+            returncode = proc.wait(timeout=TRAIN_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            logger.error("TIMEOUT %s after %d seconds", run_id, TRAIN_TIMEOUT_SECONDS)
+            proc.kill()
+            proc.wait()
+            log_f.write(f"\n---TIMEOUT after {TRAIN_TIMEOUT_SECONDS}s---\n")
+            returncode = -1
 
     elapsed = time.time() - t0
-    (run_dir / "trainer.log").write_text(
-        stdout + "\n---STDERR---\n" + stderr, encoding="utf-8"
-    )
 
     # Locate new wf_summary
     post_snapshot = _snapshot_wf_summaries(TRAINED_MODELS_DIR)
@@ -195,8 +193,13 @@ def main():
             except Exception as exc:
                 logger.error("run_single %s/%d failed: %s", version, purge, exc, exc_info=True)
 
-    print(f"\nDone. {len(completed)}/{total} runs completed.")
+    failed = total - len(completed)
+    nonzero_rc = sum(1 for r in completed if r.get("returncode", 0) != 0)
+    print(f"\nDone. {len(completed)}/{total} runs returned, {nonzero_rc} had non-zero exit code.")
     print(f"Next: python3 scripts/analyze_purge_leakage.py --date {date_str}")
+    # Non-zero exit if any run raised OR all runs had non-zero returncode
+    if failed > 0 or (completed and nonzero_rc == len(completed)):
+        return 1
     return 0
 
 
