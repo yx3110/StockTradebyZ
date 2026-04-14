@@ -1,14 +1,23 @@
 """
-NG Feature Cache Schema — version-specific tables for backward compatibility.
+NG Feature Cache Schema — version-specific tables.
 
 Table naming convention:
   - ng_feature_cache       → ng1.0.0 (original, 62 features, absolute labels)
   - ng101_feature_cache    → ng1.0.1 (69 features, industry excess labels)
-  - ng102_feature_cache    → ng1.0.2
-  - ng103_feature_cache    → ng1.0.3 (66 features, drop 3 flipping factors)
+  - ng102_feature_cache    → ng1.0.2 (adds downside_10d single column)
+  - ng103_feature_cache    → ng1.0.3 (adds label_raw_*)
+  - ng104_feature_cache    → ng1.0.4 (adds maxdd_*, ra_label_*)
+  - ng107_feature_cache    → ng1.0.7 (adds cond_label_*, amv_*)
+  - ng121_feature_cache    → ng1.2.1 (adds vn_label_*, path_*, downside_std_10d)
+  - ng123_feature_cache    → ng1.2.3 (adds 4-horizon downside_*, drops legacy)
 
-All tables share the same column schema; only the content differs.
-Old version tables are never deleted.
+Lineage:
+  - ng1.0.x: linear (each version inherits previous columns)
+  - ng1.1.x: reuses ng1.0.1 schema (no own table)
+  - ng1.2.x: branches from ng1.0.1 with own independent schemas per sub-version
+    (ng1.2.0/2.2 reuse ng1.0.1 cache; ng1.2.1/2.3 have own schemas)
+
+Old version tables are never deleted (backward compat).
 """
 import sqlite3
 import os
@@ -83,7 +92,9 @@ def _schema_sql(table_name: str, version: str = None) -> str:
     """
     ver = version or DEFAULT_VERSION
     # ng1.2.x branches from ng1.0.1 and does NOT inherit ng1.0.4/ng1.0.7
-    # additions (maxdd/ra_label/cond_label/amv). Each linear-lineage block
+    # additions (maxdd/ra_label/cond_label/amv). The ng1.0.2 block is also
+    # gated on `not is_12` to avoid a downside_10d naming conflict with
+    # ng1.2.3's new 4-horizon downside_kd columns. Each linear-lineage block
     # below gates on `not is_12` for that reason.
     is_12 = _is_1_2_branch(ver)
     extra_cols = ''
@@ -121,7 +132,10 @@ def _schema_sql(table_name: str, version: str = None) -> str:
         extra_cols += '\n    path_mean_10d REAL,'
         extra_cols += '\n    path_std_10d REAL,'
         extra_cols += '\n    downside_std_10d REAL,'
-    # ng1.2.3 adds soft-downside label columns (per spec section 5)
+    # ng1.2.3 adds soft-downside label columns (per spec section 5).
+    # IMPORTANT: When ng1.2.4 is added with its own schema, add an upper-bound
+    # guard `and not version_ge(ver, 'ng1.2.4')` here AND on the ng1.2.1 block
+    # at line ~115. See ng1.2.1 block for the established pattern.
     if is_12 and version_ge(ver, 'ng1.2.3'):
         extra_cols += '\n    downside_3d REAL,'
         extra_cols += '\n    downside_5d REAL,'
