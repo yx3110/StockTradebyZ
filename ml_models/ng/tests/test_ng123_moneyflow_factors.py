@@ -44,8 +44,7 @@ def test_aggregate_empty_returns_empty():
         assert np.isnan(agg[k]), f"{k} should be NaN"
     # Array fields (use np.testing for safety)
     import numpy.testing as npt
-    for k in ['daily_sign_net_elg', 'daily_sign_net_lg', 'daily_sign_net_sm',
-              'daily_net_sm', 'daily_net_md', 'daily_net_lg', 'daily_net_elg']:
+    for k in ['daily_net_sm', 'daily_net_md', 'daily_net_lg', 'daily_net_elg']:
         npt.assert_array_equal(agg[k], np.array([], dtype=agg[k].dtype))
     assert agg['n_days_actual'] == 0
 
@@ -66,15 +65,16 @@ def test_aggregate_takes_last_n():
     assert agg['sum_net_elg'] == 500
 
 
-def test_daily_signs():
-    """Daily sign array length matches n_days, in correct order (oldest → newest)."""
+def test_daily_signs_derived_from_daily_net():
+    """Sign of net_elg derivable from daily_net_elg via np.sign."""
     rows = [
         _mk_row(buy_elg=100, sell_elg=50),   # net +50, sign +1
         _mk_row(buy_elg=50, sell_elg=100),   # net -50, sign -1
         _mk_row(buy_elg=100, sell_elg=100),  # net 0, sign 0
     ]
     agg = aggregate_moneyflow_window(rows, n_days=3)
-    assert agg['daily_sign_net_elg'].tolist() == [1, -1, 0]
+    signs = np.sign(agg['daily_net_elg']).astype(np.int8)
+    assert signs.tolist() == [1, -1, 0]
 
 
 def test_daily_net_arrays_exposed():
