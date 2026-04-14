@@ -235,9 +235,16 @@ def add_cs_rank_factors(df_factors: pd.DataFrame,
     return df_factors
 
 
-def compute_ic_per_factor(df_factors: pd.DataFrame, df_labels: pd.DataFrame) -> pd.DataFrame:
-    """Compute Spearman IC per factor, daily cross-section, then aggregate to mean+ICIR."""
-    print("  Computing IC per factor (Spearman, daily cross-section)...", flush=True)
+def compute_ic_per_factor(df_factors: pd.DataFrame, df_labels: pd.DataFrame,
+                           min_stocks_per_day: int = 100) -> pd.DataFrame:
+    """Compute Spearman IC per factor, daily cross-section, then aggregate to mean+ICIR.
+
+    Args:
+        min_stocks_per_day: Minimum stocks per day to include that day in IC computation.
+            Default 100 for full-universe runs. Set to 30 for smoke-tests with ~200 stocks.
+    """
+    print(f"  Computing IC per factor (Spearman, daily cross-section, "
+          f"min_stocks_per_day={min_stocks_per_day})...", flush=True)
 
     # Both df_factors and df_labels use 'code_norm' + 'trade_date' as keys
     merged = df_factors.merge(df_labels[['code_norm', 'trade_date', 'label_10d']],
@@ -259,7 +266,7 @@ def compute_ic_per_factor(df_factors: pd.DataFrame, df_labels: pd.DataFrame) -> 
         ics = []
         for date, grp in grouped:
             sub = grp[[fc, 'label_10d']].dropna()
-            if len(sub) < 30:
+            if len(sub) < min_stocks_per_day:
                 continue
             try:
                 ic_val, _ = spearmanr(sub[fc].values, sub['label_10d'].values)
@@ -381,6 +388,9 @@ def main():
                    help='Sample n stocks randomly (default: full universe; use 50 for smoke-test)')
     p.add_argument('--seed', type=int, default=42,
                    help='Random seed for stock sampling (default: 42)')
+    p.add_argument('--min-stocks-per-day', type=int, default=100,
+                   help='Minimum stocks per day for IC computation (default: 100 for full run, '
+                        'use 30 for smoke-tests with --n-stocks ~200)')
     args = p.parse_args()
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -388,6 +398,7 @@ def main():
     print(f"\n=== Stage 1: Moneyflow IC Validation ===")
     print(f"  Date range: {args.start_date} → {args.end_date}")
     print(f"  n_stocks: {args.n_stocks or 'full universe'}")
+    print(f"  min_stocks_per_day: {args.min_stocks_per_day}")
     print()
 
     mf_per_stock = load_moneyflow_per_stock(
@@ -413,7 +424,8 @@ def main():
     df_labels_filtered = df_labels[df_labels['code_norm'].isin(universe_norms)]
     print(f"\n  Labels after universe filter: {len(df_labels_filtered):,} rows", flush=True)
 
-    ic_df = compute_ic_per_factor(df_factors, df_labels_filtered)
+    ic_df = compute_ic_per_factor(df_factors, df_labels_filtered,
+                                   min_stocks_per_day=args.min_stocks_per_day)
     print("\n=== Factor IC Summary ===")
     pd.set_option('display.max_columns', 20)
     pd.set_option('display.width', 120)
@@ -456,6 +468,7 @@ def main():
             'start_date': args.start_date,
             'end_date': args.end_date,
             'n_stocks': args.n_stocks,
+            'min_stocks_per_day': args.min_stocks_per_day,
         },
     }
     status_path = OUTPUT_DIR / 'stage1_status.json'
