@@ -436,3 +436,22 @@ def test_compute_group_d_factors_nan_stock_value():
         f"NaN stock value should give neutral 0.5, got {res['cs_rank_mf_net_elg_5d']}"
     # Other factors compute normally
     assert res['cs_rank_mf_net_elg_20d'] != 0.5  # 0.05 is somewhere in peer range
+
+
+def test_compute_stock_mf_scalars_parity_with_groups():
+    """Pin the contract: scalar values match Group A/B factor outputs.
+
+    This is the parity that compute_all_moneyflow_factors's inline extraction
+    relies on. If a future refactor changes Group A/B formulas without updating
+    compute_stock_mf_scalars, the batch path (Task 8) would silently use stale
+    values for cs_rank computation.
+    """
+    rows = [_mk_row(buy_elg=200, sell_elg=100, buy_lg=150, sell_lg=80,
+                     buy_md=70, sell_md=100, buy_sm=80, sell_sm=100)] * 20
+    a = compute_group_a_factors(rows)
+    b = compute_group_b_factors(rows)
+    s = compute_stock_mf_scalars(rows)
+    assert s['net_elg_5d_ratio'] == a['mf_net_elg_5d_ratio']
+    assert s['net_elg_20d_ratio'] == a['mf_net_elg_20d_ratio']
+    assert s['smart_net_share_20d'] == a['mf_smart_net_share_20d']
+    assert s['persistence_20d'] == b['mf_elg_persistence_20d']
