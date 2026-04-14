@@ -26,6 +26,10 @@ EMPTY_MF_RESULT = {
     'daily_sign_net_elg': np.array([], dtype=np.int8),
     'daily_sign_net_lg': np.array([], dtype=np.int8),
     'daily_sign_net_sm': np.array([], dtype=np.int8),
+    'daily_net_sm': np.array([], dtype=np.float64),
+    'daily_net_md': np.array([], dtype=np.float64),
+    'daily_net_lg': np.array([], dtype=np.float64),
+    'daily_net_elg': np.array([], dtype=np.float64),
     'n_days_actual': 0,
 }
 
@@ -35,9 +39,16 @@ def aggregate_moneyflow_window(
 ) -> Dict:
     """Aggregate last n_days of moneyflow rows into summary stats.
 
-    Returns dict with sums per order-size class + per-day sign arrays.
+    Returns dict with sums per order-size class + per-day sign arrays +
+    per-day raw net arrays (daily_net_*).
+
     Uses the LAST n_days rows (most recent) so callers can pass the full
     20-day history and request any sub-window without slicing themselves.
+
+    Note: If raw row values are explicit NaN (rather than None), the `or 0`
+    pattern propagates NaN through the sums. Tushare data is clean (None or
+    real numbers), so this is currently a non-issue. _load_moneyflow_data
+    converts None → 0.0 before reaching this function.
     """
     if not rows or n_days <= 0:
         return EMPTY_MF_RESULT.copy()
@@ -80,5 +91,9 @@ def aggregate_moneyflow_window(
         'daily_sign_net_elg': np.sign(net_elg).astype(np.int8),
         'daily_sign_net_lg': np.sign(net_lg).astype(np.int8),
         'daily_sign_net_sm': np.sign(net_sm).astype(np.int8),
+        'daily_net_sm': net_sm,
+        'daily_net_md': net_md,
+        'daily_net_lg': net_lg,
+        'daily_net_elg': net_elg,
         'n_days_actual': n_actual,
     }
