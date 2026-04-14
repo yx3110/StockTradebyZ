@@ -22,6 +22,9 @@ __all__ = [
     "compute_group_a_factors",
     "compute_group_b_factors",
     "compute_group_c_factors",
+    "compute_stock_mf_scalars",
+    "compute_group_d_factors",
+    "compute_all_moneyflow_factors",
 ]
 
 # Sentinel: returned when no moneyflow data available
@@ -249,4 +252,115 @@ def compute_group_c_factors(rows: List[Dict]) -> Dict[str, float]:
         ratio_20 = agg20['sum_net_elg'] / agg20['sum_total_amount']
         result['mf_elg_acceleration_5_20'] = ratio_5 - ratio_20
 
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Helper: compute the 4 scalar values needed for cs_rank wrapper
+# ---------------------------------------------------------------------------
+
+def compute_stock_mf_scalars(rows: List[Dict]) -> Dict[str, float]:
+    """Compute the 4 raw scalars that feed Group D cs_rank factors.
+
+    Returns NaN-filled dict for empty input. Used by ng_cache_updater to
+    pre-compute peer arrays per industry per date.
+
+    Keys (4):
+      net_elg_5d_ratio   — same as factor 1 (mf_net_elg_5d_ratio)
+      net_elg_20d_ratio  — same as factor 2 (mf_net_elg_20d_ratio)
+      smart_net_share_20d — same as factor 4 (mf_smart_net_share_20d)
+      persistence_20d    — same as factor 5 (mf_elg_persistence_20d)
+    """
+    result = {
+        'net_elg_5d_ratio': np.nan,
+        'net_elg_20d_ratio': np.nan,
+        'smart_net_share_20d': np.nan,
+        'persistence_20d': np.nan,
+    }
+    if not rows:
+        return result
+
+    a = compute_group_a_factors(rows)
+    b = compute_group_b_factors(rows)
+    result['net_elg_5d_ratio'] = a['mf_net_elg_5d_ratio']
+    result['net_elg_20d_ratio'] = a['mf_net_elg_20d_ratio']
+    result['smart_net_share_20d'] = a['mf_smart_net_share_20d']
+    result['persistence_20d'] = b['mf_elg_persistence_20d']
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Group D: Cross-Sectional Industry Ranks (4 factors)
+# ---------------------------------------------------------------------------
+
+def _industry_percentile_rank_safe(value: float, peer_values: np.ndarray) -> float:
+    """Mirror of ng_feature_calculator._industry_percentile_rank but NaN-safe.
+
+    Returns 0.5 if peer array empty or all NaN; otherwise fraction strictly < value.
+    """
+    if peer_values is None or len(peer_values) == 0:
+        return 0.5
+    valid = peer_values[~np.isnan(peer_values)]
+    if len(valid) < 2:
+        return 0.5
+    if np.isnan(value):
+        return 0.5
+    return float(np.mean(valid < value))
+
+
+def compute_group_d_factors(
+    stock_scalars: Dict[str, float],
+    peer_scalars: Dict[str, np.ndarray],
+) -> Dict[str, float]:
+    """Compute Group D factors 9-12 from spec §4.1.
+
+    Args:
+        stock_scalars: dict from compute_stock_mf_scalars(self_rows).
+        peer_scalars: dict {factor_name → 1D array of peer values incl. self}.
+
+    Returns dict with 4 float keys, each in [0, 1] (or 0.5 if no peers).
+    """
+    return {
+        'cs_rank_mf_net_elg_5d': _industry_percentile_rank_safe(
+            stock_scalars.get('net_elg_5d_ratio', np.nan),
+            peer_scalars.get('net_elg_5d_ratio', np.array([]))),
+        'cs_rank_mf_net_elg_20d': _industry_percentile_rank_safe(
+            stock_scalars.get('net_elg_20d_ratio', np.nan),
+            peer_scalars.get('net_elg_20d_ratio', np.array([]))),
+        'cs_rank_mf_smart_net_share_20d': _industry_percentile_rank_safe(
+            stock_scalars.get('smart_net_share_20d', np.nan),
+            peer_scalars.get('smart_net_share_20d', np.array([]))),
+        'cs_rank_mf_elg_persistence_20d': _industry_percentile_rank_safe(
+            stock_scalars.get('persistence_20d', np.nan),
+            peer_scalars.get('persistence_20d', np.array([]))),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Top-level orchestrator: compute all 12 factors for a single stock
+# ---------------------------------------------------------------------------
+
+def compute_all_moneyflow_factors(
+    rows: List[Dict],
+    stock_scalars: Dict[str, float] = None,
+    peer_scalars: Dict[str, np.ndarray] = None,
+) -> Dict[str, float]:
+    """Compute all 12 ng1.2.3 moneyflow factors for one stock on one date.
+
+    Args:
+        rows: List of moneyflow dicts (last 20 days), oldest → newest.
+        stock_scalars: Pre-computed via compute_stock_mf_scalars(rows). If None,
+            computed inline. Pass pre-computed when called in batch context.
+        peer_scalars: Industry peer arrays (pre-computed once per industry-date).
+            Pass empty dict {} if peer info unavailable (cs_rank → 0.5).
+    """
+    result = {}
+    result.update(compute_group_a_factors(rows))
+    result.update(compute_group_b_factors(rows))
+    result.update(compute_group_c_factors(rows))
+    if stock_scalars is None:
+        stock_scalars = compute_stock_mf_scalars(rows)
+    if peer_scalars is None:
+        peer_scalars = {}
+    result.update(compute_group_d_factors(stock_scalars, peer_scalars))
     return result

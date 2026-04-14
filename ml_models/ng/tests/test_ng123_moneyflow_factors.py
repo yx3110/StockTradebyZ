@@ -8,6 +8,9 @@ from ml_models.ng.ng123_moneyflow_factors import (
     compute_group_a_factors,
     compute_group_b_factors,
     compute_group_c_factors,
+    compute_stock_mf_scalars,
+    compute_group_d_factors,
+    compute_all_moneyflow_factors,
     _SHORT_WINDOW,
     _LONG_WINDOW,
 )
@@ -309,3 +312,94 @@ def test_mf_smart_consistency_5d_partial_window():
     rows = [_mk_row(buy_elg=100, sell_elg=50, buy_lg=80, sell_lg=40)] * 3
     res = compute_group_b_factors(rows)
     assert abs(res['mf_smart_consistency_5d'] - 3/5) < 1e-9
+
+
+# --- Group D: Cross-Sectional Industry Ranks (4 factors) --------------------
+
+def test_compute_stock_mf_scalars_for_cs_rank():
+    """Helper that returns scalar values needed for cs_rank wrapper."""
+    rows = [_mk_row(buy_elg=200, sell_elg=100, buy_sm=400, sell_sm=400)] * 20
+    s = compute_stock_mf_scalars(rows)
+    assert 'net_elg_5d_ratio' in s
+    assert 'net_elg_20d_ratio' in s
+    assert 'smart_net_share_20d' in s
+    assert 'persistence_20d' in s
+
+
+def test_compute_stock_mf_scalars_empty_input():
+    """Empty rows → all 4 scalars NaN."""
+    s = compute_stock_mf_scalars([])
+    assert all(np.isnan(s[k]) for k in s)
+
+
+def test_compute_group_d_factors_basic():
+    """cs_rank factors return percentile rank in [0, 1]."""
+    stock_scalars = {
+        'net_elg_5d_ratio': 0.10,
+        'net_elg_20d_ratio': 0.05,
+        'smart_net_share_20d': 0.30,
+        'persistence_20d': 0.40,
+    }
+    peer_scalars = {
+        'net_elg_5d_ratio': np.array([0.02, 0.05, 0.08, 0.10, 0.15]),
+        'net_elg_20d_ratio': np.array([0.01, 0.03, 0.05, 0.05, 0.10]),
+        'smart_net_share_20d': np.array([-0.20, 0.10, 0.30, 0.40, 0.50]),
+        'persistence_20d': np.array([-0.50, 0.0, 0.40, 0.60, 0.80]),
+    }
+    res = compute_group_d_factors(stock_scalars, peer_scalars)
+    assert 'cs_rank_mf_net_elg_5d' in res
+    assert 'cs_rank_mf_net_elg_20d' in res
+    assert 'cs_rank_mf_smart_net_share_20d' in res
+    assert 'cs_rank_mf_elg_persistence_20d' in res
+    for v in res.values():
+        assert 0.0 <= v <= 1.0
+    # Stock at 0.10 with peers [0.02, 0.05, 0.08, 0.10, 0.15] → 3/5 strictly less
+    assert abs(res['cs_rank_mf_net_elg_5d'] - 3/5) < 1e-9
+
+
+def test_compute_group_d_factors_empty_peers():
+    """No peers → return 0.5 (neutral)."""
+    stock_scalars = {
+        'net_elg_5d_ratio': 0.10, 'net_elg_20d_ratio': 0.05,
+        'smart_net_share_20d': 0.30, 'persistence_20d': 0.40,
+    }
+    peer_scalars = {
+        'net_elg_5d_ratio': np.array([]),
+        'net_elg_20d_ratio': np.array([]),
+        'smart_net_share_20d': np.array([]),
+        'persistence_20d': np.array([]),
+    }
+    res = compute_group_d_factors(stock_scalars, peer_scalars)
+    for v in res.values():
+        assert v == 0.5
+
+
+def test_compute_all_moneyflow_factors_returns_12_keys():
+    """Top-level orchestrator returns exactly the 12 expected keys."""
+    rows = [_mk_row(buy_elg=200, sell_elg=100, buy_sm=400, sell_sm=400)] * 20
+    res = compute_all_moneyflow_factors(rows)
+    expected_keys = {
+        # Group A
+        'mf_net_elg_5d_ratio', 'mf_net_elg_20d_ratio',
+        'mf_net_lg_5d_ratio', 'mf_smart_net_share_20d',
+        # Group B
+        'mf_elg_persistence_20d', 'mf_smart_consistency_5d',
+        # Group C
+        'mf_smart_retail_divergence_5d', 'mf_elg_acceleration_5_20',
+        # Group D
+        'cs_rank_mf_net_elg_5d', 'cs_rank_mf_net_elg_20d',
+        'cs_rank_mf_smart_net_share_20d', 'cs_rank_mf_elg_persistence_20d',
+    }
+    assert set(res.keys()) == expected_keys, f"Missing or extra keys: {set(res.keys()) ^ expected_keys}"
+
+
+def test_compute_all_moneyflow_factors_empty_input():
+    """Empty rows → all 12 factors NaN (or 0.5 for cs_rank with empty peers)."""
+    res = compute_all_moneyflow_factors([])
+    # Groups A/B/C → NaN
+    for k in ['mf_net_elg_5d_ratio', 'mf_elg_persistence_20d', 'mf_smart_retail_divergence_5d']:
+        assert np.isnan(res[k])
+    # Group D with default empty peers → 0.5
+    for k in ['cs_rank_mf_net_elg_5d', 'cs_rank_mf_net_elg_20d',
+              'cs_rank_mf_smart_net_share_20d', 'cs_rank_mf_elg_persistence_20d']:
+        assert res[k] == 0.5
