@@ -993,7 +993,10 @@ class NGCacheUpdater:
             # Must run after mf_data is loaded (above) and before the per-stock loop.
             # Builds peer_mf_scalars_per_industry[industry] = {scalar_key → np.ndarray}
             # so Group D cs_rank factors can be computed per stock without re-scanning all peers.
+            # stock_mf_scalars_per_code caches per-stock scalars to avoid a second
+            # compute_stock_mf_scalars() call in the per-stock loop (Fix #2).
             peer_mf_scalars_per_industry: Dict[str, Dict[str, np.ndarray]] = {}
+            stock_mf_scalars_per_code: Dict[str, Dict[str, float]] = {}
             if self.version == 'ng1.2.3':
                 _ind_scalars: Dict[str, Dict[str, list]] = defaultdict(lambda: defaultdict(list))
                 for _sid in active_sids:
@@ -1005,6 +1008,7 @@ class NGCacheUpdater:
                     if not _rows:
                         continue
                     _scalars = compute_stock_mf_scalars(_rows)
+                    stock_mf_scalars_per_code[_code] = _scalars  # cache for per-stock loop
                     _industry = _info.get('industry') or 'unknown'
                     for _k, _v in _scalars.items():
                         if not np.isnan(_v):
@@ -1367,16 +1371,12 @@ class NGCacheUpdater:
                 # --- ng1.2.3: drop 12 weak features + compute 12 ng123 moneyflow factors ---
                 ng123_mf_feats = {}
                 if self.version == 'ng1.2.3':
-                    # 1. Drop 12 weak features from ng1.0.1 base per spec §4.3
-                    # Applied to stock, fund, and industry feature dicts since some
-                    # dropped features live in ind_feats (e.g. industry_hhi).
-                    stock_feats = filter_ng123_features(stock_feats)
-                    fund_feats = filter_ng123_features(fund_feats)
-                    ind_feats = filter_ng123_features(ind_feats)
-
                     # 2. Compute 12 ng1.2.3 moneyflow factors (Groups A+B+C+D)
+                    # Use cached scalars from pre-compute loop to avoid redundant recompute.
                     _mf_rows = mf_data.get(code, [])
-                    _stock_scalars = compute_stock_mf_scalars(_mf_rows)
+                    _stock_scalars = stock_mf_scalars_per_code.get(
+                        code, compute_stock_mf_scalars(_mf_rows)
+                    )
                     _peer_scalars = peer_mf_scalars_per_industry.get(industry, {})
                     try:
                         ng123_mf_feats = compute_all_moneyflow_factors(
@@ -1388,7 +1388,11 @@ class NGCacheUpdater:
                         print(f"    WARN: ng123 moneyflow_factors failed for {code}: {e}")
                         ng123_mf_feats = {}
 
-                # Store raw values needed for CS rank (pass 2)
+                # Store raw values needed for CS rank (pass 2).
+                # IMPORTANT: read raw values from UNFILTERED stock_feats/fund_feats/ind_feats.
+                # The ng1.2.3 filter call below (filter_ng123_features) drops 'dv_ratio' and
+                # other features that are also CS-rank inputs — reading after filtering would
+                # silently produce NaN if the drop list ever expands further.
                 ret_5d_val = returns_5d.get(sid, np.nan)
                 ret_20d_val = returns_20d.get(sid, np.nan)
                 vol_ratio = stock_feats.get('volume_ratio_5d', np.nan) if stock_feats else np.nan
@@ -1402,6 +1406,18 @@ class NGCacheUpdater:
                 pb_val = fund_feats.get('pb', np.nan) if fund_feats else np.nan
                 dv_val = fund_feats.get('dv_ratio', np.nan) if fund_feats else np.nan
                 avg_vol_5d = float(np.mean(amounts[-5:])) if len(amounts) >= 5 else np.nan
+
+                # ng1.2.3: filter 12 drop-list features AFTER CS rank raw value snapshot.
+                # Must read raw values from unfiltered dicts to avoid NaN corruption if
+                # the drop list ever expands to include CS-rank inputs (e.g. dv_ratio is
+                # already in both the drop list and the CS-rank inputs).
+                if self.version == 'ng1.2.3':
+                    # 1. Drop 12 weak features from ng1.0.1 base per spec §4.3
+                    # Applied to stock, fund, and industry feature dicts since some
+                    # dropped features live in ind_feats (e.g. industry_hhi).
+                    stock_feats = filter_ng123_features(stock_feats)
+                    fund_feats = filter_ng123_features(fund_feats)
+                    ind_feats = filter_ng123_features(ind_feats)
 
                 eligible_stocks[sid] = {
                     'code': code,
