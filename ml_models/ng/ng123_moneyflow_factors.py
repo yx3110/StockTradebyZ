@@ -316,7 +316,12 @@ def compute_group_d_factors(
 
     Args:
         stock_scalars: dict from compute_stock_mf_scalars(self_rows).
+            Required keys: 'net_elg_5d_ratio', 'net_elg_20d_ratio',
+            'smart_net_share_20d', 'persistence_20d'.
         peer_scalars: dict {factor_name → 1D array of peer values incl. self}.
+            ⚠️ Use the SAME 4 scalar-namespace keys as stock_scalars (NOT the
+            'mf_*' factor names from Group A/B output). Missing keys silently
+            fall back to empty array → cs_rank = 0.5 (no error signal).
 
     Returns dict with 4 float keys, each in [0, 1] (or 0.5 if no peers).
     """
@@ -350,17 +355,33 @@ def compute_all_moneyflow_factors(
     Args:
         rows: List of moneyflow dicts (last 20 days), oldest → newest.
         stock_scalars: Pre-computed via compute_stock_mf_scalars(rows). If None,
-            computed inline. Pass pre-computed when called in batch context.
+            extracted from already-computed Group A/B results (no double-call).
+            Pass pre-computed when called in batch context — saves one extraction.
         peer_scalars: Industry peer arrays (pre-computed once per industry-date).
-            Pass empty dict {} if peer info unavailable (cs_rank → 0.5).
+            Expected keys: 'net_elg_5d_ratio', 'net_elg_20d_ratio',
+            'smart_net_share_20d', 'persistence_20d' (NOTE: scalar-namespace
+            names, NOT Group A/B factor names with 'mf_' prefix). Pass empty
+            dict {} or None if peer info unavailable (cs_rank → 0.5).
     """
-    result = {}
-    result.update(compute_group_a_factors(rows))
-    result.update(compute_group_b_factors(rows))
-    result.update(compute_group_c_factors(rows))
+    a = compute_group_a_factors(rows)
+    b = compute_group_b_factors(rows)
+    c = compute_group_c_factors(rows)
+
+    result: Dict[str, float] = {}
+    result.update(a)
+    result.update(b)
+    result.update(c)
+
     if stock_scalars is None:
-        stock_scalars = compute_stock_mf_scalars(rows)
+        # Extract from already-computed Group A/B results (avoid double-call).
+        stock_scalars = {
+            'net_elg_5d_ratio':    a['mf_net_elg_5d_ratio'],
+            'net_elg_20d_ratio':   a['mf_net_elg_20d_ratio'],
+            'smart_net_share_20d': a['mf_smart_net_share_20d'],
+            'persistence_20d':     b['mf_elg_persistence_20d'],
+        }
     if peer_scalars is None:
         peer_scalars = {}
+
     result.update(compute_group_d_factors(stock_scalars, peer_scalars))
     return result

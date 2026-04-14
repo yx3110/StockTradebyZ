@@ -394,12 +394,45 @@ def test_compute_all_moneyflow_factors_returns_12_keys():
 
 
 def test_compute_all_moneyflow_factors_empty_input():
-    """Empty rows → all 12 factors NaN (or 0.5 for cs_rank with empty peers)."""
+    """Empty rows → all 8 ABC factors NaN, all 4 D factors 0.5 (empty peers default)."""
     res = compute_all_moneyflow_factors([])
-    # Groups A/B/C → NaN
-    for k in ['mf_net_elg_5d_ratio', 'mf_elg_persistence_20d', 'mf_smart_retail_divergence_5d']:
-        assert np.isnan(res[k])
-    # Group D with default empty peers → 0.5
-    for k in ['cs_rank_mf_net_elg_5d', 'cs_rank_mf_net_elg_20d',
-              'cs_rank_mf_smart_net_share_20d', 'cs_rank_mf_elg_persistence_20d']:
-        assert res[k] == 0.5
+    abc_keys = [
+        'mf_net_elg_5d_ratio', 'mf_net_elg_20d_ratio',
+        'mf_net_lg_5d_ratio', 'mf_smart_net_share_20d',
+        'mf_elg_persistence_20d', 'mf_smart_consistency_5d',
+        'mf_smart_retail_divergence_5d', 'mf_elg_acceleration_5_20',
+    ]
+    for k in abc_keys:
+        assert np.isnan(res[k]), f"{k} should be NaN, got {res[k]}"
+    d_keys = [
+        'cs_rank_mf_net_elg_5d', 'cs_rank_mf_net_elg_20d',
+        'cs_rank_mf_smart_net_share_20d', 'cs_rank_mf_elg_persistence_20d',
+    ]
+    for k in d_keys:
+        assert res[k] == 0.5, f"{k} should be 0.5 (empty peers), got {res[k]}"
+
+
+def test_compute_group_d_factors_nan_stock_value():
+    """Stock value NaN with valid peers → 0.5 (neutral, not 0.0).
+
+    Pins the behavioral fix in _industry_percentile_rank_safe vs the original
+    in ng_feature_calculator (which would return 0.0 for NaN < anything).
+    """
+    stock_scalars = {
+        'net_elg_5d_ratio': np.nan,
+        'net_elg_20d_ratio': 0.05,
+        'smart_net_share_20d': 0.30,
+        'persistence_20d': 0.40,
+    }
+    peer_scalars = {
+        'net_elg_5d_ratio': np.array([0.1, 0.2, 0.3, 0.4, 0.5]),
+        'net_elg_20d_ratio': np.array([0.01, 0.03, 0.05, 0.08, 0.10]),
+        'smart_net_share_20d': np.array([-0.20, 0.10, 0.30, 0.40, 0.50]),
+        'persistence_20d': np.array([-0.50, 0.0, 0.40, 0.60, 0.80]),
+    }
+    res = compute_group_d_factors(stock_scalars, peer_scalars)
+    # NaN value with valid peers → neutral 0.5
+    assert res['cs_rank_mf_net_elg_5d'] == 0.5, \
+        f"NaN stock value should give neutral 0.5, got {res['cs_rank_mf_net_elg_5d']}"
+    # Other factors compute normally
+    assert res['cs_rank_mf_net_elg_20d'] != 0.5  # 0.05 is somewhere in peer range
