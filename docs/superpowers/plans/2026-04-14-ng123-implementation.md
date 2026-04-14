@@ -66,18 +66,37 @@
     'ng1.2.3': 'ng1.2.3',  # own schema (adds downside_kd label cols)
 ```
 
-- [ ] **Step 3: 修改 `_schema_sql` 加 downside_kd 列**
+- [ ] **Step 3: 修改 `_schema_sql` 加 downside_kd 列 + 防止列名冲突 + 防止 ng1.2.1 列泄漏**
 
-找到 `_schema_sql` 函数 (line 74-146)。在 `if is_12 and version_ge(ver, 'ng1.2.1'):` block (line 113) 后追加新 block：
+找到 `_schema_sql` 函数 (line 74-146)。需要做 3 处修改：
+
+(a) 给 `if version_ge(ver, 'ng1.0.2'):` 块加 `not is_12` 守卫（避免与 ng1.2.3 新 `downside_10d` 命名冲突）：
+```python
+    if version_ge(ver, 'ng1.0.2') and not is_12:
+        extra_cols = '\n    downside_10d REAL,'
+```
+
+(b) 给 `if is_12 and version_ge(ver, 'ng1.2.1'):` 块加上界守卫（避免 vn_label_/path_ 列泄漏到 ng1.2.3）：
+```python
+    if is_12 and version_ge(ver, 'ng1.2.1') and not version_ge(ver, 'ng1.2.3'):
+        extra_cols += '\n    vn_label_3d REAL,'
+        ...（保持原 7 列不变）
+```
+
+(c) 在 ng1.2.1 block 后追加 ng1.2.3 块（含前瞻注释）：
 
 ```python
-    # ng1.2.3 adds soft-downside label columns (per spec section 5)
+    # ng1.2.3 adds soft-downside label columns (per spec section 5).
+    # IMPORTANT: When ng1.2.4 is added with its own schema, add an upper-bound
+    # guard `and not version_ge(ver, 'ng1.2.4')` here AND on the ng1.2.1 block.
     if is_12 and version_ge(ver, 'ng1.2.3'):
         extra_cols += '\n    downside_3d REAL,'
         extra_cols += '\n    downside_5d REAL,'
         extra_cols += '\n    downside_10d REAL,'
         extra_cols += '\n    downside_15d REAL,'
 ```
+
+⚠️ 当年原 plan 漏掉了 (a)(b)，导致首次实施时一是 SQL duplicate column error，二是 ng1.2.1 的 vn_label/path 列泄漏到 ng123_feature_cache。这两个 guard 现已写入 plan 防止再踩。
 
 - [ ] **Step 4: 创建表 + smoke-test**
 
