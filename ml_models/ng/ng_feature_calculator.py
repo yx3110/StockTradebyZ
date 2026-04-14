@@ -1120,3 +1120,33 @@ def compute_conditional_interaction_features(
     )
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# ng1.2.3 helpers: drop-list filter + 70-feature entry point
+# ---------------------------------------------------------------------------
+
+NG123_DROP_FEATURES = frozenset([
+    'lower_shadow_ratio',
+    'volume_cv',
+    'volume_contraction',
+    'volume_price_corr',
+    'industry_hhi',
+    'industry_volume_change',
+    'n_sectors_strong',
+    'peg_proxy',
+    'pb_roe_ratio',
+    'dv_ratio',
+    'up_volume_ratio',
+    'ocf_quality',
+])
+
+
+def get_ng123_drop_features() -> frozenset:
+    """Return the 12 stock features dropped from ng1.0.1 in ng1.2.3 (per spec §4.3)."""
+    return NG123_DROP_FEATURES
+
+
+def filter_ng123_features(features_dict: Dict[str, float]) -> Dict[str, float]:
+    """Remove the 12 dropped features from a ng1.0.1 feature dict."""
+    return {k: v for k, v in features_dict.items() if k not in NG123_DROP_FEATURES}
