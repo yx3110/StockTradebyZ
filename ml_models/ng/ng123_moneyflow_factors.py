@@ -16,6 +16,8 @@ __all__ = [
     "EMPTY_MF_RESULT",
     "aggregate_moneyflow_window",
     "compute_group_a_factors",
+    "compute_group_b_factors",
+    "compute_group_c_factors",
 ]
 
 # Sentinel: returned when no moneyflow data available
@@ -148,5 +150,87 @@ def compute_group_a_factors(rows: List[Dict]) -> Dict[str, float]:
     if abs_daily_total > 1e-8:
         smart_num = agg20['sum_net_elg'] + agg20['sum_net_lg']
         result['mf_smart_net_share_20d'] = smart_num / abs_daily_total
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Group B: Smart Money Persistence (2 factors)
+# ---------------------------------------------------------------------------
+
+def compute_group_b_factors(rows: List[Dict]) -> Dict[str, float]:
+    """Compute Group B factors 5-6 from spec §4.1.
+
+    Returns dict with 2 float keys (NaN-safe).
+
+    Partial windows: Same policy as compute_group_a_factors — use available
+    data rather than emitting NaN when len(rows) < requested window.
+
+    Keys:
+      mf_elg_persistence_20d — mean(sign(daily_net_elg)) over 20d, range [-1, 1]
+      mf_smart_consistency_5d — fraction of 5d where sign(net_elg)==sign(net_lg),
+                                 range [0, 1]
+    """
+    result: Dict[str, float] = {
+        'mf_elg_persistence_20d': np.nan,
+        'mf_smart_consistency_5d': np.nan,
+    }
+    if not rows:
+        return result
+
+    agg20 = aggregate_moneyflow_window(rows, n_days=20)
+    agg5 = aggregate_moneyflow_window(rows, n_days=5)
+
+    # Factor 5: persistence = mean(sign(daily_net_elg)) over 20d
+    # Denominator is n_days_actual (not always 20 for short histories).
+    if agg20['n_days_actual'] > 0:
+        signs_elg = np.sign(agg20['daily_net_elg'])
+        result['mf_elg_persistence_20d'] = float(signs_elg.sum()) / agg20['n_days_actual']
+
+    # Factor 6: consistency = fraction of 5d days where sign(net_elg)==sign(net_lg)
+    if agg5['n_days_actual'] > 0:
+        s_elg = np.sign(agg5['daily_net_elg'])
+        s_lg = np.sign(agg5['daily_net_lg'])
+        result['mf_smart_consistency_5d'] = float((s_elg == s_lg).sum()) / agg5['n_days_actual']
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Group C: Smart/Retail Divergence + ELG Acceleration (2 factors)
+# ---------------------------------------------------------------------------
+
+def compute_group_c_factors(rows: List[Dict]) -> Dict[str, float]:
+    """Compute Group C factors 7-8 from spec §4.1.
+
+    Returns dict with 2 float keys (NaN-safe).
+
+    Keys:
+      mf_smart_retail_divergence_5d — sign(sum_net_elg_5d) - sign(sum_net_sm_5d),
+                                       range {-2, 0, +2}
+      mf_elg_acceleration_5_20 — mf_net_elg_5d_ratio - mf_net_elg_20d_ratio,
+                                  range ≈ [-1, 1]
+    """
+    result: Dict[str, float] = {
+        'mf_smart_retail_divergence_5d': np.nan,
+        'mf_elg_acceleration_5_20': np.nan,
+    }
+    if not rows:
+        return result
+
+    agg5 = aggregate_moneyflow_window(rows, n_days=5)
+    agg20 = aggregate_moneyflow_window(rows, n_days=20)
+
+    # Factor 7: divergence = sign(sum_net_elg_5d) - sign(sum_net_sm_5d)
+    if agg5['n_days_actual'] > 0:
+        sign_elg = float(np.sign(agg5['sum_net_elg']))
+        sign_sm = float(np.sign(agg5['sum_net_sm']))
+        result['mf_smart_retail_divergence_5d'] = sign_elg - sign_sm
+
+    # Factor 8: acceleration = ratio_5d - ratio_20d (both require nonzero total)
+    if agg5['sum_total_amount'] > 1e-8 and agg20['sum_total_amount'] > 1e-8:
+        ratio_5 = agg5['sum_net_elg'] / agg5['sum_total_amount']
+        ratio_20 = agg20['sum_net_elg'] / agg20['sum_total_amount']
+        result['mf_elg_acceleration_5_20'] = ratio_5 - ratio_20
 
     return result

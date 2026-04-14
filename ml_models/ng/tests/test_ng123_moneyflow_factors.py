@@ -6,6 +6,8 @@ from ml_models.ng.ng123_moneyflow_factors import (
     aggregate_moneyflow_window,
     EMPTY_MF_RESULT,
     compute_group_a_factors,
+    compute_group_b_factors,
+    compute_group_c_factors,
 )
 
 
@@ -199,3 +201,67 @@ def test_compute_group_a_factors_partial_window():
     # 20d factor uses same 4 rows → identical value (documented behavior)
     assert abs(res['mf_net_elg_20d_ratio'] - expected) < 1e-6
     assert abs(res['mf_net_elg_5d_ratio'] - res['mf_net_elg_20d_ratio']) < 1e-9
+
+
+# --- Group B: Persistence (2 factors) --------------------------------------
+
+def test_mf_elg_persistence_20d_all_positive():
+    """20 days all net_elg > 0 → persistence = +1.0"""
+    rows = [_mk_row(buy_elg=100, sell_elg=50)] * 20
+    res = compute_group_b_factors(rows)
+    assert abs(res['mf_elg_persistence_20d'] - 1.0) < 1e-9
+
+
+def test_mf_elg_persistence_20d_mixed():
+    """10 positive + 10 negative → persistence = 0."""
+    pos = _mk_row(buy_elg=100, sell_elg=50)
+    neg = _mk_row(buy_elg=50, sell_elg=100)
+    rows = [pos] * 10 + [neg] * 10
+    res = compute_group_b_factors(rows)
+    assert abs(res['mf_elg_persistence_20d'] - 0.0) < 1e-9
+
+
+def test_mf_smart_consistency_5d_all_aligned():
+    """All 5 days net_elg sign = net_lg sign → consistency = 1.0"""
+    rows = [_mk_row(buy_elg=100, sell_elg=50, buy_lg=80, sell_lg=40)] * 5
+    res = compute_group_b_factors(rows)
+    assert abs(res['mf_smart_consistency_5d'] - 1.0) < 1e-9
+
+
+def test_mf_smart_consistency_5d_misaligned():
+    """3 aligned + 2 misaligned → consistency = 0.6"""
+    aligned = _mk_row(buy_elg=100, sell_elg=50, buy_lg=80, sell_lg=40)   # both +
+    misaligned = _mk_row(buy_elg=100, sell_elg=50, buy_lg=40, sell_lg=80)  # elg+, lg-
+    rows = [aligned] * 3 + [misaligned] * 2
+    res = compute_group_b_factors(rows)
+    assert abs(res['mf_smart_consistency_5d'] - 0.6) < 1e-9
+
+
+# --- Group C: Divergence + Acceleration (2 factors) ------------------------
+
+def test_mf_smart_retail_divergence_5d_smart_in_retail_out():
+    """net_elg_5d > 0, net_sm_5d < 0 → divergence = sign(+) - sign(-) = +2"""
+    rows = [_mk_row(buy_elg=200, sell_elg=100,   # net_elg = +100
+                    buy_sm=50, sell_sm=200)] * 5  # net_sm = -150
+    res = compute_group_c_factors(rows)
+    assert res['mf_smart_retail_divergence_5d'] == 2
+
+
+def test_mf_smart_retail_divergence_5d_aligned():
+    """Both positive → divergence = 0"""
+    rows = [_mk_row(buy_elg=200, sell_elg=100, buy_sm=200, sell_sm=100)] * 5
+    res = compute_group_c_factors(rows)
+    assert res['mf_smart_retail_divergence_5d'] == 0
+
+
+def test_mf_elg_acceleration_5_20():
+    """5d ratio - 20d ratio: if 5d more positive, acceleration positive."""
+    # 15 days neutral (net_elg=0), 5 days positive (net_elg=+100)
+    neutral = _mk_row(buy_elg=100, sell_elg=100, buy_sm=0, sell_sm=0)   # total=200
+    positive = _mk_row(buy_elg=200, sell_elg=100, buy_sm=0, sell_sm=0)  # net=+100, total=300
+    rows = [neutral] * 15 + [positive] * 5
+    res = compute_group_c_factors(rows)
+    # 5d: net_elg_sum=500, total=1500 → ratio=0.333
+    # 20d: net_elg_sum=500, total=15*200+5*300=4500 → ratio=0.111
+    # acc = 0.333 - 0.111 = 0.222
+    assert abs(res['mf_elg_acceleration_5_20'] - (500/1500 - 500/4500)) < 1e-6
