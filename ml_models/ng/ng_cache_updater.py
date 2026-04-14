@@ -1561,9 +1561,10 @@ class NGCacheUpdater:
                     all_feats.update(ix_feats)
                 if version_ge(self.schema_version, 'ng1.0.4'):
                     all_feats.update(data.get('smooth_feats', {}))
-                if version_ge(self.schema_version, 'ng1.0.7'):
+                if version_ge(self.schema_version, 'ng1.0.7') and self.version != 'ng1.2.3':
                     # ext_market_feats stored in features_json for scorer access
                     # (only non-AMV features; AMV values already in dedicated columns)
+                    # ng1.2.3 explicitly does NOT inherit ng1.0.7 additions (spec §3.3)
                     for k, v in ext_market_feats.items():
                         if k not in ('amv_var1', 'amv_macd', 'amv_regime_days'):
                             all_feats[k] = v
