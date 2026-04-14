@@ -27,6 +27,7 @@ VERSION_TABLE_MAP = {
     'ng1.2.0': 'ng101_feature_cache',  # Margin Ranking Loss, 复用ng101缓存(仅训练层改动)
     'ng1.2.1': 'ng121_feature_cache',  # Vol-Normalized Rank Label, 独立缓存(含vn_label列)
     'ng1.2.2': 'ng101_feature_cache',  # Return-Weighted CE Quintiles, 复用ng101缓存(训练层转换)
+    'ng1.2.3': 'ng123_feature_cache',  # 三轴重构: -12 弱特征 + 12 moneyflow + 6 mined + downside label
 }
 
 DEFAULT_VERSION = 'ng1.0.3'
@@ -42,6 +43,7 @@ SCHEMA_VERSION_MAP = {
     'ng1.2.0': 'ng1.0.1',
     'ng1.2.1': 'ng1.2.1',  # new schema (adds vn_label columns)
     'ng1.2.2': 'ng1.0.1',
+    'ng1.2.3': 'ng1.2.3',  # own schema (adds downside_kd label cols)
 }
 
 
@@ -85,7 +87,7 @@ def _schema_sql(table_name: str, version: str = None) -> str:
     # below gates on `not is_12` for that reason.
     is_12 = _is_1_2_branch(ver)
     extra_cols = ''
-    if version_ge(ver, 'ng1.0.2'):
+    if version_ge(ver, 'ng1.0.2') and not is_12:
         extra_cols = '\n    downside_10d REAL,'
     if version_ge(ver, 'ng1.0.3'):
         extra_cols += '\n    label_raw_3d REAL,'
@@ -118,6 +120,12 @@ def _schema_sql(table_name: str, version: str = None) -> str:
         extra_cols += '\n    path_mean_10d REAL,'
         extra_cols += '\n    path_std_10d REAL,'
         extra_cols += '\n    downside_std_10d REAL,'
+    # ng1.2.3 adds soft-downside label columns (per spec section 5)
+    if is_12 and version_ge(ver, 'ng1.2.3'):
+        extra_cols += '\n    downside_3d REAL,'
+        extra_cols += '\n    downside_5d REAL,'
+        extra_cols += '\n    downside_10d REAL,'
+        extra_cols += '\n    downside_15d REAL,'
     return f"""
 CREATE TABLE IF NOT EXISTS {table_name} (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
