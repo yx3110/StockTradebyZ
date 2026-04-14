@@ -7,7 +7,22 @@ tests on the next iteration.
 """
 import pytest
 
-from ml_models.ng.ng_schema import _schema_sql
+from ml_models.ng.ng_schema import _schema_sql, _version_in_range
+
+
+# --- _version_in_range helper ----------------------------------------------
+
+@pytest.mark.parametrize('ver, lo, hi, expected', [
+    ('ng1.2.1', 'ng1.2.1', 'ng1.2.3', True),   # lower-bound inclusive
+    ('ng1.2.2', 'ng1.2.1', 'ng1.2.3', True),   # mid-range
+    ('ng1.2.3', 'ng1.2.1', 'ng1.2.3', False),  # upper-bound exclusive
+    ('ng1.2.0', 'ng1.2.1', 'ng1.2.3', False),  # below lower bound
+    ('ng1.2.5', 'ng1.2.1', 'ng1.2.3', False),  # above upper bound
+    ('ng1.0.7', 'ng1.0.4', 'ng1.0.8', True),   # linear lineage range
+    ('ng1.0.8', 'ng1.0.4', 'ng1.0.8', False),  # linear lineage upper-exclusive
+])
+def test_version_in_range(ver, lo, hi, expected):
+    assert _version_in_range(ver, lo, hi) is expected
 
 
 # --- ng1.2.3 must EXCLUDE these columns (per spec §3.3) ---------------------
@@ -67,7 +82,9 @@ def test_ng102_linear_has_legacy_downside_10d():
 
 def test_ng123_does_not_have_legacy_downside_10d_block():
     """The ng1.2.3 downside_10d should come from the new 4-col block, not the ng1.0.2 legacy block.
-    Sanity check: count occurrences (should be exactly 1)."""
+    Match 'downside_10d REAL' (DDL-specific) so a stray comment containing 'downside_10d'
+    won't false-positive; if both code paths emit the column, count would be 2."""
     sql = _schema_sql('ng123_feature_cache', version='ng1.2.3')
-    assert sql.count('downside_10d') == 1, \
-        "ng1.2.3 should have exactly 1 downside_10d column (from new 4-col block)"
+    assert 'downside_3d' in sql, "ng1.2.3 must have downside_3d (sanity for 4-col block)"
+    assert sql.count('downside_10d REAL') == 1, \
+        "ng1.2.3 must have exactly 1 DDL definition for downside_10d (not 2)"

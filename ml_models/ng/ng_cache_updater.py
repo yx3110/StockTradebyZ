@@ -30,7 +30,8 @@ if _PROJECT_ROOT not in sys.path:
 
 from ml_models.ng.ng_schema import (
     create_table, get_table_name, DB_PATH, create_moneyflow_table,
-    version_ge, get_schema_version, DEFAULT_VERSION, _is_1_2_branch,
+    version_ge, get_schema_version, DEFAULT_VERSION,
+    _is_1_2_branch, _version_in_range,
 )
 from ml_models.ng.ng_feature_calculator import (
     compute_stock_features,
@@ -1571,7 +1572,7 @@ class NGCacheUpdater:
                 else:
                     ng107_cols = ()
 
-                if is_12 and version_ge(self.schema_version, 'ng1.2.1'):
+                if is_12 and _version_in_range(self.schema_version, 'ng1.2.1', 'ng1.2.3'):
                     ng121_cols = (
                         _to_sql(stock_labels.get('vn_label_3d')),
                         _to_sql(stock_labels.get('vn_label_5d')),
@@ -1604,7 +1605,7 @@ class NGCacheUpdater:
             # Write to database
             if insert_rows:
                 conn.row_factory = None
-                if is_12 and version_ge(self.schema_version, 'ng1.2.1'):
+                if is_12 and _version_in_range(self.schema_version, 'ng1.2.1', 'ng1.2.3'):
                     # 29 columns: base(3) + labels(5, includes downside_10d)
                     #   + label_raw(4) + vn_label(4) + path_stats(3) + market(10)
                     conn.executemany(

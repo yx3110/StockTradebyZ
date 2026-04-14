@@ -28,7 +28,9 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from ml_models.training.train_v395_multi_target import V485Trainer
-from ml_models.ng.ng_schema import get_table_name, version_ge, get_schema_version, _is_1_2_branch
+from ml_models.ng.ng_schema import (
+    get_table_name, version_ge, get_schema_version, _is_1_2_branch, _version_in_range,
+)
 from ml_models.common.lgb_rank_utils import RANK_BASE_PARAMS, build_groups_per_date
 from ml_models.ng.ng_margin_loss import make_margin_objective, make_margin_eval_metric
 from ml_models.ng.ng_quintile_ce import (
@@ -780,7 +782,7 @@ class NGTrainer(V485Trainer):
         # ng1.2.x branches from ng1.0.1 and skips ng1.0.4/1.0.7 columns; detect
         # separately so the numeric version_ge doesn't pull in non-existent cols.
         is_12 = _is_1_2_branch(self.schema_version)
-        if is_12 and version_ge(self.schema_version, 'ng1.2.1'):
+        if is_12 and _version_in_range(self.schema_version, 'ng1.2.1', 'ng1.2.3'):
             extra_select = ", vn_label_3d, vn_label_5d, vn_label_10d, vn_label_15d"
             extra_select += ", path_mean_10d, path_std_10d, downside_std_10d"
         elif version_ge(self.schema_version, 'ng1.0.7') and not is_12:

@@ -82,8 +82,20 @@ def _is_1_2_branch(ver: str) -> bool:
     return ver.startswith('ng1.2.')
 
 
+def _version_in_range(ver: str, lo: str, hi: str) -> bool:
+    """True iff lo <= ver < hi (inclusive lower, exclusive upper).
+
+    Use this for ng1.2.x sub-version blocks where each version has its own
+    schema and must be bounded above by the next sub-version (e.g., ng1.2.1
+    block must stop firing when ver=ng1.2.3+).
+    """
+    return version_ge(ver, lo) and not version_ge(ver, hi)
+
+
 def _real_cols(*names: str) -> str:
-    """Build SQL fragment '\\n    name1 REAL,\\n    name2 REAL,...' for the given column names."""
+    """Build SQL DDL fragment for REAL columns. Centralizes the repeated
+    `extra_cols += '\\n    {col} REAL,'` pattern across schema blocks.
+    """
     return ''.join(f'\n    {n} REAL,' for n in names)
 
 
@@ -119,7 +131,7 @@ def _schema_sql(table_name: str, version: str = None) -> str:
         )
     # ng1.2.1 adds Sharpe-style path-based labels (ng1.2.x branch only, NOT ng1.2.3+)
     # ng1.2.3 spec §3.3 explicitly excludes vn_label_* / path_* / downside_std_10d
-    if is_12 and version_ge(ver, 'ng1.2.1') and not version_ge(ver, 'ng1.2.3'):
+    if is_12 and _version_in_range(ver, 'ng1.2.1', 'ng1.2.3'):
         extra_cols += _real_cols(
             'vn_label_3d', 'vn_label_5d', 'vn_label_10d', 'vn_label_15d',
             'path_mean_10d', 'path_std_10d', 'downside_std_10d',
@@ -165,10 +177,6 @@ def create_table(db_path: str = None, version: str = None):
     with sqlite3.connect(path, timeout=30) as conn:
         conn.executescript(_schema_sql(table_name, version=ver))
     print(f"{table_name} table ready: {path}")
-
-
-# Backward compatibility: also expose SCHEMA_SQL for ng_feature_cache (v1.0.0)
-SCHEMA_SQL = _schema_sql('ng_feature_cache')
 
 
 MONEYFLOW_SCHEMA_SQL = """
