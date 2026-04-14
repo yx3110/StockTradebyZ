@@ -28,7 +28,13 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from ml_models.training.train_v395_multi_target import V485Trainer
-from ml_models.ng.ng_schema import get_table_name, version_ge, get_schema_version
+from ml_models.ng.ng_schema import get_table_name, version_ge, get_schema_version, _is_1_2_branch
+from ml_models.common.lgb_rank_utils import RANK_BASE_PARAMS, build_groups_per_date
+from ml_models.ng.ng_margin_loss import make_margin_objective, make_margin_eval_metric
+from ml_models.ng.ng_quintile_ce import (
+    N_CLASSES, QUINTILE_MODEL_KEY, QuintileStrongBuyModel, make_quintile_dataset,
+)
+import lightgbm as lgb
 
 try:
     import orjson
@@ -771,11 +777,17 @@ class NGTrainer(V485Trainer):
             params.append(end_date)
 
         extra_select = ""
-        if version_ge(self.schema_version, 'ng1.0.7'):
+        # ng1.2.x branches from ng1.0.1 and skips ng1.0.4/1.0.7 columns; detect
+        # separately so the numeric version_ge doesn't pull in non-existent cols.
+        is_12 = _is_1_2_branch(self.schema_version)
+        if is_12 and version_ge(self.schema_version, 'ng1.2.1'):
+            extra_select = ", vn_label_3d, vn_label_5d, vn_label_10d, vn_label_15d"
+            extra_select += ", path_mean_10d, path_std_10d, downside_std_10d"
+        elif version_ge(self.schema_version, 'ng1.0.7') and not is_12:
             extra_select = ", ra_label_3d, ra_label_5d, ra_label_10d, ra_label_15d"
             extra_select += ", cond_label_3d, cond_label_5d, cond_label_10d, cond_label_15d"
             extra_select += ", amv_var1, amv_macd, amv_regime_days"
-        elif version_ge(self.schema_version, 'ng1.0.4'):
+        elif version_ge(self.schema_version, 'ng1.0.4') and not is_12:
             extra_select = ", ra_label_3d, ra_label_5d, ra_label_10d, ra_label_15d"
 
         downside_col = ", downside_10d" if version_ge(self.schema_version, 'ng1.0.2') else ""
@@ -859,6 +871,23 @@ class NGTrainer(V485Trainer):
                     if mask.any():
                         result.loc[mask.values, f'label_{h}'] = ra_vals[mask].values
                         logger.info(f"  Using risk-adjusted label_{h}: {mask.sum():,} values")
+
+        # ng1.2.1: cross-sectional rank of vn_label per trade_date → [0, 1].
+        # Robust to cross-date vol regime shifts; what listwise ranking needs.
+        if self._ng_version == 'ng1.2.1':
+            ranked = 0
+            for h in ['3d', '5d', '10d', '15d']:
+                vn_col = f'vn_label_{h}'
+                if vn_col not in df_raw.columns:
+                    continue
+                vn_vals = pd.to_numeric(df_raw[vn_col], errors='coerce')
+                ranks = vn_vals.groupby(df_raw['trade_date']).rank(pct=True)
+                mask = ranks.notna()
+                if mask.any():
+                    result.loc[mask.values, f'label_{h}'] = ranks[mask].values
+                    ranked += 1
+            if ranked:
+                logger.info(f"  ng1.2.1: cross-sectional rank applied to {ranked} vn_label_* columns")
 
         # ng1.0.7: Use conditional labels (bear: rank-based, bull: industry excess)
         if version_ge(self._ng_version, 'ng1.0.7'):
@@ -1024,6 +1053,184 @@ class NGTrainer(V485Trainer):
 
         return model
 
+    def train_single_target_models(self, X_train, X_val, y_train, y_val,
+                                    target_name: str, sample_weights_train=None):
+        """Override: append margin_rank (ng1.2.0) or lgb_quintile (ng1.2.2).
+
+        Each ng1.2.x variant augments the base ensemble {lgb,xgb,cb,rf,hgb,
+        lgb_rank} with a single additional model aligned to that variant's
+        loss experiment. Adaptive ICIR weighting decides whether the new
+        model earns weight vs the base members — same mechanism as ng1.2.0.
+        """
+        models, pred_train, pred_val = super().train_single_target_models(
+            X_train, X_val, y_train, y_val, target_name,
+            sample_weights_train=sample_weights_train
+        )
+
+        if self._ng_version == 'ng1.2.2':
+            self._append_quintile_ce(
+                models, pred_train, pred_val,
+                X_train, X_val, y_train, y_val, target_name
+            )
+            return models, pred_train, pred_val
+
+        if self._ng_version != 'ng1.2.0':
+            return models, pred_train, pred_val
+
+        train_dates = getattr(self, 'train_dates', None)
+        val_dates = getattr(self, 'val_dates', None)
+        if train_dates is None or len(train_dates) != len(y_train):
+            logger.warning(f"  [ng1.2.0] missing train_dates, skip margin_rank for {target_name}")
+            return models, pred_train, pred_val
+
+        margin = float(getattr(self, '_margin', 0.05))
+        # Wrap entire margin training: mirrors _train_downside_model's pattern
+        # (degrade gracefully — losing one ensemble member for one WF window
+        # shouldn't abort the other 5 models + remaining windows).
+        try:
+            group_train = build_groups_per_date(train_dates)
+            if sum(group_train) != len(y_train):
+                raise ValueError(
+                    f"group_train sum {sum(group_train)} != len(y_train) {len(y_train)} "
+                    f"(train_dates must be contiguous per date)"
+                )
+
+            group_val = None
+            if val_dates is not None:
+                group_val = build_groups_per_date(val_dates)
+                if sum(group_val) != len(y_val):
+                    raise ValueError(
+                        f"group_val sum {sum(group_val)} != len(y_val) {len(y_val)}"
+                    )
+
+            params = {
+                **RANK_BASE_PARAMS,
+                'objective': make_margin_objective(margin=margin),
+            }
+
+            dtrain = lgb.Dataset(
+                X_train, label=y_train, group=group_train,
+                weight=sample_weights_train, free_raw_data=True,
+            )
+            # valid_sets: val only; monitoring train loss with early_stopping just
+            # rides overfitting down to zero loss instead of generalization.
+            callbacks = [lgb.log_evaluation(0)]
+            if group_val is not None:
+                dval = lgb.Dataset(
+                    X_val, label=y_val, group=group_val,
+                    reference=dtrain, free_raw_data=True,
+                )
+                valid_sets = [dval]
+                callbacks.insert(0, lgb.early_stopping(30))
+            else:
+                valid_sets = [dtrain]  # eval only — no early_stopping
+
+            # num_boost_round=300: the pairwise-hinge objective is O(N²) per group
+            # per iteration. At ~2500 stocks/date × 1300 dates, one iteration costs
+            # ~8B ops. 1000 rounds would push WF fast-check past 2h; 300 still gives
+            # early_stopping room (patience=30) without blowing the time budget.
+            logger.info(f"  训练 margin_rank ({target_name}, margin={margin})...")
+            margin_model = lgb.train(
+                params, dtrain,
+                num_boost_round=300,
+                feval=make_margin_eval_metric(margin=margin),
+                valid_sets=valid_sets,
+                callbacks=callbacks,
+            )
+            models['margin_rank'] = margin_model
+            pred_train['margin_rank'] = margin_model.predict(X_train)
+            pred_val['margin_rank'] = margin_model.predict(X_val)
+            logger.info(f"    margin_rank done: groups={len(group_train)}, margin={margin}")
+        except Exception as e:
+            logger.warning(
+                f"  margin_rank training failed ({target_name}, margin={margin}): "
+                f"{type(e).__name__}: {e}",
+                exc_info=True,
+            )
+
+        return models, pred_train, pred_val
+
+    def _append_quintile_ce(self, models, pred_train, pred_val,
+                             X_train, X_val, y_train, y_val, target_name: str):
+        """Train ng1.2.2 quintile-CE classifier and register P(strong_buy)."""
+        train_dates = getattr(self, 'train_dates', None)
+        val_dates = getattr(self, 'val_dates', None)
+        if train_dates is None or len(train_dates) != len(y_train):
+            logger.warning(f"  [ng1.2.2] missing train_dates, skip lgb_quintile for {target_name}")
+            return
+
+        try:
+            cls_train, w_train, valid_tr = make_quintile_dataset(y_train, train_dates)
+            if valid_tr.sum() < 1000:
+                logger.warning(
+                    f"  [ng1.2.2] too few valid training rows ({int(valid_tr.sum())}), skip lgb_quintile"
+                )
+                return
+
+            X_tr_v = X_train[valid_tr] if hasattr(X_train, 'shape') else np.asarray(X_train)[valid_tr]
+            cls_tr_v = cls_train[valid_tr].astype(np.int32)
+            w_tr_v = w_train[valid_tr]
+
+            # Validation set — allow empty valid mask to fall back to no early stop
+            if val_dates is not None and len(val_dates) == len(y_val):
+                cls_val, w_val, valid_va = make_quintile_dataset(y_val, val_dates)
+            else:
+                cls_val, w_val, valid_va = None, None, None
+
+            params = {
+                'objective': 'multiclass',
+                'num_class': N_CLASSES,
+                'metric': 'multi_logloss',
+                'learning_rate': 0.03,
+                'num_leaves': 31,
+                'min_data_in_leaf': 200,
+                'feature_fraction': 0.7,
+                'bagging_fraction': 0.8,
+                'bagging_freq': 5,
+                'reg_alpha': 0.5,
+                'reg_lambda': 3.0,
+                'verbose': -1,
+            }
+
+            dtrain = lgb.Dataset(X_tr_v, label=cls_tr_v, weight=w_tr_v, free_raw_data=True)
+            callbacks = [lgb.log_evaluation(0)]
+            has_val = valid_va is not None and valid_va.sum() >= 500
+            if has_val:
+                X_va_v = X_val[valid_va] if hasattr(X_val, 'shape') else np.asarray(X_val)[valid_va]
+                dval = lgb.Dataset(
+                    X_va_v, label=cls_val[valid_va].astype(np.int32),
+                    weight=w_val[valid_va], reference=dtrain, free_raw_data=True,
+                )
+                valid_sets = [dval]
+                callbacks.insert(0, lgb.early_stopping(30))
+            else:
+                valid_sets = [dtrain]
+
+            # Cap rounds lower when no early_stopping guard is available.
+            num_rounds = 500 if has_val else 300
+            logger.info(f"  训练 lgb_quintile ({target_name}, n_train_valid={int(valid_tr.sum())})...")
+            booster = lgb.train(
+                params, dtrain,
+                num_boost_round=num_rounds,
+                valid_sets=valid_sets,
+                callbacks=callbacks,
+            )
+            # Predict on full X_train/X_val so pred_train stays row-aligned
+            # with y_train — downstream IS IC expects full-length predictions.
+            wrapper = QuintileStrongBuyModel(booster)
+            models[QUINTILE_MODEL_KEY] = wrapper
+            pred_train[QUINTILE_MODEL_KEY] = wrapper.predict(X_train)
+            pred_val[QUINTILE_MODEL_KEY] = wrapper.predict(X_val)
+            logger.info(
+                f"    lgb_quintile done: rounds={booster.num_trees() // N_CLASSES}, "
+                f"best_iter={booster.best_iteration}"
+            )
+        except Exception as e:
+            logger.warning(
+                f"  lgb_quintile training failed ({target_name}): {type(e).__name__}: {e}",
+                exc_info=True,
+            )
+
     # ------------------------------------------------------------------
     # Walk-Forward Training
     # ------------------------------------------------------------------
@@ -1149,7 +1356,13 @@ class NGTrainer(V485Trainer):
                 seed_tag = f'_seed{seed_val}'
             except Exception:
                 seed_tag = ''
-            new_path = ng_dir / f'{version_tag}{seed_tag}_multi_target_{timestamp}.pkl'
+            # ng1.2.0 grid search: encode margin in filename so margin=0.03 and
+            # margin=0.05 runs don't silently overwrite each other's .pkl.
+            margin_tag = ''
+            if self._ng_version == 'ng1.2.0':
+                margin = float(getattr(self, '_margin', 0.05))
+                margin_tag = f'_m{int(round(margin * 100)):03d}'
+            new_path = ng_dir / f'{version_tag}{seed_tag}{margin_tag}_multi_target_{timestamp}.pkl'
 
             # Update model metadata
             model_data['version'] = self._ng_version
@@ -1287,6 +1500,8 @@ if __name__ == '__main__':
                         help='ng1.0.9: minimum 10d rank autocorrelation threshold (0=off, 0.3-0.5 recommended)')
     parser.add_argument('--smooth-label', type=int, default=0,
                         help='ng1.0.9: label smoothing window (0=off, 5=average over 5-day entry window)')
+    parser.add_argument('--margin', type=float, default=0.05,
+                        help='ng1.2.0: pairwise margin ranking loss margin value (0.03-0.10 typical)')
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -1306,6 +1521,7 @@ if __name__ == '__main__':
         trainer._persistent_features = args.persistent_features
         trainer._smooth_label = args.smooth_label
         trainer._min_autocorr = args.min_autocorr
+        trainer._margin = args.margin
         if args.fast_check:
             trainer._fast_check = True
             trainer._fast_check_max_windows = 2

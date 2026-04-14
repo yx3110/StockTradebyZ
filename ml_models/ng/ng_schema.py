@@ -24,6 +24,9 @@ VERSION_TABLE_MAP = {
     'ng1.0.4': 'ng104_feature_cache',
     'ng1.0.7': 'ng107_feature_cache',
     'ng1.1.0': 'ng101_feature_cache',  # 基于ng1.0.1(69feat)精简, 复用ng101缓存
+    'ng1.2.0': 'ng101_feature_cache',  # Margin Ranking Loss, 复用ng101缓存(仅训练层改动)
+    'ng1.2.1': 'ng121_feature_cache',  # Vol-Normalized Rank Label, 独立缓存(含vn_label列)
+    'ng1.2.2': 'ng101_feature_cache',  # Return-Weighted CE Quintiles, 复用ng101缓存(训练层转换)
 }
 
 DEFAULT_VERSION = 'ng1.0.3'
@@ -32,8 +35,13 @@ PRODUCTION_VERSION = 'ng1.0.1'
 
 # Versions that reuse another version's cache schema (table columns + feature semantics)
 # ng1.1.0 is a pruning+bugfix iteration on top of ng1.0.1, uses identical ng101_feature_cache schema
+# ng1.2.0/ng1.2.2 are training-layer variants on ng1.0.1 (same features, different loss/label transform)
+# ng1.2.1 adds new label columns (vn_label_Nd) but keeps ng1.0.1 feature set
 SCHEMA_VERSION_MAP = {
     'ng1.1.0': 'ng1.0.1',
+    'ng1.2.0': 'ng1.0.1',
+    'ng1.2.1': 'ng1.2.1',  # new schema (adds vn_label columns)
+    'ng1.2.2': 'ng1.0.1',
 }
 
 
@@ -58,9 +66,24 @@ def get_table_name(version: str = None) -> str:
     return VERSION_TABLE_MAP.get(ver, f'ng{ver.replace(".", "").replace("ng", "")}_feature_cache')
 
 
+def _is_1_2_branch(ver: str) -> bool:
+    """ng1.2.x branches from ng1.0.1 — skip ng1.0.4/ng1.0.7 linear additions."""
+    return ver.startswith('ng1.2.')
+
+
 def _schema_sql(table_name: str, version: str = None) -> str:
-    """Generate CREATE TABLE SQL for a given table name and version."""
+    """Generate CREATE TABLE SQL for a given table name and version.
+
+    Version lineage:
+      - ng1.0.x: linear (each adds more columns)
+      - ng1.1.x: reuses ng1.0.1 schema
+      - ng1.2.x: branches from ng1.0.1 (does NOT inherit ng1.0.4/ng1.0.7 columns)
+    """
     ver = version or DEFAULT_VERSION
+    # ng1.2.x branches from ng1.0.1 and does NOT inherit ng1.0.4/ng1.0.7
+    # additions (maxdd/ra_label/cond_label/amv). Each linear-lineage block
+    # below gates on `not is_12` for that reason.
+    is_12 = _is_1_2_branch(ver)
     extra_cols = ''
     if version_ge(ver, 'ng1.0.2'):
         extra_cols = '\n    downside_10d REAL,'
@@ -69,7 +92,7 @@ def _schema_sql(table_name: str, version: str = None) -> str:
         extra_cols += '\n    label_raw_5d REAL,'
         extra_cols += '\n    label_raw_10d REAL,'
         extra_cols += '\n    label_raw_15d REAL,'
-    if version_ge(ver, 'ng1.0.4'):
+    if version_ge(ver, 'ng1.0.4') and not is_12:
         extra_cols += '\n    maxdd_3d REAL,'
         extra_cols += '\n    maxdd_5d REAL,'
         extra_cols += '\n    maxdd_10d REAL,'
@@ -78,7 +101,7 @@ def _schema_sql(table_name: str, version: str = None) -> str:
         extra_cols += '\n    ra_label_5d REAL,'
         extra_cols += '\n    ra_label_10d REAL,'
         extra_cols += '\n    ra_label_15d REAL,'
-    if version_ge(ver, 'ng1.0.7'):
+    if version_ge(ver, 'ng1.0.7') and not is_12:
         extra_cols += '\n    cond_label_3d REAL,'
         extra_cols += '\n    cond_label_5d REAL,'
         extra_cols += '\n    cond_label_10d REAL,'
@@ -86,6 +109,15 @@ def _schema_sql(table_name: str, version: str = None) -> str:
         extra_cols += '\n    amv_var1 REAL,'
         extra_cols += '\n    amv_macd REAL,'
         extra_cols += '\n    amv_regime_days REAL,'
+    # ng1.2.1 adds Sharpe-style path-based labels (ng1.2.x branch only)
+    if is_12 and version_ge(ver, 'ng1.2.1'):
+        extra_cols += '\n    vn_label_3d REAL,'
+        extra_cols += '\n    vn_label_5d REAL,'
+        extra_cols += '\n    vn_label_10d REAL,'
+        extra_cols += '\n    vn_label_15d REAL,'
+        extra_cols += '\n    path_mean_10d REAL,'
+        extra_cols += '\n    path_std_10d REAL,'
+        extra_cols += '\n    downside_std_10d REAL,'
     return f"""
 CREATE TABLE IF NOT EXISTS {table_name} (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

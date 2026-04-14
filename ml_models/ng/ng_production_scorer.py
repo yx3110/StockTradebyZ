@@ -41,6 +41,14 @@ from .ng_trainer import (
 )
 from .ng_schema import get_table_name, version_ge
 
+# Ensemble members whose raw outputs are ranks/probabilities rather than
+# return-scale regressions. We rescale them into the regression heads' mean/std
+# so composite weighting is on a common scale. Any new rank-style head must be
+# added here — forgetting leaves it double-counted as a regression prediction.
+RANK_HEAD_NAMES = frozenset({'lgb_rank', 'lgb_listnet', 'margin_rank', 'lgb_quintile'})
+# Regression-shaped heads excluded from the rescale target (and from composite).
+COMPOSITE_EXCLUDE_NAMES = frozenset({'lgb_q95'})
+
 try:
     import orjson
     _json_loads = orjson.loads
@@ -87,19 +95,20 @@ class NGProductionScorer:
         if version and version_ge(version, 'ng1.0.4') and model_path is None:
             self._load_ensemble_models(version)
         else:
-            self._load_model(model_path)
+            self._load_model(model_path, version)
 
-    def _load_model(self, model_path: str = None):
+    def _load_model(self, model_path: str = None, version: str = None):
         if model_path:
             path = Path(model_path)
         else:
+            glob_pat = f"{version.replace('.', '')}*.pkl" if version else 'ng*.pkl'
             ng_files = sorted(
-                self.model_dir.glob('ng*.pkl'),
+                self.model_dir.glob(glob_pat),
                 key=lambda f: f.stat().st_mtime
             )
             if not ng_files:
-                logger.warning("No NG model found in %s", self.model_dir)
-                print(f"NG scorer: No model found in {self.model_dir}")
+                logger.warning("No NG model found in %s matching %s", self.model_dir, glob_pat)
+                print(f"NG scorer: No model found in {self.model_dir} matching {glob_pat}")
                 return
             path = ng_files[-1]
 
@@ -240,10 +249,14 @@ class NGProductionScorer:
 
         conn = sqlite3.connect(self.db_path, timeout=30)
         try:
-            # ng1.0.7: also load AMV columns from table
+            # ng1.0.7: also load AMV columns from table — only if cache actually has them.
+            # ng1.2.x reuses ng101/ng121 cache which omits AMV; the model may still list them in
+            # macro_feature_cols (trained as NaN-filled), so skip the SELECT and fill with 0 downstream.
             extra_select = ""
             if any(c in self.macro_feature_cols for c in EXTENDED_MARKET_FEATURE_NAMES):
-                extra_select = ", amv_var1, amv_macd, amv_regime_days"
+                cache_cols = {r[1] for r in conn.execute(f"PRAGMA table_info({self.cache_table})").fetchall()}
+                if {'amv_var1', 'amv_macd', 'amv_regime_days'}.issubset(cache_cols):
+                    extra_select = ", amv_var1, amv_macd, amv_regime_days"
 
             query = f"""
             SELECT code, features_json,
@@ -327,24 +340,29 @@ class NGProductionScorer:
         if not preds:
             return None
 
-        regression_names = [n for n in preds if n not in ('lgb_rank', 'lgb_listnet', 'lgb_q95')]
-        rank_names = [n for n in preds if n in ('lgb_rank', 'lgb_listnet')]
+        rank_names = [n for n in preds if n in RANK_HEAD_NAMES]
+        regression_names = [
+            n for n in preds
+            if n not in RANK_HEAD_NAMES and n not in COMPOSITE_EXCLUDE_NAMES
+        ]
         if regression_names and rank_names:
             reg_means = [np.mean(preds[n]) for n in regression_names]
             reg_stds = [max(np.std(preds[n]), 1e-8) for n in regression_names]
-            t_mean, t_std = np.mean(reg_means), np.mean(reg_stds)
+            t_mean = np.mean(reg_means)
+            # Floor on the target std too: if all regression heads are near-constant
+            # in this batch, avg std → 0 collapses rank heads onto a single point.
+            t_std = max(np.mean(reg_stds), 1e-8)
             for rn in rank_names:
                 rp = preds[rn]
                 rp_std = max(np.std(rp), 1e-8)
                 preds[rn] = (rp - np.mean(rp)) / rp_std * t_std + t_mean
 
-        COMPOSITE_EXCLUDE = ('lgb_q95',)
         target_w = self.weights.get(target, {})
         weighted_sum = np.zeros(X.shape[0])
         total_weight = 0.0
 
         for name, pred in preds.items():
-            if name in COMPOSITE_EXCLUDE:
+            if name in COMPOSITE_EXCLUDE_NAMES:
                 continue
             w = target_w.get(name, 0.2)
             weighted_sum += w * pred

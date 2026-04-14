@@ -28,7 +28,10 @@ _PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '.
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
-from ml_models.ng.ng_schema import create_table, get_table_name, DB_PATH, create_moneyflow_table, version_ge, get_schema_version, DEFAULT_VERSION
+from ml_models.ng.ng_schema import (
+    create_table, get_table_name, DB_PATH, create_moneyflow_table,
+    version_ge, get_schema_version, DEFAULT_VERSION, _is_1_2_branch,
+)
 from ml_models.ng.ng_feature_calculator import (
     compute_stock_features,
     compute_fundamental_features,
@@ -43,7 +46,10 @@ from ml_models.ng.ng_feature_calculator import (
     compute_conditional_interaction_features,
 )
 from sklearn.linear_model import LinearRegression
-from fetch_data.label_utils import compute_labels_from_future_prices
+from fetch_data.label_utils import (
+    compute_labels_from_future_prices,
+    compute_vn_labels_from_future_prices,
+)
 
 
 def compute_maxdd_from_future_prices(
@@ -112,6 +118,17 @@ def _safe_float(val, default=np.nan) -> float:
         return float(val)
     except (ValueError, TypeError):
         return default
+
+
+def _to_sql(v):
+    """Convert a Python/NumPy scalar to a SQLite-safe value. NaN/Inf → NULL."""
+    if v is None:
+        return None
+    if isinstance(v, (float, np.floating)):
+        if np.isnan(v) or np.isinf(v):
+            return None
+        return float(v)
+    return v
 
 
 # ---------------------------------------------------------------------------
@@ -643,6 +660,10 @@ class NGCacheUpdater:
         if not future_dates:
             return {}
 
+        schema_ver = self.schema_version
+        want_vn = (schema_ver == 'ng1.2.1')
+        max_h = max(LABEL_HORIZONS)
+
         result = {}
         for sid in security_ids:
             fp = future_prices.get(sid, {})
@@ -653,21 +674,38 @@ class NGCacheUpdater:
             if np.isnan(base) or base < 1e-8:
                 continue
 
-            # 构造 {horizon: close_price} 字典
-            future_closes = {}
-            for n in LABEL_HORIZONS:
-                if n < len(future_dates) and future_dates[n] in fp:
-                    future_closes[n] = fp[future_dates[n]].get('close', np.nan)
+            # ng1.2.1 需要 1..max_h 连续每日 close 走 Sharpe path;
+            # 其他分支只需要 horizon 对应的 close.
+            if want_vn:
+                future_closes = {}
+                for n in range(1, max_h + 1):
+                    if n < len(future_dates) and future_dates[n] in fp:
+                        future_closes[n] = fp[future_dates[n]].get('close', np.nan)
+            else:
+                future_closes = {}
+                for n in LABEL_HORIZONS:
+                    if n < len(future_dates) and future_dates[n] in fp:
+                        future_closes[n] = fp[future_dates[n]].get('close', np.nan)
 
+            # compute_labels_from_future_prices only reads keys in LABEL_HORIZONS;
+            # passing the dense dict for vn case is fine (extra keys ignored).
             labels = compute_labels_from_future_prices(
                 base_open=base,
                 future_closes=future_closes,
                 horizons=tuple(LABEL_HORIZONS),
             )
+            if want_vn:
+                labels.update(compute_vn_labels_from_future_prices(
+                    base_open=base,
+                    future_closes=future_closes,
+                    horizons=tuple(LABEL_HORIZONS),
+                    path_horizon=10,
+                ))
             result[sid] = labels
 
-        # ng1.0.4: Compute max drawdown for each security
-        if version_ge(getattr(self, 'schema_version', 'ng1.0.0'), 'ng1.0.4'):
+        # ng1.0.4: Compute max drawdown. ng1.2.x branches past ng1.0.1 so the
+        # numeric version_ge check matches spuriously — gate with _is_1_2_branch.
+        if version_ge(schema_ver, 'ng1.0.4') and not _is_1_2_branch(schema_ver):
             for sid in security_ids:
                 fp = future_prices.get(sid, {})
                 if not fp or future_dates[0] not in fp:
@@ -1360,6 +1398,9 @@ class NGCacheUpdater:
                 industry_peer_arrays[ind] = arrays
 
             insert_rows = []
+            # ng1.2.x branches from ng1.0.1 and doesn't inherit ng1.0.4/1.0.7
+            # columns; INSERT dispatch + per-stock column gating both need this.
+            is_12 = _is_1_2_branch(self.schema_version)
 
             for sid, data in eligible_stocks.items():
                 industry = data['industry']
@@ -1480,19 +1521,8 @@ class NGCacheUpdater:
                         clean_feats[k] = v
                 features_json = json.dumps(clean_feats)
 
-                # Labels (industry excess returns)
                 stock_labels = labels_all.get(sid, {})
 
-                def _to_sql(v):
-                    if v is None:
-                        return None
-                    if isinstance(v, (float, np.floating)):
-                        if np.isnan(v) or np.isinf(v):
-                            return None
-                        return float(v)
-                    return v
-
-                # Build base row tuple
                 base_row = (
                     data['code'],
                     date,
@@ -1504,7 +1534,6 @@ class NGCacheUpdater:
                     _to_sql(stock_labels.get('downside_10d')),
                 )
 
-                # v1.0.3: add label_raw columns
                 if version_ge(self.schema_version, 'ng1.0.3'):
                     raw_cols = (
                         _to_sql(stock_labels.get('label_raw_3d')),
@@ -1515,8 +1544,7 @@ class NGCacheUpdater:
                 else:
                     raw_cols = ()
 
-                # ng1.0.4: add maxDD + RA label columns
-                if version_ge(self.schema_version, 'ng1.0.4'):
+                if version_ge(self.schema_version, 'ng1.0.4') and not is_12:
                     ng104_cols = (
                         _to_sql(stock_labels.get('maxdd_3d')),
                         _to_sql(stock_labels.get('maxdd_5d')),
@@ -1530,8 +1558,7 @@ class NGCacheUpdater:
                 else:
                     ng104_cols = ()
 
-                # ng1.0.7: add conditional label + AMV columns
-                if version_ge(self.schema_version, 'ng1.0.7'):
+                if version_ge(self.schema_version, 'ng1.0.7') and not is_12:
                     ng107_cols = (
                         _to_sql(stock_labels.get('cond_label_3d')),
                         _to_sql(stock_labels.get('cond_label_5d')),
@@ -1543,6 +1570,19 @@ class NGCacheUpdater:
                     )
                 else:
                     ng107_cols = ()
+
+                if is_12 and version_ge(self.schema_version, 'ng1.2.1'):
+                    ng121_cols = (
+                        _to_sql(stock_labels.get('vn_label_3d')),
+                        _to_sql(stock_labels.get('vn_label_5d')),
+                        _to_sql(stock_labels.get('vn_label_10d')),
+                        _to_sql(stock_labels.get('vn_label_15d')),
+                        _to_sql(stock_labels.get('path_mean_10d')),
+                        _to_sql(stock_labels.get('path_std_10d')),
+                        _to_sql(stock_labels.get('downside_std_10d')),
+                    )
+                else:
+                    ng121_cols = ()
 
                 market_cols = (
                     _to_sql(market_feats.get('market_return_5d')),
@@ -1557,12 +1597,31 @@ class NGCacheUpdater:
                     _to_sql(market_feats.get('market_momentum_diff')),
                 )
 
-                insert_rows.append(base_row + raw_cols + ng104_cols + ng107_cols + market_cols)
+                insert_rows.append(
+                    base_row + raw_cols + ng104_cols + ng107_cols + ng121_cols + market_cols
+                )
 
             # Write to database
             if insert_rows:
                 conn.row_factory = None
-                if version_ge(self.schema_version, 'ng1.0.7'):
+                if is_12 and version_ge(self.schema_version, 'ng1.2.1'):
+                    # 29 columns: base(3) + labels(5, includes downside_10d)
+                    #   + label_raw(4) + vn_label(4) + path_stats(3) + market(10)
+                    conn.executemany(
+                        f'''INSERT OR REPLACE INTO {self.table_name}
+                           (code, trade_date, features_json,
+                            label_3d, label_5d, label_10d, label_15d, downside_10d,
+                            label_raw_3d, label_raw_5d, label_raw_10d, label_raw_15d,
+                            vn_label_3d, vn_label_5d, vn_label_10d, vn_label_15d,
+                            path_mean_10d, path_std_10d, downside_std_10d,
+                            market_return_5d, market_return_20d, market_volatility_20d,
+                            market_breadth, market_new_high_ratio, northbound_flow_5d,
+                            market_volume_ratio, market_drawdown, vix_proxy,
+                            market_momentum_diff)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                        insert_rows
+                    )
+                elif version_ge(self.schema_version, 'ng1.0.7') and not is_12:
                     # 37 columns: ng1.0.4 (30) + 7 ng1.0.7 columns (cond_label + amv)
                     conn.executemany(
                         f'''INSERT OR REPLACE INTO {self.table_name}
@@ -1580,7 +1639,7 @@ class NGCacheUpdater:
                            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
                         insert_rows
                     )
-                elif version_ge(self.schema_version, 'ng1.0.4'):
+                elif version_ge(self.schema_version, 'ng1.0.4') and not is_12:
                     # 30 columns: ng1.0.3 columns + 8 ng1.0.4 columns (maxdd + ra_label)
                     conn.executemany(
                         f'''INSERT OR REPLACE INTO {self.table_name}
