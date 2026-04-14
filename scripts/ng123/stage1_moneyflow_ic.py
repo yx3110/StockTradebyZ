@@ -14,9 +14,11 @@ Estimated runtime: ~4 hours on full universe × 2022-01..2026-04.
 """
 import argparse
 import json
+import pickle
 import sys
 import sqlite3
 from collections import defaultdict
+from datetime import date
 from pathlib import Path
 from typing import Dict, List
 
@@ -35,6 +37,7 @@ from ml_models.ng.ng123_moneyflow_factors import (
 
 DB_PATH = str(PROJECT_ROOT / 'data_adapter' / 'stock_data.db')
 OUTPUT_DIR = PROJECT_ROOT / 'reports' / 'ng123' / 'fastcheck'
+CHECKPOINT_DIR = OUTPUT_DIR / 'checkpoint'
 
 # Pass thresholds (spec §6.1)
 MIN_IC = 0.02
@@ -382,8 +385,8 @@ def main():
     p = argparse.ArgumentParser(description='ng1.2.3 Stage 1 moneyflow IC validation')
     p.add_argument('--start-date', default='2022-01-01',
                    help='Start date for IC/corr computation (default: 2022-01-01)')
-    p.add_argument('--end-date', default='2026-04-14',
-                   help='End date (default: 2026-04-14)')
+    p.add_argument('--end-date', default=None,
+                   help='End date (default: today)')
     p.add_argument('--n-stocks', type=int, default=None,
                    help='Sample n stocks randomly (default: full universe; use 50 for smoke-test)')
     p.add_argument('--seed', type=int, default=42,
@@ -391,7 +394,12 @@ def main():
     p.add_argument('--min-stocks-per-day', type=int, default=100,
                    help='Minimum stocks per day for IC computation (default: 100 for full run, '
                         'use 30 for smoke-tests with --n-stocks ~200)')
+    p.add_argument('--no-checkpoint', action='store_true',
+                   help='Disable checkpoint/resume — always recompute df_factors')
     args = p.parse_args()
+
+    if args.end_date is None:
+        args.end_date = date.today().strftime('%Y-%m-%d')
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -409,13 +417,32 @@ def main():
     print(f"  Industry map: {len(industry_map):,} entries", flush=True)
 
     universe = list(mf_per_stock.keys())
-    df_raw = compute_factors_for_universe(mf_per_stock, universe)
 
-    if len(df_raw) == 0:
-        print("ERROR: No factor rows computed — check moneyflow data availability!")
-        sys.exit(1)
+    checkpoint_key = (
+        f"factors_{args.start_date}_{args.end_date}_"
+        f"{args.n_stocks or 'full'}.pkl"
+    )
+    checkpoint_path = CHECKPOINT_DIR / checkpoint_key
 
-    df_factors = add_cs_rank_factors(df_raw, industry_map)
+    if not args.no_checkpoint and checkpoint_path.exists():
+        print(f"  Loading factor cache from {checkpoint_path} "
+              f"(skip ~3.5h computation)", flush=True)
+        with open(checkpoint_path, 'rb') as fh:
+            df_factors = pickle.load(fh)
+    else:
+        df_raw = compute_factors_for_universe(mf_per_stock, universe)
+
+        if len(df_raw) == 0:
+            print("ERROR: No factor rows computed — check moneyflow data availability!")
+            sys.exit(1)
+
+        df_factors = add_cs_rank_factors(df_raw, industry_map)
+
+        if not args.no_checkpoint:
+            CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
+            with open(checkpoint_path, 'wb') as fh:
+                pickle.dump(df_factors, fh, protocol=pickle.HIGHEST_PROTOCOL)
+            print(f"  Saved factor checkpoint: {checkpoint_path}", flush=True)
 
     factor_cols = [c for c in df_factors.columns if c not in ('code_norm', 'trade_date')]
     print(f"\n  Factor columns ({len(factor_cols)}): {factor_cols}")
