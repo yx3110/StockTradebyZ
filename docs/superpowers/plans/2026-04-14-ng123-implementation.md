@@ -1912,6 +1912,12 @@ git commit -m "feat(ng123): Mined factor 计算模块 + 选定 6 个 (TDD)"
 - Modify: `ml_models/ng/ng_cache_updater.py`
 - Modify: `ml_models/ng/ng_feature_calculator.py` (新增 ng123 入口)
 
+⚠️ **Task 1 simplify Round 1 必修项**: `ng_cache_updater.py:1574` 现有 `is_12 and version_ge(..., 'ng1.2.1')` 行缺少与 ng_schema.py 同步的上界 guard。本 task 必须将其改为：
+```python
+is_12 and version_ge(self.schema_version, 'ng1.2.1') and not version_ge(self.schema_version, 'ng1.2.3')
+```
+否则 ng1.2.3 流程会尝试写入 ng1.2.1 列（vn_label_/path_/downside_std_10d）但表里没这些列，触发 SQL 错误。
+
 - [ ] **Step 1: 在 ng_feature_calculator.py 添加 ng123 入口**
 
 打开 `ml_models/ng/ng_feature_calculator.py`，在文件**末尾**追加：

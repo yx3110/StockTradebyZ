@@ -82,6 +82,11 @@ def _is_1_2_branch(ver: str) -> bool:
     return ver.startswith('ng1.2.')
 
 
+def _real_cols(*names: str) -> str:
+    """Build SQL fragment '\\n    name1 REAL,\\n    name2 REAL,...' for the given column names."""
+    return ''.join(f'\n    {n} REAL,' for n in names)
+
+
 def _schema_sql(table_name: str, version: str = None) -> str:
     """Generate CREATE TABLE SQL for a given table name and version.
 
@@ -99,48 +104,31 @@ def _schema_sql(table_name: str, version: str = None) -> str:
     is_12 = _is_1_2_branch(ver)
     extra_cols = ''
     if version_ge(ver, 'ng1.0.2') and not is_12:
-        extra_cols = '\n    downside_10d REAL,'
+        extra_cols = _real_cols('downside_10d')
     if version_ge(ver, 'ng1.0.3'):
-        extra_cols += '\n    label_raw_3d REAL,'
-        extra_cols += '\n    label_raw_5d REAL,'
-        extra_cols += '\n    label_raw_10d REAL,'
-        extra_cols += '\n    label_raw_15d REAL,'
+        extra_cols += _real_cols('label_raw_3d', 'label_raw_5d', 'label_raw_10d', 'label_raw_15d')
     if version_ge(ver, 'ng1.0.4') and not is_12:
-        extra_cols += '\n    maxdd_3d REAL,'
-        extra_cols += '\n    maxdd_5d REAL,'
-        extra_cols += '\n    maxdd_10d REAL,'
-        extra_cols += '\n    maxdd_15d REAL,'
-        extra_cols += '\n    ra_label_3d REAL,'
-        extra_cols += '\n    ra_label_5d REAL,'
-        extra_cols += '\n    ra_label_10d REAL,'
-        extra_cols += '\n    ra_label_15d REAL,'
+        extra_cols += _real_cols(
+            'maxdd_3d', 'maxdd_5d', 'maxdd_10d', 'maxdd_15d',
+            'ra_label_3d', 'ra_label_5d', 'ra_label_10d', 'ra_label_15d',
+        )
     if version_ge(ver, 'ng1.0.7') and not is_12:
-        extra_cols += '\n    cond_label_3d REAL,'
-        extra_cols += '\n    cond_label_5d REAL,'
-        extra_cols += '\n    cond_label_10d REAL,'
-        extra_cols += '\n    cond_label_15d REAL,'
-        extra_cols += '\n    amv_var1 REAL,'
-        extra_cols += '\n    amv_macd REAL,'
-        extra_cols += '\n    amv_regime_days REAL,'
+        extra_cols += _real_cols(
+            'cond_label_3d', 'cond_label_5d', 'cond_label_10d', 'cond_label_15d',
+            'amv_var1', 'amv_macd', 'amv_regime_days',
+        )
     # ng1.2.1 adds Sharpe-style path-based labels (ng1.2.x branch only, NOT ng1.2.3+)
     # ng1.2.3 spec §3.3 explicitly excludes vn_label_* / path_* / downside_std_10d
     if is_12 and version_ge(ver, 'ng1.2.1') and not version_ge(ver, 'ng1.2.3'):
-        extra_cols += '\n    vn_label_3d REAL,'
-        extra_cols += '\n    vn_label_5d REAL,'
-        extra_cols += '\n    vn_label_10d REAL,'
-        extra_cols += '\n    vn_label_15d REAL,'
-        extra_cols += '\n    path_mean_10d REAL,'
-        extra_cols += '\n    path_std_10d REAL,'
-        extra_cols += '\n    downside_std_10d REAL,'
+        extra_cols += _real_cols(
+            'vn_label_3d', 'vn_label_5d', 'vn_label_10d', 'vn_label_15d',
+            'path_mean_10d', 'path_std_10d', 'downside_std_10d',
+        )
     # ng1.2.3 adds soft-downside label columns (per spec section 5).
     # IMPORTANT: When ng1.2.4 is added with its own schema, add an upper-bound
-    # guard `and not version_ge(ver, 'ng1.2.4')` here AND on the ng1.2.1 block
-    # at line ~115. See ng1.2.1 block for the established pattern.
+    # guard `and not version_ge(ver, 'ng1.2.4')` here AND on the ng1.2.1 block above.
     if is_12 and version_ge(ver, 'ng1.2.3'):
-        extra_cols += '\n    downside_3d REAL,'
-        extra_cols += '\n    downside_5d REAL,'
-        extra_cols += '\n    downside_10d REAL,'
-        extra_cols += '\n    downside_15d REAL,'
+        extra_cols += _real_cols('downside_3d', 'downside_5d', 'downside_10d', 'downside_15d')
     return f"""
 CREATE TABLE IF NOT EXISTS {table_name} (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
