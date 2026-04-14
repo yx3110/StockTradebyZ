@@ -337,7 +337,7 @@ def apply_downside_penalty(
 python3 -m pytest ml_models/ng/tests/test_ng123_label_transform.py -v
 ```
 
-Expected: 13 passed.
+Expected: 16 passed (13 from spec + 3 added during code review: NaN excess, NaN downside, negative lambda raises).
 
 - [ ] **Step 5: Commit**
 

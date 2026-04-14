@@ -11,6 +11,14 @@ import numpy as np
 
 ArrayLike = Union[float, np.ndarray]
 
+__all__ = [
+    "DEFAULT_LAMBDA",
+    "ArrayLike",
+    "compute_path_min_kd",
+    "compute_downside_kd",
+    "apply_downside_penalty",
+]
+
 DEFAULT_LAMBDA = 0.3
 
 
@@ -18,7 +26,8 @@ def compute_path_min_kd(today_close: float, future_closes: np.ndarray) -> float:
     """Return min(future_closes) / today_close - 1.
 
     Args:
-        today_close: scalar close at date t (anchor).
+        today_close: scalar close at date t (anchor). Accepts None (returns NaN
+            for suspended stocks).
         future_closes: 1-D array of closes from t+1 to t+k.
 
     Returns:
@@ -35,12 +44,13 @@ def compute_path_min_kd(today_close: float, future_closes: np.ndarray) -> float:
 
 
 def compute_downside_kd(path_min: ArrayLike) -> ArrayLike:
-    """downside = max(0, -path_min). NaN propagates."""
-    if isinstance(path_min, np.ndarray):
-        return np.where(np.isnan(path_min), np.nan, np.maximum(0.0, -path_min))
-    if path_min is None or (isinstance(path_min, float) and np.isnan(path_min)):
+    """downside = max(0, -path_min). NaN propagates. Handles None, Python float,
+    np.float64, ndarray uniformly via np.asarray dispatch."""
+    if path_min is None:
         return np.nan
-    return max(0.0, -float(path_min))
+    arr = np.asarray(path_min, dtype=np.float64)
+    result = np.where(np.isnan(arr), np.nan, np.maximum(0.0, -arr))
+    return result if arr.ndim > 0 else float(result)
 
 
 def apply_downside_penalty(

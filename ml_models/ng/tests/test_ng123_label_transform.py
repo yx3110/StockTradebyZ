@@ -104,3 +104,8 @@ def test_penalty_vectorized():
     res = apply_downside_penalty(excess=excess, downside=downside, lam=0.3)
     expected = np.array([0.041, 0.055, -0.110, 0.0])
     assert np.allclose(res, expected, atol=1e-9)
+
+
+def test_penalty_negative_lambda_raises():
+    with pytest.raises(ValueError, match="non-negative"):
+        apply_downside_penalty(0.05, 0.03, lam=-0.1)
