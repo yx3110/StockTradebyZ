@@ -111,8 +111,9 @@ def _schema_sql(table_name: str, version: str = None) -> str:
         extra_cols += '\n    amv_var1 REAL,'
         extra_cols += '\n    amv_macd REAL,'
         extra_cols += '\n    amv_regime_days REAL,'
-    # ng1.2.1 adds Sharpe-style path-based labels (ng1.2.x branch only)
-    if is_12 and version_ge(ver, 'ng1.2.1'):
+    # ng1.2.1 adds Sharpe-style path-based labels (ng1.2.x branch only, NOT ng1.2.3+)
+    # ng1.2.3 spec §3.3 explicitly excludes vn_label_* / path_* / downside_std_10d
+    if is_12 and version_ge(ver, 'ng1.2.1') and not version_ge(ver, 'ng1.2.3'):
         extra_cols += '\n    vn_label_3d REAL,'
         extra_cols += '\n    vn_label_5d REAL,'
         extra_cols += '\n    vn_label_10d REAL,'
