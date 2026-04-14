@@ -93,9 +93,17 @@ def aggregate_moneyflow_window(
 # ---------------------------------------------------------------------------
 
 def compute_group_a_factors(rows: List[Dict]) -> Dict[str, float]:
-    """Compute factors 1-4 from spec §4.1 Group A.
+    """Compute Group A factors 1-4 from spec §4.1.
 
-    Returns dict with keys:
+    Returns dict with 4 float keys (NaN-safe).
+
+    Partial windows: When `len(rows) < 5` (or `< 20`), the corresponding factors
+    are computed using whatever data is available rather than emitting NaN.
+    Rationale: Group D cs_rank factors handle IPO-edge noise via cross-sectional
+    ranking; emitting NaN here would lose the IPO-window signal entirely. Stocks
+    with very short histories should be filtered upstream by ng_cache_updater.
+
+    Keys:
       mf_net_elg_5d_ratio   — net ELG flow / total flow, 5d window
       mf_net_elg_20d_ratio  — net ELG flow / total flow, 20d window
       mf_net_lg_5d_ratio    — net LG flow / total flow, 5d window
@@ -116,30 +124,29 @@ def compute_group_a_factors(rows: List[Dict]) -> Dict[str, float]:
     agg20 = aggregate_moneyflow_window(rows, n_days=20)
 
     # Factor 1: mf_net_elg_5d_ratio = sum_net_elg_5d / sum_total_5d
-    if agg5['n_days_actual'] > 0 and agg5['sum_total_amount'] > 1e-8:
+    if agg5['sum_total_amount'] > 1e-8:
         result['mf_net_elg_5d_ratio'] = agg5['sum_net_elg'] / agg5['sum_total_amount']
 
     # Factor 2: mf_net_elg_20d_ratio = sum_net_elg_20d / sum_total_20d
-    if agg20['n_days_actual'] > 0 and agg20['sum_total_amount'] > 1e-8:
+    if agg20['sum_total_amount'] > 1e-8:
         result['mf_net_elg_20d_ratio'] = agg20['sum_net_elg'] / agg20['sum_total_amount']
 
-    # Factor 3: mf_net_lg_5d_ratio = sum_net_lg_5d / sum_total_5d
-    if agg5['n_days_actual'] > 0 and agg5['sum_total_amount'] > 1e-8:
+    # Factor 3: mf_net_lg_5d_ratio
+    if agg5['sum_total_amount'] > 1e-8:
         result['mf_net_lg_5d_ratio'] = agg5['sum_net_lg'] / agg5['sum_total_amount']
 
-    # Factor 4: mf_smart_net_share_20d = sum(net_elg+net_lg, 20d) / sum(|daily_net_X|, 20d)
+    # Factor 4: mf_smart_net_share_20d
     # CRITICAL: denominator uses sum of per-day absolute values (not abs of sum)
     # to avoid sign-cancellation bias when net flow alternates direction.
     # Spec §4.1 row 4: Σ(|net_elg|+|net_lg|+|net_md|+|net_sm|, 20d) is per-day |·|.
-    if agg20['n_days_actual'] > 0:
+    abs_daily_total = float(
+        np.abs(agg20['daily_net_sm']).sum()
+        + np.abs(agg20['daily_net_md']).sum()
+        + np.abs(agg20['daily_net_lg']).sum()
+        + np.abs(agg20['daily_net_elg']).sum()
+    )
+    if abs_daily_total > 1e-8:
         smart_num = agg20['sum_net_elg'] + agg20['sum_net_lg']
-        abs_daily_total = float(
-            np.abs(agg20['daily_net_elg']).sum()
-            + np.abs(agg20['daily_net_lg']).sum()
-            + np.abs(agg20['daily_net_md']).sum()
-            + np.abs(agg20['daily_net_sm']).sum()
-        )
-        if abs_daily_total > 1e-8:
-            result['mf_smart_net_share_20d'] = smart_num / abs_daily_total
+        result['mf_smart_net_share_20d'] = smart_num / abs_daily_total
 
     return result
