@@ -21,7 +21,6 @@ __all__ = [
 EMPTY_MF_RESULT = {
     'sum_net_sm': np.nan, 'sum_net_md': np.nan,
     'sum_net_lg': np.nan, 'sum_net_elg': np.nan,
-    'sum_buy_elg': np.nan, 'sum_sell_elg': np.nan,
     'sum_total_amount': np.nan,
     'daily_net_sm': np.array([], dtype=np.float64),
     'daily_net_md': np.array([], dtype=np.float64),
@@ -67,9 +66,6 @@ def aggregate_moneyflow_window(
         [(r.get('buy_elg_amount') or 0) - (r.get('sell_elg_amount') or 0) for r in window],
         dtype=np.float64)
 
-    sum_buy_elg = float(sum((r.get('buy_elg_amount') or 0) for r in window))
-    sum_sell_elg = float(sum((r.get('sell_elg_amount') or 0) for r in window))
-
     # Total amount = sum of all (buy + sell) across all 4 classes
     sum_total_amount = 0.0
     for r in window:
@@ -82,8 +78,6 @@ def aggregate_moneyflow_window(
         'sum_net_md': float(net_md.sum()),
         'sum_net_lg': float(net_lg.sum()),
         'sum_net_elg': float(net_elg.sum()),
-        'sum_buy_elg': sum_buy_elg,
-        'sum_sell_elg': sum_sell_elg,
         'sum_total_amount': sum_total_amount,
         'daily_net_sm': net_sm,
         'daily_net_md': net_md,

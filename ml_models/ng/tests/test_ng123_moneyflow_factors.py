@@ -23,8 +23,6 @@ def test_aggregate_5d_simple():
     rows = [_mk_row(buy_elg=200, sell_elg=100)] * 5  # net_elg = 100/day
     agg = aggregate_moneyflow_window(rows, n_days=5)
     assert agg['sum_net_elg'] == 500
-    assert agg['sum_buy_elg'] == 1000
-    assert agg['sum_sell_elg'] == 500
 
 
 def test_aggregate_total_amount():
@@ -40,7 +38,7 @@ def test_aggregate_empty_returns_empty():
     agg = aggregate_moneyflow_window([], n_days=5)
     # Scalar NaN fields
     for k in ['sum_net_sm', 'sum_net_md', 'sum_net_lg', 'sum_net_elg',
-              'sum_buy_elg', 'sum_sell_elg', 'sum_total_amount']:
+              'sum_total_amount']:
         assert np.isnan(agg[k]), f"{k} should be NaN"
     # Array fields (use np.testing for safety)
     import numpy.testing as npt
