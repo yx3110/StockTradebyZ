@@ -105,6 +105,9 @@ def compute_group_a_factors(rows: List[Dict]) -> Dict[str, float]:
 
     Partial windows: When `len(rows) < 5` (or `< 20`), the corresponding factors
     are computed using whatever data is available rather than emitting NaN.
+    Group A divisor is `sum_total_amount` (computed from actual rows), so partial
+    and full windows produce the same ratio when data is sparse — no spec divergence.
+    (Contrast Group B/C factors 5+6, which use spec-literal `/20` and `/5`.)
     Rationale: Group D cs_rank factors handle IPO-edge noise via cross-sectional
     ranking; emitting NaN here would lose the IPO-window signal entirely. Stocks
     with very short histories should be filtered upstream by ng_cache_updater.
