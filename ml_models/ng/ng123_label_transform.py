@@ -38,10 +38,9 @@ def compute_path_min_kd(today_close: float, future_closes: np.ndarray) -> float:
     if future_closes is None or len(future_closes) == 0:
         return np.nan
     arr = np.asarray(future_closes, dtype=np.float64)
-    # np.nanmin returns NaN (with RuntimeWarning) for all-NaN arrays; the
-    # subsequent division propagates NaN. Single pass over arr.
-    with np.errstate(invalid='ignore'):
-        return float(np.nanmin(arr) / today_close - 1.0)
+    if not np.any(np.isfinite(arr)):
+        return np.nan
+    return float(np.nanmin(arr) / today_close - 1.0)
 
 
 def compute_downside_kd(path_min: ArrayLike) -> ArrayLike:

@@ -47,6 +47,12 @@ def test_path_min_zero_today():
     assert np.isnan(pm)
 
 
+def test_path_min_all_nan_future():
+    """All-NaN future closes → NaN (no valid minimum)."""
+    pm = compute_path_min_kd(100.0, np.array([np.nan, np.nan, np.nan]))
+    assert np.isnan(pm)
+
+
 # --- compute_downside_kd ----------------------------------------------------
 
 def test_downside_from_negative_path_min():
