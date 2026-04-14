@@ -107,3 +107,88 @@ def test_aggregate_n_days_negative_returns_empty():
     rows = [_mk_row(buy_elg=100)] * 5
     agg = aggregate_moneyflow_window(rows, n_days=-1)
     assert agg['n_days_actual'] == 0
+    assert np.isnan(agg['sum_net_elg'])
+
+
+# --- Group A: Net Flow Magnitude (4 factors) ---------------------------------
+
+def test_mf_net_elg_5d_ratio_basic():
+    """5 days each net_elg=+100, total_amount=+1100 per day → ratio = 500/5500."""
+    from ml_models.ng.ng123_moneyflow_factors import compute_group_a_factors
+    rows = [_mk_row(buy_elg=200, sell_elg=100, buy_sm=400, sell_sm=400)] * 5
+    # Per row: net_elg = 100, total = 200+100+400+400 = 1100
+    # 5d: sum_net_elg = 500, sum_total = 5500 → ratio = 500/5500 ≈ 0.0909
+    res = compute_group_a_factors(rows)
+    assert abs(res['mf_net_elg_5d_ratio'] - 500/5500) < 1e-6
+
+
+def test_mf_net_elg_5d_ratio_zero_total():
+    """Edge case: all amounts zero → NaN (not div by zero)."""
+    from ml_models.ng.ng123_moneyflow_factors import compute_group_a_factors
+    rows = [_mk_row()] * 5  # all zeros
+    res = compute_group_a_factors(rows)
+    assert np.isnan(res['mf_net_elg_5d_ratio'])
+
+
+def test_mf_net_elg_20d_ratio():
+    """20d ratio aggregates over 20 days when available."""
+    from ml_models.ng.ng123_moneyflow_factors import compute_group_a_factors
+    rows = [_mk_row(buy_elg=100, sell_elg=50, buy_sm=50, sell_sm=50)] * 25
+    # Last 20 used: net_elg=50/d * 20 = 1000; total=(100+50+50+50)/d * 20 = 5000
+    # ratio = 1000/5000 = 0.2
+    res = compute_group_a_factors(rows)
+    assert abs(res['mf_net_elg_20d_ratio'] - 0.2) < 1e-6
+
+
+def test_mf_net_lg_5d_ratio():
+    """Large-order net flow ratio (parallel to elg)."""
+    from ml_models.ng.ng123_moneyflow_factors import compute_group_a_factors
+    rows = [_mk_row(buy_lg=300, sell_lg=200, buy_sm=100, sell_sm=100)] * 5
+    # Per row: net_lg=100, total=300+200+100+100=700; 5d: 500/3500≈0.1429
+    res = compute_group_a_factors(rows)
+    assert abs(res['mf_net_lg_5d_ratio'] - 500/3500) < 1e-6
+
+
+def test_mf_smart_net_share_20d():
+    """Share of (net_elg+net_lg) over total absolute daily net flow."""
+    from ml_models.ng.ng123_moneyflow_factors import compute_group_a_factors
+    # net_elg=+100, net_lg=+50, net_md=-30, net_sm=-20 per day, 20 days
+    rows = [_mk_row(buy_elg=200, sell_elg=100, buy_lg=150, sell_lg=100,
+                    buy_md=70, sell_md=100, buy_sm=80, sell_sm=100)] * 20
+    # Per day: net = +100, +50, -30, -20 → smart sum = +150, abs_per_day = 200
+    # 20d: smart_num = 3000, abs_daily_total = 20*200 = 4000 → share = 0.75
+    res = compute_group_a_factors(rows)
+    assert abs(res['mf_smart_net_share_20d'] - 0.75) < 1e-6
+
+
+def test_group_a_empty_input():
+    """No rows → all 4 NaN."""
+    from ml_models.ng.ng123_moneyflow_factors import compute_group_a_factors
+    res = compute_group_a_factors([])
+    assert all(np.isnan(res[k]) for k in
+               ['mf_net_elg_5d_ratio', 'mf_net_elg_20d_ratio',
+                'mf_net_lg_5d_ratio', 'mf_smart_net_share_20d'])
+
+
+def test_mf_smart_net_share_20d_with_sign_flips():
+    """Days with sign flips: must use sum(|daily_net|), NOT abs(sum_net).
+
+    If the implementation uses abs(sum_net_*) the denominator collapses to 0
+    and the result is NaN rather than 0. This test pins the correct behavior.
+    """
+    from ml_models.ng.ng123_moneyflow_factors import compute_group_a_factors
+    # 10 days alternating: +100/-100 for elg, +50/-50 for lg, etc.
+    # daily_net_elg: [+100, -100, +100, -100, ...] → sum_net_elg = 0
+    # but sum(|daily_net_elg|) = 1000  (per-day absolute values)
+    # Wrong impl: abs(sum_net_elg)=0 → denominator=0 → NaN
+    # Correct impl: sum(|daily_net_elg|)=1000 → denominator=4000 → share=0
+    rows_pos = _mk_row(buy_elg=200, sell_elg=100, buy_lg=150, sell_lg=100,
+                       buy_md=70, sell_md=100, buy_sm=80, sell_sm=100)
+    rows_neg = _mk_row(buy_elg=100, sell_elg=200, buy_lg=100, sell_lg=150,
+                       buy_md=100, sell_md=70, buy_sm=100, sell_sm=80)
+    rows = [rows_pos, rows_neg] * 10  # 20 days alternating
+    res = compute_group_a_factors(rows)
+    # smart numerator = 0 (sign cancellation), denominator = 20*(100+50+30+20)=4000
+    # share = 0 / 4000 = 0
+    assert abs(res['mf_smart_net_share_20d']) < 1e-9, \
+        f"Expected ~0 (sign cancellation in numerator), got {res['mf_smart_net_share_20d']}"
