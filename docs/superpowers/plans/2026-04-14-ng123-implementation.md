@@ -1914,6 +1914,8 @@ git commit -m "feat(ng123): Mined factor 计算模块 + 选定 6 个 (TDD)"
 
 ✅ **已在 Task 1 simplify Round 2 修复**: ng_cache_updater.py:1574/1607 + ng_trainer.py:783 已用 `_version_in_range(self.schema_version, 'ng1.2.1', 'ng1.2.3')` 替换裸 `version_ge` 调用，防止 ng1.2.3 流程尝试访问 vn_label_/path_/downside_std_10d 列。
 
+⚠️ **Task 3 simplify Round 1 必修项**: ng_cache_updater.py:775 和 :865 现有 `max(0.0, -label_10d)` 内联表达式，Task 11 实现时必须改用 `from ml_models.ng.ng123_label_transform import compute_downside_kd` 并调用 `compute_downside_kd(label_10d)`，避免逻辑分散。
+
 - [ ] **Step 1: 在 ng_feature_calculator.py 添加 ng123 入口**
 
 打开 `ml_models/ng/ng_feature_calculator.py`，在文件**末尾**追加：
