@@ -12,6 +12,10 @@ from typing import Dict, List
 
 import numpy as np
 
+# Window sizes used across all moneyflow factor groups (per spec §4.1)
+_SHORT_WINDOW = 5    # short-term window (factors 1, 3, 6, 7)
+_LONG_WINDOW = 20    # long-term window (factors 2, 4, 5)
+
 __all__ = [
     "EMPTY_MF_RESULT",
     "aggregate_moneyflow_window",
@@ -122,8 +126,8 @@ def compute_group_a_factors(rows: List[Dict]) -> Dict[str, float]:
     if not rows:
         return result
 
-    agg5 = aggregate_moneyflow_window(rows, n_days=5)
-    agg20 = aggregate_moneyflow_window(rows, n_days=20)
+    agg5 = aggregate_moneyflow_window(rows, n_days=_SHORT_WINDOW)
+    agg20 = aggregate_moneyflow_window(rows, n_days=_LONG_WINDOW)
 
     # Factor 1: mf_net_elg_5d_ratio = sum_net_elg_5d / sum_total_5d
     if agg5['sum_total_amount'] > 1e-8:
@@ -163,8 +167,9 @@ def compute_group_b_factors(rows: List[Dict]) -> Dict[str, float]:
 
     Returns dict with 2 float keys (NaN-safe).
 
-    Partial windows: Same policy as compute_group_a_factors — use available
-    data rather than emitting NaN when len(rows) < requested window.
+    Partial windows: factors 5 and 6 use spec-literal divisors (/20, /5) so
+    stocks with short histories get proportionally smaller signals. This
+    matches the spec's range guarantees and avoids IPO-edge inflation.
 
     Keys:
       mf_elg_persistence_20d — mean(sign(daily_net_elg)) over 20d, range [-1, 1]
@@ -178,20 +183,23 @@ def compute_group_b_factors(rows: List[Dict]) -> Dict[str, float]:
     if not rows:
         return result
 
-    agg20 = aggregate_moneyflow_window(rows, n_days=20)
-    agg5 = aggregate_moneyflow_window(rows, n_days=5)
+    agg20 = aggregate_moneyflow_window(rows, n_days=_LONG_WINDOW)
+    agg5 = aggregate_moneyflow_window(rows, n_days=_SHORT_WINDOW)
 
-    # Factor 5: persistence = mean(sign(daily_net_elg)) over 20d
-    # Denominator is n_days_actual (not always 20 for short histories).
+    # Factor 5: persistence = mean(sign(daily_net_elg)) over 20d (spec literal /20)
+    # Partial windows: empty days count as zeros via the literal /20 divisor —
+    # stocks with short histories get proportionally smaller signals (intended,
+    # avoids IPO-edge inflation that would distort cs_rank in Group D).
     if agg20['n_days_actual'] > 0:
         signs_elg = np.sign(agg20['daily_net_elg'])
-        result['mf_elg_persistence_20d'] = float(signs_elg.sum()) / agg20['n_days_actual']
+        result['mf_elg_persistence_20d'] = float(signs_elg.sum()) / _LONG_WINDOW
 
-    # Factor 6: consistency = fraction of 5d days where sign(net_elg)==sign(net_lg)
+    # Factor 6: consistency = fraction of 5d where sign(net_elg)==sign(net_lg)
+    # (spec literal /5; partial windows: empty days count as 0)
     if agg5['n_days_actual'] > 0:
         s_elg = np.sign(agg5['daily_net_elg'])
         s_lg = np.sign(agg5['daily_net_lg'])
-        result['mf_smart_consistency_5d'] = float((s_elg == s_lg).sum()) / agg5['n_days_actual']
+        result['mf_smart_consistency_5d'] = float((s_elg == s_lg).sum()) / _SHORT_WINDOW
 
     return result
 
@@ -210,6 +218,11 @@ def compute_group_c_factors(rows: List[Dict]) -> Dict[str, float]:
                                        range {-2, 0, +2}
       mf_elg_acceleration_5_20 — mf_net_elg_5d_ratio - mf_net_elg_20d_ratio,
                                   range ≈ [-1, 1]
+
+    Note: Factor 8 (`mf_elg_acceleration_5_20`) recomputes the same ratios as
+    Group A factors 1 and 2. This duplication is by design — each group function
+    is independent and can be called in any order. Orchestrator (Task 7) may
+    optimize by passing pre-computed aggregates if profiling shows the cost matters.
     """
     result: Dict[str, float] = {
         'mf_smart_retail_divergence_5d': np.nan,
@@ -218,8 +231,8 @@ def compute_group_c_factors(rows: List[Dict]) -> Dict[str, float]:
     if not rows:
         return result
 
-    agg5 = aggregate_moneyflow_window(rows, n_days=5)
-    agg20 = aggregate_moneyflow_window(rows, n_days=20)
+    agg5 = aggregate_moneyflow_window(rows, n_days=_SHORT_WINDOW)
+    agg20 = aggregate_moneyflow_window(rows, n_days=_LONG_WINDOW)
 
     # Factor 7: divergence = sign(sum_net_elg_5d) - sign(sum_net_sm_5d)
     if agg5['n_days_actual'] > 0:

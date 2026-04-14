@@ -8,6 +8,8 @@ from ml_models.ng.ng123_moneyflow_factors import (
     compute_group_a_factors,
     compute_group_b_factors,
     compute_group_c_factors,
+    _SHORT_WINDOW,
+    _LONG_WINDOW,
 )
 
 
@@ -265,3 +267,45 @@ def test_mf_elg_acceleration_5_20():
     # 20d: net_elg_sum=500, total=15*200+5*300=4500 → ratio=0.111
     # acc = 0.333 - 0.111 = 0.222
     assert abs(res['mf_elg_acceleration_5_20'] - (500/1500 - 500/4500)) < 1e-6
+
+
+# --- Fix #3 (m-2): Empty-input tests for Groups B and C --------------------
+
+def test_compute_group_b_factors_empty_input():
+    """Empty rows → both factors NaN."""
+    res = compute_group_b_factors([])
+    assert np.isnan(res['mf_elg_persistence_20d'])
+    assert np.isnan(res['mf_smart_consistency_5d'])
+
+
+def test_compute_group_c_factors_empty_input():
+    """Empty rows → both factors NaN."""
+    res = compute_group_c_factors([])
+    assert np.isnan(res['mf_smart_retail_divergence_5d'])
+    assert np.isnan(res['mf_elg_acceleration_5_20'])
+
+
+# --- Fix #4 (m-3): Bearish divergence test for Factor 7 --------------------
+
+def test_mf_smart_retail_divergence_5d_smart_out_retail_in():
+    """net_elg_5d < 0, net_sm_5d > 0 → divergence = sign(-) - sign(+) = -2 (bearish)"""
+    rows = [_mk_row(buy_elg=50, sell_elg=200,  # net_elg = -150
+                    buy_sm=200, sell_sm=50)] * 5  # net_sm = +150
+    res = compute_group_c_factors(rows)
+    assert res['mf_smart_retail_divergence_5d'] == -2
+
+
+# --- Fix #6 (partial-window tests to PIN spec-literal divisor behavior) ----
+
+def test_mf_elg_persistence_20d_partial_window():
+    """3 days all positive → persistence = 3/20 = 0.15 (spec literal divisor)."""
+    rows = [_mk_row(buy_elg=100, sell_elg=50)] * 3
+    res = compute_group_b_factors(rows)
+    assert abs(res['mf_elg_persistence_20d'] - 3/20) < 1e-9
+
+
+def test_mf_smart_consistency_5d_partial_window():
+    """3 days all aligned → consistency = 3/5 = 0.6 (spec literal divisor)."""
+    rows = [_mk_row(buy_elg=100, sell_elg=50, buy_lg=80, sell_lg=40)] * 3
+    res = compute_group_b_factors(rows)
+    assert abs(res['mf_smart_consistency_5d'] - 3/5) < 1e-9
