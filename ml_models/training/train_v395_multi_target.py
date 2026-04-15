@@ -757,9 +757,14 @@ class V395MultiTargetTrainer:
 
     # ===== 数据缓存: load_data + prepare_features 结果缓存为joblib文件 =====
     def _compute_cache_key(self, start_date, end_date):
-        """基于类名+日期范围+DB修改时间生成缓存key"""
+        """基于类名+日期范围+DB修改时间+label 变换参数生成缓存key"""
         db_mtime = os.path.getmtime(self.db_path) if os.path.exists(self.db_path) else 0
-        key_str = f"{self.__class__.__name__}_{start_date}_{end_date}_{db_mtime:.0f}"
+        # ng1.2.3: include lambda_downside so different λ 不共用缓存 (label 不同)
+        lam_suffix = ''
+        if getattr(self, 'schema_version', '') == 'ng1.2.3':
+            lam = getattr(self, '_lambda_downside', 0.3)
+            lam_suffix = f"_lam{lam:.4f}"
+        key_str = f"{self.__class__.__name__}_{start_date}_{end_date}_{db_mtime:.0f}{lam_suffix}"
         return hashlib.md5(key_str.encode()).hexdigest()[:12]
 
     def _load_with_cache(self, start_date, end_date):
