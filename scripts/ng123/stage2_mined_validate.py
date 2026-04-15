@@ -67,8 +67,49 @@ ACCEPTED_MONEYFLOW_FEATURES = [
 ]
 
 
+def _reconstruct_spec_from_name(name: str) -> Dict:
+    """Parse factor name like `ts_cov(volume,high,5)` or `abs(ts_ret(volume,10))`
+    into the dict format required by factor_mining_pipeline.compute_factor.
+
+    Needed as fallback when mining JSON lacks structural keys (pre-bug-fix runs).
+    """
+    import re
+
+    # Depth-2 elem wrapping: elem(ts_op(operand,window))
+    m = re.match(r'^(abs|neg|sign)\((ts_\w+)\(([^,]+),(\d+)\)\)$', name.strip())
+    if m:
+        return {'name': name, 'type': 'depth2', 'elem_op': m.group(1),
+                'ts_op': m.group(2), 'operand': m.group(3), 'window': int(m.group(4))}
+
+    # Depth-2 ts chaining: ts_op1(ts_op2(operand,w2),w1)
+    m = re.match(r'^(ts_\w+)\((ts_\w+)\(([^,]+),(\d+)\),(\d+)\)$', name.strip())
+    if m:
+        return {'name': name, 'type': 'depth2_ts', 'ts_op1': m.group(1),
+                'ts_op2': m.group(2), 'operand': m.group(3),
+                'window2': int(m.group(4)), 'window1': int(m.group(5))}
+
+    # Binary ts: ts_corr(a,b,window) or ts_cov(a,b,window)
+    m = re.match(r'^(ts_corr|ts_cov)\(([^,]+),([^,]+),(\d+)\)$', name.strip())
+    if m:
+        return {'name': name, 'type': 'binary_ts', 'op': m.group(1),
+                'operand_a': m.group(2), 'operand_b': m.group(3),
+                'window': int(m.group(4))}
+
+    # Unary ts: ts_X(operand,window)
+    m = re.match(r'^(ts_\w+)\(([^,]+),(\d+)\)$', name.strip())
+    if m:
+        return {'name': name, 'type': 'unary_ts', 'op': m.group(1),
+                'operand': m.group(2), 'window': int(m.group(3))}
+
+    raise ValueError(f"Cannot parse factor name: {name!r}")
+
+
 def load_mining_results() -> List[Dict]:
-    """Load factor candidates from mining pipeline output."""
+    """Load factor candidates from mining pipeline output.
+
+    Backfills missing structural keys (type/op/operand/window) from the factor
+    name when older mining JSON lacked them (pre-pipeline-fix runs).
+    """
     if not MINING_RESULTS.exists():
         raise FileNotFoundError(
             f"{MINING_RESULTS} not found — run factor_mining_pipeline.py first")
@@ -76,8 +117,21 @@ def load_mining_results() -> List[Dict]:
         data = json.load(f)
     # Support both {'factors': [...]} and flat list
     if isinstance(data, list):
-        return data
-    return data.get('factors', data.get('results', []))
+        factors = data
+    else:
+        factors = data.get('factors', data.get('results', []))
+
+    # Reconstruct spec from name when pipeline JSON omits structural keys
+    for f in factors:
+        if 'type' not in f:  # needs reconstruction
+            try:
+                reconstructed = _reconstruct_spec_from_name(f['name'])
+                f.update({k: v for k, v in reconstructed.items() if k not in f})
+            except ValueError as e:
+                print(f"  WARN: {e} — factor skipped during reconstruction")
+                f['type'] = 'unknown'  # will fail compute_factor gracefully
+
+    return factors
 
 
 def is_economically_interpretable(name: str) -> tuple:

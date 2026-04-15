@@ -547,7 +547,10 @@ def run_pipeline(start_date='2023-01-01', end_date='2026-02-13',
 
         # 筛选条件
         if abs(metrics['ic_mean']) >= min_ic and abs(metrics['icir']) >= min_icir:
+            # 合并 candidate 结构字段 (type/op/operand/window) 以便下游 reconstruct factor
+            candidate = next((c for c in candidates if c['name'] == fname), {})
             results.append({
+                **candidate,  # type, op, operand[_a/_b], window, elem_op, ts_op 等
                 'name': fname,
                 **metrics,
             })
