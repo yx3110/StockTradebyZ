@@ -3,6 +3,7 @@ import numpy as np
 import pytest
 
 from ml_models.ng.ng123_moneyflow_factors import (
+    ACCEPTED_MF_FACTORS,
     aggregate_moneyflow_window,
     EMPTY_MF_RESULT,
     compute_group_a_factors,
@@ -374,42 +375,35 @@ def test_compute_group_d_factors_empty_peers():
         assert v == 0.5
 
 
-def test_compute_all_moneyflow_factors_returns_12_keys():
-    """Top-level orchestrator returns exactly the 12 expected keys."""
+def test_compute_all_moneyflow_factors_returns_6_accepted():
+    """Default returns only the 6 Stage 1-accepted factors (ng101 median+ bar)."""
     rows = [_mk_row(buy_elg=200, sell_elg=100, buy_sm=400, sell_sm=400)] * 20
     res = compute_all_moneyflow_factors(rows)
     expected_keys = {
-        # Group A
-        'mf_net_elg_5d_ratio', 'mf_net_elg_20d_ratio',
-        'mf_net_lg_5d_ratio', 'mf_smart_net_share_20d',
-        # Group B
-        'mf_elg_persistence_20d', 'mf_smart_consistency_5d',
-        # Group C
-        'mf_smart_retail_divergence_5d', 'mf_elg_acceleration_5_20',
-        # Group D
-        'cs_rank_mf_net_elg_5d', 'cs_rank_mf_net_elg_20d',
-        'cs_rank_mf_smart_net_share_20d', 'cs_rank_mf_elg_persistence_20d',
+        'mf_net_elg_20d_ratio', 'cs_rank_mf_net_elg_20d',
+        'mf_net_elg_5d_ratio', 'cs_rank_mf_net_elg_5d',
+        'mf_smart_net_share_20d', 'cs_rank_mf_smart_net_share_20d',
     }
-    assert set(res.keys()) == expected_keys, f"Missing or extra keys: {set(res.keys()) ^ expected_keys}"
+    assert set(res.keys()) == expected_keys, \
+        f"Mismatch: {set(res.keys()) ^ expected_keys}"
+
+
+def test_compute_all_moneyflow_factors_returns_12_when_accepted_only_false():
+    """accepted_only=False returns all 12 factors (diagnostic mode)."""
+    rows = [_mk_row(buy_elg=200, sell_elg=100, buy_sm=400, sell_sm=400)] * 20
+    res = compute_all_moneyflow_factors(rows, accepted_only=False)
+    assert len(res) == 12, f"Expected all 12 factors, got {len(res)}"
 
 
 def test_compute_all_moneyflow_factors_empty_input():
-    """Empty rows → all 8 ABC factors NaN, all 4 D factors 0.5 (empty peers default)."""
+    """Empty rows → 3 Group A kept factors NaN, 3 Group D kept factors 0.5 (empty peers default)."""
     res = compute_all_moneyflow_factors([])
-    abc_keys = [
-        'mf_net_elg_5d_ratio', 'mf_net_elg_20d_ratio',
-        'mf_net_lg_5d_ratio', 'mf_smart_net_share_20d',
-        'mf_elg_persistence_20d', 'mf_smart_consistency_5d',
-        'mf_smart_retail_divergence_5d', 'mf_elg_acceleration_5_20',
-    ]
-    for k in abc_keys:
-        assert np.isnan(res[k]), f"{k} should be NaN, got {res[k]}"
-    d_keys = [
-        'cs_rank_mf_net_elg_5d', 'cs_rank_mf_net_elg_20d',
-        'cs_rank_mf_smart_net_share_20d', 'cs_rank_mf_elg_persistence_20d',
-    ]
-    for k in d_keys:
-        assert res[k] == 0.5, f"{k} should be 0.5 (empty peers), got {res[k]}"
+    # 3 Group A factors accepted
+    for k in ['mf_net_elg_5d_ratio', 'mf_net_elg_20d_ratio', 'mf_smart_net_share_20d']:
+        assert np.isnan(res[k]), f"{k} should be NaN"
+    # 3 Group D factors accepted
+    for k in ['cs_rank_mf_net_elg_5d', 'cs_rank_mf_net_elg_20d', 'cs_rank_mf_smart_net_share_20d']:
+        assert res[k] == 0.5, f"{k} should be 0.5 (empty peers)"
 
 
 def test_compute_group_d_factors_nan_stock_value():

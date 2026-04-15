@@ -16,7 +16,22 @@ import numpy as np
 _SHORT_WINDOW = 5    # short-term window (factors 1, 3, 6, 7)
 _LONG_WINDOW = 20    # long-term window (factors 2, 4, 5)
 
+# Accepted factors after Stage 1 gate recalibration (2026-04-14).
+# Original 12 factors computed, but only 6 pass ng101 median+ bar
+# (|IC| > 0.015 AND |ICIR| > 0.2). The remaining 6 are weak/noise and
+# would dilute LightGBM training. See reports/ng123/fastcheck/
+# ng101_baseline_ic.csv for empirical baseline data.
+ACCEPTED_MF_FACTORS = frozenset([
+    'mf_net_elg_20d_ratio',
+    'cs_rank_mf_net_elg_20d',
+    'mf_net_elg_5d_ratio',
+    'cs_rank_mf_net_elg_5d',
+    'mf_smart_net_share_20d',
+    'cs_rank_mf_smart_net_share_20d',
+])
+
 __all__ = [
+    "ACCEPTED_MF_FACTORS",
     "EMPTY_MF_RESULT",
     "aggregate_moneyflow_window",
     "compute_group_a_factors",
@@ -350,8 +365,9 @@ def compute_all_moneyflow_factors(
     rows: List[Dict],
     stock_scalars: Dict[str, float] = None,
     peer_scalars: Dict[str, np.ndarray] = None,
+    accepted_only: bool = True,
 ) -> Dict[str, float]:
-    """Compute all 12 ng1.2.3 moneyflow factors for one stock on one date.
+    """Compute ng1.2.3 moneyflow factors for one stock on one date.
 
     Args:
         rows: List of moneyflow dicts (last 20 days), oldest → newest.
@@ -363,6 +379,11 @@ def compute_all_moneyflow_factors(
             'smart_net_share_20d', 'persistence_20d' (NOTE: scalar-namespace
             names, NOT Group A/B factor names with 'mf_' prefix). Pass empty
             dict {} or None if peer info unavailable (cs_rank → 0.5).
+        accepted_only: If True (default), return only the 6 factors that passed
+            Stage 1 recalibrated gates (ng101 median+ bar). If False, return
+            all 12 (for diagnostics or re-evaluation).
+
+    Returns dict with 6 keys (default) or 12 keys (accepted_only=False).
     """
     a = compute_group_a_factors(rows)
     b = compute_group_b_factors(rows)
@@ -385,4 +406,8 @@ def compute_all_moneyflow_factors(
         peer_scalars = {}
 
     result.update(compute_group_d_factors(stock_scalars, peer_scalars))
+
+    if accepted_only:
+        result = {k: v for k, v in result.items() if k in ACCEPTED_MF_FACTORS}
+
     return result
