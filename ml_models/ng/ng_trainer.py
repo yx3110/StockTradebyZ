@@ -258,10 +258,15 @@ class NGTrainer(V485Trainer):
         self.market_calculator = _StubMC()
 
     def _compute_cache_key(self, start_date, end_date):
-        """Override: include NG version in cache key to invalidate on version/feature changes."""
+        """Override: include NG version + ng1.2.3 lambda_downside in cache key to invalidate
+        on version/feature/label changes."""
         import hashlib
         db_mtime = os.path.getmtime(self.db_path) if os.path.exists(self.db_path) else 0
-        key_str = f"{self.__class__.__name__}_{self._ng_version}_{start_date}_{end_date}_{db_mtime:.0f}"
+        lam_suffix = ''
+        if self.schema_version == 'ng1.2.3':
+            lam = getattr(self, '_lambda_downside', 0.3)
+            lam_suffix = f"_lam{lam:.4f}"
+        key_str = f"{self.__class__.__name__}_{self._ng_version}_{start_date}_{end_date}_{db_mtime:.0f}{lam_suffix}"
         return hashlib.md5(key_str.encode()).hexdigest()[:12]
 
     # ------------------------------------------------------------------
