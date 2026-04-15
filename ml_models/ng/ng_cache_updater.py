@@ -23,6 +23,7 @@ from collections import defaultdict
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
+import pandas as pd
 
 _PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 if _PROJECT_ROOT not in sys.path:
@@ -54,6 +55,10 @@ from ml_models.ng.ng123_moneyflow_factors import (
     compute_group_d_factors,
 )
 from ml_models.ng.ng123_label_transform import compute_path_min_kd, compute_downside_kd
+from ml_models.ng.ng123_mined_factors import (
+    MINED_FACTOR_SPEC,
+    compute_mined_factor_value,
+)
 from sklearn.linear_model import LinearRegression
 from fetch_data.label_utils import (
     compute_labels_from_future_prices,
@@ -281,6 +286,34 @@ class NGCacheUpdater:
                 result[r['security_id']].append(float(val))
 
         return {sid: np.array(vals[-PE_HISTORY_DAYS:]) for sid, vals in result.items()}
+
+    def _load_turnover_history(
+        self, conn: sqlite3.Connection, date: str, security_ids: List[int]
+    ) -> Dict[int, List[float]]:
+        """Load per-date turnover_rate history (up to LOOKBACK_DAYS) for ng1.2.3 mined factors.
+
+        Returns {security_id: [turnover_rate, ...]} ordered oldest→newest.
+        Missing dates are NOT interpolated — caller should align by position with price rows.
+        """
+        from datetime import datetime, timedelta
+        dt = datetime.strptime(date, '%Y-%m-%d')
+        lookback_start = (dt - timedelta(days=LOOKBACK_DAYS)).strftime('%Y-%m-%d')
+
+        rows = conn.execute(
+            f'''SELECT security_id, trade_date, turnover_rate
+                FROM daily_basic
+                WHERE trade_date BETWEEN ? AND ?
+                  AND security_id IN ({','.join('?' * len(security_ids))})
+                ORDER BY security_id, trade_date''',
+            [lookback_start, date] + security_ids
+        ).fetchall()
+
+        result: Dict[int, List] = defaultdict(list)
+        for r in rows:
+            result[r['security_id']].append(
+                (r['trade_date'], r['turnover_rate'])
+            )
+        return dict(result)
 
     def _load_financial_data(
         self, conn: sqlite3.Connection, date: str, security_ids: List[int]
@@ -963,6 +996,16 @@ class NGCacheUpdater:
                 chunk_data = self._load_pe_history(conn, date, chunk)
                 pe_history.update(chunk_data)
 
+            # 5.5. ng1.2.3: load turnover history for mined alpha factors
+            # (4 of 6 mined factors need turnover as a time series, not just today's value)
+            turnover_history: Dict[int, List] = {}
+            if self.version == 'ng1.2.3':
+                print(f"  [{date}] Loading turnover history (ng1.2.3 mined factors)...")
+                for i in range(0, len(active_sids), chunk_size):
+                    chunk = active_sids[i:i + chunk_size]
+                    chunk_data = self._load_turnover_history(conn, date, chunk)
+                    turnover_history.update(chunk_data)
+
             # 6. Load financial data
             print(f"  [{date}] Loading financial data...")
             fin_data: Dict[int, dict] = {}
@@ -1388,6 +1431,50 @@ class NGCacheUpdater:
                         print(f"    WARN: ng123 moneyflow_factors failed for {code}: {e}")
                         ng123_mf_feats = {}
 
+                # --- ng1.2.3: compute 6 mined alpha factors ---
+                ng123_mined_feats = {}
+                if self.version == 'ng1.2.3' and MINED_FACTOR_SPEC:
+                    # Build per-stock OHLCV df aligned with price rows.
+                    # Merge daily_basic turnover_rate by trade_date for full time series.
+                    _tr_history = turnover_history.get(sid, [])
+                    _tr_by_date = {td: v for td, v in _tr_history}
+                    _turnover_arr = np.array([
+                        float(_tr_by_date[r['trade_date']])
+                        if r['trade_date'] in _tr_by_date and _tr_by_date[r['trade_date']] is not None
+                        else np.nan
+                        for r in rows
+                    ])
+                    # Forward-fill NaN turnover (sparse coverage in daily_basic)
+                    _last_valid = np.nan
+                    for _i in range(len(_turnover_arr)):
+                        if np.isfinite(_turnover_arr[_i]):
+                            _last_valid = _turnover_arr[_i]
+                        elif np.isfinite(_last_valid):
+                            _turnover_arr[_i] = _last_valid
+                    if len(rows) >= 60:
+                        _df_stock = pd.DataFrame({
+                            'open': opens,
+                            'high': highs,
+                            'low': lows,
+                            'close': closes,
+                            'volume': volumes,
+                            'price_change_pct': np.array(
+                                [_safe_float(r.get('price_change_pct', 0)) for r in rows]
+                            ),
+                            'turnover_rate': _turnover_arr,
+                        })
+                        for _spec in MINED_FACTOR_SPEC:
+                            try:
+                                _arr = compute_mined_factor_value(_spec, _df_stock)
+                                _val = float(_arr[-1]) if len(_arr) > 0 and np.isfinite(_arr[-1]) else 0.0
+                                ng123_mined_feats[_spec['name']] = _val
+                            except Exception:
+                                ng123_mined_feats[_spec['name']] = 0.0
+                    else:
+                        # Not enough history — zero-fill
+                        for _spec in MINED_FACTOR_SPEC:
+                            ng123_mined_feats[_spec['name']] = 0.0
+
                 # Store raw values needed for CS rank (pass 2).
                 # IMPORTANT: read raw values from UNFILTERED stock_feats/fund_feats/ind_feats.
                 # The ng1.2.3 filter call below (filter_ng123_features) drops 'dv_ratio' and
@@ -1427,7 +1514,8 @@ class NGCacheUpdater:
                     'ind_feats': ind_feats,
                     'mf_feats': mf_feats,
                     'smooth_feats': smooth_feats,
-                    'ng123_mf_feats': ng123_mf_feats,  # ng1.2.3: 12-factor moneyflow
+                    'ng123_mf_feats': ng123_mf_feats,   # ng1.2.3: 12-factor moneyflow
+                    'ng123_mined_feats': ng123_mined_feats,  # ng1.2.3: 6 mined alpha factors
                     # Raw values for CS rank
                     'return_5d': ret_5d_val,
                     'return_20d': ret_20d_val,
@@ -1585,11 +1673,12 @@ class NGCacheUpdater:
                         if k not in ('amv_var1', 'amv_macd', 'amv_regime_days'):
                             all_feats[k] = v
                     all_feats.update(cond_ix_feats)
-                # ng1.2.3: add 12 moneyflow factors to features_json
+                # ng1.2.3: add 12 moneyflow factors + 6 mined alpha factors to features_json
                 # (mf_feats from ng1.0.3 path was already dropped via filter above;
                 #  ng123_mf_feats replaces it with the new 12-factor set)
                 if self.version == 'ng1.2.3':
                     all_feats.update(data.get('ng123_mf_feats', {}))
+                    all_feats.update(data.get('ng123_mined_feats', {}))
 
                 # Clean NaN/Inf
                 clean_feats = {}

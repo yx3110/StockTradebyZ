@@ -37,18 +37,57 @@ __all__ = [
 # ============================================================================
 
 MINED_FACTOR_SPEC: List[Dict] = [
-    # POPULATED BY Task 10 post-Stage 2 — each entry format:
-    # {
-    #     'name': 'neg_ts_decay_ret_60',     # canonical with sign-flip prefix
-    #     'sign_flip': True,                  # multiply output by -1
-    #     'type': 'unary_ts',                 # per factor_mining_pipeline
-    #     'op': 'ts_decay',                   # or 'binary_ts' / 'depth2' / 'depth2_ts'
-    #     'operand': 'ret',
-    #     'window': 60,
-    #     'ic': 0.096, 'icir': 1.020,
-    #     'cross_regime_ic': {'bear_2022': 0.08, 'recovery_2024': 0.11},
-    #     'semantic': '60-day decay-weighted return reversal',
-    # },
+    # Selected 2026-04-15 from stage2_status.json top-6.
+    # All show negative IC in A-share → sign_flip=True (contrarian signals).
+    # Name prefix `neg_` denotes sign-flipped for naming consistency with spec §4.2.
+    {
+        'name': 'neg_ts_cov_close_turnover_5',
+        'type': 'binary_ts', 'op': 'ts_cov',
+        'operand_a': 'close', 'operand_b': 'turnover', 'window': 5,
+        'sign_flip': True,
+        'ic': -0.090306, 'icir': -0.8026,
+        'semantic': '5-day covariance(close, turnover) — contrarian microstructure',
+    },
+    {
+        'name': 'neg_abs_ts_ret_volume_10',
+        'type': 'depth2', 'elem_op': 'abs',
+        'ts_op': 'ts_ret', 'operand': 'volume', 'window': 10,
+        'sign_flip': True,
+        'ic': -0.047846, 'icir': -0.7322,
+        'semantic': '10-day |volume return| — contrarian volume-volatility',
+    },
+    {
+        'name': 'neg_abs_ts_ret_volume_60',
+        'type': 'depth2', 'elem_op': 'abs',
+        'ts_op': 'ts_ret', 'operand': 'volume', 'window': 60,
+        'sign_flip': True,
+        'ic': -0.053732, 'icir': -0.7246,
+        'semantic': '60-day |volume return| — contrarian long-horizon volume-volatility',
+    },
+    {
+        'name': 'neg_ts_corr_turnover_high_10',
+        'type': 'binary_ts', 'op': 'ts_corr',
+        'operand_a': 'turnover', 'operand_b': 'high', 'window': 10,
+        'sign_flip': True,
+        'ic': -0.062888, 'icir': -0.6929,
+        'semantic': '10-day corr(turnover, high) — contrarian liquidity-price',
+    },
+    {
+        'name': 'neg_ts_corr_volume_high_10',
+        'type': 'binary_ts', 'op': 'ts_corr',
+        'operand_a': 'volume', 'operand_b': 'high', 'window': 10,
+        'sign_flip': True,
+        'ic': -0.062557, 'icir': -0.689,
+        'semantic': '10-day corr(volume, high) — contrarian volume-price coupling',
+    },
+    {
+        'name': 'neg_ts_cov_turnover_low_10',
+        'type': 'binary_ts', 'op': 'ts_cov',
+        'operand_a': 'turnover', 'operand_b': 'low', 'window': 10,
+        'sign_flip': True,
+        'ic': -0.069448, 'icir': -0.6671,
+        'semantic': '10-day cov(turnover, low) — contrarian downside-turnover',
+    },
 ]
 
 
