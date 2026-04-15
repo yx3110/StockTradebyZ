@@ -782,7 +782,11 @@ class NGTrainer(V485Trainer):
         # ng1.2.x branches from ng1.0.1 and skips ng1.0.4/1.0.7 columns; detect
         # separately so the numeric version_ge doesn't pull in non-existent cols.
         is_12 = _is_1_2_branch(self.schema_version)
-        if is_12 and _version_in_range(self.schema_version, 'ng1.2.1', 'ng1.2.3'):
+        # ng1.2.3: 4-horizon downside_kd columns; no vn_label/path (excluded by spec §3.3)
+        if is_12 and version_ge(self.schema_version, 'ng1.2.3'):
+            extra_select = ", downside_3d, downside_5d, downside_10d, downside_15d"
+        # ng1.2.1: Sharpe-style path-based labels (not inherited by ng1.2.3+)
+        elif is_12 and _version_in_range(self.schema_version, 'ng1.2.1', 'ng1.2.3'):
             extra_select = ", vn_label_3d, vn_label_5d, vn_label_10d, vn_label_15d"
             extra_select += ", path_mean_10d, path_std_10d, downside_std_10d"
         elif version_ge(self.schema_version, 'ng1.0.7') and not is_12:
@@ -792,7 +796,10 @@ class NGTrainer(V485Trainer):
         elif version_ge(self.schema_version, 'ng1.0.4') and not is_12:
             extra_select = ", ra_label_3d, ra_label_5d, ra_label_10d, ra_label_15d"
 
-        downside_col = ", downside_10d" if version_ge(self.schema_version, 'ng1.0.2') else ""
+        # ng1.0.2 linear lineage has a single downside_10d column.
+        # ng1.2.3 already has downside_10d inside extra_select (4-horizon block);
+        # ng1.2.1 has no downside_10d at all — avoid duplicates in both cases.
+        downside_col = ", downside_10d" if version_ge(self.schema_version, 'ng1.0.2') and not is_12 else ""
         query = f"""
         SELECT code, trade_date, features_json,
                label_3d, label_5d, label_10d, label_15d{downside_col}{extra_select},
@@ -902,11 +909,20 @@ class NGTrainer(V485Trainer):
                         result.loc[mask.values, f'label_{h}'] = cond_vals[mask].values
                         logger.info(f"  Using conditional label_{h}: {mask.sum():,} values")
 
-        # downside_10d (v1.0.2): backward compat with ng101 cache
-        if 'downside_10d' in df_raw.columns:
+        # downside_10d (v1.0.2 linear lineage): backward compat with ng101 cache
+        if 'downside_10d' in df_raw.columns and not _is_1_2_branch(self.schema_version):
             result['downside_10d'] = pd.to_numeric(df_raw['downside_10d'], errors='coerce').fillna(0.0).values
-        else:
+        elif not _is_1_2_branch(self.schema_version):
             result['downside_10d'] = 0.0
+
+        # ng1.2.3: propagate 4-horizon downside_kd columns from df_raw into result
+        if _is_1_2_branch(self.schema_version) and version_ge(self.schema_version, 'ng1.2.3'):
+            for h in [3, 5, 10, 15]:
+                col = f'downside_{h}d'
+                if col in df_raw.columns:
+                    result[col] = pd.to_numeric(df_raw[col], errors='coerce').fillna(0.0).values
+                else:
+                    result[col] = 0.0
 
         # Market features: ffill
         result = result.sort_values('trade_date')
@@ -919,6 +935,24 @@ class NGTrainer(V485Trainer):
         for col in active_stock_features:
             if col in result.columns:
                 result[col] = pd.to_numeric(result[col], errors='coerce').fillna(0.0)
+
+        # ng1.2.3: apply soft downside penalty to multi-target labels
+        if _is_1_2_branch(self.schema_version) and version_ge(self.schema_version, 'ng1.2.3'):
+            from ml_models.ng.ng123_label_transform import apply_downside_penalty
+            lam = float(getattr(self, '_lambda_downside', 0.3))
+            penalized = 0
+            for h in [3, 5, 10, 15]:
+                excess_col = f'label_{h}d'
+                ds_col = f'downside_{h}d'
+                if ds_col in result.columns and excess_col in result.columns:
+                    result[excess_col] = apply_downside_penalty(
+                        excess=result[excess_col].values,
+                        downside=result[ds_col].values,
+                        lam=lam,
+                    )
+                    penalized += 1
+            logger.info(f"  ng1.2.3: applied downside penalty (λ={lam}) to labels "
+                        f"for {penalized} horizons {[3, 5, 10, 15][:penalized]}")
 
         # ng1.0.9: Smooth labels — average return over entry window
         smooth_window = getattr(self, '_smooth_label', 0)
@@ -1504,6 +1538,9 @@ if __name__ == '__main__':
                         help='ng1.0.9: label smoothing window (0=off, 5=average over 5-day entry window)')
     parser.add_argument('--margin', type=float, default=0.05,
                         help='ng1.2.0: pairwise margin ranking loss margin value (0.03-0.10 typical)')
+    parser.add_argument('--lambda-downside', type=float, default=0.3,
+                        help='ng1.2.3: downside penalty multiplier for label transform (default 0.3 per spec §5). '
+                             'λ ∈ {0, 0.15, 0.3, 0.45, 0.6} for ablation.')
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -1524,6 +1561,7 @@ if __name__ == '__main__':
         trainer._smooth_label = args.smooth_label
         trainer._min_autocorr = args.min_autocorr
         trainer._margin = args.margin
+        trainer._lambda_downside = args.lambda_downside
         if args.fast_check:
             trainer._fast_check = True
             trainer._fast_check_max_windows = 2
