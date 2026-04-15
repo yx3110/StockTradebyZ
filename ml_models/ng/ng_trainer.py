@@ -923,6 +923,9 @@ class NGTrainer(V485Trainer):
                     result[col] = pd.to_numeric(df_raw[col], errors='coerce').fillna(0.0).values
                 else:
                     result[col] = 0.0
+                null_count = int(pd.isna(result[col]).sum())
+                if null_count > 0:
+                    logger.warning(f"  ng1.2.3: {null_count} NULL {col} rows (partial cache? penalty=0 for those)")
 
         # Market features: ffill
         result = result.sort_values('trade_date')
@@ -940,7 +943,7 @@ class NGTrainer(V485Trainer):
         if _is_1_2_branch(self.schema_version) and version_ge(self.schema_version, 'ng1.2.3'):
             from ml_models.ng.ng123_label_transform import apply_downside_penalty
             lam = float(getattr(self, '_lambda_downside', 0.3))
-            penalized = 0
+            penalized_horizons = []
             for h in [3, 5, 10, 15]:
                 excess_col = f'label_{h}d'
                 ds_col = f'downside_{h}d'
@@ -950,9 +953,8 @@ class NGTrainer(V485Trainer):
                         downside=result[ds_col].values,
                         lam=lam,
                     )
-                    penalized += 1
-            logger.info(f"  ng1.2.3: applied downside penalty (λ={lam}) to labels "
-                        f"for {penalized} horizons {[3, 5, 10, 15][:penalized]}")
+                    penalized_horizons.append(h)
+            logger.info(f"  ng1.2.3: applied downside penalty (λ={lam}) to labels for horizons {penalized_horizons}")
 
         # ng1.0.9: Smooth labels — average return over entry window
         smooth_window = getattr(self, '_smooth_label', 0)
