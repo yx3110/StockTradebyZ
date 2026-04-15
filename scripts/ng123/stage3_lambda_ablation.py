@@ -122,7 +122,7 @@ Output: {OUTPUT_DIR}
             print(f"  lambda={lam:.2f} -> PARSE FAIL")
 
     df = pd.DataFrame(results)
-    df['ratio_to_baseline'] = df['icir_10d'].abs() / args.baseline_icir
+    df['ratio_to_baseline'] = df['icir_10d'] / args.baseline_icir
     df['passes_threshold'] = df['ratio_to_baseline'] >= args.pass_threshold
     df = df.sort_values('lambda')
 

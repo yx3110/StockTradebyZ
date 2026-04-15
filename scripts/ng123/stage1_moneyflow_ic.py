@@ -275,7 +275,7 @@ def compute_ic_per_factor(df_factors: pd.DataFrame, df_labels: pd.DataFrame,
                 ic_val, _ = spearmanr(sub[fc].values, sub['label_10d'].values)
                 if np.isfinite(ic_val):
                     ics.append(ic_val)
-            except Exception:
+            except (ValueError, TypeError):
                 pass
         if len(ics) < 20:
             results.append({
@@ -338,7 +338,7 @@ def compute_max_corr_vs_ng101(df_factors: pd.DataFrame, df_ng101: pd.DataFrame) 
                 if pd.notna(c) and abs(c) > max_abs_corr:
                     max_abs_corr = abs(c)
                     worst_pair = nc
-            except Exception:
+            except (TypeError, ValueError):
                 continue
         rows.append({
             'factor': fc,

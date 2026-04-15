@@ -14,6 +14,7 @@ Output: reports/ng123/fastcheck/stage2_mined_factors.csv
 """
 import argparse
 import json
+import re
 import sys
 import sqlite3
 from pathlib import Path
@@ -26,6 +27,8 @@ from scipy.stats import spearmanr
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(PROJECT_ROOT / 'scripts'))
+
+from factor_mining_pipeline import generate_operands, compute_factor
 
 DB_PATH = str(PROJECT_ROOT / 'data_adapter' / 'stock_data.db')
 OUTPUT_DIR = PROJECT_ROOT / 'reports' / 'ng123' / 'fastcheck'
@@ -73,8 +76,6 @@ def _reconstruct_spec_from_name(name: str) -> Dict:
 
     Needed as fallback when mining JSON lacks structural keys (pre-bug-fix runs).
     """
-    import re
-
     # Depth-2 elem wrapping: elem(ts_op(operand,window))
     m = re.match(r'^(abs|neg|sign)\((ts_\w+)\(([^,]+),(\d+)\)\)$', name.strip())
     if m:
@@ -122,14 +123,19 @@ def load_mining_results() -> List[Dict]:
         factors = data.get('factors', data.get('results', []))
 
     # Reconstruct spec from name when pipeline JSON omits structural keys
+    unparseable_count = 0
     for f in factors:
         if 'type' not in f:  # needs reconstruction
             try:
                 reconstructed = _reconstruct_spec_from_name(f['name'])
                 f.update({k: v for k, v in reconstructed.items() if k not in f})
             except ValueError as e:
-                print(f"  WARN: {e} — factor skipped during reconstruction")
+                print(f"  WARN: {e} — factor skipped during reconstruction", file=sys.stderr)
                 f['type'] = 'unknown'  # will fail compute_factor gracefully
+                unparseable_count += 1
+
+    if unparseable_count > 0:
+        print(f"  ⚠️  {unparseable_count} factors could not be parsed (type='unknown' will produce no values)", file=sys.stderr)
 
     return factors
 
@@ -218,9 +224,11 @@ def compute_factor_values_for_period(factor_spec: Dict, period: tuple,
     """Recompute a mined factor for all stocks in the given date range.
 
     Returns DataFrame[code, trade_date, factor_value, label_10d].
-    """
-    from factor_mining_pipeline import generate_operands, compute_factor
 
+    Note: uses raw forward return (close.shift(-10)/close - 1), not industry-excess.
+    This is acceptable for cross-regime direction consistency check; factor sign
+    predicts raw returns, which proxies industry-excess direction.
+    """
     start, end = period
     conn = sqlite3.connect(DB_PATH, timeout=30)
 
@@ -311,8 +319,6 @@ def check_orthogonality(factor_spec: Dict, existing_df: pd.DataFrame) -> tuple:
     """
     if existing_df.empty:
         return True, 0.0, ''
-
-    from factor_mining_pipeline import generate_operands, compute_factor
 
     # Compute factor values on the sample rows
     factor_vals_by_key = {}  # key = (code, date) -> factor_value

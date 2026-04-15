@@ -59,6 +59,7 @@ from ml_models.ng.ng123_mined_factors import (
     MINED_FACTOR_SPEC,
     compute_mined_factor_value,
 )
+from scripts.factor_mining_pipeline import generate_operands, compute_factor as _compute_mined_factor
 from sklearn.linear_model import LinearRegression
 from fetch_data.label_utils import (
     compute_labels_from_future_prices,
@@ -1463,17 +1464,26 @@ class NGCacheUpdater:
                             ),
                             'turnover_rate': _turnover_arr,
                         })
+                        # Call generate_operands ONCE and reuse across all 6 specs
+                        # (vs 6 separate compute_mined_factor_value calls each rebuilding operands)
+                        _operands = generate_operands(_df_stock)
                         for _spec in MINED_FACTOR_SPEC:
                             try:
-                                _arr = compute_mined_factor_value(_spec, _df_stock)
-                                _val = float(_arr[-1]) if len(_arr) > 0 and np.isfinite(_arr[-1]) else 0.0
+                                _series = _compute_mined_factor(_spec, _operands)
+                                if _series is None:
+                                    _val = np.nan
+                                else:
+                                    _vals = np.asarray(_series.values, dtype=np.float64)
+                                    if _spec.get('sign_flip', False):
+                                        _vals = -_vals
+                                    _val = float(_vals[-1]) if len(_vals) > 0 and np.isfinite(_vals[-1]) else np.nan
                                 ng123_mined_feats[_spec['name']] = _val
                             except Exception:
-                                ng123_mined_feats[_spec['name']] = 0.0
+                                ng123_mined_feats[_spec['name']] = np.nan
                     else:
-                        # Not enough history — zero-fill
+                        # Not enough history — NaN-fill
                         for _spec in MINED_FACTOR_SPEC:
-                            ng123_mined_feats[_spec['name']] = 0.0
+                            ng123_mined_feats[_spec['name']] = np.nan
 
                 # Store raw values needed for CS rank (pass 2).
                 # IMPORTANT: read raw values from UNFILTERED stock_feats/fund_feats/ind_feats.

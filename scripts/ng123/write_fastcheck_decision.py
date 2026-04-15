@@ -82,7 +82,7 @@ def main():
     ])
     if not s2.get('missing'):
         lines.append("")
-        lines.append(f"- Regime-stable factors: {s2.get('n_stable', 'n/a')}")
+        lines.append(f"- Regime-stable factors: {s2.get('n_regime_stable', s2.get('n_stable', 'n/a'))}")
         for f in s2.get('top_6', [])[:6]:
             name = f.get('name', 'unknown')
             ic = f.get('original_ic', 'n/a')
