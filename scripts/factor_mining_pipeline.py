@@ -402,9 +402,10 @@ def remove_redundant_factors(factor_values_dict, max_corr=0.7):
         return valid_names
 
     # 采样计算相关性 (全量太慢)
-    n = len(all_vals[0])
+    # 因子长度不一致时取最小长度防止索引越界 (不同因子 NaN 数量不同)
+    n = min(len(v) for v in all_vals)
     sample_idx = np.random.choice(n, min(n, 50000), replace=False)
-    mat = np.column_stack([v[sample_idx] for v in all_vals])
+    mat = np.column_stack([v[:n][sample_idx] for v in all_vals])
 
     # 处理NaN
     mat = np.nan_to_num(mat, nan=0.0)
