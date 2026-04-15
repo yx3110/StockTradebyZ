@@ -392,7 +392,8 @@ def check_orthogonality(factor_spec: Dict, existing_df: pd.DataFrame) -> tuple:
         for (code, td) in common_keys:
             try:
                 v = existing_indexed.loc[(code, td), col]
-                vals.append(float(v) if np.isfinite(float(v)) else np.nan)
+                fv = float(v)
+                vals.append(fv if np.isfinite(fv) else np.nan)
             except (KeyError, TypeError, ValueError):
                 vals.append(np.nan)
         aligned_existing[col] = np.array(vals)
