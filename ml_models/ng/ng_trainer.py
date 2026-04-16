@@ -787,8 +787,8 @@ class NGTrainer(V485Trainer):
         # ng1.2.x branches from ng1.0.1 and skips ng1.0.4/1.0.7 columns; detect
         # separately so the numeric version_ge doesn't pull in non-existent cols.
         is_12 = _is_1_2_branch(self.schema_version)
-        # ng1.2.3: 4-horizon downside_kd columns; no vn_label/path (excluded by spec §3.3)
-        if is_12 and version_ge(self.schema_version, 'ng1.2.3'):
+        # ng1.2.3: 4-horizon downside_kd columns; ng1.2.4 has no downside cols
+        if is_12 and _version_in_range(self.schema_version, 'ng1.2.3', 'ng1.2.4'):
             extra_select = ", downside_3d, downside_5d, downside_10d, downside_15d"
         # ng1.2.1: Sharpe-style path-based labels (not inherited by ng1.2.3+)
         elif is_12 and _version_in_range(self.schema_version, 'ng1.2.1', 'ng1.2.3'):
@@ -921,7 +921,7 @@ class NGTrainer(V485Trainer):
             result['downside_10d'] = 0.0
 
         # ng1.2.3: propagate 4-horizon downside_kd columns from df_raw into result
-        if _is_1_2_branch(self.schema_version) and version_ge(self.schema_version, 'ng1.2.3'):
+        if _is_1_2_branch(self.schema_version) and _version_in_range(self.schema_version, 'ng1.2.3', 'ng1.2.4'):
             for h in [3, 5, 10, 15]:
                 col = f'downside_{h}d'
                 if col in df_raw.columns:
@@ -944,8 +944,8 @@ class NGTrainer(V485Trainer):
             if col in result.columns:
                 result[col] = pd.to_numeric(result[col], errors='coerce').fillna(0.0)
 
-        # ng1.2.3: apply soft downside penalty to multi-target labels
-        if _is_1_2_branch(self.schema_version) and version_ge(self.schema_version, 'ng1.2.3'):
+        # ng1.2.3: apply soft downside penalty to multi-target labels (ng1.2.4 skips)
+        if _is_1_2_branch(self.schema_version) and _version_in_range(self.schema_version, 'ng1.2.3', 'ng1.2.4'):
             from ml_models.ng.ng123_label_transform import apply_downside_penalty
             lam = float(getattr(self, '_lambda_downside', 0.3))
             penalized_horizons = []

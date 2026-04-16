@@ -80,6 +80,35 @@ def test_ng102_linear_has_legacy_downside_10d():
     assert 'downside_10d' in sql
 
 
+# --- ng1.2.4 must EXCLUDE these columns (no downside penalty, no legacy) ------
+
+@pytest.mark.parametrize('forbidden_col', [
+    'downside_3d', 'downside_5d', 'downside_15d',  # ng1.2.3 downside_kd
+    'vn_label_3d', 'vn_label_5d', 'vn_label_10d', 'vn_label_15d',  # ng1.2.1
+    'path_mean_10d', 'path_std_10d', 'downside_std_10d',  # ng1.2.1
+    'maxdd_3d', 'maxdd_10d',  # ng1.0.4 lineage
+    'ra_label_3d', 'ra_label_10d',  # ng1.0.4 lineage
+    'cond_label_3d', 'cond_label_10d',  # ng1.0.7 lineage
+    'amv_var1', 'amv_macd', 'amv_regime_days',  # ng1.0.7 lineage
+])
+def test_ng124_excludes(forbidden_col):
+    sql = _schema_sql('ng124_feature_cache', version='ng1.2.4')
+    assert forbidden_col not in sql, \
+        f"ng1.2.4 schema must NOT contain {forbidden_col}"
+
+
+@pytest.mark.parametrize('required_col', [
+    'label_3d', 'label_5d', 'label_10d', 'label_15d',
+    'label_raw_3d', 'label_raw_5d', 'label_raw_10d', 'label_raw_15d',
+    'features_json',
+    'market_return_5d', 'market_volatility_20d', 'market_breadth',
+])
+def test_ng124_includes(required_col):
+    sql = _schema_sql('ng124_feature_cache', version='ng1.2.4')
+    assert required_col in sql, \
+        f"ng1.2.4 schema must contain {required_col}"
+
+
 def test_ng123_does_not_have_legacy_downside_10d_block():
     """The ng1.2.3 downside_10d should come from the new 4-col block, not the ng1.0.2 legacy block.
     Match 'downside_10d REAL' (DDL-specific) so a stray comment containing 'downside_10d'

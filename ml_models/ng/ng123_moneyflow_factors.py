@@ -30,8 +30,15 @@ ACCEPTED_MF_FACTORS = frozenset([
     'cs_rank_mf_smart_net_share_20d',
 ])
 
+# ng1.2.4: 极保守 — 仅 top 2 P90 因子 (|ICIR| > 0.5 in ng101 baseline percentile)
+ACCEPTED_MF_FACTORS_NG124 = frozenset([
+    'mf_net_elg_20d_ratio',     # |ICIR|=0.524, P90
+    'cs_rank_mf_net_elg_20d',   # |ICIR|=0.511, P90
+])
+
 __all__ = [
     "ACCEPTED_MF_FACTORS",
+    "ACCEPTED_MF_FACTORS_NG124",
     "EMPTY_MF_RESULT",
     "aggregate_moneyflow_window",
     "compute_group_a_factors",
@@ -366,6 +373,7 @@ def compute_all_moneyflow_factors(
     stock_scalars: Dict[str, float] = None,
     peer_scalars: Dict[str, np.ndarray] = None,
     accepted_only: bool = True,
+    ng124_mode: bool = False,
 ) -> Dict[str, float]:
     """Compute ng1.2.3 moneyflow factors for one stock on one date.
 
@@ -382,8 +390,10 @@ def compute_all_moneyflow_factors(
         accepted_only: If True (default), return only the 6 factors that passed
             Stage 1 recalibrated gates (ng101 median+ bar). If False, return
             all 12 (for diagnostics or re-evaluation).
+        ng124_mode: If True, return only ACCEPTED_MF_FACTORS_NG124 (top 2).
+            Overrides accepted_only.
 
-    Returns dict with 6 keys (default) or 12 keys (accepted_only=False).
+    Returns dict with 2 keys (ng124_mode), 6 keys (accepted_only), or 12 keys.
     """
     a = compute_group_a_factors(rows)
     b = compute_group_b_factors(rows)
@@ -407,7 +417,9 @@ def compute_all_moneyflow_factors(
 
     result.update(compute_group_d_factors(stock_scalars, peer_scalars))
 
-    if accepted_only:
+    if ng124_mode:
+        result = {k: v for k, v in result.items() if k in ACCEPTED_MF_FACTORS_NG124}
+    elif accepted_only:
         result = {k: v for k, v in result.items() if k in ACCEPTED_MF_FACTORS}
 
     return result

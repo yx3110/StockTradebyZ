@@ -449,3 +449,22 @@ def test_compute_stock_mf_scalars_parity_with_groups():
     assert s['net_elg_20d_ratio'] == a['mf_net_elg_20d_ratio']
     assert s['smart_net_share_20d'] == a['mf_smart_net_share_20d']
     assert s['persistence_20d'] == b['mf_elg_persistence_20d']
+
+
+# ---------------------------------------------------------------------------
+# ng1.2.4: top-2 factor mode
+# ---------------------------------------------------------------------------
+
+def test_ng124_returns_2_factors():
+    """ng124_mode=True returns exactly the top-2 P90 factors."""
+    rows = [_mk_row(buy_elg=200, sell_elg=100, buy_sm=400, sell_sm=400)] * 20
+    res = compute_all_moneyflow_factors(rows, ng124_mode=True)
+    expected = {'mf_net_elg_20d_ratio', 'cs_rank_mf_net_elg_20d'}
+    assert set(res.keys()) == expected
+
+
+def test_ng124_mode_overrides_accepted_only_false():
+    """ng124_mode=True overrides accepted_only=False (still returns 2)."""
+    rows = [_mk_row(buy_elg=200, sell_elg=100, buy_sm=400, sell_sm=400)] * 20
+    res = compute_all_moneyflow_factors(rows, accepted_only=False, ng124_mode=True)
+    assert len(res) == 2

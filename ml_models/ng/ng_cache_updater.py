@@ -1041,7 +1041,7 @@ class NGCacheUpdater:
             # compute_stock_mf_scalars() call in the per-stock loop (Fix #2).
             peer_mf_scalars_per_industry: Dict[str, Dict[str, np.ndarray]] = {}
             stock_mf_scalars_per_code: Dict[str, Dict[str, float]] = {}
-            if self.version == 'ng1.2.3':
+            if self.version in ('ng1.2.3', 'ng1.2.4'):
                 _ind_scalars: Dict[str, Dict[str, list]] = defaultdict(lambda: defaultdict(list))
                 for _sid in active_sids:
                     _info = universe.get(_sid)
@@ -1412,11 +1412,9 @@ class NGCacheUpdater:
                         print(f"    WARN: moneyflow_features failed for {code}: {e}")
                         mf_feats = {}
 
-                # --- ng1.2.3: drop 12 weak features + compute 12 ng123 moneyflow factors ---
+                # --- ng1.2.3/ng1.2.4: compute moneyflow factors ---
                 ng123_mf_feats = {}
-                if self.version == 'ng1.2.3':
-                    # 2. Compute 12 ng1.2.3 moneyflow factors (Groups A+B+C+D)
-                    # Use cached scalars from pre-compute loop to avoid redundant recompute.
+                if self.version in ('ng1.2.3', 'ng1.2.4'):
                     _mf_rows = mf_data.get(code, [])
                     _stock_scalars = stock_mf_scalars_per_code.get(
                         code, compute_stock_mf_scalars(_mf_rows)
@@ -1427,6 +1425,7 @@ class NGCacheUpdater:
                             _mf_rows,
                             stock_scalars=_stock_scalars,
                             peer_scalars=_peer_scalars,
+                            ng124_mode=(self.version == 'ng1.2.4'),
                         )
                     except Exception as e:
                         print(f"    WARN: ng123 moneyflow_factors failed for {code}: {e}")
@@ -1675,10 +1674,10 @@ class NGCacheUpdater:
                     all_feats.update(ix_feats)
                 if version_ge(self.schema_version, 'ng1.0.4'):
                     all_feats.update(data.get('smooth_feats', {}))
-                if version_ge(self.schema_version, 'ng1.0.7') and self.version != 'ng1.2.3':
+                if version_ge(self.schema_version, 'ng1.0.7') and self.version not in ('ng1.2.3', 'ng1.2.4'):
                     # ext_market_feats stored in features_json for scorer access
                     # (only non-AMV features; AMV values already in dedicated columns)
-                    # ng1.2.3 explicitly does NOT inherit ng1.0.7 additions (spec §3.3)
+                    # ng1.2.x branches do NOT inherit ng1.0.7 additions
                     for k, v in ext_market_feats.items():
                         if k not in ('amv_var1', 'amv_macd', 'amv_regime_days'):
                             all_feats[k] = v
@@ -1689,6 +1688,8 @@ class NGCacheUpdater:
                 if self.version == 'ng1.2.3':
                     all_feats.update(data.get('ng123_mf_feats', {}))
                     all_feats.update(data.get('ng123_mined_feats', {}))
+                elif self.version == 'ng1.2.4':
+                    all_feats.update(data.get('ng123_mf_feats', {}))
 
                 # Clean NaN/Inf
                 clean_feats = {}
@@ -1724,8 +1725,8 @@ class NGCacheUpdater:
                             compute_downside_kd(_pm)
                         )
 
-                # ng1.2.3 uses label-only base_row (no legacy downside_10d position)
-                if self.version == 'ng1.2.3':
+                # ng1.2.3+ uses label-only base_row (no legacy downside_10d position)
+                if self.version in ('ng1.2.3', 'ng1.2.4'):
                     base_row = (
                         data['code'],
                         date,
@@ -1797,8 +1798,8 @@ class NGCacheUpdater:
                 else:
                     ng121_cols = ()
 
-                # ng1.2.3: 4-horizon downside_kd columns
-                if is_12 and version_ge(self.schema_version, 'ng1.2.3'):
+                # ng1.2.3: 4-horizon downside_kd columns (ng1.2.4 has no downside)
+                if is_12 and _version_in_range(self.schema_version, 'ng1.2.3', 'ng1.2.4'):
                     ng123_cols = (
                         _to_sql(ng123_downside.get('downside_3d')),
                         _to_sql(ng123_downside.get('downside_5d')),
@@ -1829,9 +1830,8 @@ class NGCacheUpdater:
             # Write to database
             if insert_rows:
                 conn.row_factory = None
-                if is_12 and version_ge(self.schema_version, 'ng1.2.3'):
+                if is_12 and _version_in_range(self.schema_version, 'ng1.2.3', 'ng1.2.4'):
                     # 25 columns: base(3) + labels(4) + label_raw(4) + downside_kd(4) + market(10)
-                    # Note: no legacy downside_10d position; 4-horizon downside_kd replace it.
                     conn.executemany(
                         f'''INSERT OR REPLACE INTO {self.table_name}
                            (code, trade_date, features_json,
@@ -1843,6 +1843,21 @@ class NGCacheUpdater:
                             market_volume_ratio, market_drawdown, vix_proxy,
                             market_momentum_diff)
                            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                        insert_rows
+                    )
+                elif is_12 and version_ge(self.schema_version, 'ng1.2.4'):
+                    # 21 columns: base(3) + labels(4) + label_raw(4) + market(10)
+                    # No downside columns (ng1.2.4 uses industry-excess label without penalty)
+                    conn.executemany(
+                        f'''INSERT OR REPLACE INTO {self.table_name}
+                           (code, trade_date, features_json,
+                            label_3d, label_5d, label_10d, label_15d,
+                            label_raw_3d, label_raw_5d, label_raw_10d, label_raw_15d,
+                            market_return_5d, market_return_20d, market_volatility_20d,
+                            market_breadth, market_new_high_ratio, northbound_flow_5d,
+                            market_volume_ratio, market_drawdown, vix_proxy,
+                            market_momentum_diff)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
                         insert_rows
                     )
                 elif is_12 and _version_in_range(self.schema_version, 'ng1.2.1', 'ng1.2.3'):

@@ -37,6 +37,7 @@ VERSION_TABLE_MAP = {
     'ng1.2.1': 'ng121_feature_cache',  # Vol-Normalized Rank Label, 独立缓存(含vn_label列)
     'ng1.2.2': 'ng101_feature_cache',  # Return-Weighted CE Quintiles, 复用ng101缓存(训练层转换)
     'ng1.2.3': 'ng123_feature_cache',  # 三轴重构: -12 弱特征 + 12 moneyflow + 6 mined + downside label
+    'ng1.2.4': 'ng124_feature_cache',  # ng1.0.1 + 2 top mf factors only (极保守增量)
 }
 
 DEFAULT_VERSION = 'ng1.0.3'
@@ -53,6 +54,7 @@ SCHEMA_VERSION_MAP = {
     'ng1.2.1': 'ng1.2.1',  # new schema (adds vn_label columns)
     'ng1.2.2': 'ng1.0.1',
     'ng1.2.3': 'ng1.2.3',  # own schema (adds downside_kd label cols)
+    'ng1.2.4': 'ng1.2.4',  # own schema (ng1.0.1 base + label_raw, NO downside cols)
 }
 
 
@@ -137,9 +139,8 @@ def _schema_sql(table_name: str, version: str = None) -> str:
             'path_mean_10d', 'path_std_10d', 'downside_std_10d',
         )
     # ng1.2.3 adds soft-downside label columns (per spec section 5).
-    # IMPORTANT: When ng1.2.4 is added with its own schema, add an upper-bound
-    # guard `and not version_ge(ver, 'ng1.2.4')` here AND on the ng1.2.1 block above.
-    if is_12 and version_ge(ver, 'ng1.2.3'):
+    # Upper-bound guard: ng1.2.4 does NOT inherit downside cols (no penalty label).
+    if is_12 and _version_in_range(ver, 'ng1.2.3', 'ng1.2.4'):
         extra_cols += _real_cols('downside_3d', 'downside_5d', 'downside_10d', 'downside_15d')
     return f"""
 CREATE TABLE IF NOT EXISTS {table_name} (
