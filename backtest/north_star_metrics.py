@@ -1016,8 +1016,17 @@ def compute_benchmark_comparison(portfolio_returns: pd.Series,
             'information_ratio': 0, 'excess_annual_return': 0,
         }
 
-    p_ret = portfolio_returns.loc[common_dates]
-    b_ret = benchmark_returns.loc[common_dates]
+    p_ret = pd.to_numeric(portfolio_returns.loc[common_dates], errors='coerce')
+    b_ret = pd.to_numeric(benchmark_returns.loc[common_dates], errors='coerce')
+    # Drop dates where either series is NaN (benchmark cache may have gaps)
+    valid_mask = p_ret.notna() & b_ret.notna()
+    p_ret = p_ret[valid_mask]
+    b_ret = b_ret[valid_mask]
+    if len(p_ret) < min_required:
+        return {
+            'alpha': 0, 'beta': 0, 'tracking_error': 0,
+            'information_ratio': 0, 'excess_annual_return': 0,
+        }
 
     # Alpha / Beta (CAPM回归)
     cov = np.cov(p_ret, b_ret)
