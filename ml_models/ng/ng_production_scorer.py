@@ -10,8 +10,10 @@ v1.0.3 changes:
   - Backward compatible: auto-detects v1.0.0 / v1.0.1 / v1.0.3 models
 """
 
+import glob
 import json
 import logging
+import os
 import sqlite3
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -666,3 +668,140 @@ class NGProductionScorer:
                     }
 
         return results
+
+
+# ---------------------------------------------------------------------------
+# NG 1.3.0 Dual-Head Scorer
+# ---------------------------------------------------------------------------
+
+from ml_models.ng.ng130_composite import DEFAULT_BETA, compute_composite
+
+
+class NG130DualHeadScorer:
+    """ng1.3.x dual-head scorer: 3 seeds × 2 heads, β composite.
+
+    Loads 6 pkl files (ng130_seed{42,123,456}_{excess,downside}_multi_target_*.pkl),
+    predicts each (seed, head) for the requested horizon, averages across seeds,
+    then computes cross-sectional β composite per trade_date.
+    """
+
+    VERSION = 'ng1.3.0'
+
+    def __init__(
+        self,
+        model_dir: Optional[str] = None,
+        beta: Optional[float] = None,
+        seeds: tuple = (42, 123, 456),
+    ):
+        proj = Path(__file__).resolve().parent.parent.parent
+        self.model_dir = model_dir or str(proj / 'ml_models' / 'trained_models' / 'ng')
+        self.beta = beta if beta is not None else DEFAULT_BETA
+        self.seeds = seeds
+
+        # Load 3 × 2 = 6 models
+        self.models: Dict = {}
+        for seed in seeds:
+            for head in ('excess', 'downside'):
+                pattern = os.path.join(
+                    self.model_dir, f'ng130_seed{seed}_{head}_multi_target_*.pkl'
+                )
+                matches = sorted(glob.glob(pattern))
+                if not matches:
+                    raise FileNotFoundError(
+                        f'No model for seed={seed} head={head} in {self.model_dir}'
+                    )
+                self.models[(seed, head)] = joblib.load(matches[-1])
+
+        self.feature_names: List[str] = self.models[(seeds[0], 'excess')]['feature_names']
+        print(
+            f'NG130DualHeadScorer loaded: {len(self.models)} models, '
+            f'{len(self.feature_names)} features, β={self.beta}'
+        )
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _predict_head(
+        self, model_dict: dict, X: np.ndarray, horizon: str = '10d'
+    ) -> np.ndarray:
+        """Weighted ensemble prediction for one (seed, head) and one horizon."""
+        target_cfg = model_dict['models'][horizon]
+        boosters = target_cfg['models']
+        weights = target_cfg.get('weights', {})
+
+        preds: Dict[str, np.ndarray] = {}
+        for algo, booster in boosters.items():
+            try:
+                if algo == 'xgb':
+                    import xgboost as xgb
+                    dmat = xgb.DMatrix(X, feature_names=self.feature_names)
+                    preds[algo] = booster.predict(dmat)
+                else:
+                    preds[algo] = booster.predict(X)
+            except Exception as e:
+                logger.warning('NG130 %s predict failed: %s', algo, e)
+
+        if not preds:
+            raise RuntimeError(f'All boosters failed for horizon={horizon}')
+
+        wsum = sum(weights.get(a, 0.0) for a in preds)
+        if wsum <= 0:
+            return np.mean(list(preds.values()), axis=0)
+        return sum(weights.get(a, 0.0) * preds[a] for a in preds) / wsum
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def predict(self, features_df: pd.DataFrame, horizon: str = '10d') -> pd.DataFrame:
+        """Score rows in features_df.
+
+        Args:
+            features_df: Must contain all self.feature_names columns (NaN ok,
+                filled with 0) plus a 'trade_date' column for cross-sectional
+                composite ranking.
+            horizon: one of '3d', '5d', '10d', '15d'.
+
+        Returns:
+            DataFrame with columns:
+              trade_date, pred_excess, pred_downside, composite, composite_rank
+        """
+        X = features_df.reindex(columns=self.feature_names, fill_value=0.0).fillna(0.0).values
+
+        pred_excess_list, pred_downside_list = [], []
+        for seed in self.seeds:
+            pred_excess_list.append(self._predict_head(self.models[(seed, 'excess')], X, horizon))
+            pred_downside_list.append(self._predict_head(self.models[(seed, 'downside')], X, horizon))
+        pred_excess_avg = np.mean(pred_excess_list, axis=0)
+        pred_downside_avg = np.mean(pred_downside_list, axis=0)
+
+        if 'trade_date' in features_df.columns:
+            out = features_df[['trade_date']].copy()
+        else:
+            out = pd.DataFrame({'trade_date': 'unknown'}, index=features_df.index)
+        out['pred_excess'] = pred_excess_avg
+        out['pred_downside'] = pred_downside_avg
+
+        beta = self.beta
+
+        # Per-date cross-sectional composite. Assign via aligned Series to preserve dtype.
+        composite_series = pd.Series(index=out.index, dtype=float)
+        for date, g in out.groupby('trade_date', sort=False):
+            composite_series.loc[g.index] = compute_composite(
+                g['pred_excess'], g['pred_downside'], beta,
+            ).values
+        out['composite'] = composite_series
+        out['composite_rank'] = out.groupby('trade_date')['composite'].rank(
+            ascending=False, method='first'
+        )
+        return out
+
+
+# ---------------------------------------------------------------------------
+# Scorer registry
+# ---------------------------------------------------------------------------
+
+SCORER_REGISTRY: Dict[str, tuple] = {
+    'ng1.3.0': (NG130DualHeadScorer, {}),
+}

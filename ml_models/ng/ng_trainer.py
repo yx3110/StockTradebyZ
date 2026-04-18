@@ -300,15 +300,24 @@ class NGTrainer(V485Trainer):
         self.market_calculator = _StubMC()
 
     def _compute_cache_key(self, start_date, end_date):
-        """Override: include NG version + ng1.2.3 lambda_downside in cache key to invalidate
-        on version/feature/label changes."""
+        """Override: include NG version + head (ng1.3.x) + ng1.2.3 lambda_downside
+        in cache key to invalidate on version/head/label changes.
+
+        CRITICAL: ng1.3.x excess vs downside heads MUST have different cache keys,
+        otherwise the second head run will reuse the first head's cached labels
+        (seen in first training batch: excess and downside models bit-identical).
+        """
         import hashlib
         db_mtime = os.path.getmtime(self.db_path) if os.path.exists(self.db_path) else 0
         lam_suffix = ''
         if self.schema_version == 'ng1.2.3':
             lam = getattr(self, '_lambda_downside', 0.3)
             lam_suffix = f"_lam{lam:.4f}"
-        key_str = f"{self.__class__.__name__}_{self._ng_version}_{start_date}_{end_date}_{db_mtime:.0f}{lam_suffix}"
+        head_suffix = ''
+        if _is_1_3_branch(self._ng_version):
+            head_suffix = f"_{self._head}"
+        key_str = (f"{self.__class__.__name__}_{self._ng_version}_{start_date}_{end_date}"
+                   f"_{db_mtime:.0f}{lam_suffix}{head_suffix}")
         return hashlib.md5(key_str.encode()).hexdigest()[:12]
 
     # ------------------------------------------------------------------
