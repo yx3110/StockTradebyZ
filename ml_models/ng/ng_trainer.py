@@ -194,6 +194,46 @@ NG110_STOCK_FEATURES = NG110_STOCK_FEATURES + NG110_BUGFIX_FEATURES + NG110_P2_F
 NG110_ALL_FEATURES: List[str] = NG110_STOCK_FEATURES + MARKET_FEATURE_NAMES
 NG110_VERSION = 'ng1.1.0'
 
+# ---------------------------------------------------------------------------
+# ng1.3.0: Multi-task 双头 (excess + downside) + β composite
+# Spec: docs/superpowers/specs/2026-04-18-ng130-multitask-design.md
+# ---------------------------------------------------------------------------
+# Tier A (7): 4 downside (from ng1.0.4 smoothing subset) + 3 AMV (from ng1.0.6)
+# Tier B (3): moneyflow factors (require moneyflow_daily.code_6 fix)
+# Tier C (0 accepted): EMT 4-gate rejected all 4 candidates (2026-04-18)
+#   → ng1.3.0 final: 66 ng1.0.1 base + 4 Tier A downside + 3 Tier A AMV + 3 Tier B mf = 76 features
+
+NG130_TIER_A_DOWNSIDE: List[str] = [
+    'current_drawdown',       # 60d 距高点距离 (from ng1.0.4 smoothing)
+    'downside_vol_20d',       # 下行波动率
+    'recovery_speed_20d',     # 20d 反弹速率
+    'gap_risk_20d',           # 跳空风险
+]
+
+NG130_TIER_A_AMV: List[str] = [
+    'amv_var1',               # 0AMV 活跃筹码连续值 (from ng1.0.6)
+    'amv_macd',               # 0AMV MACD 强度
+    'amv_regime_days',        # 当前 regime 持续天数
+]
+
+# Tier B: moneyflow factors (defined in ml_models/ng/ng130_moneyflow_factors.py)
+NG130_TIER_B_MF: List[str] = [
+    'elg_net_inflow_20d_z',   # 特大单 20d 净流入 CS z-score
+    'mf_main_ratio_20d',      # 主力资金占比 (lg + elg) / total
+    'mf_concentration_20d',   # 资金流波动 (std / mean_abs)
+]
+
+# ng1.3.0 feature assembly:
+#   stock features (63) = ng1.0.1 base (56) + 4 downside + 3 moneyflow
+#   market features (13) = ng1.0.1 base (10) + 3 AMV
+#   cond_ix (0) = not used
+NG130_STOCK_FEATURES: List[str] = (
+    STOCK_FEATURE_NAMES + NG130_TIER_A_DOWNSIDE + NG130_TIER_B_MF
+)
+NG130_MARKET_FEATURES: List[str] = MARKET_FEATURE_NAMES + NG130_TIER_A_AMV
+NG130_ALL_FEATURES: List[str] = NG130_STOCK_FEATURES + NG130_MARKET_FEATURES
+NG130_VERSION = 'ng1.3.0'
+
 # ng1.0.9: Persistent features (10-day rank autocorrelation >= 0.5)
 # 22 features that produce stable cross-sectional rankings over 10 days
 PERSISTENT_STOCK_FEATURES: List[str] = [
@@ -236,6 +276,7 @@ class NGTrainer(V485Trainer):
         self._turbo_skip_etf = True
         self.cache_table = get_table_name(self._ng_version)
         version_feature_table = [
+            ('ng1.3.0', NG130_ALL_FEATURES, NG130_STOCK_FEATURES, NG130_MARKET_FEATURES, []),
             ('ng1.1.0', NG110_ALL_FEATURES, NG110_STOCK_FEATURES, MARKET_FEATURE_NAMES, []),
             ('ng1.0.7', NG107_ALL_FEATURES, STOCK_FEATURE_NAMES,  NG107_MARKET_FEATURES, CONDITIONAL_IX_FEATURE_NAMES),
             ('ng1.0.4', NG104_ALL_FEATURES, NG104_STOCK_FEATURES, MARKET_FEATURE_NAMES,  []),
