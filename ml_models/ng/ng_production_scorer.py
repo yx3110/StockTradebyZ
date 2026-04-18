@@ -797,6 +797,77 @@ class NG130DualHeadScorer:
         )
         return out
 
+    def predict_scores(self, stock_codes: List[str], date: str) -> Dict[str, Dict]:
+        """Compatible with NGProductionScorer API: return {code: {score, pred_10d, ...}}.
+
+        tomorrow_stock_selector.py 调用此 API 对批量 stock_codes 评分.
+        内部: 从 ng130_feature_cache 读取 (code, date) 行 → predict() → 格式化返回.
+        """
+        import sqlite3
+        import json
+
+        if isinstance(date, str) and len(date) == 8 and date.isdigit():
+            date = f'{date[:4]}-{date[4:6]}-{date[6:]}'
+
+        proj = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        db_path = os.path.join(proj, 'data_adapter', 'stock_data.db')
+
+        placeholders = ','.join('?' * len(stock_codes))
+        sql = f"""
+            SELECT code, trade_date, features_json,
+                   market_return_5d, market_return_20d, market_volatility_20d,
+                   market_breadth, market_new_high_ratio, northbound_flow_5d,
+                   market_volume_ratio, market_drawdown, vix_proxy,
+                   market_momentum_diff
+            FROM ng130_feature_cache
+            WHERE trade_date = ? AND code IN ({placeholders})
+        """
+        with sqlite3.connect(db_path, timeout=30) as conn:
+            df_raw = pd.read_sql(sql, conn, params=[date] + list(stock_codes))
+
+        results: Dict[str, Dict] = {}
+        default_result = {
+            'score': 50.0, 'pred_excess': 0.0, 'pred_downside': 0.0,
+            'composite': 0.5, 'pred_10d': 0.0, 'rank_score': 0.5,
+            'recommendation': '观望', 'exec_filter': 'no_data',
+        }
+        if df_raw.empty:
+            return {code: dict(default_result) for code in stock_codes}
+
+        feats = pd.DataFrame([json.loads(r) for r in df_raw['features_json']])
+        market_cols = [
+            'market_return_5d', 'market_return_20d', 'market_volatility_20d',
+            'market_breadth', 'market_new_high_ratio', 'northbound_flow_5d',
+            'market_volume_ratio', 'market_drawdown', 'vix_proxy',
+            'market_momentum_diff',
+        ]
+        for c in market_cols:
+            feats[c] = df_raw[c].values
+        feats['trade_date'] = df_raw['trade_date'].values
+        feats['code'] = df_raw['code'].values
+
+        scored = self.predict(feats, horizon='10d')
+        scored['code'] = feats['code'].values
+
+        for code in stock_codes:
+            row = scored[scored['code'] == code]
+            if row.empty:
+                results[code] = dict(default_result)
+            else:
+                r = row.iloc[0]
+                composite = float(r['composite'])
+                results[code] = {
+                    'score': float(100 * composite),
+                    'pred_excess': float(r['pred_excess']),
+                    'pred_downside': float(r['pred_downside']),
+                    'composite': composite,
+                    'pred_10d': float(r['pred_excess']),
+                    'rank_score': composite,
+                    'recommendation': '买入' if composite > 0.65 else ('关注' if composite > 0.5 else '观望'),
+                    'exec_filter': 'ok',
+                }
+        return results
+
 
 # ---------------------------------------------------------------------------
 # Scorer registry
