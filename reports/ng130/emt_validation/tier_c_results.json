@@ -1,0 +1,54 @@
+{
+  "amihud_illiq_20d": {
+    "rank_ic": 0.09101346961940715,
+    "abs_ic": 0.09101346961940715,
+    "ic_direction": 0.6310254163014899,
+    "samples_used": 50094,
+    "date_windows": 1141,
+    "gate_1_threshold": 0.15,
+    "gate_1_pass": false,
+    "gate_2_pass": true,
+    "max_corr_tierc": 0.06195305169631299,
+    "gate_3_pass_tierc": true,
+    "accepted": false
+  },
+  "vwap_close_ratio_20d": {
+    "rank_ic": -0.05563594264112741,
+    "abs_ic": 0.05563594264112741,
+    "ic_direction": 0.4171779141104294,
+    "samples_used": 50094,
+    "date_windows": 1141,
+    "gate_1_threshold": 0.15,
+    "gate_1_pass": false,
+    "gate_2_pass": true,
+    "max_corr_tierc": 0.22671458156968594,
+    "gate_3_pass_tierc": true,
+    "accepted": false
+  },
+  "amount_acceleration_5d": {
+    "rank_ic": -0.019204473044510968,
+    "abs_ic": 0.019204473044510968,
+    "ic_direction": 0.4618755477651183,
+    "samples_used": 50094,
+    "date_windows": 1141,
+    "gate_1_threshold": 0.1,
+    "gate_1_pass": false,
+    "gate_2_pass": true,
+    "max_corr_tierc": 0.22671458156968594,
+    "gate_3_pass_tierc": true,
+    "accepted": false
+  },
+  "tail_beta_60d": {
+    "rank_ic": -0.007435525360473743,
+    "abs_ic": 0.007435525360473743,
+    "ic_direction": 0.5127081507449606,
+    "samples_used": 50094,
+    "date_windows": 1141,
+    "gate_1_threshold": 0.1,
+    "gate_1_pass": false,
+    "gate_2_pass": false,
+    "max_corr_tierc": 0.09936502065700364,
+    "gate_3_pass_tierc": true,
+    "accepted": false
+  }
+}
