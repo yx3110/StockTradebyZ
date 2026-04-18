@@ -38,6 +38,7 @@ VERSION_TABLE_MAP = {
     'ng1.2.2': 'ng101_feature_cache',  # Return-Weighted CE Quintiles, 复用ng101缓存(训练层转换)
     'ng1.2.3': 'ng123_feature_cache',  # 三轴重构: -12 弱特征 + 12 moneyflow + 6 mined + downside label
     'ng1.2.4': 'ng124_feature_cache',  # ng1.0.1 + 2 top mf factors only (极保守增量)
+    'ng1.3.0': 'ng200_feature_cache',  # Multi-task 双头 (excess + downside) + β composite
 }
 
 DEFAULT_VERSION = 'ng1.0.3'
@@ -55,6 +56,7 @@ SCHEMA_VERSION_MAP = {
     'ng1.2.2': 'ng1.0.1',
     'ng1.2.3': 'ng1.2.3',  # own schema (adds downside_kd label cols)
     'ng1.2.4': 'ng1.2.4',  # own schema (ng1.0.1 base + label_raw, NO downside cols)
+    'ng1.3.0': 'ng1.3.0',  # own schema (ng1.0.1 base + downside_{3,5,10,15}d + amv_* reuse from market_amv)
 }
 
 
@@ -82,6 +84,11 @@ def get_table_name(version: str = None) -> str:
 def _is_1_2_branch(ver: str) -> bool:
     """ng1.2.x branches from ng1.0.1 — skip ng1.0.4/ng1.0.7 linear additions."""
     return ver.startswith('ng1.2.')
+
+
+def _is_1_3_branch(ver: str) -> bool:
+    """ng1.3.x branches from ng1.0.1 — adds multi-task downside labels, does NOT inherit ng1.0.4/0.7 linear columns unless needed."""
+    return ver.startswith('ng1.3.')
 
 
 def _version_in_range(ver: str, lo: str, hi: str) -> bool:
