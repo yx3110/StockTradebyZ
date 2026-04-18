@@ -313,9 +313,9 @@ class NGTrainer(V485Trainer):
         if self.schema_version == 'ng1.2.3':
             lam = getattr(self, '_lambda_downside', 0.3)
             lam_suffix = f"_lam{lam:.4f}"
-        head_suffix = ''
-        if _is_1_3_branch(self._ng_version):
-            head_suffix = f"_{self._head}"
+        # head suffix when training with non-default head (current: ng1.3.x downside).
+        # Future versions using --head downside get the same cache invalidation automatically.
+        head_suffix = f"_{self._head}" if self._head != 'excess' else ''
         key_str = (f"{self.__class__.__name__}_{self._ng_version}_{start_date}_{end_date}"
                    f"_{db_mtime:.0f}{lam_suffix}{head_suffix}")
         return hashlib.md5(key_str.encode()).hexdigest()[:12]

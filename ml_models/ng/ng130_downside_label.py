@@ -26,12 +26,15 @@ def compute_downside_label(t_close: float, future_closes: np.ndarray) -> float:
         future_closes: Closes from t+1 onwards (length = horizon).
 
     Returns:
-        min(future_closes) / t_close - 1; NaN if insufficient data or t_close<=0.
+        min(future_closes) / t_close - 1; NaN if empty, t_close invalid, or all-NaN future.
     """
-    if len(future_closes) == 0 or t_close <= 0:
+    if len(future_closes) == 0 or not (t_close > 0) or np.isnan(t_close):
         return np.nan
     future = np.asarray(future_closes, dtype=np.float64)
-    return float(future.min() / t_close - 1.0)
+    min_future = np.nanmin(future) if np.any(~np.isnan(future)) else np.nan
+    if np.isnan(min_future):
+        return np.nan
+    return float(min_future / t_close - 1.0)
 
 
 def compute_all_downside_horizons(t_close: float, future_closes: np.ndarray) -> Dict[str, float]:
