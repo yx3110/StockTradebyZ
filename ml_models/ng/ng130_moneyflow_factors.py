@@ -2,15 +2,15 @@
 
 Spec: docs/superpowers/specs/2026-04-18-ng130-multitask-design.md §5.3
 
-  1. elg_net_inflow_20d_z:  20d sum of (buy_elg - sell_elg), z-scored against
-                             cross-sectional history (the caller supplies CS history).
+  1. elg_net_inflow_20d_z:  log-sign transform of 20d sum of (buy_elg - sell_elg).
+                             Optional CS z-score if history provided.
   2. mf_main_ratio_20d:      ∑(net_lg + net_elg) / (∑(total_amount) × window), 20d.
   3. mf_concentration_20d:   std(daily_net_mf, ddof=1) / mean(|daily_net_mf|), 20d.
 
 Input: List[Dict] sorted oldest→newest, each dict has:
   buy_{sm,md,lg,elg}_amount, sell_{sm,md,lg,elg}_amount, net_mf_amount
 """
-from typing import Dict, List, Sequence
+from typing import Dict, List, Optional, Sequence
 import numpy as np
 
 NG130_MF_FACTORS = (
@@ -25,16 +25,17 @@ _WINDOW = 20
 
 def compute_ng130_mf_factors(
     records: List[Dict],
-    cs_z_history_elg: Sequence[float],
+    cs_z_history_elg: Optional[Sequence[float]] = None,
 ) -> Dict[str, float]:
     """Compute 3 Tier B moneyflow factors for ng1.3.0.
 
     Args:
-        records: List of moneyflow dicts, oldest→newest. May be < _WINDOW; uses all available.
-        cs_z_history_elg: Cross-sectional 20d-sum-net-elg values from history for z-scoring.
+        records: List of moneyflow dicts, oldest→newest. Uses last _WINDOW entries.
+        cs_z_history_elg: Optional CS 20d-sum-net-elg history for z-scoring.
+            If None or <2 entries, falls back to log-sign self-transform (stable, dimensionless).
 
     Returns:
-        Dict with 3 keys; NaN if insufficient data.
+        Dict with 3 keys; NaN if no records.
     """
     if not records:
         return dict(_EMPTY_RESULT)
@@ -51,13 +52,17 @@ def compute_ng130_mf_factors(
     ], dtype=np.float64)
     sum_net_elg = float(net_elg_daily.sum())
 
-    if len(cs_z_history_elg) < 2:
-        result['elg_net_inflow_20d_z'] = np.nan
-    else:
+    if cs_z_history_elg is not None and len(cs_z_history_elg) >= 2:
         history = np.asarray(cs_z_history_elg, dtype=np.float64)
         mu = float(history.mean())
         sigma = float(history.std()) + 1e-8
         result['elg_net_inflow_20d_z'] = (sum_net_elg - mu) / sigma
+    else:
+        # Fallback: log-sign self-transform. Stable, dimensionless, monotonic in sign/magnitude.
+        # Divisor 1e6 (1M CNY) keeps typical magnitudes in ~[-5, 5].
+        result['elg_net_inflow_20d_z'] = float(
+            np.sign(sum_net_elg) * np.log1p(abs(sum_net_elg) / 1e6)
+        )
 
     # --- Factor 2: mf_main_ratio_20d ---
     # ∑(net_lg + net_elg) / (∑(total_amount) × window_size)

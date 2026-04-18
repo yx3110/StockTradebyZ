@@ -545,18 +545,21 @@ class NGCacheUpdater:
         if not codes:
             return {}
 
-        # Query moneyflow_daily in chunks
+        # Query moneyflow_daily in chunks.
+        # NOTE: securities.code is 6-digit ('000001') but moneyflow_daily.code has
+        # exchange suffix ('000001.SZ'). JOIN on code_6 column (added 2026-04-18)
+        # to avoid silent empty result.
         result: Dict[str, list] = defaultdict(list)
         for i in range(0, len(codes), chunk_size):
             chunk = codes[i:i + chunk_size]
             rows = conn.execute(
-                f"""SELECT code, trade_date, buy_sm_amount, sell_sm_amount,
+                f"""SELECT code_6 AS code, trade_date, buy_sm_amount, sell_sm_amount,
                            buy_md_amount, sell_md_amount, buy_lg_amount, sell_lg_amount,
                            buy_elg_amount, sell_elg_amount, net_mf_amount
                     FROM moneyflow_daily
                     WHERE trade_date BETWEEN ? AND ?
-                      AND code IN ({','.join('?' * len(chunk))})
-                    ORDER BY code, trade_date""",
+                      AND code_6 IN ({','.join('?' * len(chunk))})
+                    ORDER BY code_6, trade_date""",
                 [lookback_start, date] + chunk
             ).fetchall()
             for r in rows:
@@ -1438,9 +1441,9 @@ class NGCacheUpdater:
                 if _is_1_3_branch(self.schema_version):
                     _mf_rows_130 = mf_data.get(code, [])
                     try:
-                        ng130_mf_feats = compute_ng130_mf_factors(
-                            _mf_rows_130, cs_z_history_elg=[0.0]
-                        )
+                        # cs_z_history_elg=None → log-sign self-transform fallback.
+                        # Cross-sectional z-score pipeline deferred to future iteration.
+                        ng130_mf_feats = compute_ng130_mf_factors(_mf_rows_130)
                     except Exception as e:
                         print(f"    WARN: ng130 mf factors failed for {code}: {e}")
                         ng130_mf_feats = {name: np.nan for name in NG130_MF_FACTORS}

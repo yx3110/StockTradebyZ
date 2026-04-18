@@ -29,7 +29,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from ml_models.training.train_v395_multi_target import V485Trainer
 from ml_models.ng.ng_schema import (
-    get_table_name, version_ge, get_schema_version, _is_1_2_branch, _version_in_range,
+    get_table_name, version_ge, get_schema_version, _is_1_2_branch, _is_1_3_branch, _version_in_range,
 )
 from ml_models.common.lgb_rank_utils import RANK_BASE_PARAMS, build_groups_per_date
 from ml_models.ng.ng_margin_loss import make_margin_objective, make_margin_eval_metric
@@ -830,7 +830,7 @@ class NGTrainer(V485Trainer):
         # separately so the numeric version_ge doesn't pull in non-existent cols.
         is_12 = _is_1_2_branch(self.schema_version)
         # ng1.3.x: load 4-horizon downside labels for dual-head training
-        if self._ng_version.startswith('ng1.3.'):
+        if _is_1_3_branch(self._ng_version):
             extra_select = ", downside_3d, downside_5d, downside_10d, downside_15d"
         # ng1.2.3: 4-horizon downside_kd columns; ng1.2.4 has no downside cols
         elif is_12 and _version_in_range(self.schema_version, 'ng1.2.3', 'ng1.2.4'):
@@ -978,7 +978,7 @@ class NGTrainer(V485Trainer):
                     logger.warning(f"  ng1.2.3: {null_count} NULL {col} rows (partial cache? penalty=0 for those)")
 
         # ng1.3.x: propagate 4-horizon downside columns from df_raw into result
-        if self._ng_version.startswith('ng1.3.'):
+        if _is_1_3_branch(self._ng_version):
             for h in [3, 5, 10, 15]:
                 col = f'downside_{h}d'
                 if col in df_raw.columns:
@@ -989,7 +989,7 @@ class NGTrainer(V485Trainer):
 
         # ng1.3.x dual-head: if head='downside', swap downside_Nd → label_Nd so
         # V485Trainer.walk_forward_train trains on downside values unchanged.
-        if self._ng_version.startswith('ng1.3.') and getattr(self, '_head', 'excess') == 'downside':
+        if _is_1_3_branch(self._ng_version) and self._head == 'downside':
             logger.info("  ng1.3.x head=downside: overriding label_Nd with downside_Nd values")
             for h in [3, 5, 10, 15]:
                 ds_col = f'downside_{h}d'
@@ -1474,8 +1474,8 @@ class NGTrainer(V485Trainer):
                 margin_tag = f'_m{int(round(margin * 100)):03d}'
             # ng1.3.x dual-head: encode head in filename so excess/downside don't overwrite each other
             head_tag = ''
-            if self._ng_version.startswith('ng1.3.'):
-                head_tag = f'_{getattr(self, "_head", "excess")}'
+            if _is_1_3_branch(self._ng_version):
+                head_tag = f'_{self._head}'
             new_path = ng_dir / f'{version_tag}{seed_tag}{head_tag}{margin_tag}_multi_target_{timestamp}.pkl'
 
             # Update model metadata
