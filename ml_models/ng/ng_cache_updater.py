@@ -32,8 +32,10 @@ if _PROJECT_ROOT not in sys.path:
 from ml_models.ng.ng_schema import (
     create_table, get_table_name, DB_PATH, create_moneyflow_table,
     version_ge, get_schema_version, DEFAULT_VERSION,
-    _is_1_2_branch, _version_in_range,
+    _is_1_2_branch, _is_1_3_branch, _version_in_range,
 )
+from ml_models.ng.ng130_downside_label import compute_all_downside_horizons
+from ml_models.ng.ng130_moneyflow_factors import compute_ng130_mf_factors, NG130_MF_FACTORS
 from ml_models.ng.ng_feature_calculator import (
     compute_stock_features,
     compute_fundamental_features,
@@ -1431,6 +1433,18 @@ class NGCacheUpdater:
                         print(f"    WARN: ng123 moneyflow_factors failed for {code}: {e}")
                         ng123_mf_feats = {}
 
+                # --- ng1.3.0: Compute Tier B moneyflow factors (3) ---
+                ng130_mf_feats: Dict[str, float] = {}
+                if _is_1_3_branch(self.schema_version):
+                    _mf_rows_130 = mf_data.get(code, [])
+                    try:
+                        ng130_mf_feats = compute_ng130_mf_factors(
+                            _mf_rows_130, cs_z_history_elg=[0.0]
+                        )
+                    except Exception as e:
+                        print(f"    WARN: ng130 mf factors failed for {code}: {e}")
+                        ng130_mf_feats = {name: np.nan for name in NG130_MF_FACTORS}
+
                 # --- ng1.2.3: compute 6 mined alpha factors ---
                 ng123_mined_feats = {}
                 if self.version == 'ng1.2.3' and MINED_FACTOR_SPEC:
@@ -1525,6 +1539,7 @@ class NGCacheUpdater:
                     'smooth_feats': smooth_feats,
                     'ng123_mf_feats': ng123_mf_feats,   # ng1.2.3: 12-factor moneyflow
                     'ng123_mined_feats': ng123_mined_feats,  # ng1.2.3: 6 mined alpha factors
+                    'ng130_mf_feats': ng130_mf_feats,   # ng1.3.0: 3 Tier B moneyflow factors
                     # Raw values for CS rank
                     'return_5d': ret_5d_val,
                     'return_20d': ret_20d_val,
@@ -1572,9 +1587,9 @@ class NGCacheUpdater:
                 industry_peer_arrays[ind] = arrays
 
             insert_rows = []
-            # ng1.2.x branches from ng1.0.1 and doesn't inherit ng1.0.4/1.0.7
-            # columns; INSERT dispatch + per-stock column gating both need this.
+            # ng1.2.x / ng1.3.x branch guards — used in both per-stock column gating and INSERT dispatch.
             is_12 = _is_1_2_branch(self.schema_version)
+            is_13 = _is_1_3_branch(self.schema_version)
 
             for sid, data in eligible_stocks.items():
                 industry = data['industry']
@@ -1674,14 +1689,20 @@ class NGCacheUpdater:
                     all_feats.update(ix_feats)
                 if version_ge(self.schema_version, 'ng1.0.4'):
                     all_feats.update(data.get('smooth_feats', {}))
-                if version_ge(self.schema_version, 'ng1.0.7') and self.version not in ('ng1.2.3', 'ng1.2.4'):
+                if version_ge(self.schema_version, 'ng1.0.7') and self.version not in ('ng1.2.3', 'ng1.2.4') and not _is_1_3_branch(self.schema_version):
                     # ext_market_feats stored in features_json for scorer access
                     # (only non-AMV features; AMV values already in dedicated columns)
-                    # ng1.2.x branches do NOT inherit ng1.0.7 additions
+                    # ng1.2.x and ng1.3.x branches do NOT inherit ng1.0.7 additions
                     for k, v in ext_market_feats.items():
                         if k not in ('amv_var1', 'amv_macd', 'amv_regime_days'):
                             all_feats[k] = v
                     all_feats.update(cond_ix_feats)
+                # ng1.3.0: add only 3 AMV + 3 mf factors to features_json (no cond_ix, no other ext_market)
+                if _is_1_3_branch(self.schema_version):
+                    for k in ('amv_var1', 'amv_macd', 'amv_regime_days'):
+                        if k in ext_market_feats:
+                            all_feats[k] = ext_market_feats[k]
+                    all_feats.update(data.get('ng130_mf_feats', {}))
                 # ng1.2.3: add 12 moneyflow factors + 6 mined alpha factors to features_json
                 # (mf_feats from ng1.0.3 path was already dropped via filter above;
                 #  ng123_mf_feats replaces it with the new 12-factor set)
@@ -1725,8 +1746,23 @@ class NGCacheUpdater:
                             compute_downside_kd(_pm)
                         )
 
-                # ng1.2.3+ uses label-only base_row (no legacy downside_10d position)
-                if self.version in ('ng1.2.3', 'ng1.2.4'):
+                # ng1.3.0: compute 4-horizon downside labels (min-cumret semantics)
+                ng130_downside: Dict[str, float] = {}
+                if _is_1_3_branch(self.schema_version):
+                    today_close = data.get('today_close', np.nan)
+                    future_closes_list = []
+                    for _fd in future_dates[:16]:  # t+1..t+15
+                        if sid in future_prices and _fd in future_prices[sid]:
+                            _fc = future_prices[sid][_fd].get('close')
+                            if _fc is not None and not np.isnan(_fc):
+                                future_closes_list.append(_fc)
+                    ng130_downside = compute_all_downside_horizons(
+                        float(today_close) if not np.isnan(today_close) else 0.0,
+                        np.array(future_closes_list, dtype=np.float64),
+                    )
+
+                # ng1.2.3+ and ng1.3.x use label-only base_row (no legacy downside_10d position)
+                if self.version in ('ng1.2.3', 'ng1.2.4') or _is_1_3_branch(self.schema_version):
                     base_row = (
                         data['code'],
                         date,
@@ -1758,7 +1794,7 @@ class NGCacheUpdater:
                 else:
                     raw_cols = ()
 
-                if version_ge(self.schema_version, 'ng1.0.4') and not is_12:
+                if version_ge(self.schema_version, 'ng1.0.4') and not is_12 and not is_13:
                     ng104_cols = (
                         _to_sql(stock_labels.get('maxdd_3d')),
                         _to_sql(stock_labels.get('maxdd_5d')),
@@ -1772,7 +1808,7 @@ class NGCacheUpdater:
                 else:
                     ng104_cols = ()
 
-                if version_ge(self.schema_version, 'ng1.0.7') and not is_12:
+                if version_ge(self.schema_version, 'ng1.0.7') and not is_12 and not is_13:
                     ng107_cols = (
                         _to_sql(stock_labels.get('cond_label_3d')),
                         _to_sql(stock_labels.get('cond_label_5d')),
@@ -1809,6 +1845,17 @@ class NGCacheUpdater:
                 else:
                     ng123_cols = ()
 
+                # ng1.3.0: 4-horizon downside labels (min-cumret semantics)
+                if is_13:
+                    ng130_cols = (
+                        _to_sql(ng130_downside.get('downside_3d')),
+                        _to_sql(ng130_downside.get('downside_5d')),
+                        _to_sql(ng130_downside.get('downside_10d')),
+                        _to_sql(ng130_downside.get('downside_15d')),
+                    )
+                else:
+                    ng130_cols = ()
+
                 market_cols = (
                     _to_sql(market_feats.get('market_return_5d')),
                     _to_sql(market_feats.get('market_return_20d')),
@@ -1824,13 +1871,29 @@ class NGCacheUpdater:
 
                 insert_rows.append(
                     base_row + raw_cols + ng104_cols + ng107_cols
-                    + ng121_cols + ng123_cols + market_cols
+                    + ng121_cols + ng123_cols + ng130_cols + market_cols
                 )
 
             # Write to database
             if insert_rows:
                 conn.row_factory = None
-                if is_12 and _version_in_range(self.schema_version, 'ng1.2.3', 'ng1.2.4'):
+                if is_13:
+                    # ng1.3.0: 25 columns — base(3) + labels(4) + label_raw(4) + downside_4(4) + market(10)
+                    # Same column structure as ng1.2.3 but different downside semantics (min-cumret)
+                    conn.executemany(
+                        f'''INSERT OR REPLACE INTO {self.table_name}
+                           (code, trade_date, features_json,
+                            label_3d, label_5d, label_10d, label_15d,
+                            label_raw_3d, label_raw_5d, label_raw_10d, label_raw_15d,
+                            downside_3d, downside_5d, downside_10d, downside_15d,
+                            market_return_5d, market_return_20d, market_volatility_20d,
+                            market_breadth, market_new_high_ratio, northbound_flow_5d,
+                            market_volume_ratio, market_drawdown, vix_proxy,
+                            market_momentum_diff)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                        insert_rows
+                    )
+                elif is_12 and _version_in_range(self.schema_version, 'ng1.2.3', 'ng1.2.4'):
                     # 25 columns: base(3) + labels(4) + label_raw(4) + downside_kd(4) + market(10)
                     conn.executemany(
                         f'''INSERT OR REPLACE INTO {self.table_name}
