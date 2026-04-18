@@ -83,7 +83,7 @@
   ├─ daily_quotes.amount           ✅ 已 100% 回填 (10.1M 行)
   ├─ moneyflow_daily (code 修复)   Tier B 先做, ~2h
   ├─ financial_indicator           已有 roe/pe/ocf_to_profit
-  └─ ng200_feature_cache           ★ 新表, 不改 ng101
+  └─ ng130_feature_cache           ★ 新表, 不改 ng101
 
 特征层 (78 个)
   ├─ ng1.0.1 base                  66 个, bugfix 重训版
@@ -176,7 +176,7 @@ vix_proxy, cs_rank_turnover, market_volatility_20d, industry_return_20d, northbo
 - `label_3d, label_5d, label_10d, label_15d` = industry excess return
 - `label_raw_3d, ..., label_raw_15d` = 绝对收益 (ablation 用)
 
-### 6.2 新增 downside label (ng200 cache 新列)
+### 6.2 新增 downside label (ng130 cache 新列)
 
 ```python
 # For each trade_date t and horizon N:
@@ -340,12 +340,12 @@ assert top2_count[β_star] >= 2, "β* 只靠 1 window 拉高均值 (至少 2/3 w
 
 | Day | Phase | 任务 | 预估 |
 |---|---|---|---|
-| **Day 1** | 0 | ng200 schema 设计 + ng_schema.py 注册 ng1.3.0 | 2h |
+| **Day 1** | 0 | ng130 schema 设计 + ng_schema.py 注册 ng1.3.0 | 2h |
 | | 1a | moneyflow_daily code 格式修复 (加 code_6 列或 JOIN 时 split) | 2h |
 | | 1b | Tier A 7 特征实现 + 集成到 ng_feature_calculator | 3h |
 | **Day 2** | 1c | Tier B 3 moneyflow 因子实现 | 2h |
 | | 1d | Tier C 4 候选 + **EMT 四关验证** | 4h |
-| | 2 | downside label 计算 + ng200 cache backfill 2020-2026 | 3h |
+| | 2 | downside label 计算 + ng130 cache backfill 2020-2026 | 3h |
 | **Day 3** | 3a | 3-seed × 2-head 训练启动 (auto-WF) | 20-30h (overnight) |
 | **Day 4** | 3b | 训练完成 + sanity test (seed 传播验证) | 1h |
 | | 3c | **Stage 3.5 spot check** (2025 全年) | 2h |
@@ -370,7 +370,7 @@ assert top2_count[β_star] >= 2, "β* 只靠 1 window 拉高均值 (至少 2/3 w
 |---|---|---|
 | Fast-check ICIR 虚高 | ng1.0.9 ICIR=1.29 但 Sharpe=0.79 | 禁用 fast-check 作 go/no-go, 只用 full WF |
 | Seed 传播 bug | ng1.0.2 种子未传入 booster, ensemble 无效 | Sanity test: 3-seed pred_excess 互相 corr ∈ [0.85, 0.95] |
-| Cache 版本 bug | ng1.2.x schema 混用 AMV 列 | `_is_1_3_branch()` guard + ng200 独立表 |
+| Cache 版本 bug | ng1.2.x schema 混用 AMV 列 | `_is_1_3_branch()` guard + ng130 独立表 |
 | RF 权重失衡 | ng1.0.4 RF=94% 导致银行股垄断 | Downside head RF cap ≤ 40% |
 | Contrarian 因子反向 | ng1.2.3 mined+mf 叠加双崩 | 每个新因子单独 IC 方向验证 (6 regime 一致) |
 | Pre-2020 过拟合 | ng1.0.4 (45.5%) / ng1.0.7 (41%) | Stage 4b 硬 gate 65%; β* 落在 0.4+ 时加强审视 |
@@ -381,7 +381,7 @@ assert top2_count[β_star] >= 2, "β* 只靠 1 window 拉高均值 (至少 2/3 w
 1. **全程保持** `PRODUCTION_VERSION='ng1.0.1'`, ng1.3.0 通过 `--scoring-version ng1.3.0` 测试
 2. Stage 3.5/4a/4b 任何 FAIL → 立即 ABORT, ng1.0.1 continues serving
 3. 全 gate 通过后，**观察 1-2 周日常表现** 再切换 `PRODUCTION_VERSION`
-4. ng1.3.0 所有产物 (ng200 cache / 144 个 booster / 报告) **永久保留** 作为后续迭代参考
+4. ng1.3.0 所有产物 (ng130 cache / 144 个 booster / 报告) **永久保留** 作为后续迭代参考
 
 ### 11.3 部分成功场景处理
 
@@ -423,7 +423,7 @@ assert top2_count[β_star] >= 2, "β* 只靠 1 window 拉高均值 (至少 2/3 w
 
 > ⚠️ 下列命令中标注 `(待实现)` 的在当前代码库**尚未存在**, 需作为 writing-plans 阶段的 implementation task 开发。
 > - `ng_trainer.py --multi-task` 参数 (双头训练开关)
-> - `ng_cache_updater.py --version ng1.3.0` 分支 (ng200 schema 处理)
+> - `ng_cache_updater.py --version ng1.3.0` 分支 (ng130 schema 处理)
 > - `scripts/ng130_beta_search.py` (全新脚本)
 
 ### 13.1 Schema 创建

@@ -38,7 +38,7 @@ VERSION_TABLE_MAP = {
     'ng1.2.2': 'ng101_feature_cache',  # Return-Weighted CE Quintiles, 复用ng101缓存(训练层转换)
     'ng1.2.3': 'ng123_feature_cache',  # 三轴重构: -12 弱特征 + 12 moneyflow + 6 mined + downside label
     'ng1.2.4': 'ng124_feature_cache',  # ng1.0.1 + 2 top mf factors only (极保守增量)
-    'ng1.3.0': 'ng200_feature_cache',  # Multi-task 双头 (excess + downside) + β composite
+    'ng1.3.0': 'ng130_feature_cache',  # Multi-task 双头 (excess + downside) + β composite
 }
 
 DEFAULT_VERSION = 'ng1.0.3'
