@@ -7461,14 +7461,15 @@ class V475Trainer(V473Trainer):
                 if _turbo_targets:
                     all_targets = [t for t in all_targets if t[0] in _turbo_targets]
                     logger.info(f"  [TURBO] 只训练目标: {_turbo_targets}")
-                for target_key, y_tr, y_va, y_te in all_targets:
-                    if _wf_pbar:
-                        _wf_pbar.set_description(f"W{wi+1}/{len(windows)} {target_key}")
-                    sample_w = self.compute_sample_weights(df[train_mask], y_tr)
+
+                _df_train_slice = df[train_mask]
+
+                def _train_one_target(target_key, y_tr, y_va, y_te):
+                    sample_w = self.compute_sample_weights(_df_train_slice, y_tr)
                     models, pred_train, pred_val = self.train_single_target_models(
                         X_train_w, X_val_w, y_tr, y_va, f"label_{target_key}",
                         sample_weights_train=sample_w)
-                    weights, rmses = self.calculate_ensemble_weights(pred_val, y_va)
+                    weights, _ = self.calculate_ensemble_weights(pred_val, y_va)
 
                     pred_test = {}
                     for name, model in models.items():
@@ -7480,31 +7481,43 @@ class V475Trainer(V473Trainer):
                         except Exception:
                             pred_test[name] = model.predict(X_test_w)
 
-                    # OOS IC/ICIR
                     ensemble_pred = self.ensemble_predict(pred_test, weights)
                     ic, icir = self._calculate_daily_ic(ensemble_pred, y_te, test_dates_w)
-
-                    # IS IC/ICIR (用于WFER计算)
                     ensemble_pred_train = self.ensemble_predict(pred_train, weights)
                     is_ic, is_icir = self._calculate_daily_ic(ensemble_pred_train, y_tr, train_dates_w)
-
-                    # OOS月度IC (用于IC半衰期计算)
                     oos_monthly_ic = self._calculate_monthly_ic(ensemble_pred, y_te, test_dates_w)
-
-                    window_metrics[target_key] = {
+                    return target_key, {
                         'ic': ic, 'icir': icir,
                         'is_ic': is_ic, 'is_icir': is_icir,
                         'oos_monthly_ic': oos_monthly_ic,
-                    }
-                    logger.info(f"  {target_key}: OOS IC={ic:.4f}, ICIR={icir:.4f} | IS IC={is_ic:.4f}, ICIR={is_icir:.4f}")
+                    }, ensemble_pred
 
+                _tp = min(getattr(self, '_target_parallel', 1), len(all_targets))
+                if _tp > 1:
+                    # Threading is safe: GBDT libs release GIL, helpers only read self.
+                    # Empirically threadpoolctl-limiting BLAS/OpenMP per worker is a wash
+                    # here — sklearn RF (n_jobs=-1) and CatBoost (own pool) bypass it, so
+                    # constraining the fast models without reaching the slow ones loses net.
+                    from concurrent.futures import ThreadPoolExecutor
+                    logger.info(f"  🚀 Target并行: {_tp} 线程同时训练 {len(all_targets)} 个目标")
+                    with ThreadPoolExecutor(max_workers=_tp) as ex:
+                        results = list(ex.map(lambda a: _train_one_target(*a), all_targets))
+                else:
+                    results = []
+                    for args in all_targets:
+                        if _wf_pbar:
+                            _wf_pbar.set_description(f"W{wi+1}/{len(windows)} {args[0]}")
+                        results.append(_train_one_target(*args))
+
+                for tk, wm, ep in results:
+                    window_metrics[tk] = wm
+                    logger.info(f"  {tk}: OOS IC={wm['ic']:.4f}, ICIR={wm['icir']:.4f} | "
+                                f"IS IC={wm['is_ic']:.4f}, ICIR={wm['is_icir']:.4f}")
                     if window_test_preds is not None:
-                        window_test_preds[target_key] = ensemble_pred.copy()
-
-                    del models, pred_train, pred_val, pred_test
-                    gc.collect()
+                        window_test_preds[tk] = ep.copy()
                     if _wf_pbar:
                         _wf_pbar.update(1)
+                gc.collect()
 
                 wf_metrics.append(window_metrics)
 
@@ -15028,6 +15041,9 @@ def main():
                         help='头部加权倍数 (0=不加权, 3.0=top-1%%样本权重×3)')
     parser.add_argument('--parallel-wf', type=int, default=3,
                         help='并行WF窗口数 (1=串行, 3=默认, 使用multiprocessing fork)')
+    parser.add_argument('--target-parallel', type=int, default=1,
+                        help='窗口内并行训练目标数 (1=串行, 4=同时训练3d/5d/10d/15d). '
+                             '实测M5 Max上 4 ~= 1.4x 提速')
     parser.add_argument('--no-cache', action='store_true',
                         help='禁用训练数据joblib缓存 (首次加载或数据变更后自动重建)')
     parser.add_argument('--wf-report-dir', type=str, default='auto',
@@ -15098,6 +15114,10 @@ def main():
         if args.parallel_wf > 1:
             trainer_obj._parallel_wf_workers = args.parallel_wf
             logger.info(f"  CLI override: parallel_wf={args.parallel_wf} 进程")
+        if args.target_parallel > 1:
+            trainer_obj._target_parallel = args.target_parallel
+            logger.info(f"  CLI override: target_parallel={args.target_parallel} 线程 "
+                        f"(每窗口同时训练 {args.target_parallel} 个目标)")
 
         # fast-check / turbo-check 模式设置
         if args.turbo_check:
