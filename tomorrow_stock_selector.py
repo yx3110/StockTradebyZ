@@ -62,6 +62,9 @@ SCORER_REGISTRY = {
                 'scoring_engine_v44', 'v44_batch_cache', {'version': 'ng1.0.7'}, False),
     'ng1.1.0': ('ml_models.ng.ng_production_scorer', 'NGProductionScorer',
                 'scoring_engine_v44', 'v44_batch_cache', {'version': 'ng1.1.0'}, False),
+    # ng1.3.x: dual-head scorer (3 seeds × 2 heads = 6 pkl) + β composite
+    'ng1.3.0': ('ml_models.ng.ng_production_scorer', 'NG130DualHeadScorer',
+                'scoring_engine_v44', 'v44_batch_cache', {}, False),
     # --- V5.0 (独立 engine_attr) ---
     'v5.0': ('ml_models.v39.v500_production_scorer', 'V500ProductionScorer',
              'scoring_engine_v500', 'v500_batch_cache', {'model_type': 'small_data'}, True),
