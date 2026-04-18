@@ -59,7 +59,8 @@ def compute_ng130_mf_factors(
         result['elg_net_inflow_20d_z'] = (sum_net_elg - mu) / sigma
     else:
         # Fallback: log-sign self-transform. Stable, dimensionless, monotonic in sign/magnitude.
-        # Divisor 1e6 (1M CNY) keeps typical magnitudes in ~[-5, 5].
+        # Divisor 1e6 keeps typical stocks in ~[-5, 5]; extreme 龙头股 (20d|sum|≈2e10) ≈ ±10.
+        # GBDT handles bounded outliers fine; downstream rank-normalization at composite time.
         result['elg_net_inflow_20d_z'] = float(
             np.sign(sum_net_elg) * np.log1p(abs(sum_net_elg) / 1e6)
         )
