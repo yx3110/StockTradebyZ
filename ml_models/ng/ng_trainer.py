@@ -848,8 +848,9 @@ class NGTrainer(V485Trainer):
 
         # ng1.0.2 linear lineage has a single downside_10d column.
         # ng1.2.3 already has downside_10d inside extra_select (4-horizon block);
-        # ng1.2.1 has no downside_10d at all — avoid duplicates in both cases.
-        downside_col = ", downside_10d" if version_ge(self.schema_version, 'ng1.0.2') and not is_12 else ""
+        # ng1.2.1 has no downside_10d at all; ng1.3.x has 4-horizon block too — avoid duplicates.
+        is_13 = _is_1_3_branch(self._ng_version)
+        downside_col = ", downside_10d" if version_ge(self.schema_version, 'ng1.0.2') and not is_12 and not is_13 else ""
         query = f"""
         SELECT code, trade_date, features_json,
                label_3d, label_5d, label_10d, label_15d{downside_col}{extra_select},
