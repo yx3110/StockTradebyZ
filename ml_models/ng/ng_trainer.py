@@ -268,12 +268,13 @@ class NGTrainer(V485Trainer):
         'label_15d': 0.35,
     }
 
-    def __init__(self, db_path: str = DB_PATH, version: str = None):
+    def __init__(self, db_path: str = DB_PATH, version: str = None, head: str = 'excess'):
         super().__init__(db_path)
         self._ng_version = version or NG_VERSION
         self.schema_version = get_schema_version(self._ng_version)
         self.target_weights = dict(self.TARGET_WEIGHTS)
         self._turbo_skip_etf = True
+        self._head = head  # 'excess' (default) or 'downside' (ng1.3.x dual-head training)
         self.cache_table = get_table_name(self._ng_version)
         version_feature_table = [
             ('ng1.3.0', NG130_ALL_FEATURES, NG130_STOCK_FEATURES, NG130_MARKET_FEATURES, []),
@@ -828,8 +829,11 @@ class NGTrainer(V485Trainer):
         # ng1.2.x branches from ng1.0.1 and skips ng1.0.4/1.0.7 columns; detect
         # separately so the numeric version_ge doesn't pull in non-existent cols.
         is_12 = _is_1_2_branch(self.schema_version)
+        # ng1.3.x: load 4-horizon downside labels for dual-head training
+        if self._ng_version.startswith('ng1.3.'):
+            extra_select = ", downside_3d, downside_5d, downside_10d, downside_15d"
         # ng1.2.3: 4-horizon downside_kd columns; ng1.2.4 has no downside cols
-        if is_12 and _version_in_range(self.schema_version, 'ng1.2.3', 'ng1.2.4'):
+        elif is_12 and _version_in_range(self.schema_version, 'ng1.2.3', 'ng1.2.4'):
             extra_select = ", downside_3d, downside_5d, downside_10d, downside_15d"
         # ng1.2.1: Sharpe-style path-based labels (not inherited by ng1.2.3+)
         elif is_12 and _version_in_range(self.schema_version, 'ng1.2.1', 'ng1.2.3'):
@@ -972,6 +976,28 @@ class NGTrainer(V485Trainer):
                 null_count = int(pd.isna(result[col]).sum())
                 if null_count > 0:
                     logger.warning(f"  ng1.2.3: {null_count} NULL {col} rows (partial cache? penalty=0 for those)")
+
+        # ng1.3.x: propagate 4-horizon downside columns from df_raw into result
+        if self._ng_version.startswith('ng1.3.'):
+            for h in [3, 5, 10, 15]:
+                col = f'downside_{h}d'
+                if col in df_raw.columns:
+                    result[col] = pd.to_numeric(df_raw[col], errors='coerce').fillna(0.0).values
+                else:
+                    result[col] = 0.0
+                    logger.warning(f"  ng1.3.x: {col} missing from cache — fill=0.0 (run ng_cache_updater first)")
+
+        # ng1.3.x dual-head: if head='downside', swap downside_Nd → label_Nd so
+        # V485Trainer.walk_forward_train trains on downside values unchanged.
+        if self._ng_version.startswith('ng1.3.') and getattr(self, '_head', 'excess') == 'downside':
+            logger.info("  ng1.3.x head=downside: overriding label_Nd with downside_Nd values")
+            for h in [3, 5, 10, 15]:
+                ds_col = f'downside_{h}d'
+                lb_col = f'label_{h}d'
+                if ds_col in result.columns:
+                    result[lb_col] = result[ds_col].values
+                    logger.info(f"    label_{h}d ← downside_{h}d (non-zero: "
+                                f"{int((result[lb_col] != 0).sum()):,})")
 
         # Market features: ffill
         result = result.sort_values('trade_date')
@@ -1446,7 +1472,11 @@ class NGTrainer(V485Trainer):
             if self._ng_version == 'ng1.2.0':
                 margin = float(getattr(self, '_margin', 0.05))
                 margin_tag = f'_m{int(round(margin * 100)):03d}'
-            new_path = ng_dir / f'{version_tag}{seed_tag}{margin_tag}_multi_target_{timestamp}.pkl'
+            # ng1.3.x dual-head: encode head in filename so excess/downside don't overwrite each other
+            head_tag = ''
+            if self._ng_version.startswith('ng1.3.'):
+                head_tag = f'_{getattr(self, "_head", "excess")}'
+            new_path = ng_dir / f'{version_tag}{seed_tag}{head_tag}{margin_tag}_multi_target_{timestamp}.pkl'
 
             # Update model metadata
             model_data['version'] = self._ng_version
@@ -1552,6 +1582,9 @@ if __name__ == '__main__':
                         help='Fast check mode: 2 WF windows, no model save')
     parser.add_argument('--parallel', type=int, default=1,
                         help='Number of parallel WF workers')
+    parser.add_argument('--target-parallel', type=int, default=1,
+                        help='Targets trained concurrently per window (1=serial, 4=3d/5d/10d/15d in parallel). '
+                             'Recommend setting OMP_NUM_THREADS=$((cores/N)) to avoid thread oversubscription.')
     parser.add_argument('--lambda-risk', type=float, default=0.5,
                         help='Risk discount factor for downside model (default: 0.5)')
     # ng1.0.3 new switches
@@ -1589,6 +1622,10 @@ if __name__ == '__main__':
     parser.add_argument('--lambda-downside', type=float, default=0.3,
                         help='ng1.2.3: downside penalty multiplier for label transform (default 0.3 per spec §5). '
                              'λ ∈ {0, 0.15, 0.3, 0.45, 0.6} for ablation.')
+    # ng1.3.x dual-head training
+    parser.add_argument('--head', choices=['excess', 'downside'], default='excess',
+                        help='ng1.3.x multi-task head selector. "excess" = industry excess labels (default). '
+                             '"downside" = min-cumret downside labels (requires ng1.3.x cache with downside_Nd cols).')
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -1619,6 +1656,8 @@ if __name__ == '__main__':
             trainer._fast_check_step_days = 60
         if args.parallel > 1:
             trainer._parallel_wf_workers = args.parallel
+        if args.target_parallel > 1:
+            trainer._target_parallel = args.target_parallel
 
     if args.wf_windows > 3:
         args.step_days = 90
@@ -1637,7 +1676,7 @@ if __name__ == '__main__':
             np.random.seed(seed_val)
             _trainer_mod._GLOBAL_RANDOM_SEED = seed_val
 
-            trainer = NGTrainer(version=version)
+            trainer = NGTrainer(version=version, head=args.head)
             _apply_trainer_switches(trainer)
 
             model_data, history = trainer.walk_forward_train(
@@ -1659,7 +1698,7 @@ if __name__ == '__main__':
             _trainer_mod._GLOBAL_RANDOM_SEED = args.seed
             logger.info(f"Global random seed set to {args.seed} (numpy + LGB/XGB/CB/RF/HGB)")
 
-        trainer = NGTrainer(version=version)
+        trainer = NGTrainer(version=version, head=args.head)
         _apply_trainer_switches(trainer)
 
         model_data, history = trainer.walk_forward_train(
