@@ -115,40 +115,52 @@ def _schema_sql(table_name: str, version: str = None) -> str:
       - ng1.0.x: linear (each adds more columns)
       - ng1.1.x: reuses ng1.0.1 schema
       - ng1.2.x: branches from ng1.0.1 (does NOT inherit ng1.0.4/ng1.0.7 columns)
+      - ng1.3.x: branches from ng1.0.1 (adds downside_{3,5,10,15}d; AMV joined from market_amv)
     """
     ver = version or DEFAULT_VERSION
-    # ng1.2.x branches from ng1.0.1 and does NOT inherit ng1.0.4/ng1.0.7
-    # additions (maxdd/ra_label/cond_label/amv). The ng1.0.2 block is also
-    # gated on `not is_12` to avoid a downside_10d naming conflict with
-    # ng1.2.3's new 4-horizon downside_kd columns. Each linear-lineage block
-    # below gates on `not is_12` for that reason.
     is_12 = _is_1_2_branch(ver)
+    is_13 = _is_1_3_branch(ver)
     extra_cols = ''
-    if version_ge(ver, 'ng1.0.2') and not is_12:
-        extra_cols = _real_cols('downside_10d')
-    if version_ge(ver, 'ng1.0.3'):
-        extra_cols += _real_cols('label_raw_3d', 'label_raw_5d', 'label_raw_10d', 'label_raw_15d')
-    if version_ge(ver, 'ng1.0.4') and not is_12:
-        extra_cols += _real_cols(
-            'maxdd_3d', 'maxdd_5d', 'maxdd_10d', 'maxdd_15d',
-            'ra_label_3d', 'ra_label_5d', 'ra_label_10d', 'ra_label_15d',
-        )
-    if version_ge(ver, 'ng1.0.7') and not is_12:
-        extra_cols += _real_cols(
-            'cond_label_3d', 'cond_label_5d', 'cond_label_10d', 'cond_label_15d',
-            'amv_var1', 'amv_macd', 'amv_regime_days',
-        )
-    # ng1.2.1 adds Sharpe-style path-based labels (ng1.2.x branch only, NOT ng1.2.3+)
-    # ng1.2.3 spec §3.3 explicitly excludes vn_label_* / path_* / downside_std_10d
-    if is_12 and _version_in_range(ver, 'ng1.2.1', 'ng1.2.3'):
-        extra_cols += _real_cols(
-            'vn_label_3d', 'vn_label_5d', 'vn_label_10d', 'vn_label_15d',
-            'path_mean_10d', 'path_std_10d', 'downside_std_10d',
-        )
-    # ng1.2.3 adds soft-downside label columns (per spec section 5).
-    # Upper-bound guard: ng1.2.4 does NOT inherit downside cols (no penalty label).
-    if is_12 and _version_in_range(ver, 'ng1.2.3', 'ng1.2.4'):
+
+    # ng1.3.x: branches from ng1.0.1 (does NOT inherit ng1.0.4/ng1.0.7/ng1.2.x columns).
+    # Only adds label_raw_{3,5,10,15}d (ablation) and downside_{3,5,10,15}d (L3 multi-task
+    # downside head labels). amv_* features are joined from market_amv at read time, not
+    # stored as inline columns.
+    if is_13:
+        extra_cols = _real_cols('label_raw_3d', 'label_raw_5d', 'label_raw_10d', 'label_raw_15d')
         extra_cols += _real_cols('downside_3d', 'downside_5d', 'downside_10d', 'downside_15d')
+    else:
+        # Existing ng1.0.x / ng1.1.x / ng1.2.x lineage handling.
+        # ng1.2.x branches from ng1.0.1 and does NOT inherit ng1.0.4/ng1.0.7
+        # additions (maxdd/ra_label/cond_label/amv). The ng1.0.2 block is also
+        # gated on `not is_12` to avoid a downside_10d naming conflict with
+        # ng1.2.3's new 4-horizon downside_kd columns. Each linear-lineage block
+        # below gates on `not is_12` for that reason.
+        if version_ge(ver, 'ng1.0.2') and not is_12:
+            extra_cols = _real_cols('downside_10d')
+        if version_ge(ver, 'ng1.0.3'):
+            extra_cols += _real_cols('label_raw_3d', 'label_raw_5d', 'label_raw_10d', 'label_raw_15d')
+        if version_ge(ver, 'ng1.0.4') and not is_12:
+            extra_cols += _real_cols(
+                'maxdd_3d', 'maxdd_5d', 'maxdd_10d', 'maxdd_15d',
+                'ra_label_3d', 'ra_label_5d', 'ra_label_10d', 'ra_label_15d',
+            )
+        if version_ge(ver, 'ng1.0.7') and not is_12:
+            extra_cols += _real_cols(
+                'cond_label_3d', 'cond_label_5d', 'cond_label_10d', 'cond_label_15d',
+                'amv_var1', 'amv_macd', 'amv_regime_days',
+            )
+        # ng1.2.1 adds Sharpe-style path-based labels (ng1.2.x branch only, NOT ng1.2.3+)
+        # ng1.2.3 spec §3.3 explicitly excludes vn_label_* / path_* / downside_std_10d
+        if is_12 and _version_in_range(ver, 'ng1.2.1', 'ng1.2.3'):
+            extra_cols += _real_cols(
+                'vn_label_3d', 'vn_label_5d', 'vn_label_10d', 'vn_label_15d',
+                'path_mean_10d', 'path_std_10d', 'downside_std_10d',
+            )
+        # ng1.2.3 adds soft-downside label columns (per spec section 5).
+        # Upper-bound guard: ng1.2.4 does NOT inherit downside cols (no penalty label).
+        if is_12 and _version_in_range(ver, 'ng1.2.3', 'ng1.2.4'):
+            extra_cols += _real_cols('downside_3d', 'downside_5d', 'downside_10d', 'downside_15d')
     return f"""
 CREATE TABLE IF NOT EXISTS {table_name} (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
