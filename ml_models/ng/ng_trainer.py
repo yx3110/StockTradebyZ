@@ -1392,6 +1392,13 @@ class NGTrainer(V485Trainer):
             return model_data, history
 
         # --- v1.0.2: Train downside model ---
+        # ng1.3.x skips this legacy NG102 single-horizon downside model — it has
+        # its own dual-head (4-horizon) architecture via --head downside instead.
+        # Also preserves correct feature_names metadata for pkl save.
+        if _is_1_3_branch(self._ng_version):
+            logger.info("ng1.3.x: skipping legacy downside_10d model (uses dual-head architecture)")
+            return model_data, history
+
         # Restore feature cols (WF parent may have modified them)
         if version_ge(self._ng_version, 'ng1.1.0'):
             self.stock_feature_cols = list(NG110_STOCK_FEATURES)
