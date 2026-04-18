@@ -890,9 +890,14 @@ class NGTrainer(V485Trainer):
         active_stock_features = self._get_active_stock_features()
 
         # Exclude market feature names that may appear in features_json
-        # (they are loaded from dedicated SQL columns instead)
+        # (they are loaded from dedicated SQL columns instead — except ng1.3.x,
+        # which stores AMV in features_json only since ng130_feature_cache has no amv_* columns)
         market_cols_to_load = list(MARKET_FEATURE_NAMES)
-        if version_ge(self.schema_version, 'ng1.0.7'):
+        if _is_1_3_branch(self._ng_version):
+            # ng1.3.x: only base 10 market + 3 AMV. No other ext_market features
+            # (market_ret_60d, liquidity_stress etc were verified useless in ng1.0.7 and dropped).
+            market_cols_to_load += ['amv_var1', 'amv_macd', 'amv_regime_days']
+        elif version_ge(self.schema_version, 'ng1.0.7'):
             market_cols_to_load += EXTENDED_MARKET_FEATURE_NAMES
         market_set = set(market_cols_to_load)
         active_stock_features = [c for c in active_stock_features if c not in market_set]
@@ -918,9 +923,18 @@ class NGTrainer(V485Trainer):
             if col in df_stock_features.columns:
                 result[col] = df_stock_features[col].values
 
+        # ng1.3.x: AMV features live in features_json (not SQL columns).
+        # Extract once from parsed_rows; fall back to NaN for any missing.
+        amv_from_json = {}
+        if _is_1_3_branch(self._ng_version):
+            for col in ('amv_var1', 'amv_macd', 'amv_regime_days'):
+                amv_from_json[col] = [d.get(col, np.nan) for d in parsed_rows]
+
         for col in market_cols_to_load:
             if col in df_raw.columns:
                 result[col] = df_raw[col].values
+            elif col in amv_from_json:
+                result[col] = amv_from_json[col]
             else:
                 result[col] = np.nan
 
