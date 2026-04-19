@@ -1,7 +1,6 @@
 """Shared fixtures for data_explorer tests."""
 import json
 import sqlite3
-import tempfile
 from pathlib import Path
 
 import pandas as pd

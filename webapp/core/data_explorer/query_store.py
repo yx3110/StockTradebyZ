@@ -25,8 +25,9 @@ def apply_migration(webapp_db_path: str | Path) -> None:
     """Idempotent: create saved_queries table if missing."""
     webapp_db_path = Path(webapp_db_path)
     webapp_db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(webapp_db_path)
+    conn = sqlite3.connect(webapp_db_path, timeout=30.0)
     try:
+        conn.execute("PRAGMA busy_timeout=30000")
         conn.executescript(MIGRATION_SQL)
         conn.commit()
     finally:

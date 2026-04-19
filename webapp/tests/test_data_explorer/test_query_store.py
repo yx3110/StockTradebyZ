@@ -2,7 +2,7 @@
 import sqlite3
 from pathlib import Path
 
-from webapp.core.data_explorer.query_store import apply_migration
+from core.data_explorer.query_store import apply_migration
 
 
 def test_migration_creates_table(tmp_webapp_db: Path) -> None:
