@@ -1,0 +1,106 @@
+/* Data Explorer page layout */
+
+.explorer-layout {
+    display: grid;
+    grid-template-columns: 260px 1fr;
+    gap: 12px;
+    min-height: calc(100vh - 200px);
+}
+
+.schema-browser {
+    background: #f8f9fa;
+    border: 1px solid #dee2e6;
+    border-radius: 4px;
+    padding: 10px;
+    overflow-y: auto;
+    font-size: 0.85rem;
+    max-height: calc(100vh - 160px);
+}
+
+.schema-browser .category {
+    font-weight: 600;
+    cursor: pointer;
+    padding: 4px 0;
+    user-select: none;
+}
+.schema-browser .category .bi { font-size: 0.7rem; }
+.schema-browser .category-count {
+    font-weight: normal;
+    color: #6c757d;
+    font-size: 0.75rem;
+}
+.schema-browser ul.tables {
+    list-style: none;
+    padding-left: 14px;
+    margin: 4px 0;
+}
+.schema-browser ul.tables li {
+    padding: 2px 4px;
+    border-radius: 3px;
+    cursor: pointer;
+    color: #0d6efd;
+    font-family: ui-monospace, SFMono-Regular, monospace;
+    font-size: 0.8rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.schema-browser ul.tables li:hover { background: #e9ecef; }
+.schema-browser .active-marker {
+    color: #198754;
+    font-size: 0.7rem;
+    margin-left: 4px;
+}
+.schema-browser .has-json::after {
+    content: "{ }";
+    color: #fd7e14;
+    font-size: 0.7rem;
+    margin-left: 4px;
+}
+
+.editor-region { display: flex; flex-direction: column; gap: 8px; }
+
+.cm-editor {
+    border: 1px solid #dee2e6;
+    border-radius: 4px;
+    font-size: 0.9rem;
+    min-height: 150px;
+    background: #282c34;
+}
+.cm-editor .cm-scroller { font-family: ui-monospace, monospace; }
+
+.result-region {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+    min-height: 300px;
+}
+.result-table-card, .result-chart-card {
+    border: 1px solid #dee2e6;
+    border-radius: 4px;
+    padding: 8px;
+}
+.result-chart-card { min-height: 300px; }
+
+.warning-banner {
+    background: #fff3cd;
+    border: 1px solid #ffeeba;
+    color: #856404;
+    padding: 6px 10px;
+    border-radius: 4px;
+    font-size: 0.85rem;
+    margin-bottom: 8px;
+}
+.mode-tabs { border-bottom: 2px solid #dee2e6; margin-bottom: 12px; }
+.mode-tabs .nav-link.active {
+    border-bottom: 3px solid #0d6efd;
+    color: #0d6efd;
+    font-weight: 600;
+}
+
+.saved-query-list .saved-row {
+    padding: 8px;
+    border-bottom: 1px solid #dee2e6;
+    cursor: pointer;
+}
+.saved-query-list .saved-row:hover { background: #f8f9fa; }

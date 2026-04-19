@@ -1,0 +1,148 @@
+{% extends "base.html" %}
+
+{% block title %}数据探索 - StockTradebyZ Web{% endblock %}
+
+{% block extra_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/data_explorer.css') }}">
+{% endblock %}
+
+{% block content %}
+<div class="row mb-3">
+  <div class="col-12">
+    <h2 class="mb-3">
+      <i class="bi bi-search"></i> 数据探索
+      <small class="text-muted fs-6">SQL / Builder / Saved / 单股 / 截面 / 模型对比</small>
+    </h2>
+  </div>
+</div>
+
+<!-- Mode tabs -->
+<ul class="nav mode-tabs" role="tablist">
+  <li class="nav-item"><a class="nav-link active" data-mode="sql" href="#sql"><i class="bi bi-code-slash"></i> SQL Explorer</a></li>
+  <li class="nav-item"><a class="nav-link" data-mode="stock" href="#stock"><i class="bi bi-graph-up"></i> 单股深挖</a></li>
+  <li class="nav-item"><a class="nav-link" data-mode="cross" href="#cross"><i class="bi bi-bar-chart"></i> 截面分析</a></li>
+  <li class="nav-item"><a class="nav-link" data-mode="compare" href="#compare"><i class="bi bi-diagram-3"></i> 模型对比</a></li>
+  <li class="nav-item"><a class="nav-link" data-mode="saved" href="#saved"><i class="bi bi-star"></i> 已保存 <span class="badge bg-secondary" id="saved-count">0</span></a></li>
+</ul>
+
+<!-- Main layout: schema browser + query region -->
+<div class="explorer-layout" id="explorer-main">
+
+  <!-- Left: schema browser -->
+  <aside class="schema-browser">
+    <input class="form-control form-control-sm mb-2" id="schema-search" placeholder="搜索表/列...">
+    <div id="schema-tree">
+      <div class="text-muted small">Loading schema...</div>
+    </div>
+  </aside>
+
+  <!-- Right: editor + results -->
+  <section class="editor-region">
+    <!-- Toolbar: SQL/Builder toggle + options -->
+    <div class="d-flex gap-2 align-items-center flex-wrap">
+      <div class="btn-group btn-group-sm" role="group" id="input-mode-toggle">
+        <button class="btn btn-primary" data-input="sql">SQL</button>
+        <button class="btn btn-outline-secondary" data-input="builder"><i class="bi bi-tools"></i> Builder</button>
+      </div>
+      <div class="form-check form-switch small">
+        <input class="form-check-input" type="checkbox" id="expand-features" checked>
+        <label class="form-check-label" for="expand-features">自动展开 features_json</label>
+      </div>
+      <div class="flex-grow-1"></div>
+      <button class="btn btn-primary btn-sm" id="btn-run">
+        <i class="bi bi-play-fill"></i> 运行 <small class="opacity-75">(Ctrl+Enter)</small>
+      </button>
+      <button class="btn btn-outline-secondary btn-sm" id="btn-save"><i class="bi bi-save"></i> 保存</button>
+      <button class="btn btn-outline-secondary btn-sm" id="btn-csv"><i class="bi bi-file-earmark-spreadsheet"></i> CSV</button>
+    </div>
+
+    <!-- SQL editor container -->
+    <div id="sql-editor-container"></div>
+
+    <!-- Visual builder (hidden by default) -->
+    <div id="builder-container" class="d-none card p-3"></div>
+
+    <!-- Run summary / warnings -->
+    <div id="query-summary" class="small text-muted"></div>
+    <div id="warning-area"></div>
+
+    <!-- Results split -->
+    <div class="result-region">
+      <div class="result-table-card">
+        <div class="d-flex align-items-center mb-1">
+          <strong class="small"><i class="bi bi-table"></i> 结果表</strong>
+          <span class="ms-2 small text-muted" id="table-meta"></span>
+        </div>
+        <div id="result-table-wrap"><div class="text-muted small">(运行一条 SQL 查询)</div></div>
+      </div>
+      <div class="result-chart-card">
+        <div class="d-flex align-items-center mb-1">
+          <strong class="small"><i class="bi bi-graph-up-arrow"></i> 图表</strong>
+          <select class="form-select form-select-sm ms-2" id="chart-type-select" style="width:auto">
+            <option value="auto">自动</option>
+            <option value="line">折线</option>
+            <option value="scatter">散点</option>
+            <option value="bar">柱状</option>
+            <option value="histogram">直方图</option>
+            <option value="none">不画</option>
+          </select>
+          <span class="ms-auto small text-success" id="chart-hint-label"></span>
+        </div>
+        <div id="result-chart"></div>
+      </div>
+    </div>
+  </section>
+</div>
+
+<!-- Saved queries panel (hidden except on #saved mode) -->
+<div id="saved-panel" class="d-none card mt-3">
+  <div class="card-body">
+    <div class="d-flex align-items-center mb-3">
+      <h5 class="mb-0"><i class="bi bi-star"></i> 保存的查询</h5>
+      <input class="form-control form-control-sm ms-auto" id="saved-tag-filter"
+             placeholder="按 tag 过滤..." style="max-width:200px">
+    </div>
+    <div class="saved-query-list" id="saved-query-list"></div>
+  </div>
+</div>
+
+<!-- Save dialog -->
+<div class="modal fade" id="save-modal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header"><h5 class="modal-title">保存查询</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+      <div class="modal-body">
+        <div class="mb-2"><label class="form-label">名称</label>
+          <input class="form-control" id="save-name" required></div>
+        <div class="mb-2"><label class="form-label">标签（逗号分隔）</label>
+          <input class="form-control" id="save-tags" placeholder="user,analysis"></div>
+        <div class="mb-2"><label class="form-label">描述</label>
+          <textarea class="form-control" id="save-description" rows="2"></textarea></div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+        <button type="button" class="btn btn-primary" id="save-modal-confirm">保存</button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<!-- CodeMirror 6 (SQL) bundled via cdn.jsdelivr.net -->
+<script type="importmap">
+{
+  "imports": {
+    "@codemirror/view": "https://esm.sh/@codemirror/view@6",
+    "@codemirror/state": "https://esm.sh/@codemirror/state@6",
+    "@codemirror/commands": "https://esm.sh/@codemirror/commands@6",
+    "@codemirror/lang-sql": "https://esm.sh/@codemirror/lang-sql@6",
+    "@codemirror/language": "https://esm.sh/@codemirror/language@6",
+    "codemirror": "https://esm.sh/codemirror@6"
+  }
+}
+</script>
+
+<script src="{{ url_for('static', filename='js/data_explorer.js') }}" type="module"></script>
+{% endblock %}
