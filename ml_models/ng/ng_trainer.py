@@ -137,6 +137,13 @@ NG_VERSION = 'ng1.0.3'
 NG104_VERSION = 'ng1.0.4'
 NG107_VERSION = 'ng1.0.7'
 
+
+def _describe_series(s: pd.Series) -> str:
+    """One-line summary for label/feature series logging."""
+    d = s.describe(percentiles=[0.10, 0.90])
+    return (f"n={int(d['count']):,} mean={d['mean']:.4f} std={d['std']:.4f} "
+            f"p10={d['10%']:.4f} p90={d['90%']:.4f}")
+
 # ---------------------------------------------------------------------------
 # ng1.1.0: 基于ng1.0.1精简 + bug修复 + P2新因子
 # ---------------------------------------------------------------------------
@@ -301,11 +308,15 @@ class NGTrainer(V485Trainer):
 
     def _compute_cache_key(self, start_date, end_date):
         """Override: include NG version + head (ng1.3.x) + ng1.2.3 lambda_downside
-        in cache key to invalidate on version/head/label changes.
+        + feature-set hash in cache key to invalidate on version/head/label/feature changes.
 
         CRITICAL: ng1.3.x excess vs downside heads MUST have different cache keys,
         otherwise the second head run will reuse the first head's cached labels
         (seen in first training batch: excess and downside models bit-identical).
+
+        Feature-set hash guards against stale caches written by an older feature
+        pipeline (root cause of ng1.3.0 pkls carrying 18-col NG107 macro instead
+        of 13-col NG130 macro — stale cache predated ext_market exclusion in e37eb263).
         """
         import hashlib
         db_mtime = os.path.getmtime(self.db_path) if os.path.exists(self.db_path) else 0
@@ -316,9 +327,36 @@ class NGTrainer(V485Trainer):
         # head suffix when training with non-default head (current: ng1.3.x downside).
         # Future versions using --head downside get the same cache invalidation automatically.
         head_suffix = f"_{self._head}" if self._head != 'excess' else ''
+        feat_hash = hashlib.md5(
+            ('|'.join(self.stock_feature_cols) + '#' + '|'.join(self.macro_feature_cols)).encode()
+        ).hexdigest()[:8]
         key_str = (f"{self.__class__.__name__}_{self._ng_version}_{start_date}_{end_date}"
-                   f"_{db_mtime:.0f}{lam_suffix}{head_suffix}")
+                   f"_{db_mtime:.0f}{lam_suffix}{head_suffix}_{feat_hash}")
         return hashlib.md5(key_str.encode()).hexdigest()[:12]
+
+    def _warn_on_feature_count_mismatch(self, model_data: dict) -> None:
+        """Probe first probeable booster; warn if its n_features != len(self.feature_names)."""
+        try:
+            models = model_data.get('models', {})
+            for tk in ('3d', '5d', '10d', '15d'):
+                boosters = (models.get(tk, {}) or {}).get('models', {}) or {}
+                for algo, b in boosters.items():
+                    if hasattr(b, 'num_feature'):
+                        nf = b.num_feature()
+                    else:
+                        nfi = getattr(b, 'n_features_in_', None)
+                        nf = int(nfi) if nfi else None
+                    if nf is None:
+                        continue
+                    if nf != len(self.feature_names):
+                        logger.warning(
+                            f"  ⚠️ pkl feature_names ({len(self.feature_names)}) != "
+                            f"booster {tk}/{algo} num_feature ({nf}). "
+                            "Inference may misalign."
+                        )
+                    return
+        except Exception as e:
+            logger.debug(f"  feature_names sanity skipped: {e}")
 
     # ------------------------------------------------------------------
     # Feature name accessors
@@ -894,9 +932,8 @@ class NGTrainer(V485Trainer):
         # which stores AMV in features_json only since ng130_feature_cache has no amv_* columns)
         market_cols_to_load = list(MARKET_FEATURE_NAMES)
         if _is_1_3_branch(self._ng_version):
-            # ng1.3.x: only base 10 market + 3 AMV. No other ext_market features
-            # (market_ret_60d, liquidity_stress etc were verified useless in ng1.0.7 and dropped).
-            market_cols_to_load += ['amv_var1', 'amv_macd', 'amv_regime_days']
+            # ng1.3.x: base 10 market + 3 AMV only; ext_market was useless in ng1.0.7.
+            market_cols_to_load += NG130_TIER_A_AMV
         elif version_ge(self.schema_version, 'ng1.0.7'):
             market_cols_to_load += EXTENDED_MARKET_FEATURE_NAMES
         market_set = set(market_cols_to_load)
@@ -927,7 +964,7 @@ class NGTrainer(V485Trainer):
         # Extract once from parsed_rows; fall back to NaN for any missing.
         amv_from_json = {}
         if _is_1_3_branch(self._ng_version):
-            for col in ('amv_var1', 'amv_macd', 'amv_regime_days'):
+            for col in NG130_TIER_A_AMV:
                 amv_from_json[col] = [d.get(col, np.nan) for d in parsed_rows]
 
         for col in market_cols_to_load:
@@ -1013,8 +1050,11 @@ class NGTrainer(V485Trainer):
 
         # ng1.3.x dual-head: if head='downside', swap downside_Nd → label_Nd so
         # V485Trainer.walk_forward_train trains on downside values unchanged.
+        # Log pre/post label_10d stats to catch silent residual transforms.
         if _is_1_3_branch(self._ng_version) and self._head == 'downside':
             logger.info("  ng1.3.x head=downside: overriding label_Nd with downside_Nd values")
+            logger.info(f"    pre-swap  label_10d: {_describe_series(result['label_10d'])}")
+            logger.info(f"    source    downside_10d: {_describe_series(result['downside_10d'])}")
             for h in [3, 5, 10, 15]:
                 ds_col = f'downside_{h}d'
                 lb_col = f'label_{h}d'
@@ -1022,6 +1062,7 @@ class NGTrainer(V485Trainer):
                     result[lb_col] = result[ds_col].values
                     logger.info(f"    label_{h}d ← downside_{h}d (non-zero: "
                                 f"{int((result[lb_col] != 0).sum()):,})")
+            logger.info(f"    post-swap label_10d: {_describe_series(result['label_10d'])}")
 
         # Market features: ffill
         result = result.sort_values('trade_date')
@@ -1090,8 +1131,11 @@ class NGTrainer(V485Trainer):
         """Prepare NG feature matrix (dynamic: base + moneyflow + interaction + conditional_ix)."""
         active_stock_features = self._get_active_stock_features()
 
-        # Determine market feature columns
-        if version_ge(self._ng_version, 'ng1.0.7'):
+        # Determine market feature columns (version-specific to avoid ext_market
+        # leaking into ng1.3.x training — ng1.3.x uses only 10 base + 3 AMV)
+        if _is_1_3_branch(self._ng_version):
+            active_market_cols = [c for c in NG130_MARKET_FEATURES if c in df.columns]
+        elif version_ge(self._ng_version, 'ng1.0.7'):
             active_market_cols = [c for c in NG107_MARKET_FEATURES if c in df.columns]
         else:
             active_market_cols = [c for c in MARKET_FEATURE_NAMES if c in df.columns]
@@ -1543,6 +1587,10 @@ class NGTrainer(V485Trainer):
                     'wf_step_days': step_days,
                 },
             }
+            # Warn if pkl feature_names mismatches the trained booster's column count
+            # (stale cache or V485 internals can silently mutate feature cols mid-WF).
+            self._warn_on_feature_count_mismatch(model_data)
+
             model_data['feature_names'] = self.feature_names
             model_data['stock_feature_cols'] = self.stock_feature_cols
             model_data['macro_feature_cols'] = self.macro_feature_cols
