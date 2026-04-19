@@ -222,12 +222,102 @@ function escapeHtml(s) {
           .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
-// ---- Chart (stub — filled by Task 13) --------------------------------------
+// ---- Chart ------------------------------------------------------------------
 
 function renderChart(body, typeOverride) {
-  // Stub — Task 13 fills this in
+  const hint = body.chart_hint;
   const label = document.getElementById("chart-hint-label");
-  if (label) label.textContent = "(chart rendered in Task 13)";
+  const container = document.getElementById("result-chart");
+  container.innerHTML = "";
+
+  // Determine type
+  let type = typeOverride;
+  if (type === "auto") type = hint ? hint.type : "none";
+  if (!type || type === "none") {
+    label.textContent = hint ? "" : "无合适图表";
+    return;
+  }
+  label.textContent = (typeOverride === "auto" && hint) ? `✨ auto: ${hint.type}` : "";
+
+  // Build series depending on type. Use first numeric as Y if hint missing.
+  const numericCols = body.columns.filter((c, i) =>
+    body.rows.every((r) => r[i] === null || typeof r[i] === "number")
+  );
+  const firstNumeric = numericCols[0];
+  const xCol = (hint && hint.x) || "code";
+  const yCol = (hint && hint.y) || firstNumeric;
+  if (!yCol) { label.textContent = "无数值列可画"; return; }
+
+  const xIdx = body.columns.indexOf(xCol);
+  const yIdx = body.columns.indexOf(yCol);
+  if (yIdx < 0) { label.textContent = "指定列不存在"; return; }
+
+  let options;
+  if (type === "line") {
+    options = {
+      chart: { type: "line", height: 280, animations: { enabled: false } },
+      series: [{ name: yCol, data: body.rows.map((r) => r[yIdx]) }],
+      xaxis: { categories: body.rows.map((r) => r[xIdx]), title: { text: xCol } },
+      yaxis: { title: { text: yCol } },
+      stroke: { width: 2 },
+    };
+  } else if (type === "scatter") {
+    options = {
+      chart: { type: "scatter", height: 280, animations: { enabled: false } },
+      series: [{
+        name: `${xCol} vs ${yCol}`,
+        data: body.rows.map((r) => [r[xIdx], r[yIdx]]).filter((p) => p[0] !== null && p[1] !== null),
+      }],
+      xaxis: { title: { text: xCol } },
+      yaxis: { title: { text: yCol } },
+      title: { text: hint && hint.annotations ? `r = ${hint.annotations.pearson_r}` : "" },
+    };
+  } else if (type === "bar") {
+    // sort descending by Y
+    const sorted = [...body.rows].sort((a, b) => (b[yIdx] ?? 0) - (a[yIdx] ?? 0));
+    options = {
+      chart: { type: "bar", height: 280, animations: { enabled: false } },
+      series: [{ name: yCol, data: sorted.map((r) => r[yIdx]) }],
+      xaxis: { categories: sorted.map((r) => r[xIdx]), title: { text: xCol } },
+      yaxis: { title: { text: yCol } },
+    };
+  } else if (type === "histogram") {
+    const values = body.rows.map((r) => r[yIdx]).filter((v) => typeof v === "number");
+    const bins = histogram(values, 20);
+    options = {
+      chart: { type: "bar", height: 280, animations: { enabled: false } },
+      series: [{ name: yCol, data: bins.counts }],
+      xaxis: {
+        categories: bins.edges.map((v) => v.toFixed(3)),
+        title: { text: yCol },
+      },
+      yaxis: { title: { text: "count" } },
+    };
+  }
+
+  if (state.currentChart) {
+    state.currentChart.destroy();
+    state.currentChart = null;
+  }
+  if (options) {
+    state.currentChart = new ApexCharts(container, options);
+    state.currentChart.render();
+  }
+}
+
+function histogram(values, nBins) {
+  if (values.length === 0) return { edges: [], counts: [] };
+  const lo = Math.min(...values);
+  const hi = Math.max(...values);
+  const step = (hi - lo) / nBins || 1;
+  const counts = new Array(nBins).fill(0);
+  const edges = [];
+  for (let i = 0; i < nBins; i++) edges.push(lo + i * step);
+  for (const v of values) {
+    const idx = Math.min(nBins - 1, Math.floor((v - lo) / step));
+    counts[idx]++;
+  }
+  return { edges, counts };
 }
 
 // ---- Bootstrap --------------------------------------------------------------
@@ -236,4 +326,12 @@ document.addEventListener("DOMContentLoaded", () => {
   initEditor();
   loadSchema();
   document.getElementById("btn-run").addEventListener("click", runQuery);
+});
+
+// Chart type dropdown
+document.addEventListener("DOMContentLoaded", () => {
+  const sel = document.getElementById("chart-type-select");
+  sel.addEventListener("change", () => {
+    if (state.lastResult) renderChart(state.lastResult, sel.value);
+  });
 });
