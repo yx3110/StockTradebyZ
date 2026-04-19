@@ -17,3 +17,6 @@ python-dotenv==1.0.0
 
 # 日志和工具
 python-dateutil==2.8.2
+
+# SQL parsing for data explorer (SELECT-only validation, LIMIT injection)
+sqlglot==26.12.1
