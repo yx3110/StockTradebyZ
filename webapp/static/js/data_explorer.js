@@ -125,11 +125,109 @@ function initEditor() {
   });
 }
 
-// ---- Query Runner (filled in Task 13) --------------------------------------
+// ---- Query Runner -----------------------------------------------------------
 
 async function runQuery() {
+  const sqlText = getEditorContent().trim();
+  if (!sqlText) {
+    window.showToast("SQL 为空", "warning");
+    return;
+  }
+  const expandFeatures = document.getElementById("expand-features").checked;
+  const runBtn = document.getElementById("btn-run");
+  runBtn.disabled = true;
+  document.getElementById("query-summary").textContent = "执行中...";
+  document.getElementById("warning-area").innerHTML = "";
+
+  try {
+    const resp = await fetch("/api/explorer/query", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sql: sqlText, expand_features: expandFeatures }),
+    });
+    const body = await resp.json();
+    if (!body.success) {
+      window.showToast(body.error || "查询失败", "error");
+      document.getElementById("query-summary").textContent =
+        `错误 (${body.code}): ${body.error}`;
+      return;
+    }
+    state.lastResult = body;
+    state.currentHint = body.chart_hint;
+    renderResultTable(body);
+    renderWarnings(body.warnings, body.truncated);
+    document.getElementById("query-summary").textContent =
+      `${body.row_count.toLocaleString()} 行 · ${body.took_ms} ms` +
+      (body.truncated ? " (截断)" : "");
+    renderChart(body, "auto");
+  } catch (e) {
+    window.showToast("网络错误: " + e.message, "error");
+  } finally {
+    runBtn.disabled = false;
+  }
+}
+
+function renderWarnings(warnings, truncated) {
+  const area = document.getElementById("warning-area");
+  area.innerHTML = "";
+  if (truncated) {
+    const banner = document.createElement("div");
+    banner.className = "warning-banner";
+    banner.textContent = "⚠️ 结果已截断至上限 10 000 行 — 请加 LIMIT 或 WHERE 缩小范围";
+    area.appendChild(banner);
+  }
+  for (const w of warnings || []) {
+    const div = document.createElement("div");
+    div.className = "warning-banner";
+    div.textContent = w;
+    area.appendChild(div);
+  }
+}
+
+function renderResultTable(body) {
+  const wrap = document.getElementById("result-table-wrap");
+  wrap.innerHTML = "";
+  if (body.row_count === 0) {
+    wrap.innerHTML = '<div class="text-muted small">0 rows</div>';
+    return;
+  }
+  const table = document.createElement("table");
+  table.className = "table table-sm table-striped";
+  table.style.width = "100%";
+  const thead = document.createElement("thead");
+  thead.innerHTML = "<tr>" + body.columns.map((c) => `<th>${c}</th>`).join("") + "</tr>";
+  table.appendChild(thead);
+  const tbody = document.createElement("tbody");
+  for (const row of body.rows) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = row.map((v) => `<td>${v === null ? "<span class='text-muted'>·</span>" : escapeHtml(String(v))}</td>`).join("");
+    tbody.appendChild(tr);
+  }
+  table.appendChild(tbody);
+  wrap.appendChild(table);
+
+  // DataTables for sort + paging (library loaded in base.html)
+  $(table).DataTable({
+    pageLength: 25,
+    deferRender: true,
+    scrollX: true,
+    order: [],
+  });
+  document.getElementById("table-meta").textContent =
+    `${body.row_count.toLocaleString()} rows × ${body.columns.length} cols`;
+}
+
+function escapeHtml(s) {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+// ---- Chart (stub — filled by Task 13) --------------------------------------
+
+function renderChart(body, typeOverride) {
   // Stub — Task 13 fills this in
-  window.showToast("runQuery stub — Task 12 wires this up", "info");
+  const label = document.getElementById("chart-hint-label");
+  if (label) label.textContent = "(chart rendered in Task 13)";
 }
 
 // ---- Bootstrap --------------------------------------------------------------
