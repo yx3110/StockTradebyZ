@@ -1417,64 +1417,64 @@ class NGTrainer(V485Trainer):
         # --- v1.0.2: Train downside model ---
         # ng1.3.x skips this legacy NG102 single-horizon downside model — it has
         # its own dual-head (4-horizon) architecture via --head downside instead.
-        # Also preserves correct feature_names metadata for pkl save.
+        # Skip the legacy training but still continue to pkl rename logic below.
         if _is_1_3_branch(self._ng_version):
             logger.info("ng1.3.x: skipping legacy downside_10d model (uses dual-head architecture)")
-            return model_data, history
+        else:
+            # Restore feature cols (WF parent may have modified them)
+            if version_ge(self._ng_version, 'ng1.1.0'):
+                self.stock_feature_cols = list(NG110_STOCK_FEATURES)
+                self.macro_feature_cols = list(MARKET_FEATURE_NAMES)
+                self.feature_names = list(NG110_ALL_FEATURES)
+            elif version_ge(self._ng_version, 'ng1.0.7'):
+                self.stock_feature_cols = list(STOCK_FEATURE_NAMES)
+                self.macro_feature_cols = list(NG107_MARKET_FEATURES)
+                self.feature_names = self.stock_feature_cols + self.macro_feature_cols
+            logger.info("Training downside_10d model (separate LightGBM pass)...")
+        if not _is_1_3_branch(self._ng_version):
+            try:
+                df_full = self.load_data(start_date=start_date, end_date=end_date)
+                _result = self.prepare_features(df_full)
+                X, y_3d, y_5d, y_10d, y_15d, df_full = _result
+                y_downside = self._y_downside
 
-        # Restore feature cols (WF parent may have modified them)
-        if version_ge(self._ng_version, 'ng1.1.0'):
-            self.stock_feature_cols = list(NG110_STOCK_FEATURES)
-            self.macro_feature_cols = list(MARKET_FEATURE_NAMES)
-            self.feature_names = list(NG110_ALL_FEATURES)
-        elif version_ge(self._ng_version, 'ng1.0.7'):
-            self.stock_feature_cols = list(STOCK_FEATURE_NAMES)
-            self.macro_feature_cols = list(NG107_MARKET_FEATURES)
-            self.feature_names = self.stock_feature_cols + self.macro_feature_cols
-        logger.info("Training downside_10d model (separate LightGBM pass)...")
-        try:
-            df_full = self.load_data(start_date=start_date, end_date=end_date)
-            _result = self.prepare_features(df_full)
-            X, y_3d, y_5d, y_10d, y_15d, df_full = _result
-            y_downside = self._y_downside
+                # Use last portion as val (matching WF logic)
+                unique_dates = sorted(df_full['trade_date'].unique())
+                n = len(unique_dates)
+                val_start_idx = max(0, n - test_days - val_days)
+                val_end_idx = max(0, n - test_days)
 
-            # Use last portion as val (matching WF logic)
-            unique_dates = sorted(df_full['trade_date'].unique())
-            n = len(unique_dates)
-            val_start_idx = max(0, n - test_days - val_days)
-            val_end_idx = max(0, n - test_days)
+                train_dates = set(unique_dates[:val_start_idx])
+                val_dates = set(unique_dates[val_start_idx:val_end_idx])
+                test_dates = set(unique_dates[val_end_idx:])
 
-            train_dates = set(unique_dates[:val_start_idx])
-            val_dates = set(unique_dates[val_start_idx:val_end_idx])
-            test_dates = set(unique_dates[val_end_idx:])
+                train_mask = df_full['trade_date'].isin(train_dates).values
+                val_mask = df_full['trade_date'].isin(val_dates).values
+                test_mask = df_full['trade_date'].isin(test_dates).values
 
-            train_mask = df_full['trade_date'].isin(train_dates).values
-            val_mask = df_full['trade_date'].isin(val_dates).values
-            test_mask = df_full['trade_date'].isin(test_dates).values
+                if train_mask.sum() > 1000 and val_mask.sum() > 100:
+                    downside_model = self._train_downside_model(
+                        X[train_mask], y_downside[train_mask],
+                        X[val_mask], y_downside[val_mask],
+                        feature_names=self.feature_names,
+                    )
+                    model_data['downside_model'] = downside_model
 
-            if train_mask.sum() > 1000 and val_mask.sum() > 100:
-                downside_model = self._train_downside_model(
-                    X[train_mask], y_downside[train_mask],
-                    X[val_mask], y_downside[val_mask],
-                    feature_names=self.feature_names,
-                )
-                model_data['downside_model'] = downside_model
+                    # Compute OOS IC
+                    if test_mask.sum() > 0:
+                        pred_ds = downside_model.predict(X[test_mask])
+                        from scipy.stats import spearmanr
+                        ic, _ = spearmanr(pred_ds, y_downside[test_mask])
+                        logger.info(f"  Downside 10d OOS IC: {ic:.4f}")
+                        model_data['downside_ic'] = float(ic)
 
-                # Compute OOS IC
-                if test_mask.sum() > 0:
-                    pred_ds = downside_model.predict(X[test_mask])
-                    from scipy.stats import spearmanr
-                    ic, _ = spearmanr(pred_ds, y_downside[test_mask])
-                    logger.info(f"  Downside 10d OOS IC: {ic:.4f}")
-                    model_data['downside_ic'] = float(ic)
-
-                logger.info(f"  Downside model trained: {downside_model.num_trees()} trees")
-            else:
-                logger.warning("  Not enough data for downside model training")
+                    logger.info(f"  Downside model trained: {downside_model.num_trees()} trees")
+                else:
+                    logger.warning("  Not enough data for downside model training")
+                    model_data['downside_model'] = None
+            except Exception as e:
+                logger.warning(f"  Downside model training failed: {e}")
                 model_data['downside_model'] = None
-        except Exception as e:
-            logger.warning(f"  Downside model training failed: {e}")
-            model_data['downside_model'] = None
 
         # Compute ICIR adaptive weights from WF history
         adaptive_weights = self._compute_icir_adaptive_weights(history)
