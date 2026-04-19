@@ -31,31 +31,33 @@ def ensure_select_only(sql: str) -> exp.Select:
             f"Exactly one statement required; got {len(statements)}"
         )
     stmt = statements[0]
-    if not isinstance(stmt, exp.Select):
+    if not isinstance(stmt, (exp.Select, exp.Union, exp.Intersect, exp.Except)):
         raise InvalidQueryError(
-            f"Only SELECT allowed; got {stmt.key.upper()}"
+            f"Only SELECT/UNION/INTERSECT/EXCEPT allowed; got {stmt.key.upper()}"
         )
     return stmt
 
 
 def inject_limit(sql: str, max_rows: int) -> str:
-    """Return SQL with LIMIT <= max_rows guaranteed.
+    """Return SQL with LIMIT ≤ max_rows guaranteed.
 
-    - Missing LIMIT: append LIMIT max_rows.
-    - Existing LIMIT > max_rows: replace with max_rows.
-    - Existing LIMIT <= max_rows: leave as-is.
+    To minimize AST round-trip damage (sqlglot may rewrite CTEs, regex ops,
+    json_extract etc.), returns the original SQL unchanged when the user
+    already supplied a LIMIT ≤ max_rows.
     """
     stmt = ensure_select_only(sql)
     existing = stmt.args.get("limit")
-    if existing is None:
-        stmt.limit(max_rows, copy=False)
-    else:
+    if existing is not None:
         try:
             current = int(existing.expression.this)
         except (ValueError, AttributeError):
-            current = max_rows + 1  # unparseable -> replace with cap
-        if current > max_rows:
-            stmt.limit(max_rows, copy=False)
+            current = max_rows + 1
+        if current <= max_rows:
+            return sql  # keep user's exact text
+        # else: need to cap — fall through to re-emit
+        stmt.limit(max_rows, copy=False)
+    else:
+        stmt.limit(max_rows, copy=False)
     return stmt.sql(dialect="sqlite")
 
 
@@ -142,7 +144,9 @@ def run_query(
     started = time.monotonic()
     try:
         df = pd.read_sql_query(final_sql, conn)
-    except sqlite3.OperationalError as e:
+    except Exception as e:
+        # Progress handler returning 1 surfaces as "interrupted" — possibly
+        # wrapped by pandas.errors.DatabaseError, possibly raw sqlite3.OperationalError
         if "interrupted" in str(e).lower():
             raise QueryTimeoutError(
                 f"Query exceeded {timeout_s}s timeout"

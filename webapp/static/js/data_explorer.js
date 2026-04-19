@@ -197,7 +197,7 @@ function renderResultTable(body) {
   table.className = "table table-sm table-striped";
   table.style.width = "100%";
   const thead = document.createElement("thead");
-  thead.innerHTML = "<tr>" + body.columns.map((c) => `<th>${c}</th>`).join("") + "</tr>";
+  thead.innerHTML = "<tr>" + body.columns.map((c) => `<th>${escapeHtml(c)}</th>`).join("") + "</tr>";
   table.appendChild(thead);
   const tbody = document.createElement("tbody");
   for (const row of body.rows) {

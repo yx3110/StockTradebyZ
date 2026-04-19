@@ -118,3 +118,46 @@ def test_run_query_returns_chart_hint(tmp_stock_db) -> None:
     )
     assert result.chart_hint is not None
     assert result.chart_hint["type"] in {"bar", "line"}
+
+
+# --- Fix 2: Timeout test -------------------------------------------------------
+
+def test_run_query_timeout(tmp_stock_db) -> None:
+    """Verify the 30s timeout path actually fires. Use a 2s timeout + a
+    recursive CTE that counts forever so the progress handler trips fast.
+
+    We include a LIMIT so inject_limit returns the original SQL unchanged
+    (Fix 5), avoiding sqlglot's CTE column-alias rewriting bug.
+    """
+    from core.data_explorer.query_runner import QueryTimeoutError
+    # Recursive CTE using AS alias (sqlglot-safe) + huge LIMIT so inject_limit
+    # keeps original text via Fix 5 early-return path
+    slow_sql = (
+        "WITH RECURSIVE cnt AS "
+        "(SELECT 1 AS x UNION ALL SELECT x+1 FROM cnt) "
+        "SELECT x FROM cnt LIMIT 1000000000"
+    )
+    with pytest.raises(QueryTimeoutError) as exc:
+        run_query(tmp_stock_db, slow_sql, timeout_s=2, max_rows=1_000_000_000)
+    assert "timeout" in str(exc.value).lower()
+
+
+# --- Fix 4: UNION/INTERSECT/EXCEPT acceptance ---------------------------------
+
+def test_union_accepted() -> None:
+    ensure_select_only("SELECT 1 UNION SELECT 2")  # no raise
+
+
+def test_union_gets_limit_injected() -> None:
+    out = inject_limit("SELECT 1 UNION SELECT 2", max_rows=100)
+    assert "LIMIT 100" in out.upper().replace("\n", " ")
+
+
+# --- Fix 5: inject_limit preserves original text when limit already valid -----
+
+def test_inject_limit_preserves_original_text_when_limit_valid() -> None:
+    # sqlglot would normally rewrite json_extract → -> operator.
+    # We keep the user's exact text because their LIMIT is already valid.
+    original = "SELECT json_extract(features_json, '$.pb') FROM ng101_feature_cache LIMIT 50"
+    out = inject_limit(original, max_rows=10000)
+    assert out == original
