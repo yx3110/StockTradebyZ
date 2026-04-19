@@ -26,6 +26,9 @@ __pycache__/
 .auto-claude/
 .worktrees/
 
+# Brainstorming Visual Companion
+.superpowers/
+
 # Logs
 logs/
 *.log
