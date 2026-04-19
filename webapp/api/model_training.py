@@ -10,12 +10,12 @@ import pickle
 import sys
 import os
 from pathlib import Path
-from flask import Blueprint, jsonify, request, Response, current_app
+from flask import Blueprint, jsonify, request, current_app
 from datetime import datetime
 from typing import Dict, List, Any, Optional
 
 from core.task_manager import task_manager, TaskType
-from core.database import DatabaseManager
+from api._helpers import api_error_handler, task_progress_sse, get_db_manager
 
 
 logger = logging.getLogger(__name__)
@@ -23,554 +23,234 @@ logger = logging.getLogger(__name__)
 model_training_bp = Blueprint('model_training', __name__)
 
 
-@model_training_bp.route('/', methods=['GET'])
-def get_models():
-    """
-    获取所有模型版本列表
-
-    Returns:
-        {
-            "success": True,
-            "models": [
-                {
-                    "version": "v3.7",
-                    "name": "三层Ensemble系统",
-                    "status": "trained|not_trained",
-                    "model_files": [...],
-                    ...
-                }
-            ]
+def _model_files_info(model_dir, include_size_mb: bool = False):
+    """列出 model_dir 下所有 .pkl 文件的元信息。"""
+    result = []
+    for f in model_dir.glob('*.pkl'):
+        stat = f.stat()
+        info = {
+            'name': f.name,
+            'size': stat.st_size,
+            'modified_time': datetime.fromtimestamp(stat.st_mtime).isoformat(),
         }
-    """
-    try:
-        models = []
-        model_dirs = current_app.config['MODEL_DIRS']
+        if include_size_mb:
+            info['size_mb'] = round(stat.st_size / (1024 * 1024), 2)
+        result.append(info)
+    return result
 
-        for version, model_dir in model_dirs.items():
-            model_info = {
-                'version': version,
-                'name': _get_model_name(version),
-                'status': 'trained' if model_dir.exists() and list(model_dir.glob('*.pkl')) else 'not_trained',
-                'model_dir': str(model_dir),
-                'model_files': []
-            }
 
-            # 列出模型文件
-            if model_dir.exists():
-                model_files = list(model_dir.glob('*.pkl'))
-                for model_file in model_files:
-                    stat = model_file.stat()
-                    model_info['model_files'].append({
-                        'name': model_file.name,
-                        'size': stat.st_size,
-                        'modified_time': datetime.fromtimestamp(stat.st_mtime).isoformat()
-                    })
-
-            models.append(model_info)
-
-        return jsonify({
-            'success': True,
-            'models': models
+@model_training_bp.route('/', methods=['GET'])
+@api_error_handler
+def get_models():
+    """获取所有模型版本列表"""
+    models = []
+    for version, model_dir in current_app.config['MODEL_DIRS'].items():
+        files = _model_files_info(model_dir) if model_dir.exists() else []
+        models.append({
+            'version': version,
+            'name': _get_model_name(version),
+            'status': 'trained' if files else 'not_trained',
+            'model_dir': str(model_dir),
+            'model_files': files,
         })
-
-    except Exception as e:
-        logger.error(f'获取模型列表失败: {e}', exc_info=True)
-        return jsonify({'success': False, 'error': str(e)}), 500
+    return jsonify({'success': True, 'models': models})
 
 
 @model_training_bp.route('/<version>', methods=['GET'])
+@api_error_handler
 def get_model_detail(version: str):
-    """
-    获取指定版本模型详情
+    """获取指定版本模型详情"""
+    model_dir = current_app.config['MODEL_DIRS'].get(version)
+    if not model_dir:
+        return jsonify({'success': False, 'error': f'未知的模型版本: {version}'}), 404
 
-    Returns:
-        {
-            "success": True,
-            "model": {...}
-        }
-    """
-    try:
-        model_dir = current_app.config['MODEL_DIRS'].get(version)
-
-        if not model_dir:
-            return jsonify({
-                'success': False,
-                'error': f'未知的模型版本: {version}'
-            }), 404
-
-        model_info = {
+    files = _model_files_info(model_dir, include_size_mb=True) if model_dir.exists() else []
+    return jsonify({
+        'success': True,
+        'model': {
             'version': version,
             'name': _get_model_name(version),
             'description': _get_model_description(version),
-            'status': 'trained' if model_dir.exists() and list(model_dir.glob('*.pkl')) else 'not_trained',
+            'status': 'trained' if files else 'not_trained',
             'model_dir': str(model_dir),
-            'model_files': []
+            'model_files': files,
         }
-
-        # 列出模型文件
-        if model_dir.exists():
-            model_files = list(model_dir.glob('*.pkl'))
-            for model_file in model_files:
-                stat = model_file.stat()
-                model_info['model_files'].append({
-                    'name': model_file.name,
-                    'size': stat.st_size,
-                    'size_mb': round(stat.st_size / (1024 * 1024), 2),
-                    'modified_time': datetime.fromtimestamp(stat.st_mtime).isoformat()
-                })
-
-        return jsonify({
-            'success': True,
-            'model': model_info
-        })
-
-    except Exception as e:
-        logger.error(f'获取模型详情失败: {e}', exc_info=True)
-        return jsonify({'success': False, 'error': str(e)}), 500
+    })
 
 
 @model_training_bp.route('/train', methods=['POST'])
+@api_error_handler
 def train_model():
-    """
-    启动模型训练任务
-
-    Request Body:
-        {
-            "version": "v3.9",
-            "start_date": "2020-01-01",  // 可选
-            "end_date": "2025-11-24",    // 可选
-            "months": 6,                 // 可选，自动模式使用
-            "auto": true                 // 可选，自动计算日期
+    """启动模型训练任务"""
+    data = request.get_json() or {}
+    version = data.get('version', 'v3.9')
+    task_id = task_manager.submit_task(
+        task_type=TaskType.MODEL_TRAINING,
+        func=_run_model_training,
+        metadata={
+            'version': version,
+            'start_date': data.get('start_date'),
+            'end_date': data.get('end_date'),
+            'months': data.get('months', 6),
+            'auto': data.get('auto', True),
+            '_train_script': str(current_app.config['TRAIN_SCRIPT']),
+            '_python_exec': current_app.config['PYTHON_EXECUTABLE'],
+            '_base_dir': str(current_app.config['BASE_DIR']),
+            '_task_timeout': current_app.config['TASK_TIMEOUT'],
         }
-
-    Returns:
-        {
-            "success": True,
-            "task_id": "uuid"
-        }
-    """
-    try:
-        data = request.get_json() or {}
-        version = data.get('version', 'v3.9')
-        start_date = data.get('start_date')
-        end_date = data.get('end_date')
-        months = data.get('months', 6)
-        auto_mode = data.get('auto', True)  # 默认使用自动模式
-
-        # 在主线程中获取配置（线程池中无法访问current_app）
-        train_script = str(current_app.config['TRAIN_SCRIPT'])
-        python_exec = current_app.config['PYTHON_EXECUTABLE']
-        base_dir = str(current_app.config['BASE_DIR'])
-        task_timeout = current_app.config['TASK_TIMEOUT']
-
-        # 提交训练任务
-        task_id = task_manager.submit_task(
-            task_type=TaskType.MODEL_TRAINING,
-            func=_run_model_training,
-            metadata={
-                'version': version,
-                'start_date': start_date,
-                'end_date': end_date,
-                'months': months,
-                'auto': auto_mode,
-                # 传入配置（线程中使用）
-                '_train_script': train_script,
-                '_python_exec': python_exec,
-                '_base_dir': base_dir,
-                '_task_timeout': task_timeout
-            }
-        )
-
-        return jsonify({
-            'success': True,
-            'task_id': task_id,
-            'message': f'模型训练任务已启动（版本: {version}）'
-        })
-
-    except Exception as e:
-        logger.error(f'启动模型训练失败: {e}', exc_info=True)
-        return jsonify({'success': False, 'error': str(e)}), 500
+    )
+    return jsonify({
+        'success': True, 'task_id': task_id,
+        'message': f'模型训练任务已启动（版本: {version}）',
+    })
 
 
 @model_training_bp.route('/train/stream', methods=['GET'])
 def train_stream():
-    """
-    SSE端点：实时推送训练进度
-
-    Query Parameters:
-        task_id: 任务ID
-
-    Returns:
-        Server-Sent Events stream
-    """
-    task_id = request.args.get('task_id')
-
-    if not task_id:
-        return jsonify({'error': 'Missing task_id'}), 400
-
-    def generate():
-        """生成SSE数据流"""
-        for progress_data in task_manager.get_task_progress_stream(task_id):
-            yield f"data: {json.dumps(progress_data, ensure_ascii=False)}\n\n"
-
-    return Response(
-        generate(),
-        mimetype='text/event-stream',
-        headers={
-            'Cache-Control': 'no-cache',
-            'X-Accel-Buffering': 'no'
-        }
-    )
+    """SSE: 训练进度流"""
+    return task_progress_sse(request.args.get('task_id'))
 
 
 @model_training_bp.route('/history', methods=['GET'])
+@api_error_handler
 def get_training_history():
-    """
-    获取训练历史记录
-
-    Query Parameters:
-        version: 模型版本（可选）
-        limit: 返回数量限制（默认50）
-
-    Returns:
-        {
-            "success": True,
-            "history": [...]
-        }
-    """
-    try:
-        version = request.args.get('version')
-        limit = int(request.args.get('limit', 50))
-
-        db_manager = DatabaseManager(
-            current_app.config['STOCK_DB_PATH'],
-            current_app.config['WEBAPP_DB_PATH']
-        )
-
-        history = db_manager.get_training_history(version, limit)
-
-        return jsonify({
-            'success': True,
-            'history': history
-        })
-
-    except Exception as e:
-        logger.error(f'获取训练历史失败: {e}', exc_info=True)
-        return jsonify({'success': False, 'error': str(e)}), 500
+    """获取训练历史记录 (DB 持久化层)"""
+    version = request.args.get('version')
+    limit = int(request.args.get('limit', 50))
+    return jsonify({'success': True,
+                    'history': get_db_manager().get_training_history(version, limit)})
 
 
 @model_training_bp.route('/<version>/features', methods=['GET'])
+@api_error_handler
 def get_feature_importance(version: str):
-    """
-    获取模型特征重要性
-
-    Returns:
-        {
-            "success": True,
-            "features": [{"name": "...", "importance": ...}, ...]
-        }
-    """
-    try:
-        features = _load_feature_importance(version)
-
-        return jsonify({
-            'success': True,
-            'version': version,
-            'features': features
-        })
-
-    except Exception as e:
-        logger.error(f'获取特征重要性失败: {e}', exc_info=True)
-        return jsonify({'success': False, 'error': str(e)}), 500
+    """获取模型特征重要性"""
+    return jsonify({'success': True, 'version': version,
+                    'features': _load_feature_importance(version)})
 
 
 @model_training_bp.route('/<version>/report', methods=['GET'])
+@api_error_handler
 def get_training_report(version: str):
-    """
-    获取训练报告
-
-    Returns:
-        {
-            "success": True,
-            "report": {...}
-        }
-    """
-    try:
-        report = _load_training_report(version)
-
-        return jsonify({
-            'success': True,
-            'version': version,
-            'report': report
-        })
-
-    except Exception as e:
-        logger.error(f'获取训练报告失败: {e}', exc_info=True)
-        return jsonify({'success': False, 'error': str(e)}), 500
+    """获取训练报告"""
+    return jsonify({'success': True, 'version': version,
+                    'report': _load_training_report(version)})
 
 
 @model_training_bp.route('/<version>/north_star', methods=['GET'])
+@api_error_handler
 def get_north_star(version: str):
-    """
-    获取模型版本的北极星V2评分卡
-
-    Returns:
-        {
-            "success": True,
-            "version": "v4.4",
-            "north_star": {
-                "total_score": 88,
-                "max_score": 105,
-                "pct": 83.8,
-                "grade": "S",
-                "layers": { ... },
-                "metrics": { ... }
-            }
-        }
-    """
-    try:
-        result = _compute_north_star_v2(version)
-        return jsonify({
-            'success': True,
-            'version': version,
-            'north_star': result
-        })
-    except Exception as e:
-        logger.error(f'获取北极星评分失败: {e}', exc_info=True)
-        return jsonify({'success': False, 'error': str(e)}), 500
+    """获取模型版本的北极星V2评分卡"""
+    return jsonify({'success': True, 'version': version,
+                    'north_star': _compute_north_star_v2(version)})
 
 
 @model_training_bp.route('/<version>/metrics', methods=['GET'])
+@api_error_handler
 def get_model_metrics(version: str):
-    """
-    获取模型性能指标
-
-    Returns:
-        {
-            "success": True,
-            "metrics": {...}
-        }
-    """
-    try:
-        metrics = _load_model_metrics(version)
-
-        return jsonify({
-            'success': True,
-            'version': version,
-            'metrics': metrics
-        })
-
-    except Exception as e:
-        logger.error(f'获取模型指标失败: {e}', exc_info=True)
-        return jsonify({'success': False, 'error': str(e)}), 500
+    """获取模型性能指标"""
+    return jsonify({'success': True, 'version': version,
+                    'metrics': _load_model_metrics(version)})
 
 
 @model_training_bp.route('/<version>/training_curves', methods=['GET'])
+@api_error_handler
 def get_training_curves(version: str):
-    """
-    获取模型训练曲线数据 (loss曲线、学习曲线等)
-
-    Returns:
-        {
-            "success": True,
-            "version": "v3.9",
-            "training_curves": {
-                "models": {
-                    "lightgbm": {
-                        "train_losses": [...],
-                        "val_losses": [...],
-                        "iterations": [...]
-                    },
-                    ...
-                },
-                "meta_model": {...},
-                "summary": {...}
-            }
-        }
-    """
-    try:
-        curves = _load_training_curves(version)
-
-        return jsonify({
-            'success': True,
-            'version': version,
-            'training_curves': curves
-        })
-
-    except Exception as e:
-        logger.error(f'获取训练曲线失败: {e}', exc_info=True)
-        return jsonify({'success': False, 'error': str(e)}), 500
+    """获取模型训练曲线数据 (loss/学习曲线)"""
+    return jsonify({'success': True, 'version': version,
+                    'training_curves': _load_training_curves(version)})
 
 
 @model_training_bp.route('/<version>/training_history', methods=['GET'])
+@api_error_handler
 def get_training_history_list(version: str):
-    """
-    获取指定版本的所有训练历史记录
-
-    Returns:
-        {
-            "success": True,
-            "version": "v3.9",
-            "histories": [...]
-        }
-    """
-    try:
-        histories = _list_training_histories(version)
-
-        return jsonify({
-            'success': True,
-            'version': version,
-            'histories': histories
-        })
-
-    except Exception as e:
-        logger.error(f'获取训练历史列表失败: {e}', exc_info=True)
-        return jsonify({'success': False, 'error': str(e)}), 500
+    """获取指定版本的所有训练历史记录 (文件系统)"""
+    return jsonify({'success': True, 'version': version,
+                    'histories': _list_training_histories(version)})
 
 
 @model_training_bp.route('/ranking', methods=['GET'])
+@api_error_handler
 def get_models_ranking():
-    """
-    获取所有模型的北极星V2排名
-
-    Returns:
-        {
-            "success": True,
-            "ranking": [
-                {
-                    "version": "v4.4",
-                    "name": "V4.4 六模块增强系统",
-                    "rank": 1,
-                    "total_score": 88,
-                    "max_score": 105,
-                    "pct": 83.8,
-                    "grade": "S",
-                    "report_days": 112,
-                    "layers": {...}
-                }, ...
-            ]
-        }
-    """
-    try:
-        ranking = []
-
-        for version in _get_rankable_report_dirs():
-            ns = _compute_north_star_v2(version)
-            if ns.get('has_data'):
-                ranking.append({
-                    'version': version,
-                    'name': _get_model_name(version),
-                    'total_score': ns['total_score'],
-                    'max_score': ns['max_score'],
-                    'pct': ns['pct'],
-                    'grade': ns['grade'],
-                    'report_days': ns.get('report_days', 0),
-                    'focus_days': ns.get('focus_days', 10),
-                    'top_n': ns.get('top_n', 10),
-                    'layers': ns.get('layers', {}),
-                })
-
-        # 按总分降序排列
-        ranking.sort(key=lambda x: x['total_score'], reverse=True)
-        for i, item in enumerate(ranking):
-            item['rank'] = i + 1
-
-        return jsonify({
-            'success': True,
-            'ranking': ranking
-        })
-
-    except Exception as e:
-        logger.error(f'获取模型排名失败: {e}', exc_info=True)
-        return jsonify({'success': False, 'error': str(e)}), 500
+    """获取所有模型的北极星V2排名"""
+    ranking = []
+    for version in _get_rankable_report_dirs():
+        ns = _compute_north_star_v2(version)
+        if ns.get('has_data'):
+            ranking.append({
+                'version': version,
+                'name': _get_model_name(version),
+                'total_score': ns['total_score'],
+                'max_score': ns['max_score'],
+                'pct': ns['pct'],
+                'grade': ns['grade'],
+                'report_days': ns.get('report_days', 0),
+                'focus_days': ns.get('focus_days', 10),
+                'top_n': ns.get('top_n', 10),
+                'layers': ns.get('layers', {}),
+            })
+    ranking.sort(key=lambda x: x['total_score'], reverse=True)
+    for i, item in enumerate(ranking):
+        item['rank'] = i + 1
+    return jsonify({'success': True, 'ranking': ranking})
 
 
 @model_training_bp.route('/summary', methods=['GET'])
+@api_error_handler
 def get_models_summary():
-    """
-    获取所有模型的汇总信息
+    """获取所有模型的汇总信息"""
+    model_dirs = current_app.config['MODEL_DIRS']
+    models_dir = current_app.config['MODELS_DIR']
 
-    Returns:
-        {
-            "success": True,
-            "summary": {
-                "total_models": 4,
-                "trained_models": 3,
-                "total_size_mb": 150.5,
-                "latest_training": "2025-11-24",
-                "versions": [...]
-            }
+    summary = {
+        'total_models': len(model_dirs),
+        'trained_models': 0,
+        'total_size_mb': 0,
+        'latest_training': None,
+        'versions': [],
+    }
+    latest_time = None
+
+    for version, model_dir in model_dirs.items():
+        version_info = {
+            'version': version, 'name': _get_model_name(version),
+            'status': 'not_trained', 'files_count': 0,
+            'size_mb': 0, 'latest_modified': None,
         }
-    """
-    try:
-        model_dirs = current_app.config['MODEL_DIRS']
-        models_dir = current_app.config['MODELS_DIR']
+        if model_dir.exists():
+            pkl_files = list(model_dir.glob('*.pkl'))
+            if pkl_files:
+                version_info['status'] = 'trained'
+                version_info['files_count'] = len(pkl_files)
+                summary['trained_models'] += 1
 
-        summary = {
-            'total_models': len(model_dirs),
-            'trained_models': 0,
-            'total_size_mb': 0,
-            'latest_training': None,
-            'versions': []
-        }
+                for f in pkl_files:
+                    stat = f.stat()
+                    version_info['size_mb'] += stat.st_size / (1024 * 1024)
+                    if latest_time is None or stat.st_mtime > latest_time:
+                        latest_time = stat.st_mtime
 
-        latest_time = None
+                version_info['size_mb'] = round(version_info['size_mb'], 2)
+                summary['total_size_mb'] += version_info['size_mb']
 
-        for version, model_dir in model_dirs.items():
-            version_info = {
-                'version': version,
-                'name': _get_model_name(version),
-                'status': 'not_trained',
-                'files_count': 0,
-                'size_mb': 0,
-                'latest_modified': None
-            }
+                newest = max(pkl_files, key=lambda f: f.stat().st_mtime)
+                version_info['latest_modified'] = datetime.fromtimestamp(
+                    newest.stat().st_mtime).strftime('%Y-%m-%d %H:%M')
 
-            if model_dir.exists():
-                pkl_files = list(model_dir.glob('*.pkl'))
-                if pkl_files:
-                    version_info['status'] = 'trained'
-                    version_info['files_count'] = len(pkl_files)
-                    summary['trained_models'] += 1
+        summary['versions'].append(version_info)
 
-                    for f in pkl_files:
-                        stat = f.stat()
-                        version_info['size_mb'] += stat.st_size / (1024 * 1024)
+    if models_dir.exists():
+        for f in models_dir.glob('*.pkl'):
+            stat = f.stat()
+            summary['total_size_mb'] += stat.st_size / (1024 * 1024)
+            if latest_time is None or stat.st_mtime > latest_time:
+                latest_time = stat.st_mtime
 
-                        if latest_time is None or stat.st_mtime > latest_time:
-                            latest_time = stat.st_mtime
+    summary['total_size_mb'] = round(summary['total_size_mb'], 2)
+    if latest_time:
+        summary['latest_training'] = datetime.fromtimestamp(latest_time).strftime('%Y-%m-%d')
 
-                    version_info['size_mb'] = round(version_info['size_mb'], 2)
-                    summary['total_size_mb'] += version_info['size_mb']
-
-                    # 获取最新修改时间
-                    newest = max(pkl_files, key=lambda f: f.stat().st_mtime)
-                    version_info['latest_modified'] = datetime.fromtimestamp(
-                        newest.stat().st_mtime
-                    ).strftime('%Y-%m-%d %H:%M')
-
-            summary['versions'].append(version_info)
-
-        # 检查根目录下的模型文件
-        if models_dir.exists():
-            for f in models_dir.glob('*.pkl'):
-                stat = f.stat()
-                summary['total_size_mb'] += stat.st_size / (1024 * 1024)
-                if latest_time is None or stat.st_mtime > latest_time:
-                    latest_time = stat.st_mtime
-
-        summary['total_size_mb'] = round(summary['total_size_mb'], 2)
-        if latest_time:
-            summary['latest_training'] = datetime.fromtimestamp(latest_time).strftime('%Y-%m-%d')
-
-        return jsonify({
-            'success': True,
-            'summary': summary
-        })
-
-    except Exception as e:
-        logger.error(f'获取模型汇总失败: {e}', exc_info=True)
-        return jsonify({'success': False, 'error': str(e)}), 500
+    return jsonify({'success': True, 'summary': summary})
 
 
 # ==================== 辅助函数 ====================

@@ -36,8 +36,9 @@ class DatabaseManager:
     @contextmanager
     def get_stock_db_connection(self):
         """获取主数据库连接（上下文管理器）"""
-        conn = sqlite3.connect(self.stock_db_path)
-        conn.row_factory = sqlite3.Row  # 使查询结果可以通过列名访问
+        conn = sqlite3.connect(self.stock_db_path, timeout=30.0)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout=30000")
         try:
             yield conn
         finally:
@@ -46,8 +47,9 @@ class DatabaseManager:
     @contextmanager
     def get_webapp_db_connection(self):
         """获取Web应用数据库连接（上下文管理器）"""
-        conn = sqlite3.connect(self.webapp_db_path)
+        conn = sqlite3.connect(self.webapp_db_path, timeout=30.0)
         conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout=30000")
         try:
             yield conn
         finally:
@@ -1044,24 +1046,46 @@ class DatabaseManager:
     def update_position_prices(self):
         """更新所有持仓的当前价格"""
         positions = self.get_all_positions()
-        updated_count = 0
-        for pos in positions:
-            code = pos['code']
-            # 标准化代码
-            normalized_code = self._normalize_code(code)
-            # 从主数据库获取最新价格
-            with self.get_stock_db_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute('''
-                    SELECT close FROM daily_quotes
-                    WHERE security_id = (SELECT id FROM securities WHERE code = ?)
-                    ORDER BY trade_date DESC LIMIT 1
-                ''', (normalized_code,))
-                row = cursor.fetchone()
-                if row:
-                    self.update_position(pos['id'], {'current_price': row['close']})
-                    updated_count += 1
-        return updated_count
+        if not positions:
+            return 0
+
+        normalized = [self._normalize_code(p['code']) for p in positions]
+        prices = self._batch_latest_prices(normalized)
+
+        updates = []
+        for pos, code in zip(positions, normalized):
+            price = prices.get(code)
+            if price is not None:
+                updates.append((price, pos['id']))
+
+        if not updates:
+            return 0
+
+        with self.get_webapp_db_connection() as conn:
+            conn.executemany(
+                'UPDATE positions SET current_price = ?, last_update = CURRENT_TIMESTAMP WHERE id = ?',
+                updates)
+            conn.commit()
+        return len(updates)
+
+    def _batch_latest_prices(self, codes: List[str]) -> Dict[str, float]:
+        """批量获取一组股票的最新收盘价，避免 N+1。"""
+        unique_codes = list({c for c in codes if c})
+        if not unique_codes:
+            return {}
+        placeholders = ','.join('?' * len(unique_codes))
+        with self.get_stock_db_connection() as conn:
+            rows = conn.execute(f'''
+                SELECT s.code, dq.close
+                FROM securities s
+                JOIN daily_quotes dq ON dq.security_id = s.id
+                WHERE s.code IN ({placeholders})
+                  AND dq.trade_date = (
+                    SELECT MAX(trade_date) FROM daily_quotes
+                    WHERE security_id = s.id
+                  )
+            ''', unique_codes).fetchall()
+        return {row['code']: row['close'] for row in rows if row['close'] is not None}
 
     # ==================== 交易记录方法 ====================
 
@@ -1238,6 +1262,20 @@ class DatabaseManager:
                     LIMIT 100
                 ''')
             return [dict(row) for row in cursor.fetchall()]
+
+    def get_evaluated_days_by_trade(self, trade_ids: List[int]) -> Dict[int, set]:
+        """批量返回 {trade_id: {days_after, ...}}, 用于 N+1 已评估检查。"""
+        if not trade_ids:
+            return {}
+        placeholders = ','.join('?' * len(trade_ids))
+        with self.get_webapp_db_connection() as conn:
+            rows = conn.execute(
+                f'SELECT trade_id, days_after FROM trade_evaluations WHERE trade_id IN ({placeholders})',
+                trade_ids).fetchall()
+        result: Dict[int, set] = {}
+        for row in rows:
+            result.setdefault(row['trade_id'], set()).add(row['days_after'])
+        return result
 
     def add_trade_evaluation(self, data: Dict) -> int:
         """添加交易评估"""
@@ -1451,6 +1489,18 @@ class DatabaseManager:
             cursor.execute('SELECT name FROM securities WHERE code = ?', (code,))
             row = cursor.fetchone()
             return row['name'] if row else ''
+
+    def get_stock_names_batch(self, codes: List[str]) -> Dict[str, str]:
+        """批量获取股票名称, 返回 {normalized_code: name}。"""
+        unique_codes = list({self._normalize_code(c) for c in codes if c})
+        if not unique_codes:
+            return {}
+        placeholders = ','.join('?' * len(unique_codes))
+        with self.get_stock_db_connection() as conn:
+            rows = conn.execute(
+                f'SELECT code, name FROM securities WHERE code IN ({placeholders})',
+                unique_codes).fetchall()
+        return {row['code']: row['name'] for row in rows}
 
     def get_stock_latest_price(self, code: str) -> Optional[float]:
         """获取股票最新价格"""

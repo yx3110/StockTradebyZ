@@ -82,6 +82,13 @@ class TaskManager:
     - 任务历史记录
     """
 
+    # 单个任务进度队列上限 (防止无 SSE 消费者时无界增长)
+    PROGRESS_QUEUE_MAXSIZE = 500
+    # 自动清理周期 (秒)
+    CLEANUP_INTERVAL_SEC = 3600
+    # 自动清理保留时长 (小时)
+    CLEANUP_MAX_AGE_HOURS = 24
+
     def __init__(self, max_workers: int = 4):
         """
         初始化任务管理器
@@ -97,6 +104,11 @@ class TaskManager:
 
         # 任务进度队列（用于实时进度推送）
         self.progress_queues: Dict[str, queue.Queue] = {}
+
+        # 周期性清理已完成任务, 避免 tasks/futures/progress_queues 无界增长
+        self._cleanup_timer: Optional[threading.Timer] = None
+        self._shutdown_flag = False
+        self._start_cleanup_timer()
 
     def submit_task(
         self,
@@ -131,7 +143,7 @@ class TaskManager:
 
         with self.lock:
             self.tasks[task_id] = task_info
-            self.progress_queues[task_id] = queue.Queue()
+            self.progress_queues[task_id] = queue.Queue(maxsize=self.PROGRESS_QUEUE_MAXSIZE)
 
         # 创建进度回调函数
         def progress_callback(progress: float, message: str = ''):
@@ -376,6 +388,23 @@ class TaskManager:
                 if task_id in self.progress_queues:
                     del self.progress_queues[task_id]
 
+    def _start_cleanup_timer(self):
+        """启动周期清理定时器 (daemon, 进程退出自动结束)。"""
+        if self._shutdown_flag:
+            return
+
+        def _tick():
+            try:
+                self.cleanup_old_tasks(self.CLEANUP_MAX_AGE_HOURS)
+            except Exception:  # noqa: BLE001 — timer 必须不传播异常
+                pass
+            finally:
+                self._start_cleanup_timer()
+
+        self._cleanup_timer = threading.Timer(self.CLEANUP_INTERVAL_SEC, _tick)
+        self._cleanup_timer.daemon = True
+        self._cleanup_timer.start()
+
     def shutdown(self, wait: bool = True):
         """
         关闭任务管理器
@@ -383,6 +412,9 @@ class TaskManager:
         Args:
             wait: 是否等待所有任务完成
         """
+        self._shutdown_flag = True
+        if self._cleanup_timer is not None:
+            self._cleanup_timer.cancel()
         self.executor.shutdown(wait=wait)
 
 

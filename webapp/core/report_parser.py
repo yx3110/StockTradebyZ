@@ -4,12 +4,32 @@
 import re
 import json
 import logging
+from functools import lru_cache
 from pathlib import Path
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Callable
 from datetime import datetime
 
 
 logger = logging.getLogger(__name__)
+
+
+def _mtime_ns(filepath: Path) -> int:
+    """Stat 失败返回 0; 用于 lru_cache 的失效 key。"""
+    try:
+        return filepath.stat().st_mtime_ns
+    except OSError:
+        return 0
+
+
+@lru_cache(maxsize=128)
+def _cached_parse(parser_id: str, filepath_str: str, _mtime: int) -> Dict[str, Any]:
+    """按 (parser, path, mtime) 缓存解析结果; 文件不变则零 I/O。"""
+    parser = _PARSERS[parser_id]
+    return parser(Path(filepath_str))
+
+
+# 注册稍后填充, 避免循环引用
+_PARSERS: Dict[str, Callable[[Path], Dict[str, Any]]] = {}
 
 
 class ReportParser:
@@ -21,124 +41,18 @@ class ReportParser:
 
     @staticmethod
     def parse_selection_report(filepath: Path) -> Dict[str, Any]:
-        """
-        解析选股报告
-
-        Args:
-            filepath: 报告文件路径
-
-        Returns:
-            解析结果字典
-        """
-        try:
-            with open(filepath, 'r', encoding='utf-8') as f:
-                content = f.read()
-
-            # 提取日期
-            date = ReportParser._extract_date(content)
-
-            # 提取股票列表
-            stocks = ReportParser._extract_stock_table(content)
-
-            # 提取摘要信息
-            summary = ReportParser._extract_summary(content)
-
-            return {
-                'date': date,
-                'stocks': stocks,
-                'summary': summary,
-                'raw_content': content,
-                'file_path': str(filepath)
-            }
-
-        except Exception as e:
-            logger.error(f'解析选股报告失败: {filepath}, 错误: {e}')
-            return {
-                'error': str(e),
-                'file_path': str(filepath)
-            }
+        """解析选股报告 (mtime-aware LRU 缓存)"""
+        return _cached_parse('selection_report', str(filepath), _mtime_ns(filepath))
 
     @staticmethod
     def parse_backtest_report(filepath: Path) -> Dict[str, Any]:
-        """
-        解析回测报告
-
-        Args:
-            filepath: 报告文件路径
-
-        Returns:
-            解析结果字典
-        """
-        try:
-            with open(filepath, 'r', encoding='utf-8') as f:
-                content = f.read()
-
-            # 提取回测配置
-            config = ReportParser._extract_backtest_config(content)
-
-            # 提取性能指标
-            metrics = ReportParser._extract_backtest_metrics(content)
-
-            # 提取交易记录
-            trades = ReportParser._extract_backtest_trades(content)
-
-            return {
-                'config': config,
-                'metrics': metrics,
-                'trades': trades,
-                'raw_content': content,
-                'file_path': str(filepath)
-            }
-
-        except Exception as e:
-            logger.error(f'解析回测报告失败: {filepath}, 错误: {e}')
-            return {
-                'error': str(e),
-                'file_path': str(filepath)
-            }
+        """解析回测报告 (mtime-aware LRU 缓存)"""
+        return _cached_parse('backtest_report', str(filepath), _mtime_ns(filepath))
 
     @staticmethod
     def parse_ai_analysis_report(filepath: Path) -> Dict[str, Any]:
-        """
-        解析AI分析报告
-
-        Args:
-            filepath: 报告文件路径
-
-        Returns:
-            解析结果字典
-        """
-        try:
-            with open(filepath, 'r', encoding='utf-8') as f:
-                content = f.read()
-
-            # 提取日期
-            date = ReportParser._extract_date(content)
-
-            # 提取市场分析
-            market_analysis = ReportParser._extract_section(content, '市场分析')
-
-            # 提取个股分析
-            stock_analysis = ReportParser._extract_section(content, '个股分析')
-
-            # 提取风险评估
-            risk_assessment = ReportParser._extract_section(content, '风险评估')
-
-            return {
-                'date': date,
-                'market_analysis': market_analysis,
-                'stock_analysis': stock_analysis,
-                'risk_assessment': risk_assessment,
-                'raw_content': content,
-                'file_path': str(filepath)
-            }
-
-        except Exception as e:
-            logger.error(f'解析AI分析报告失败: {filepath}, 错误: {e}')
-            return {
-                'error': str(e),
-                'file_path': str(filepath)
-            }
+        """解析AI分析报告 (mtime-aware LRU 缓存)"""
+        return _cached_parse('ai_analysis_report', str(filepath), _mtime_ns(filepath))
 
     # ==================== 辅助方法 ====================
 
@@ -364,76 +278,8 @@ class ReportParser:
 
     @staticmethod
     def parse_selection_json(filepath: Path) -> Dict[str, Any]:
-        """
-        解析选股JSON数据文件
-
-        Args:
-            filepath: JSON文件路径
-
-        Returns:
-            解析结果字典
-        """
-        try:
-            with open(filepath, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-
-            # 提取日期（从文件名）
-            date_match = re.search(r'(\d{8})', filepath.name)
-            date = None
-            if date_match:
-                d = date_match.group(1)
-                date = f'{d[:4]}-{d[4:6]}-{d[6:]}'
-
-            # 处理推荐股票
-            top_recommendations = data.get('top_recommendations', [])
-            all_stocks = data.get('all_stocks_with_scores', [])
-
-            # 格式化股票数据
-            formatted_stocks = []
-            for stock in top_recommendations:
-                formatted_stocks.append({
-                    'code': stock.get('stock_code', ''),
-                    'name': stock.get('stock_name', ''),
-                    'industry': stock.get('industry', ''),
-                    'close_price': stock.get('close_price', 0),
-                    'price_change_pct': stock.get('price_change_pct', 0),
-                    'score': stock.get('score', 0),
-                    'confidence': stock.get('confidence', ''),
-                    'recommendation': stock.get('recommendation', ''),
-                    'strategies': stock.get('strategies', []),
-                    'strategy_count': stock.get('selected_by_strategies', 0),
-                    'risk_reward_ratio': stock.get('risk_reward_ratio', 0),
-                    'stop_loss_price': stock.get('stop_loss_price', 0),
-                    'take_profit_price': stock.get('take_profit_price', 0),
-                    'technical_rating': stock.get('technical_rating', ''),
-                    'risk_rating': stock.get('risk_rating', ''),
-                    'kdj_k': stock.get('kdj_k', 0),
-                    'kdj_d': stock.get('kdj_d', 0),
-                    'kdj_j': stock.get('kdj_j', 0),
-                    'bbi': stock.get('bbi', 0),
-                    'predicted_return_5d': stock.get('predicted_return_5d'),
-                    'detailed_scoring': stock.get('detailed_scoring', {}),
-                    'volume': stock.get('volume', 0),
-                    'suggested_buy_price': stock.get('suggested_buy_price', 0),
-                })
-
-            return {
-                'date': date,
-                'total_strategies': data.get('total_strategies', 0),
-                'strategy_results': data.get('strategy_results', {}),
-                'total_stocks': len(all_stocks),
-                'top_recommendations': formatted_stocks,
-                'all_stocks_count': len(all_stocks),
-                'multi_strategy_count': len(data.get('multi_strategy_stocks', [])),
-                'file_path': str(filepath)
-            }
-
-        except Exception as e:
-            logger.error(f'解析选股JSON失败: {filepath}, 错误: {e}')
-            return {
-                'error': str(e),
-                'file_path': str(filepath)
-            }
+        """解析选股JSON数据文件 (mtime-aware LRU 缓存)"""
+        return _cached_parse('selection_json', str(filepath), _mtime_ns(filepath))
 
     @staticmethod
     def get_selection_dates(reports_dir: Path, limit: int = 100) -> List[str]:
@@ -492,3 +338,113 @@ class ReportParser:
             return ReportParser.parse_selection_report(md_file)
 
         return None
+
+
+# ==================== Uncached implementations (registered in _PARSERS) ====================
+
+def _uncached_parse_selection_report(filepath: Path) -> Dict[str, Any]:
+    try:
+        with open(filepath, 'r', encoding='utf-8') as f:
+            content = f.read()
+        return {
+            'date': ReportParser._extract_date(content),
+            'stocks': ReportParser._extract_stock_table(content),
+            'summary': ReportParser._extract_summary(content),
+            'raw_content': content,
+            'file_path': str(filepath),
+        }
+    except Exception as e:
+        logger.error(f'解析选股报告失败: {filepath}, 错误: {e}')
+        return {'error': str(e), 'file_path': str(filepath)}
+
+
+def _uncached_parse_backtest_report(filepath: Path) -> Dict[str, Any]:
+    try:
+        with open(filepath, 'r', encoding='utf-8') as f:
+            content = f.read()
+        return {
+            'config': ReportParser._extract_backtest_config(content),
+            'metrics': ReportParser._extract_backtest_metrics(content),
+            'trades': ReportParser._extract_backtest_trades(content),
+            'raw_content': content,
+            'file_path': str(filepath),
+        }
+    except Exception as e:
+        logger.error(f'解析回测报告失败: {filepath}, 错误: {e}')
+        return {'error': str(e), 'file_path': str(filepath)}
+
+
+def _uncached_parse_ai_analysis_report(filepath: Path) -> Dict[str, Any]:
+    try:
+        with open(filepath, 'r', encoding='utf-8') as f:
+            content = f.read()
+        return {
+            'date': ReportParser._extract_date(content),
+            'market_analysis': ReportParser._extract_section(content, '市场分析'),
+            'stock_analysis': ReportParser._extract_section(content, '个股分析'),
+            'risk_assessment': ReportParser._extract_section(content, '风险评估'),
+            'raw_content': content,
+            'file_path': str(filepath),
+        }
+    except Exception as e:
+        logger.error(f'解析AI分析报告失败: {filepath}, 错误: {e}')
+        return {'error': str(e), 'file_path': str(filepath)}
+
+
+def _uncached_parse_selection_json(filepath: Path) -> Dict[str, Any]:
+    try:
+        with open(filepath, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        date_match = re.search(r'(\d{8})', filepath.name)
+        date = None
+        if date_match:
+            d = date_match.group(1)
+            date = f'{d[:4]}-{d[4:6]}-{d[6:]}'
+        top_recommendations = data.get('top_recommendations', [])
+        all_stocks = data.get('all_stocks_with_scores', [])
+        formatted_stocks = [{
+            'code': s.get('stock_code', ''),
+            'name': s.get('stock_name', ''),
+            'industry': s.get('industry', ''),
+            'close_price': s.get('close_price', 0),
+            'price_change_pct': s.get('price_change_pct', 0),
+            'score': s.get('score', 0),
+            'confidence': s.get('confidence', ''),
+            'recommendation': s.get('recommendation', ''),
+            'strategies': s.get('strategies', []),
+            'strategy_count': s.get('selected_by_strategies', 0),
+            'risk_reward_ratio': s.get('risk_reward_ratio', 0),
+            'stop_loss_price': s.get('stop_loss_price', 0),
+            'take_profit_price': s.get('take_profit_price', 0),
+            'technical_rating': s.get('technical_rating', ''),
+            'risk_rating': s.get('risk_rating', ''),
+            'kdj_k': s.get('kdj_k', 0),
+            'kdj_d': s.get('kdj_d', 0),
+            'kdj_j': s.get('kdj_j', 0),
+            'bbi': s.get('bbi', 0),
+            'predicted_return_5d': s.get('predicted_return_5d'),
+            'detailed_scoring': s.get('detailed_scoring', {}),
+            'volume': s.get('volume', 0),
+            'suggested_buy_price': s.get('suggested_buy_price', 0),
+        } for s in top_recommendations]
+        return {
+            'date': date,
+            'total_strategies': data.get('total_strategies', 0),
+            'strategy_results': data.get('strategy_results', {}),
+            'total_stocks': len(all_stocks),
+            'top_recommendations': formatted_stocks,
+            'all_stocks_count': len(all_stocks),
+            'multi_strategy_count': len(data.get('multi_strategy_stocks', [])),
+            'file_path': str(filepath),
+        }
+    except Exception as e:
+        logger.error(f'解析选股JSON失败: {filepath}, 错误: {e}')
+        return {'error': str(e), 'file_path': str(filepath)}
+
+
+_PARSERS.update({
+    'selection_report': _uncached_parse_selection_report,
+    'backtest_report': _uncached_parse_backtest_report,
+    'ai_analysis_report': _uncached_parse_ai_analysis_report,
+    'selection_json': _uncached_parse_selection_json,
+})

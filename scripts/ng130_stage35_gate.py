@@ -67,17 +67,17 @@ def run_north_star(report_dir: Path, label: str) -> str:
 # V5.2 is printed last (after V2/V3/V4/V5/V5.1), so we split on the V5.2 header
 # and parse the 原始总分 line inside that block to avoid capturing earlier cards.
 V52_HEADER_RE = re.compile(r'北极星评分卡\s*V5\.2')
-RAW_SCORE_RE = re.compile(r'原始总分:\s*([\d.]+)\s*/\s*105\s*\(未加权([\d.]+)%\)')
+RAW_SCORE_RE = re.compile(r'原始总分:\s*([\d.]+)\s*/\s*([\d.]+)\s*\(未加权([\d.]+)%\)')
 
 
 def parse_v52_raw(north_star_output: str) -> tuple[float, float] | None:
-    """Return (score_out_of_105, pct) of V5.2 scorecard in north_star stdout."""
+    """Return (score, pct) of V5.2 scorecard in north_star stdout."""
     header = V52_HEADER_RE.search(north_star_output)
     block = north_star_output[header.start():] if header else north_star_output
     m = RAW_SCORE_RE.search(block)
     if not m:
         return None
-    return float(m.group(1)), float(m.group(2))
+    return float(m.group(1)), float(m.group(3))
 
 
 def write_postmortem(passed: bool, v52_pct: float, label: str, start: str, end: str,

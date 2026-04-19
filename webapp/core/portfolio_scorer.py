@@ -17,6 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 import sqlite3
 import math
 import numpy as np
+from contextlib import closing
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple, Any
 from pathlib import Path
@@ -248,6 +249,56 @@ class PortfolioScorer:
     def __init__(self, stock_db_path: Path, webapp_db_path: Path):
         self.stock_db_path = stock_db_path
         self.webapp_db_path = webapp_db_path
+        # Per-call caches; populated by _preload_stock_data() at start of calculate_score
+        self._industry_cache: Dict[str, str] = {}
+        self._volatility_cache: Dict[str, float] = {}
+
+    def _normalize_code(self, code: str) -> str:
+        return code.split('.')[0] if code and '.' in code else (code or '')
+
+    def _preload_stock_data(self, positions: List[Dict]) -> None:
+        """一次性批量预取所有持仓的 industry + 21 日收盘价，填充缓存避免 N+1。"""
+        self._industry_cache = {}
+        self._volatility_cache = {}
+        codes = sorted({self._normalize_code(p.get('code', '')) for p in positions if p.get('code')})
+        if not codes:
+            return
+        placeholders = ','.join('?' * len(codes))
+        try:
+            with closing(sqlite3.connect(self.stock_db_path, timeout=30.0)) as conn:
+                conn.execute("PRAGMA busy_timeout=30000")
+                # 行业
+                for row in conn.execute(
+                        f"SELECT code, industry FROM securities WHERE code IN ({placeholders})",
+                        codes):
+                    self._industry_cache[row[0]] = row[1] or '未知'
+                # 收盘价 — 用全局最近 21 个交易日的 cutoff (股票共享交易日历; 长期停牌股自然落到默认 0.30)
+                rows = conn.execute(f"""
+                    SELECT s.code, dq.close, dq.trade_date
+                    FROM securities s
+                    JOIN daily_quotes dq ON dq.security_id = s.id
+                    WHERE s.code IN ({placeholders}) AND dq.close > 0
+                      AND dq.trade_date >= (
+                        SELECT MIN(trade_date) FROM (
+                          SELECT DISTINCT trade_date FROM daily_quotes
+                          ORDER BY trade_date DESC LIMIT 21
+                        )
+                      )
+                    ORDER BY s.code, dq.trade_date
+                """, codes).fetchall()
+        except Exception as e:
+            logger.warning("preload stock data failed: %s", e)
+            return
+
+        prices_by_code: Dict[str, List[float]] = {}
+        for code, close, _ in rows:
+            prices_by_code.setdefault(code, []).append(close)
+        for code, prices in prices_by_code.items():
+            if len(prices) < 6:
+                self._volatility_cache[code] = 0.30
+                continue
+            rets = [(prices[i] - prices[i-1]) / prices[i-1] for i in range(1, len(prices))]
+            self._volatility_cache[code] = float(np.std(rets) * math.sqrt(252))
 
     def calculate_score(self,
                         positions: List[Dict],
@@ -272,6 +323,9 @@ class PortfolioScorer:
         Returns:
             完整评分报告
         """
+        # 一次性预取行业+收盘价缓存，消除后续 _get_stock_industry / _get_stock_volatility N+1
+        self._preload_stock_data(positions)
+
         total_mv = sum(p.get('market_value') or 0 for p in positions)
         if total_capital <= 0:
             if cash_amount > 0:
@@ -501,7 +555,7 @@ class PortfolioScorer:
         returns_matrix = []  # each row = daily returns for one stock
 
         try:
-            with sqlite3.connect(self.stock_db_path) as conn:
+            with closing(sqlite3.connect(self.stock_db_path)) as conn:
                 cursor = conn.cursor()
                 for p in positions:
                     code = p.get('code', '')
@@ -694,7 +748,7 @@ class PortfolioScorer:
     def _calc_rebalance_follow_rate(self) -> Optional[float]:
         """再平衡建议执行率 (from management engine)"""
         try:
-            with sqlite3.connect(self.webapp_db_path) as conn:
+            with closing(sqlite3.connect(self.webapp_db_path)) as conn:
                 cursor = conn.cursor()
                 cursor.execute(
                     "SELECT status, COUNT(*) FROM rebalance_suggestions GROUP BY status")
@@ -777,35 +831,8 @@ class PortfolioScorer:
         return compliant / len(positions) * 100
 
     def _detect_market_regime(self) -> str:
-        """从沪深300指数实际数据判断市场状态 (bull/bear/neutral)"""
-        try:
-            with sqlite3.connect(self.stock_db_path) as conn:
-                cursor = conn.cursor()
-                # CSI 300 index code: 000300.SH or 399300.SZ
-                cursor.execute("""
-                    SELECT dq.close FROM daily_quotes dq
-                    JOIN securities s ON dq.security_id = s.id
-                    WHERE s.code IN ('000300', '399300')
-                    ORDER BY dq.trade_date DESC LIMIT 60
-                """)
-                rows = cursor.fetchall()
-                if len(rows) < 20:
-                    return 'neutral'
-                prices = [r[0] for r in reversed(rows)]
-                # 20-day return
-                ret_20d = (prices[-1] - prices[-20]) / prices[-20]
-                # 60-day MA trend
-                ma20 = np.mean(prices[-20:])
-                ma60 = np.mean(prices) if len(prices) >= 60 else ma20
-
-                if ret_20d > 0.05 and prices[-1] > ma60:
-                    return 'bull'
-                elif ret_20d < -0.05 and prices[-1] < ma60:
-                    return 'bear'
-                else:
-                    return 'neutral'
-        except Exception:
-            return 'neutral'
+        from .utils import detect_market_regime
+        return detect_market_regime(self.stock_db_path)
 
     def _calc_regime_adaptiveness(self, positions: List[Dict],
                                    total_mv: float, total_capital: float,
@@ -855,7 +882,7 @@ class PortfolioScorer:
         # Bonus for active risk management (management engine running)
         bonus = 0
         try:
-            with sqlite3.connect(self.webapp_db_path) as conn:
+            with closing(sqlite3.connect(self.webapp_db_path)) as conn:
                 cursor = conn.cursor()
                 cursor.execute(
                     "SELECT market_regime, target_exposure_pct FROM portfolio_risk_state "
@@ -1026,7 +1053,7 @@ class PortfolioScorer:
         if not rec_id:
             return
         try:
-            with sqlite3.connect(self.webapp_db_path) as conn:
+            with closing(sqlite3.connect(self.webapp_db_path)) as conn:
                 conn.execute(
                     "UPDATE recommendations SET is_executed = 1, executed_at = CURRENT_TIMESTAMP WHERE id = ?",
                     (rec_id,))
@@ -1091,52 +1118,48 @@ class PortfolioScorer:
     # ==================== 辅助数据查询 ====================
 
     def _get_stock_industry(self, code: str) -> str:
-        """获取股票行业 (from securities table)"""
+        """获取股票行业, 优先用 _preload_stock_data 填充的缓存。"""
+        norm = self._normalize_code(code)
+        if norm in self._industry_cache:
+            return self._industry_cache[norm]
         try:
-            # 去掉后缀
-            if '.' in code:
-                code = code.split('.')[0]
-            with sqlite3.connect(self.stock_db_path) as conn:
-                cursor = conn.cursor()
-                cursor.execute(
+            with closing(sqlite3.connect(self.stock_db_path, timeout=30.0)) as conn:
+                conn.execute("PRAGMA busy_timeout=30000")
+                row = conn.execute(
                     "SELECT industry FROM securities WHERE code = ? LIMIT 1",
-                    (code,))
-                row = cursor.fetchone()
-                return row[0] if row and row[0] else '未知'
-        except Exception:
-            return '未知'
+                    (norm,)).fetchone()
+            industry = row[0] if row and row[0] else '未知'
+        except Exception as e:
+            logger.warning("get industry %s failed: %s", norm, e)
+            industry = '未知'
+        self._industry_cache[norm] = industry
+        return industry
 
     def _get_stock_volatility(self, code: str, days: int = 20) -> float:
-        """获取股票年化波动率 (从收盘价直接计算, 避免pct格式歧义)"""
+        """获取股票年化波动率, 优先用 _preload_stock_data 填充的缓存。"""
+        norm = self._normalize_code(code)
+        if norm in self._volatility_cache:
+            return self._volatility_cache[norm]
         try:
-            if '.' in code:
-                code = code.split('.')[0]
-            with sqlite3.connect(self.stock_db_path) as conn:
-                cursor = conn.cursor()
-                cursor.execute(
-                    "SELECT id FROM securities WHERE code = ? LIMIT 1", (code,))
-                row = cursor.fetchone()
-                if not row:
-                    return 0.30
-                sec_id = row[0]
-
-                cursor.execute("""
+            with closing(sqlite3.connect(self.stock_db_path, timeout=30.0)) as conn:
+                conn.execute("PRAGMA busy_timeout=30000")
+                rows = conn.execute("""
                     SELECT close FROM daily_quotes
-                    WHERE security_id = ? AND close > 0
+                    WHERE security_id = (SELECT id FROM securities WHERE code = ?)
+                      AND close > 0
                     ORDER BY trade_date DESC LIMIT ?
-                """, (sec_id, days + 1))
-                rows = cursor.fetchall()
-                if len(rows) < 6:
-                    return 0.30
-
+                """, (norm, days + 1)).fetchall()
+            if len(rows) < 6:
+                vol = 0.30
+            else:
                 prices = [r[0] for r in reversed(rows)]
-                returns = [(prices[i] - prices[i-1]) / prices[i-1]
-                           for i in range(1, len(prices))]
-                daily_vol = np.std(returns)
-                annual_vol = daily_vol * math.sqrt(252)
-                return annual_vol
-        except Exception:
-            return 0.30
+                rets = [(prices[i] - prices[i-1]) / prices[i-1] for i in range(1, len(prices))]
+                vol = float(np.std(rets) * math.sqrt(252))
+        except Exception as e:
+            logger.warning("get volatility %s failed: %s", norm, e)
+            vol = 0.30
+        self._volatility_cache[norm] = vol
+        return vol
 
 
 def format_score_display(score_result: Dict) -> str:

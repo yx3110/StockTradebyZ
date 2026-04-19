@@ -129,8 +129,8 @@ class PositionAnalyzer:
                 if row and row[0]:
                     current_price = float(row[0])
                     avg_cost = current_price
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("get latest price for %s failed: %s", code_clean, e)
 
         # 最终回退
         if current_price is None or current_price == 0:
@@ -1243,20 +1243,21 @@ class PositionAnalyzer:
         ml_batch = {}
         if self.ml_scorer and all_codes:
             try:
-                if self.ml_version == 'v4.4.1':
+                # 所有活跃版本 (v4.4.1 / v3.9.x / v3.95) 都暴露 predict_scores 批量接口;
+                # fallback per-code 只在极老版本没有该方法时触发
+                if hasattr(self.ml_scorer, 'predict_scores'):
                     ml_batch = self.ml_scorer.predict_scores(all_codes, trade_date)
                 else:
-                    # V3.9.x: 逐个获取
                     for code in all_codes:
                         try:
                             result = self.ml_scorer.predict_score(code, trade_date)
                             if result:
                                 ml_batch[code] = result
-                        except Exception:
-                            pass
-                logger.info(f"批量ML评分完成: {len(ml_batch)}/{len(all_codes)} 只股票")
+                        except Exception as e:
+                            logger.warning("predict_score %s failed: %s", code, e)
+                logger.info("批量ML评分完成: %d/%d", len(ml_batch), len(all_codes))
             except Exception as e:
-                logger.warning(f"批量ML评分失败: {e}")
+                logger.warning("批量ML评分失败: %s", e)
 
         for pos in positions:
             try:
@@ -1265,8 +1266,8 @@ class PositionAnalyzer:
                     try:
                         first_date = datetime.strptime(pos['first_buy_date'], '%Y-%m-%d')
                         holding_days = (datetime.now() - first_date).days
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.warning("parse first_buy_date %r failed: %s", pos.get('first_buy_date'), e)
 
                 # 确保参数有效
                 avg_cost = pos.get('avg_cost')
@@ -1293,8 +1294,8 @@ class PositionAnalyzer:
                         if row and row[0]:
                             current_price = float(row[0])
                             avg_cost = current_price if avg_cost is None else avg_cost
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.warning("price fallback for %s failed: %s", code_clean, e)
 
                 if current_price is None:
                     current_price = 10.0

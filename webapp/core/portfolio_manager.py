@@ -17,6 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 import sqlite3
 import math
 import numpy as np
+from contextlib import closing
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple, Any
 from pathlib import Path
@@ -503,7 +504,7 @@ class PortfolioManager:
         try:
             if '.' in code:
                 code = code.split('.')[0]
-            with sqlite3.connect(self.stock_db_path) as conn:
+            with closing(sqlite3.connect(self.stock_db_path)) as conn:
                 cursor = conn.cursor()
                 cursor.execute(
                     "SELECT id FROM securities WHERE code = ? LIMIT 1", (code,))
@@ -538,7 +539,7 @@ class PortfolioManager:
         try:
             if '.' in code:
                 code = code.split('.')[0]
-            with sqlite3.connect(self.stock_db_path) as conn:
+            with closing(sqlite3.connect(self.stock_db_path)) as conn:
                 cursor = conn.cursor()
                 cursor.execute("""
                     SELECT close FROM daily_quotes
@@ -556,7 +557,7 @@ class PortfolioManager:
         try:
             if '.' in code:
                 code = code.split('.')[0]
-            with sqlite3.connect(self.stock_db_path) as conn:
+            with closing(sqlite3.connect(self.stock_db_path)) as conn:
                 cursor = conn.cursor()
                 cursor.execute(
                     "SELECT id FROM securities WHERE code = ? LIMIT 1", (code,))
@@ -587,7 +588,7 @@ class PortfolioManager:
         try:
             if '.' in code:
                 code = code.split('.')[0]
-            with sqlite3.connect(self.stock_db_path) as conn:
+            with closing(sqlite3.connect(self.stock_db_path)) as conn:
                 cursor = conn.cursor()
                 cursor.execute(
                     "SELECT industry FROM securities WHERE code = ? LIMIT 1",
@@ -598,37 +599,13 @@ class PortfolioManager:
             return '未知'
 
     def _detect_market_regime(self) -> str:
-        """从沪深300指数判断市场状态"""
-        try:
-            with sqlite3.connect(self.stock_db_path) as conn:
-                cursor = conn.cursor()
-                cursor.execute("""
-                    SELECT dq.close FROM daily_quotes dq
-                    JOIN securities s ON dq.security_id = s.id
-                    WHERE s.code IN ('000300', '399300')
-                    ORDER BY dq.trade_date DESC LIMIT 60
-                """)
-                rows = cursor.fetchall()
-                if len(rows) < 20:
-                    return 'neutral'
-                prices = [r[0] for r in reversed(rows)]
-                ret_20d = (prices[-1] - prices[-20]) / prices[-20]
-                ma20 = np.mean(prices[-20:])
-                ma60 = np.mean(prices) if len(prices) >= 60 else ma20
-
-                if ret_20d > 0.05 and prices[-1] > ma60:
-                    return 'bull'
-                elif ret_20d < -0.05 and prices[-1] < ma60:
-                    return 'bear'
-                else:
-                    return 'neutral'
-        except Exception:
-            return 'neutral'
+        from .utils import detect_market_regime
+        return detect_market_regime(self.stock_db_path)
 
     def _update_position_field(self, position_id: int, field: str, value):
         """更新单个持仓字段"""
         try:
-            with sqlite3.connect(self.webapp_db_path) as conn:
+            with closing(sqlite3.connect(self.webapp_db_path)) as conn:
                 cursor = conn.cursor()
                 cursor.execute(
                     f'UPDATE positions SET {field} = ? WHERE id = ?',

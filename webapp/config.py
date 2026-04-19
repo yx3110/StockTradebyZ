@@ -33,6 +33,40 @@ def scan_report_directories(reports_dir: Path) -> dict:
 HIDDEN_MODEL_VERSIONS = {'v3.6', 'v3.7', 'v3.8', 'v3.81', 'v3.9', 'v3.91', 'v3.92', 'v3.93', 'v3.94'}
 
 
+# ML 版本 UI 显示文案 (backtest 下拉 + portfolio 推荐卡片共用)
+ML_VERSION_DISPLAY_NAMES = {
+    'v3.0': 'V3.0 量化评分',
+    'v3.6': 'V3.6 基础评分系统',
+    'v3.7': 'V3.7 三层Ensemble',
+    'v3.8': 'V3.8 增量学习',
+    'v3.81': 'V3.81 质量元学习器',
+    'v3.9': 'V3.9 增强特征',
+    'v3.91': 'V3.91 优化特征',
+    'v3.92': 'V3.92 高级特征',
+    'v3.93': 'V3.93 实验特征',
+    'v3.94': 'V3.94 活跃市值优化',
+    'v3.95': 'V3.95 多目标滚动预测',
+    'v4.9.0.1': 'V4.9.0.1 (含泄露, 仅内部参考)',
+    'ng1.0.1': 'NG v1.0.1 生产 (V5.2=72.1% A+)',
+    'ng1.1.0': 'NG v1.1.0 (P2新因子)',
+}
+
+# ML 版本短描述 (portfolio recommendations UI 的 ml_info 字段)
+# position_analyzer.py 目前仅会设置 v4.4.1/v3.9.4/v3.9.0/None — 这些 legacy key 必须保留
+ML_VERSION_DESCRIPTIONS = {
+    # legacy keys (position_analyzer 当前实际输出)
+    'v4.4.1': 'S级, 59特征, 6增强模块',
+    'v3.9.4': 'IC=0.1363, 48特征',
+    'v3.9.0': 'IC=0.0489, 42特征',
+    # 新版 (未来 analyzer 升级后使用)
+    'ng1.0.1': 'A+级, 66特征, Sharpe=2.753, 年化165.7%',
+    'ng1.1.0': '68特征 (P2新因子), Sharpe=2.065',
+    'v4.9.0.1': 'S级, 61特征 (含动量泄露, 内部参考)',
+    'v3.95': '多目标预测, 3d/5d/10d',
+    'v3.9': 'IC=0.0489, 42特征',
+}
+
+
 def scan_model_directories(models_dir: Path) -> dict:
     """
     自动扫描模型目录，发现所有可用的模型版本
