@@ -129,6 +129,7 @@ def register_blueprints(app):
     from api.portfolio import portfolio_bp
     from api.data_management import data_management_bp
     from api.stock import stock_bp
+    from api.data_explorer import data_explorer_bp   # NEW
 
     app.register_blueprint(daily_tasks_bp, url_prefix='/api/daily')
     app.register_blueprint(model_training_bp, url_prefix='/api/models')
@@ -137,6 +138,7 @@ def register_blueprints(app):
     app.register_blueprint(portfolio_bp, url_prefix='/api/portfolio')
     app.register_blueprint(data_management_bp, url_prefix='/api/data')
     app.register_blueprint(stock_bp, url_prefix='/api/stock')
+    app.register_blueprint(data_explorer_bp, url_prefix='/api/explorer')  # NEW
 
 
 def register_error_handlers(app):
