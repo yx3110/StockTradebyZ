@@ -60,7 +60,42 @@
     <div id="sql-editor-container"></div>
 
     <!-- Visual builder (hidden by default) -->
-    <div id="builder-container" class="d-none card p-3"></div>
+    <div id="builder-container" class="d-none card p-3">
+      <div class="row g-2 small">
+        <div class="col-md-3">
+          <label class="form-label">Table</label>
+          <select class="form-select form-select-sm" id="b-table"></select>
+        </div>
+        <div class="col-md-6">
+          <label class="form-label">Columns (多选)</label>
+          <select class="form-select form-select-sm" id="b-columns" multiple size="4"></select>
+        </div>
+        <div class="col-md-3">
+          <label class="form-label">LIMIT</label>
+          <input class="form-control form-control-sm" id="b-limit" value="100">
+        </div>
+      </div>
+      <div class="row g-2 small mt-2">
+        <div class="col-12"><label class="form-label">Filters</label></div>
+        <div class="col-12" id="b-filters-rows"></div>
+        <div class="col-12"><button class="btn btn-outline-secondary btn-sm" id="b-add-filter">+ Filter</button></div>
+      </div>
+      <div class="row g-2 small mt-2">
+        <div class="col-md-4">
+          <label class="form-label">ORDER BY</label>
+          <select class="form-select form-select-sm" id="b-order-col"><option value="">(none)</option></select>
+        </div>
+        <div class="col-md-2">
+          <label class="form-label">Dir</label>
+          <select class="form-select form-select-sm" id="b-order-dir">
+            <option value="ASC">ASC</option><option value="DESC" selected>DESC</option>
+          </select>
+        </div>
+        <div class="col-md-6 d-flex align-items-end justify-content-end gap-2">
+          <button class="btn btn-primary btn-sm" id="b-build-sql"><i class="bi bi-arrow-up-circle"></i> Build SQL</button>
+        </div>
+      </div>
+    </div>
 
     <!-- Run summary / warnings -->
     <div id="query-summary" class="small text-muted"></div>

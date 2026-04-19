@@ -80,6 +80,8 @@ function renderSchema() {
       li.style.display = li.textContent.toLowerCase().includes(q) ? "" : "none";
     });
   });
+
+  populateBuilder();
 }
 
 function insertSampleQuery(tableInfo) {
@@ -333,5 +335,121 @@ document.addEventListener("DOMContentLoaded", () => {
   const sel = document.getElementById("chart-type-select");
   sel.addEventListener("change", () => {
     if (state.lastResult) renderChart(state.lastResult, sel.value);
+  });
+});
+
+// ---- Visual Builder ---------------------------------------------------------
+
+function getAllTablesFlat() {
+  const out = [];
+  for (const cat of Object.values(state.schema || {})) {
+    for (const t of cat) out.push(t);
+  }
+  return out.sort((a, b) => a.table.localeCompare(b.table));
+}
+
+function populateBuilder() {
+  const tables = getAllTablesFlat();
+  const tSel = document.getElementById("b-table");
+  tSel.innerHTML = tables.map((t) => `<option value="${t.table}">${t.table}</option>`).join("");
+
+  tSel.addEventListener("change", () => refreshBuilderColumns());
+  refreshBuilderColumns();
+
+  document.getElementById("b-add-filter").addEventListener("click", () => addFilterRow());
+  document.getElementById("b-build-sql").addEventListener("click", () => buildSqlFromBuilder());
+}
+
+function findTable(name) {
+  return getAllTablesFlat().find((t) => t.table === name);
+}
+
+function refreshBuilderColumns() {
+  const name = document.getElementById("b-table").value;
+  const t = findTable(name);
+  const cols = t ? t.columns.map((c) => c.name) : [];
+  document.getElementById("b-columns").innerHTML =
+    cols.map((c) => `<option value="${c}" selected>${c}</option>`).join("");
+  document.getElementById("b-order-col").innerHTML =
+    `<option value="">(none)</option>` +
+    cols.map((c) => `<option value="${c}">${c}</option>`).join("");
+  document.getElementById("b-filters-rows").innerHTML = "";
+}
+
+function addFilterRow() {
+  const name = document.getElementById("b-table").value;
+  const t = findTable(name);
+  const cols = t ? t.columns.map((c) => c.name) : [];
+  const row = document.createElement("div");
+  row.className = "input-group input-group-sm mb-1";
+  row.innerHTML = `
+    <select class="form-select form-select-sm b-f-col">
+      ${cols.map((c) => `<option>${c}</option>`).join("")}
+    </select>
+    <select class="form-select form-select-sm b-f-op" style="max-width:90px">
+      <option>=</option><option>!=</option><option>&gt;</option><option>&lt;</option>
+      <option>&gt;=</option><option>&lt;=</option><option>LIKE</option><option>IN</option>
+    </select>
+    <input class="form-control form-control-sm b-f-val" placeholder="value">
+    <button class="btn btn-outline-danger btn-sm b-f-del">&times;</button>
+  `;
+  row.querySelector(".b-f-del").addEventListener("click", () => row.remove());
+  document.getElementById("b-filters-rows").appendChild(row);
+}
+
+function buildSqlFromBuilder() {
+  const table = document.getElementById("b-table").value;
+  const cols = [...document.getElementById("b-columns").selectedOptions].map((o) => o.value);
+  const limit = parseInt(document.getElementById("b-limit").value, 10) || 100;
+  const orderCol = document.getElementById("b-order-col").value;
+  const orderDir = document.getElementById("b-order-dir").value;
+
+  const selectList = cols.length ? cols.join(", ") : "*";
+  let sql = `SELECT ${selectList}\nFROM ${table}`;
+
+  const filterRows = document.querySelectorAll("#b-filters-rows .input-group");
+  const clauses = [];
+  for (const r of filterRows) {
+    const col = r.querySelector(".b-f-col").value;
+    const op = r.querySelector(".b-f-op").value;
+    const valRaw = r.querySelector(".b-f-val").value.trim();
+    if (!valRaw) continue;
+    let val = valRaw;
+    if (op === "IN") {
+      val = "(" + valRaw.split(",").map((v) => `'${v.trim()}'`).join(", ") + ")";
+    } else if (isNaN(Number(valRaw))) {
+      val = `'${valRaw.replace(/'/g, "''")}'`;
+    }
+    clauses.push(`  ${col} ${op} ${val}`);
+  }
+  if (clauses.length) sql += `\nWHERE\n${clauses.join("\n  AND\n")}`;
+  if (orderCol) sql += `\nORDER BY ${orderCol} ${orderDir}`;
+  sql += `\nLIMIT ${limit};`;
+
+  setEditorContent(sql);
+  toggleInputMode("sql");
+}
+
+// Input mode toggle (SQL <-> Builder)
+function toggleInputMode(mode) {
+  const sqlC = document.getElementById("sql-editor-container");
+  const bC = document.getElementById("builder-container");
+  const toggle = document.getElementById("input-mode-toggle");
+  if (mode === "builder") {
+    sqlC.classList.add("d-none");
+    bC.classList.remove("d-none");
+    toggle.querySelector('[data-input="sql"]').classList.replace("btn-primary", "btn-outline-secondary");
+    toggle.querySelector('[data-input="builder"]').classList.replace("btn-outline-secondary", "btn-primary");
+  } else {
+    sqlC.classList.remove("d-none");
+    bC.classList.add("d-none");
+    toggle.querySelector('[data-input="sql"]').classList.replace("btn-outline-secondary", "btn-primary");
+    toggle.querySelector('[data-input="builder"]').classList.replace("btn-primary", "btn-outline-secondary");
+  }
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+  document.querySelectorAll("#input-mode-toggle button").forEach((btn) => {
+    btn.addEventListener("click", () => toggleInputMode(btn.dataset.input));
   });
 });
