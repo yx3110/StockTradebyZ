@@ -989,11 +989,17 @@ def main():
         from ml_models.v39.v493b_production_scorer import V493BProductionScorer
         scorer = V493BProductionScorer(model_type='small_data')
     elif args.version.startswith('ng'):
-        from ml_models.ng.ng_production_scorer import NGProductionScorer
-        scorer = NGProductionScorer(
-            model_path=getattr(args, 'model_path', None),
-            version=args.version,
-        )
+        # ng1.3.x uses NG130DualHeadScorer (excess + downside heads + β composite
+        # + industry neutralization). Other ng versions use NGProductionScorer.
+        if args.version.startswith('ng1.3'):
+            from ml_models.ng.ng_production_scorer import NG130DualHeadScorer
+            scorer = NG130DualHeadScorer()
+        else:
+            from ml_models.ng.ng_production_scorer import NGProductionScorer
+            scorer = NGProductionScorer(
+                model_path=getattr(args, 'model_path', None),
+                version=args.version,
+            )
     elif args.version == 'v4.9.3c':
         from ml_models.v39.v493c_production_scorer import V493CProductionScorer
         scorer = V493CProductionScorer(model_type='small_data')

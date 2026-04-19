@@ -692,11 +692,15 @@ class NG130DualHeadScorer:
         model_dir: Optional[str] = None,
         beta: Optional[float] = None,
         seeds: tuple = (42, 123, 456),
+        industry_neutralize: bool = True,
     ):
         proj = Path(__file__).resolve().parent.parent.parent
         self.model_dir = model_dir or str(proj / 'ml_models' / 'trained_models' / 'ng')
         self.beta = beta if beta is not None else DEFAULT_BETA
         self.seeds = seeds
+        self.industry_neutralize = industry_neutralize
+        self._db_path = str(proj / 'data_adapter' / 'stock_data.db')
+        self._industry_map: Optional[Dict[str, str]] = None
 
         # Load 3 × 2 = 6 models
         self.models: Dict = {}
@@ -715,8 +719,21 @@ class NG130DualHeadScorer:
         self.feature_names: List[str] = self.models[(seeds[0], 'excess')]['feature_names']
         print(
             f'NG130DualHeadScorer loaded: {len(self.models)} models, '
-            f'{len(self.feature_names)} features, β={self.beta}'
+            f'{len(self.feature_names)} features, β={self.beta}, '
+            f'industry_neutralize={self.industry_neutralize}'
         )
+
+    def _load_industry_map(self) -> Dict[str, str]:
+        """Lazy-load code → industry map from securities table."""
+        if self._industry_map is not None:
+            return self._industry_map
+        import sqlite3
+        with sqlite3.connect(self._db_path, timeout=30) as conn:
+            rows = conn.execute(
+                "SELECT code, COALESCE(industry, '__NA__') FROM securities"
+            ).fetchall()
+        self._industry_map = dict(rows)
+        return self._industry_map
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -783,6 +800,18 @@ class NG130DualHeadScorer:
         out['pred_excess'] = pred_excess_avg
         out['pred_downside'] = pred_downside_avg
 
+        # Industry-neutralize predictions: subtract (trade_date, industry) mean.
+        # Hard-coded labels are already industry-excess for excess head, but predictions
+        # drift back toward industry tilts during training. Subtract industry mean so
+        # top-k picks aren't dominated by a few hot sectors (fixes L5 alpha collapse).
+        if self.industry_neutralize and 'code' in features_df.columns:
+            ind_map = self._load_industry_map()
+            out['_industry'] = [ind_map.get(c, '__NA__') for c in features_df['code'].values]
+            for col in ('pred_excess', 'pred_downside'):
+                ind_mean = out.groupby(['trade_date', '_industry'])[col].transform('mean')
+                out[col] = out[col] - ind_mean
+            out = out.drop(columns=['_industry'])
+
         beta = self.beta
 
         # Per-date cross-sectional composite. Assign via aligned Series to preserve dtype.
@@ -828,7 +857,9 @@ class NG130DualHeadScorer:
         results: Dict[str, Dict] = {}
         default_result = {
             'score': 50.0, 'pred_excess': 0.0, 'pred_downside': 0.0,
-            'composite': 0.5, 'pred_10d': 0.0, 'rank_score': 0.5,
+            'composite': 0.5,
+            'pred_3d': 0.0, 'pred_5d': 0.0, 'pred_10d': 0.0, 'pred_15d': 0.0,
+            'rank_score': 0.5,
             'recommendation': '观望', 'exec_filter': 'no_data',
         }
         if df_raw.empty:
@@ -846,26 +877,38 @@ class NG130DualHeadScorer:
         feats['trade_date'] = df_raw['trade_date'].values
         feats['code'] = df_raw['code'].values
 
-        scored = self.predict(feats, horizon='10d')
-        scored['code'] = feats['code'].values
+        # Run predict() for each horizon so downstream consumers get the full
+        # 3d/5d/10d/15d vector (batch_generate_v395_reports expects all four).
+        per_horizon: Dict[str, pd.DataFrame] = {}
+        for h in ('3d', '5d', '10d', '15d'):
+            per_horizon[h] = self.predict(feats, horizon=h)
+        codes_arr = feats['code'].values
+        for df_h in per_horizon.values():
+            df_h['code'] = codes_arr
+
+        scored = per_horizon['10d']
+        by_code = {c: i for i, c in enumerate(codes_arr)}
 
         for code in stock_codes:
-            row = scored[scored['code'] == code]
-            if row.empty:
+            idx = by_code.get(code)
+            if idx is None:
                 results[code] = dict(default_result)
-            else:
-                r = row.iloc[0]
-                composite = float(r['composite'])
-                results[code] = {
-                    'score': float(100 * composite),
-                    'pred_excess': float(r['pred_excess']),
-                    'pred_downside': float(r['pred_downside']),
-                    'composite': composite,
-                    'pred_10d': float(r['pred_excess']),
-                    'rank_score': composite,
-                    'recommendation': '买入' if composite > 0.65 else ('关注' if composite > 0.5 else '观望'),
-                    'exec_filter': 'ok',
-                }
+                continue
+            r10 = scored.iloc[idx]
+            composite = float(r10['composite'])
+            results[code] = {
+                'score': float(100 * composite),
+                'pred_excess': float(r10['pred_excess']),
+                'pred_downside': float(r10['pred_downside']),
+                'composite': composite,
+                'pred_3d': float(per_horizon['3d'].iloc[idx]['pred_excess']),
+                'pred_5d': float(per_horizon['5d'].iloc[idx]['pred_excess']),
+                'pred_10d': float(r10['pred_excess']),
+                'pred_15d': float(per_horizon['15d'].iloc[idx]['pred_excess']),
+                'rank_score': composite,
+                'recommendation': '买入' if composite > 0.65 else ('关注' if composite > 0.5 else '观望'),
+                'exec_filter': 'ok',
+            }
         return results
 
 
