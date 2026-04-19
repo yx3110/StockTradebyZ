@@ -453,3 +453,160 @@ document.addEventListener("DOMContentLoaded", () => {
     btn.addEventListener("click", () => toggleInputMode(btn.dataset.input));
   });
 });
+
+// ---- Saved queries ---------------------------------------------------------
+
+async function loadSavedQueries() {
+  const resp = await fetch("/api/explorer/saved");
+  const body = await resp.json();
+  if (!body.success) return;
+  state.savedQueries = body.queries;
+  document.getElementById("saved-count").textContent = body.queries.length;
+  renderSavedList();
+}
+
+function renderSavedList() {
+  const host = document.getElementById("saved-query-list");
+  host.innerHTML = "";
+  const filter = (document.getElementById("saved-tag-filter").value || "").trim().toLowerCase();
+  const rows = state.savedQueries.filter((q) =>
+    !filter || (q.tags || "").toLowerCase().includes(filter)
+  );
+  if (rows.length === 0) {
+    host.innerHTML = '<div class="text-muted small p-2">无保存查询</div>';
+    return;
+  }
+  for (const q of rows) {
+    const d = document.createElement("div");
+    d.className = "saved-row";
+    d.innerHTML = `
+      <div class="d-flex align-items-center">
+        <b class="me-2">${escapeHtml(q.name)}</b>
+        <span class="text-muted small">${q.tags ? "[" + escapeHtml(q.tags) + "]" : ""}</span>
+        <span class="ms-auto text-muted small">run ${q.run_count}×</span>
+        <button class="btn btn-sm btn-outline-primary ms-2 b-load">加载</button>
+        <button class="btn btn-sm btn-outline-danger ms-1 b-del">×</button>
+      </div>
+      <div class="text-muted small mt-1">${escapeHtml(q.description || "")}</div>
+      <pre class="small mb-0" style="white-space:pre-wrap">${escapeHtml(q.sql)}</pre>
+    `;
+    d.querySelector(".b-load").addEventListener("click", () => {
+      setEditorContent(q.sql);
+      window.location.hash = "#sql";
+    });
+    d.querySelector(".b-del").addEventListener("click", async () => {
+      if (!confirm(`删除 "${q.name}"?`)) return;
+      await fetch(`/api/explorer/saved/${q.id}`, { method: "DELETE" });
+      loadSavedQueries();
+    });
+    host.appendChild(d);
+  }
+}
+
+async function openSaveModal() {
+  document.getElementById("save-name").value = "";
+  document.getElementById("save-tags").value = "user";
+  document.getElementById("save-description").value = "";
+  new bootstrap.Modal(document.getElementById("save-modal")).show();
+}
+
+async function confirmSave() {
+  const name = document.getElementById("save-name").value.trim();
+  const tags = document.getElementById("save-tags").value.trim();
+  const description = document.getElementById("save-description").value.trim();
+  const sqlText = getEditorContent().trim();
+  if (!name) { window.showToast("请输入名称", "warning"); return; }
+  const resp = await fetch("/api/explorer/saved", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, sql: sqlText, tags, description }),
+  });
+  const body = await resp.json();
+  if (!body.success) {
+    window.showToast(body.error || "保存失败", "error");
+    return;
+  }
+  bootstrap.Modal.getInstance(document.getElementById("save-modal")).hide();
+  window.showToast(`已保存: ${name}`, "success");
+  loadSavedQueries();
+}
+
+// ---- Hash routing (Mode tabs) ---------------------------------------------
+
+const MODE_PRESET_NAMES = {
+  stock:   "preset: single-stock all-features",
+  cross:   "preset: cross-section pred_10d top50",
+  compare: "preset: model compare ng101 vs ng110",
+};
+
+async function applyMode(mode) {
+  // Update tab UI
+  document.querySelectorAll(".mode-tabs .nav-link").forEach((a) => {
+    a.classList.toggle("active", a.dataset.mode === mode);
+  });
+
+  const main = document.getElementById("explorer-main");
+  const saved = document.getElementById("saved-panel");
+  if (mode === "saved") {
+    main.classList.add("d-none");
+    saved.classList.remove("d-none");
+    await loadSavedQueries();
+    return;
+  }
+  main.classList.remove("d-none");
+  saved.classList.add("d-none");
+
+  if (mode in MODE_PRESET_NAMES) {
+    const presetName = MODE_PRESET_NAMES[mode];
+    const preset = state.savedQueries.find((q) => q.name === presetName);
+    if (preset) {
+      setEditorContent(preset.sql);
+    } else {
+      window.showToast(
+        `preset "${presetName}" missing — run saved_seed or re-check`,
+        "warning"
+      );
+    }
+  }
+}
+
+function currentMode() {
+  return (window.location.hash || "#sql").slice(1);
+}
+
+window.addEventListener("hashchange", () => applyMode(currentMode()));
+
+// ---- CSV download -----------------------------------------------------------
+
+function downloadCsv() {
+  if (!state.lastResult) {
+    window.showToast("先运行一条查询", "warning");
+    return;
+  }
+  const { columns, rows } = state.lastResult;
+  const lines = [columns.join(",")];
+  for (const r of rows) {
+    lines.push(r.map((v) => {
+      if (v === null) return "";
+      const s = String(v);
+      return s.includes(",") || s.includes('"') ? `"${s.replace(/"/g, '""')}"` : s;
+    }).join(","));
+  }
+  const blob = new Blob([lines.join("\n")], { type: "text/csv" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `explorer_${new Date().toISOString().slice(0,10)}.csv`;
+  a.click();
+}
+
+// ---- Final wiring ----------------------------------------------------------
+
+document.addEventListener("DOMContentLoaded", () => {
+  document.getElementById("btn-save").addEventListener("click", openSaveModal);
+  document.getElementById("save-modal-confirm").addEventListener("click", confirmSave);
+  document.getElementById("btn-csv").addEventListener("click", downloadCsv);
+  document.getElementById("saved-tag-filter").addEventListener("input", renderSavedList);
+
+  // Load saved queries once so presets are available when the user switches modes
+  loadSavedQueries().then(() => applyMode(currentMode()));
+});
