@@ -65,6 +65,11 @@ def create_app(config_name='default'):
         """数据管理页面"""
         return render_template('data_management.html')
 
+    @app.route('/data-explorer')
+    def data_explorer():
+        """数据探索页面"""
+        return render_template('data_explorer.html')
+
     @app.route('/stock/<code>')
     def stock_detail(code):
         """个股详情页"""

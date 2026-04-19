@@ -69,6 +69,12 @@
                             <i class="bi bi-database"></i> 数据管理
                         </a>
                     </li>
+                    <li class="nav-item">
+                        <a class="nav-link {% if request.endpoint == 'data_explorer' %}active{% endif %}"
+                           href="{{ url_for('data_explorer') }}">
+                            <i class="bi bi-search"></i> 数据探索
+                        </a>
+                    </li>
                 </ul>
 
                 <div class="d-flex align-items-center text-white">
