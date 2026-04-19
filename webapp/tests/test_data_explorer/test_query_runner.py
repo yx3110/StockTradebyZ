@@ -48,3 +48,73 @@ def test_inject_limit_preserves_smaller_user_limit() -> None:
     out = inject_limit("SELECT * FROM t LIMIT 50", max_rows=10000)
     assert "LIMIT 50" in out.upper().replace("\n", " ")
     assert "LIMIT 10000" not in out.upper().replace("\n", " ")
+
+
+# --- Task 6: run_query tests -------------------------------------------------
+
+from core.data_explorer.query_runner import QueryResult, run_query
+
+
+def test_run_query_returns_rows(tmp_stock_db) -> None:
+    result = run_query(
+        db_path=tmp_stock_db,
+        sql="SELECT code, close FROM daily_quotes ORDER BY trade_date",
+    )
+    assert isinstance(result, QueryResult)
+    assert "code" in result.columns and "close" in result.columns
+    assert result.row_count == 3
+    assert result.truncated is False
+    assert result.took_ms >= 0
+
+
+def test_run_query_expands_features_json(tmp_stock_db) -> None:
+    result = run_query(
+        db_path=tmp_stock_db,
+        sql="SELECT * FROM ng101_feature_cache",
+        expand_features=True,
+    )
+    assert "features_json" not in result.columns
+    assert "pb" in result.columns and "roe" in result.columns
+
+
+def test_run_query_preserves_features_json_when_expand_false(tmp_stock_db) -> None:
+    result = run_query(
+        db_path=tmp_stock_db,
+        sql="SELECT * FROM ng101_feature_cache",
+        expand_features=False,
+    )
+    assert "features_json" in result.columns
+
+
+def test_run_query_truncation_warning(tmp_stock_db) -> None:
+    result = run_query(
+        db_path=tmp_stock_db,
+        sql="SELECT * FROM daily_quotes",
+        max_rows=2,
+    )
+    assert result.row_count == 2
+    assert result.truncated is True
+    assert any("truncated" in w.lower() for w in result.warnings)
+
+
+def test_run_query_limit_injection_warning(tmp_stock_db) -> None:
+    result = run_query(
+        db_path=tmp_stock_db,
+        sql="SELECT * FROM daily_quotes",  # no LIMIT
+    )
+    assert any("limit" in w.lower() for w in result.warnings)
+
+
+def test_run_query_rejects_write(tmp_stock_db) -> None:
+    with pytest.raises(InvalidQueryError):
+        run_query(tmp_stock_db, "DELETE FROM daily_quotes")
+
+
+def test_run_query_returns_chart_hint(tmp_stock_db) -> None:
+    # 1 categorical + 1 numeric, rows ≤ 50 → bar
+    result = run_query(
+        db_path=tmp_stock_db,
+        sql="SELECT code, close FROM daily_quotes",
+    )
+    assert result.chart_hint is not None
+    assert result.chart_hint["type"] in {"bar", "line"}
