@@ -138,7 +138,7 @@ class NGProductionScorer:
             logger.error("Failed to load NG model %s: %s", path, e)
             return
 
-        # P0.3 Check 9: warn if reproducibility metadata is missing (pre-2026-04-20 models)
+        # Warn if reproducibility metadata is missing (pre-2026-04-20 models)
         for _field in ('git_commit_hash', 'host', 'schema_version'):
             if _field not in model_data:
                 logger.warning("pkl %s missing %s (pre-2026-04-20 model)", path.name, _field)

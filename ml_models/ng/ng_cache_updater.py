@@ -413,17 +413,15 @@ class NGCacheUpdater:
 
     def _load_industry_5d_ret_history(
         self, conn: sqlite3.Connection, date: str, n_calendar_days: int = 95
-    ) -> Tuple[Dict[str, np.ndarray], np.ndarray]:
-        """ng1.5.0: Load per-industry mean 1d return time series (from closes),
-        compute 5d rolling cumulative return per industry.
+    ) -> Dict[str, np.ndarray]:
+        """ng1.5.0: Per-industry 5d rolling cumulative return over n_calendar_days.
 
-        Returns:
-            industry_5d_hist: {industry_name: np.ndarray of 5d rets, last = latest date}
-            market_5d_hist: np.ndarray of benchmark 5d rets aligned with industry series
+        Returns {industry_name: np.ndarray(len=~65 trading days), last=latest}.
+        Benchmark 5d series is computed in the caller from already-loaded
+        benchmark_closes — this helper only returns industry series.
 
-        Used by ng150 `industry_regime_agreement` feature (60d sign agreement vs market).
-        Computes 1d returns from close prices via LAG() (daily_quotes.price_change_pct
-        is mostly NULL as of 2026-04). Single grouped query for all industries.
+        Computes 1d returns from close prices via SQL LAG() because
+        `daily_quotes.price_change_pct` is 97%+ NULL in prod as of 2026-04.
         """
         from datetime import datetime, timedelta
         dt = datetime.strptime(date, '%Y-%m-%d')
@@ -450,57 +448,33 @@ class NGCacheUpdater:
         ).fetchall()
 
         ind_by_date: Dict[str, Dict[str, float]] = defaultdict(dict)
+        all_dates_set: set = set()
         for r in rows:
             v = _safe_float(r['avg_1d'])
             if not np.isnan(v):
                 ind_by_date[r['industry']][r['trade_date']] = v
+                all_dates_set.add(r['trade_date'])
         if not ind_by_date:
-            return {}, np.array([])
-
-        # Benchmark close trajectory for market 5d returns (aligned date index)
-        bm_rows = conn.execute(
-            '''SELECT dq.trade_date, dq.close FROM daily_quotes dq
-               JOIN securities s ON dq.security_id = s.id
-               WHERE s.code = ? AND dq.trade_date BETWEEN ? AND ?
-               ORDER BY dq.trade_date''',
-            (BENCHMARK_CODE, hist_start, date)
-        ).fetchall()
-        if len(bm_rows) < 10:
-            return {}, np.array([])
-        bm_dates = [r['trade_date'] for r in bm_rows]
-        bm_closes = np.array([float(r['close']) for r in bm_rows])
-        n = len(bm_closes)
-        bm_5d = np.full(n, np.nan)
-        for i in range(4, n):
-            bm_5d[i] = bm_closes[i] / (bm_closes[i - 4] + 1e-8) - 1.0
+            return {}
+        sorted_dates = sorted(all_dates_set)
+        n = len(sorted_dates)
 
         industry_5d_hist: Dict[str, np.ndarray] = {}
         for ind, dmap in ind_by_date.items():
-            rets_1d = np.array([dmap.get(d, np.nan) for d in bm_dates])
+            rets_1d = np.array([dmap.get(d, np.nan) for d in sorted_dates])
+            # vectorized 5d rolling cumulative
             rets_5d = np.full(n, np.nan)
-            for i in range(4, n):
-                window = rets_1d[i - 4:i + 1]
-                if np.all(np.isfinite(window)):
-                    rets_5d[i] = float(np.prod(1.0 + window) - 1.0)
+            if n >= 5:
+                filled = np.where(np.isfinite(rets_1d), rets_1d, 0.0)
+                sw = np.lib.stride_tricks.sliding_window_view(filled, 5)
+                cum = np.prod(1.0 + sw, axis=1) - 1.0
+                # Invalidate windows that had any NaN input
+                mask = np.lib.stride_tricks.sliding_window_view(
+                    np.isfinite(rets_1d), 5
+                ).all(axis=1)
+                rets_5d[4:] = np.where(mask, cum, np.nan)
             industry_5d_hist[ind] = rets_5d
-        return industry_5d_hist, bm_5d
-
-    def _load_amv_var1_ma60(
-        self, conn: sqlite3.Connection, date: str
-    ) -> float:
-        """ng1.5.0: 60-day MA of amv_var1 for amv_regime_bull_prob feature."""
-        rows = conn.execute(
-            '''SELECT var1 FROM market_amv
-               WHERE trade_date <= ? ORDER BY trade_date DESC LIMIT 60''',
-            (date,)
-        ).fetchall()
-        if not rows:
-            return np.nan
-        vals = [_safe_float(r['var1']) for r in rows if _safe_float(r['var1']) is not None
-                and not np.isnan(_safe_float(r['var1']))]
-        if len(vals) < 10:
-            return np.nan
-        return float(np.mean(vals))
+        return industry_5d_hist
 
     def _load_northbound_data(
         self, conn: sqlite3.Connection, date: str
@@ -1186,38 +1160,43 @@ class NGCacheUpdater:
                 northbound_std=nb_std,
             )
 
-            # 11.4 ng1.5.x: Load industry 5d ret history (~65d × all industries)
-            #      + benchmark 5d ret history for industry_regime_agreement feature.
+            # 11.4 ng1.5.x: Load industry 5d ret history for industry_regime_agreement.
+            # benchmark 5d series is derived inside the feature fn from bench 1d rets
+            # (already computed from the shared benchmark_closes).
             ng150_industry_5d_hist: Dict[str, np.ndarray] = {}
-            ng150_benchmark_5d_hist: np.ndarray = np.array([])
             ng150_bench_1d_rets: np.ndarray = np.array([])
-            ng150_amv_var1_ma60 = np.nan
             if _is_1_5_branch(self.schema_version):
                 try:
-                    (ng150_industry_5d_hist,
-                     ng150_benchmark_5d_hist) = self._load_industry_5d_ret_history(conn, date)
+                    ng150_industry_5d_hist = self._load_industry_5d_ret_history(conn, date)
                 except Exception as _e:
                     print(f"  [{date}] WARN: ng150 industry history failed: {_e}")
-                # Benchmark 1d log-returns over 60+ days from already-loaded benchmark_closes
                 if len(benchmark_closes) >= 2:
                     ng150_bench_1d_rets = np.diff(np.log(benchmark_closes.astype(float) + 1e-8))
-                try:
-                    ng150_amv_var1_ma60 = self._load_amv_var1_ma60(conn, date)
-                except Exception as _e:
-                    print(f"  [{date}] WARN: ng150 amv ma60 failed: {_e}")
 
-            # 11.5 ng1.0.7: Load AMV data and compute extended market features
+            # 11.5 ng1.0.7: Load AMV data and compute extended market features.
+            # For ng1.5.x, also pull 60-day var1 history in the same query to compute
+            # amv_var1_ma60 for the `amv_regime_bull_prob` feature.
             ext_market_feats = {}
             amv_row = None
+            ng150_amv_var1_ma60 = np.nan
             if version_ge(self.schema_version, 'ng1.0.7'):
                 try:
-                    amv_row_data = conn.execute(
-                        'SELECT var1, amv_macd, amv_regime FROM market_amv WHERE trade_date <= ? ORDER BY trade_date DESC LIMIT 1',
+                    _need_ma60 = _is_1_5_branch(self.schema_version)
+                    _limit = 60 if _need_ma60 else 1
+                    amv_rows = conn.execute(
+                        f'SELECT var1, amv_macd, amv_regime FROM market_amv '
+                        f'WHERE trade_date <= ? ORDER BY trade_date DESC LIMIT {_limit}',
                         (date,)
-                    ).fetchone()
+                    ).fetchall()
+                    amv_row_data = amv_rows[0] if amv_rows else None
                     if amv_row_data:
                         amv_var1_val = _safe_float(amv_row_data['var1'])
                         amv_macd_val = _safe_float(amv_row_data['amv_macd'])
+                        if _need_ma60:
+                            _var1_hist = [_safe_float(r['var1']) for r in amv_rows]
+                            _var1_valid = [v for v in _var1_hist if not np.isnan(v)]
+                            if len(_var1_valid) >= 10:
+                                ng150_amv_var1_ma60 = float(np.mean(_var1_valid))
 
                         # Compute regime_days: count consecutive days in current regime
                         amv_history = conn.execute(
@@ -1475,7 +1454,6 @@ class NGCacheUpdater:
                             stock_returns_1d=stock_1d_rets,
                             benchmark_returns_1d=ng150_bench_1d_rets,
                             industry_returns_5d_history=ind_5d_arr,
-                            benchmark_returns_5d_history=ng150_benchmark_5d_hist,
                         )
                     except Exception as e:
                         print(f"    WARN: ng150_regime_stock failed for {code}: {e}")
@@ -1673,7 +1651,7 @@ class NGCacheUpdater:
                     'ind_feats': ind_feats,
                     'mf_feats': mf_feats,
                     'smooth_feats': smooth_feats,
-                    'ng150_feats': ng150_feats,          # ng1.5.0: 4 Tier B regime-refined
+                    'ng150_feats': ng150_feats,
                     'ng123_mf_feats': ng123_mf_feats,   # ng1.2.3: 12-factor moneyflow
                     'ng123_mined_feats': ng123_mined_feats,  # ng1.2.3: 6 mined alpha factors
                     'ng130_mf_feats': ng130_mf_feats,   # ng1.3.0: 3 Tier B moneyflow factors
@@ -1830,7 +1808,7 @@ class NGCacheUpdater:
                 if (version_ge(self.schema_version, 'ng1.0.7')
                         and self.version not in ('ng1.2.3', 'ng1.2.4')
                         and not _is_1_3_branch(self.schema_version)
-                        and not _is_1_5_branch(self.schema_version)):
+                        and not is_15):
                     # ext_market_feats stored in features_json for scorer access
                     # (only non-AMV features; AMV values already in dedicated columns)
                     # ng1.2.x / ng1.3.x / ng1.5.x branches do NOT inherit ng1.0.7 additions

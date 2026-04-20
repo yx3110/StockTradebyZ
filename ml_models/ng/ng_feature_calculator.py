@@ -1177,7 +1177,6 @@ def compute_ng150_regime_stock_features(
     stock_returns_1d: np.ndarray,
     benchmark_returns_1d: np.ndarray,
     industry_returns_5d_history: np.ndarray,
-    benchmark_returns_5d_history: np.ndarray,
 ) -> Dict[str, float]:
     """
     Compute 4 stock-level Tier B regime-refined features.
@@ -1185,22 +1184,28 @@ def compute_ng150_regime_stock_features(
     Args:
         closes: stock close price array (>= 20 days).
         stock_returns_1d: stock daily log-returns (>= 60 obs).
-        benchmark_returns_1d: benchmark daily log-returns aligned with stock_returns_1d.
+        benchmark_returns_1d: benchmark daily log-returns aligned with stock_returns_1d;
+            the benchmark 5d series is derived internally from these 1d rets.
         industry_returns_5d_history: stock's industry mean 5d return, one per
             trading day over the rolling window (>= 60 obs, last obs = today).
-        benchmark_returns_5d_history: benchmark 5d return per trading day
-            aligned index-for-index with industry_returns_5d_history.
 
     Returns dict with the 4 feature names; missing values are np.nan.
     All computations use t-snapshot data only (no future info).
     """
     result: Dict[str, float] = {}
 
+    # Derive benchmark 5d cumret from 1d rets (rolling product of (1+r) over 5d).
+    mkt5 = None
+    if benchmark_returns_1d is not None and len(benchmark_returns_1d) >= 5:
+        br = np.asarray(benchmark_returns_1d, dtype=float)
+        br = np.where(np.isfinite(br), br, 0.0)
+        sw = np.lib.stride_tricks.sliding_window_view(br, 5)
+        mkt5 = np.prod(1.0 + sw, axis=1) - 1.0  # len = N - 4
+
     # 1. industry_regime_agreement — 60d fraction of days where industry 5d
     #    ret direction matches benchmark 5d ret direction. Captures ng1.0.6
     #    "牛→行业跟涨" mechanism.
     ind = industry_returns_5d_history
-    mkt5 = benchmark_returns_5d_history
     if ind is not None and mkt5 is not None and len(ind) >= 20 and len(mkt5) >= 20:
         n = min(len(ind), len(mkt5), 60)
         ind_tail = np.asarray(ind[-n:], dtype=float)
@@ -1214,13 +1219,15 @@ def compute_ng150_regime_stock_features(
     else:
         result['industry_regime_agreement'] = np.nan
 
-    # 2. recent_maxdd_60d — 60d window drawdown of current close vs peak.
-    #    Complements 20d `current_drawdown` (ng1.4.0 Tier A). Value <= 0.
+    # 2. recent_maxdd_60d — worst PATH-DEPENDENT drawdown inside 60d window
+    #    (peak-to-trough inside window, not current-vs-peak). This differs from
+    #    ng1.4.0 `current_drawdown` (= close/peak60-1, snapshot). Value <= 0.
     c = closes.astype(float) if closes is not None else np.array([])
     if len(c) >= 20:
         window = c[-60:] if len(c) >= 60 else c
-        peak = float(np.max(window))
-        result['recent_maxdd_60d'] = float(c[-1]) / (peak + 1e-8) - 1.0
+        running_peak = np.maximum.accumulate(window)
+        dd = window / (running_peak + 1e-8) - 1.0  # <= 0 each day
+        result['recent_maxdd_60d'] = float(dd.min())
     else:
         result['recent_maxdd_60d'] = np.nan
 

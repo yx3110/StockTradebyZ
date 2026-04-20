@@ -298,9 +298,10 @@ NG150_STOCK_FEATURES: List[str] = NG140_STOCK_FEATURES + NG150_STOCK_TIER_B
 NG150_MARKET_FEATURES: List[str] = NG140_MARKET_FEATURES + NG150_MARKET_TIER_B
 NG150_ALL_FEATURES: List[str] = NG150_STOCK_FEATURES + NG150_MARKET_FEATURES
 NG150_VERSION = 'ng1.5.0'
-# Total: 53 stock (ng101 - 3 dupes) + 4 downside + 4 regime-stock
-#      + 10 market + 3 AMV + 1 regime-market = 75 total. Spec §2.1 lists 78;
-# difference is the 3 dupes pruned in ng1.4.0 carries through ng1.5.0.
+# 53 stock (ng101 - 3 dupes) + 4 downside + 4 regime-stock
+# + 10 market + 3 AMV + 1 regime-market = 75. Spec §2.1 listed 78 assuming
+# ng1.0.1 was 56 stock; the 3 ng1.4.0-pruned dupes explain the delta.
+assert len(NG150_ALL_FEATURES) == 75, f"ng150 feature count drift: {len(NG150_ALL_FEATURES)} != 75"
 
 # ng1.0.9: Persistent features (10-day rank autocorrelation >= 0.5)
 # 22 features that produce stable cross-sectional rankings over 10 days
