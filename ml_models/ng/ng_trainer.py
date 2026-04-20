@@ -13,8 +13,11 @@ v1.0.3 changes from v1.0.0 (ng1.0.0):
 import json
 import logging
 import os
+import socket
 import sqlite3
+import subprocess
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
@@ -261,6 +264,20 @@ NG140_MARKET_FEATURES: List[str] = MARKET_FEATURE_NAMES + NG130_TIER_A_AMV
 NG140_ALL_FEATURES: List[str] = NG140_STOCK_FEATURES + NG140_MARKET_FEATURES
 NG140_VERSION = 'ng1.4.0'
 
+# ng1.4.1: ng1.4.0 minus 4 Tier A downside stock features (keeps 3 AMV market)
+# Ablation: is the AMV signal alone (without per-stock downside) enough?
+NG141_STOCK_FEATURES: List[str] = [f for f in STOCK_FEATURE_NAMES if f not in _NG140_PRUNED_DUPES]
+NG141_MARKET_FEATURES: List[str] = MARKET_FEATURE_NAMES + NG130_TIER_A_AMV
+NG141_ALL_FEATURES: List[str] = NG141_STOCK_FEATURES + NG141_MARKET_FEATURES
+NG141_VERSION = 'ng1.4.1'
+
+# ng1.4.2: ng1.4.0 minus 3 AMV market features (keeps 4 downside stock)
+# Ablation: is the downside signal alone (without market regime) enough?
+NG142_STOCK_FEATURES: List[str] = NG140_STOCK_FEATURES
+NG142_MARKET_FEATURES: List[str] = list(MARKET_FEATURE_NAMES)
+NG142_ALL_FEATURES: List[str] = NG142_STOCK_FEATURES + NG142_MARKET_FEATURES
+NG142_VERSION = 'ng1.4.2'
+
 # ng1.0.9: Persistent features (10-day rank autocorrelation >= 0.5)
 # 22 features that produce stable cross-sectional rankings over 10 days
 PERSISTENT_STOCK_FEATURES: List[str] = [
@@ -299,11 +316,14 @@ class NGTrainer(V485Trainer):
         super().__init__(db_path)
         self._ng_version = version or NG_VERSION
         self.schema_version = get_schema_version(self._ng_version)
+        self._train_start_ts = time.time()  # P0.3 Check 9: pkl duration metadata
         self.target_weights = dict(self.TARGET_WEIGHTS)
         self._turbo_skip_etf = True
         self._head = head  # 'excess' (default) or 'downside' (ng1.3.x dual-head training)
         self.cache_table = get_table_name(self._ng_version)
         version_feature_table = [
+            ('ng1.4.2', NG142_ALL_FEATURES, NG142_STOCK_FEATURES, NG142_MARKET_FEATURES, []),
+            ('ng1.4.1', NG141_ALL_FEATURES, NG141_STOCK_FEATURES, NG141_MARKET_FEATURES, []),
             ('ng1.4.0', NG140_ALL_FEATURES, NG140_STOCK_FEATURES, NG140_MARKET_FEATURES, []),
             ('ng1.3.0', NG130_ALL_FEATURES, NG130_STOCK_FEATURES, NG130_MARKET_FEATURES, []),
             ('ng1.1.0', NG110_ALL_FEATURES, NG110_STOCK_FEATURES, MARKET_FEATURE_NAMES, []),
@@ -1160,6 +1180,8 @@ class NGTrainer(V485Trainer):
         # leaking into ng1.3.x/ng1.4.x training — both use only 10 base + 3 AMV)
         if _is_1_3_branch(self._ng_version):
             active_market_cols = [c for c in NG130_MARKET_FEATURES if c in df.columns]
+        elif self._ng_version == 'ng1.4.2':
+            active_market_cols = [c for c in NG142_MARKET_FEATURES if c in df.columns]
         elif _is_1_4_branch(self._ng_version):
             active_market_cols = [c for c in NG140_MARKET_FEATURES if c in df.columns]
         elif version_ge(self._ng_version, 'ng1.0.7'):
@@ -1563,6 +1585,7 @@ class NGTrainer(V485Trainer):
             timestamp = latest.stem.replace('v485_multi_target_', '')
             version_tag = self._ng_version.replace('.', '')  # e.g. ng104
             # Include seed tag in filename if a global seed was set
+            seed_val = 42
             try:
                 import ml_models.training.train_v395_multi_target as _tm
                 seed_val = getattr(_tm, '_GLOBAL_RANDOM_SEED', 42)
@@ -1623,6 +1646,21 @@ class NGTrainer(V485Trainer):
             model_data['stock_feature_cols'] = self.stock_feature_cols
             model_data['macro_feature_cols'] = self.macro_feature_cols
             model_data['target_weights'] = adaptive_weights
+
+            # P0.3 Check 9: reproducibility metadata
+            try:
+                model_data['git_commit_hash'] = subprocess.check_output(
+                    ['git', 'rev-parse', 'HEAD'], cwd=str(PROJECT_ROOT), text=True,
+                    stderr=subprocess.DEVNULL,
+                ).strip()
+            except Exception:
+                model_data['git_commit_hash'] = 'unknown'
+            model_data['host'] = socket.gethostname()
+            model_data['training_duration_sec'] = time.time() - self._train_start_ts
+            model_data['schema_version'] = self.schema_version
+            model_data['seed'] = seed_val
+            model_data['wf_mode'] = getattr(self, '_wf_mode', 'expanding')
+            model_data['purge_days'] = getattr(self, '_purge_days', None)
 
             joblib.dump(model_data, new_path)
             logger.info(f"\nNG {self._ng_version} model saved: {new_path}")

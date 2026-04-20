@@ -79,6 +79,24 @@ class NGProductionScorer:
         self.db_path = db_path or DB_PATH
         self.model_dir = PROJECT_ROOT / 'ml_models' / 'trained_models' / 'ng'
 
+        # Regime-conditional weight override (Phase B):
+        # NG14X_REGIME_WEIGHTS_JSON=<path>.json with structure:
+        #   {"weights": {"bull": {algo: w, ...}, "bear": {...}, "all": {...}}, ...}
+        # When set, overrides per-target pkl weights with per-regime weights based
+        # on today's AMV regime. Falls back to 'all' if regime unknown.
+        self._regime_weights: Optional[Dict[str, Dict[str, float]]] = None
+        self._regime_map: Optional[Dict[str, int]] = None  # trade_date → +1/-1
+        self._active_regime_weights: Optional[Dict[str, float]] = None
+        rw_path = os.environ.get('NG14X_REGIME_WEIGHTS_JSON')
+        if rw_path and os.path.exists(rw_path):
+            try:
+                with open(rw_path, 'r') as _f:
+                    self._regime_weights = json.load(_f).get('weights')
+                print(f'NG14X regime weights loaded from {rw_path}: '
+                      f'{list((self._regime_weights or {}).keys())}')
+            except Exception as _e:
+                logger.warning('regime weights load failed: %s', _e)
+
         self.models = {}
         self.weights = {}
         self.feature_names = list(ALL_FEATURE_NAMES)
@@ -119,6 +137,11 @@ class NGProductionScorer:
         except Exception as e:
             logger.error("Failed to load NG model %s: %s", path, e)
             return
+
+        # P0.3 Check 9: warn if reproducibility metadata is missing (pre-2026-04-20 models)
+        for _field in ('git_commit_hash', 'host', 'schema_version'):
+            if _field not in model_data:
+                logger.warning("pkl %s missing %s (pre-2026-04-20 model)", path.name, _field)
 
         # Parse model data
         raw_models = model_data.get('models', {})
@@ -359,7 +382,10 @@ class NGProductionScorer:
                 rp_std = max(np.std(rp), 1e-8)
                 preds[rn] = (rp - np.mean(rp)) / rp_std * t_std + t_mean
 
-        target_w = self.weights.get(target, {})
+        # Regime-conditional weight override: if _active_regime_weights is set
+        # (via _ensemble_predict_scores based on today's AMV regime), use those
+        # instead of per-target pkl weights.
+        target_w = self._active_regime_weights or self.weights.get(target, {})
         weighted_sum = np.zeros(X.shape[0])
         total_weight = 0.0
 
@@ -406,6 +432,16 @@ class NGProductionScorer:
 
     def _ensemble_predict_scores(self, stock_codes: List[str], date: str) -> Dict[str, Dict]:
         """Average predictions from all seed models."""
+        if isinstance(date, str) and len(date) == 8 and date.isdigit():
+            date = f"{date[:4]}-{date[4:6]}-{date[6:]}"
+        # Propagate regime-conditional weight override to each seed scorer.
+        # Always propagate (including None) so children don't retain stale
+        # weights from a previous call when the current date resolves to no
+        # regime override (missing AMV row or sideways regime without 'all' key).
+        self._apply_regime_weights(date)
+        for sc in self._ensemble_scorers:
+            sc._active_regime_weights = self._active_regime_weights
+
         # Load features once (all scorers share same cache table)
         features_df = self._load_features(stock_codes, date)
 
@@ -440,6 +476,27 @@ class NGProductionScorer:
 
         return merged
 
+    def _apply_regime_weights(self, date: str) -> None:
+        """Set self._active_regime_weights based on AMV regime for `date`."""
+        self._active_regime_weights = None
+        if not self._regime_weights:
+            return
+        if self._regime_map is None:
+            try:
+                import sqlite3 as _sq
+                with _sq.connect(self.db_path, timeout=30) as _c:
+                    rows = _c.execute(
+                        'SELECT trade_date, amv_regime FROM market_amv'
+                    ).fetchall()
+                self._regime_map = dict(rows)
+            except Exception as e:
+                logger.warning('regime map load failed: %s', e)
+                self._regime_map = {}
+        reg = self._regime_map.get(date)
+        key = 'bull' if reg == 1 else ('bear' if reg == -1 else 'all')
+        self._active_regime_weights = self._regime_weights.get(key) \
+            or self._regime_weights.get('all')
+
     def predict_scores(self, stock_codes: List[str], date: str) -> Dict[str, Dict]:
         # Multi-seed ensemble mode
         if self._ensemble_scorers:
@@ -447,6 +504,7 @@ class NGProductionScorer:
 
         if isinstance(date, str) and len(date) == 8 and date.isdigit():
             date = f"{date[:4]}-{date[4:6]}-{date[6:]}"
+        self._apply_regime_weights(date)
 
         results = {}
 
@@ -696,8 +754,15 @@ class NG130DualHeadScorer:
     ):
         proj = Path(__file__).resolve().parent.parent.parent
         self.model_dir = model_dir or str(proj / 'ml_models' / 'trained_models' / 'ng')
-        self.beta = beta if beta is not None else DEFAULT_BETA
+        if beta is not None:
+            self.beta = beta
+        else:
+            env_beta = os.environ.get('NG130_BETA')
+            self.beta = float(env_beta) if env_beta is not None else DEFAULT_BETA
         self.seeds = seeds
+        env_neut = os.environ.get('NG130_INDNEUT')
+        if env_neut is not None:
+            industry_neutralize = env_neut.lower() not in ('0', 'false', 'no')
         self.industry_neutralize = industry_neutralize
         self._db_path = str(proj / 'data_adapter' / 'stock_data.db')
         self._industry_map: Optional[Dict[str, str]] = None
