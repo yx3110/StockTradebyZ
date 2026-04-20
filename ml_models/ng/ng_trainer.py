@@ -278,6 +278,30 @@ NG142_MARKET_FEATURES: List[str] = list(MARKET_FEATURE_NAMES)
 NG142_ALL_FEATURES: List[str] = NG142_STOCK_FEATURES + NG142_MARKET_FEATURES
 NG142_VERSION = 'ng1.4.2'
 
+# ---------------------------------------------------------------------------
+# ng1.5.0: ng1.4.0 底座 + 5 Tier B regime-refined features
+# 设计: docs/superpowers/specs/2026-04-20-ng150-regime-refined-design.md
+# ---------------------------------------------------------------------------
+# Stock Tier B (4): industry_regime_agreement, recent_maxdd_60d,
+#                     volatility_skew_20d, upside_capture_60d
+# Market Tier B (1): amv_regime_bull_prob
+NG150_STOCK_TIER_B: List[str] = [
+    'industry_regime_agreement',
+    'recent_maxdd_60d',
+    'volatility_skew_20d',
+    'upside_capture_60d',
+]
+NG150_MARKET_TIER_B: List[str] = [
+    'amv_regime_bull_prob',
+]
+NG150_STOCK_FEATURES: List[str] = NG140_STOCK_FEATURES + NG150_STOCK_TIER_B
+NG150_MARKET_FEATURES: List[str] = NG140_MARKET_FEATURES + NG150_MARKET_TIER_B
+NG150_ALL_FEATURES: List[str] = NG150_STOCK_FEATURES + NG150_MARKET_FEATURES
+NG150_VERSION = 'ng1.5.0'
+# Total: 53 stock (ng101 - 3 dupes) + 4 downside + 4 regime-stock
+#      + 10 market + 3 AMV + 1 regime-market = 75 total. Spec §2.1 lists 78;
+# difference is the 3 dupes pruned in ng1.4.0 carries through ng1.5.0.
+
 # ng1.0.9: Persistent features (10-day rank autocorrelation >= 0.5)
 # 22 features that produce stable cross-sectional rankings over 10 days
 PERSISTENT_STOCK_FEATURES: List[str] = [
@@ -322,6 +346,7 @@ class NGTrainer(V485Trainer):
         self._head = head  # 'excess' (default) or 'downside' (ng1.3.x dual-head training)
         self.cache_table = get_table_name(self._ng_version)
         version_feature_table = [
+            ('ng1.5.0', NG150_ALL_FEATURES, NG150_STOCK_FEATURES, NG150_MARKET_FEATURES, []),
             ('ng1.4.2', NG142_ALL_FEATURES, NG142_STOCK_FEATURES, NG142_MARKET_FEATURES, []),
             ('ng1.4.1', NG141_ALL_FEATURES, NG141_STOCK_FEATURES, NG141_MARKET_FEATURES, []),
             ('ng1.4.0', NG140_ALL_FEATURES, NG140_STOCK_FEATURES, NG140_MARKET_FEATURES, []),
@@ -1255,6 +1280,7 @@ class NGTrainer(V485Trainer):
     def _train_downside_model(self, X_train, y_train, X_val, y_val, feature_names):
         """Train a standalone LightGBM for downside_10d prediction."""
         import lightgbm as lgb
+        from ml_models.training.train_v395_multi_target import _GLOBAL_RANDOM_SEED
 
         params = {
             'objective': 'regression',
@@ -1265,6 +1291,7 @@ class NGTrainer(V485Trainer):
             'bagging_fraction': 0.8,
             'bagging_freq': 5,
             'min_data_in_leaf': 200,
+            'seed': _GLOBAL_RANDOM_SEED,
             'verbose': -1,
         }
 

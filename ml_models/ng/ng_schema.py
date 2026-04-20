@@ -39,7 +39,10 @@ VERSION_TABLE_MAP = {
     'ng1.2.3': 'ng123_feature_cache',  # 三轴重构: -12 弱特征 + 12 moneyflow + 6 mined + downside label
     'ng1.2.4': 'ng124_feature_cache',  # ng1.0.1 + 2 top mf factors only (极保守增量)
     'ng1.3.0': 'ng130_feature_cache',  # Multi-task 双头 (excess + downside) + β composite
-    'ng1.4.0': 'ng130_feature_cache',  # ng1.0.1 底座 + 4 downside + 3 AMV (73 features, 无 dual-head)
+    'ng1.4.0': 'ng130_feature_cache',  # ng1.0.1 底座 + 4 downside + 3 AMV (70 features, 无 dual-head)
+    'ng1.4.1': 'ng130_feature_cache',  # ng1.4.0 - 4 downside (ablation)
+    'ng1.4.2': 'ng130_feature_cache',  # ng1.4.0 - 3 AMV (ablation)
+    'ng1.5.0': 'ng150_feature_cache',  # ng1.4.0 底座 + 5 Tier B regime-refined features (78 total)
 }
 
 DEFAULT_VERSION = 'ng1.0.3'
@@ -59,6 +62,9 @@ SCHEMA_VERSION_MAP = {
     'ng1.2.4': 'ng1.2.4',  # own schema (ng1.0.1 base + label_raw, NO downside cols)
     'ng1.3.0': 'ng1.3.0',  # own schema (ng1.0.1 base + downside_{3,5,10,15}d + amv_* reuse from market_amv)
     'ng1.4.0': 'ng1.3.0',  # reuses ng130 cache schema (same label + downside cols, trainer filters features)
+    'ng1.4.1': 'ng1.3.0',  # ablation variant, same schema as ng140
+    'ng1.4.2': 'ng1.3.0',  # ablation variant, same schema as ng140
+    'ng1.5.0': 'ng1.5.0',  # own schema (ng1.4.0 base + 5 Tier B regime-refined features in features_json)
 }
 
 
@@ -98,6 +104,13 @@ def _is_1_4_branch(ver: str) -> bool:
     return ver.startswith('ng1.4.')
 
 
+def _is_1_5_branch(ver: str) -> bool:
+    """ng1.5.x = ng1.4.0 base + 5 Tier B regime-refined features (own schema).
+    Stores label_raw_* + downside_* (same as ng1.3.x cache) + 5 new features in features_json.
+    """
+    return ver.startswith('ng1.5.')
+
+
 def _version_in_range(ver: str, lo: str, hi: str) -> bool:
     """True iff lo <= ver < hi (inclusive lower, exclusive upper).
 
@@ -127,13 +140,20 @@ def _schema_sql(table_name: str, version: str = None) -> str:
     ver = version or DEFAULT_VERSION
     is_12 = _is_1_2_branch(ver)
     is_13 = _is_1_3_branch(ver)
+    is_15 = _is_1_5_branch(ver)
     extra_cols = ''
 
+    # ng1.5.x: same schema shape as ng1.3.x (label_raw_* + downside_*), but features_json
+    # carries 5 additional Tier B regime-refined features. amv_* joined from market_amv
+    # at read time, new Tier B features stored inside features_json only.
+    if is_15:
+        extra_cols = _real_cols('label_raw_3d', 'label_raw_5d', 'label_raw_10d', 'label_raw_15d')
+        extra_cols += _real_cols('downside_3d', 'downside_5d', 'downside_10d', 'downside_15d')
     # ng1.3.x: branches from ng1.0.1 (does NOT inherit ng1.0.4/ng1.0.7/ng1.2.x columns).
     # Only adds label_raw_{3,5,10,15}d (ablation) and downside_{3,5,10,15}d (L3 multi-task
     # downside head labels). amv_* features are joined from market_amv at read time, not
     # stored as inline columns.
-    if is_13:
+    elif is_13:
         extra_cols = _real_cols('label_raw_3d', 'label_raw_5d', 'label_raw_10d', 'label_raw_15d')
         extra_cols += _real_cols('downside_3d', 'downside_5d', 'downside_10d', 'downside_15d')
     else:

@@ -28,7 +28,7 @@ Dependencies: numpy only (no pandas).
 """
 
 import numpy as np
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 
 # ---------------------------------------------------------------------------
@@ -1150,3 +1150,136 @@ def get_ng123_drop_features() -> frozenset:
 def filter_ng123_features(features_dict: Dict[str, float]) -> Dict[str, float]:
     """Remove the 12 dropped features from a ng1.0.1 feature dict."""
     return {k: v for k, v in features_dict.items() if k not in NG123_DROP_FEATURES}
+
+
+# ---------------------------------------------------------------------------
+# ng1.5.0 — Tier B Regime-Refined Features (5 factors)
+#   Stock-level (4): industry_regime_agreement, recent_maxdd_60d,
+#                     volatility_skew_20d, upside_capture_60d
+#   Market-level (1): amv_regime_bull_prob
+#
+# All functions strict t-snapshot (no `shift(-N)`, no future info).
+# ---------------------------------------------------------------------------
+
+NG150_STOCK_REGIME_FEATURES: List[str] = [
+    'industry_regime_agreement',
+    'recent_maxdd_60d',
+    'volatility_skew_20d',
+    'upside_capture_60d',
+]
+NG150_MARKET_REGIME_FEATURES: List[str] = [
+    'amv_regime_bull_prob',
+]
+
+
+def compute_ng150_regime_stock_features(
+    closes: np.ndarray,
+    stock_returns_1d: np.ndarray,
+    benchmark_returns_1d: np.ndarray,
+    industry_returns_5d_history: np.ndarray,
+    benchmark_returns_5d_history: np.ndarray,
+) -> Dict[str, float]:
+    """
+    Compute 4 stock-level Tier B regime-refined features.
+
+    Args:
+        closes: stock close price array (>= 20 days).
+        stock_returns_1d: stock daily log-returns (>= 60 obs).
+        benchmark_returns_1d: benchmark daily log-returns aligned with stock_returns_1d.
+        industry_returns_5d_history: stock's industry mean 5d return, one per
+            trading day over the rolling window (>= 60 obs, last obs = today).
+        benchmark_returns_5d_history: benchmark 5d return per trading day
+            aligned index-for-index with industry_returns_5d_history.
+
+    Returns dict with the 4 feature names; missing values are np.nan.
+    All computations use t-snapshot data only (no future info).
+    """
+    result: Dict[str, float] = {}
+
+    # 1. industry_regime_agreement — 60d fraction of days where industry 5d
+    #    ret direction matches benchmark 5d ret direction. Captures ng1.0.6
+    #    "牛→行业跟涨" mechanism.
+    ind = industry_returns_5d_history
+    mkt5 = benchmark_returns_5d_history
+    if ind is not None and mkt5 is not None and len(ind) >= 20 and len(mkt5) >= 20:
+        n = min(len(ind), len(mkt5), 60)
+        ind_tail = np.asarray(ind[-n:], dtype=float)
+        mkt_tail = np.asarray(mkt5[-n:], dtype=float)
+        valid = (~np.isnan(ind_tail)) & (~np.isnan(mkt_tail))
+        if valid.sum() >= 10:
+            agree = (np.sign(ind_tail[valid]) == np.sign(mkt_tail[valid])).astype(float)
+            result['industry_regime_agreement'] = float(agree.mean())
+        else:
+            result['industry_regime_agreement'] = np.nan
+    else:
+        result['industry_regime_agreement'] = np.nan
+
+    # 2. recent_maxdd_60d — 60d window drawdown of current close vs peak.
+    #    Complements 20d `current_drawdown` (ng1.4.0 Tier A). Value <= 0.
+    c = closes.astype(float) if closes is not None else np.array([])
+    if len(c) >= 20:
+        window = c[-60:] if len(c) >= 60 else c
+        peak = float(np.max(window))
+        result['recent_maxdd_60d'] = float(c[-1]) / (peak + 1e-8) - 1.0
+    else:
+        result['recent_maxdd_60d'] = np.nan
+
+    # 3. volatility_skew_20d — downside_vol / upside_vol ratio.
+    #    Proxy for left-tail dominance when RA label failed (I3).
+    r = stock_returns_1d
+    if r is not None and len(r) >= 10:
+        tail = np.asarray(r[-20:], dtype=float)
+        tail = tail[~np.isnan(tail)]
+        neg = tail[tail < 0]
+        pos = tail[tail > 0]
+        if len(neg) >= 3 and len(pos) >= 3:
+            result['volatility_skew_20d'] = float(neg.std()) / (float(pos.std()) + 1e-6)
+        else:
+            result['volatility_skew_20d'] = np.nan
+    else:
+        result['volatility_skew_20d'] = np.nan
+
+    # 4. upside_capture_60d — on bull days (benchmark up), mean(stock_ret / mkt_ret).
+    #    Identifies "bull-inert, bear-sticky" trap stocks.
+    if (r is not None and benchmark_returns_1d is not None
+            and len(r) >= 20 and len(benchmark_returns_1d) >= 20):
+        n = min(len(r), len(benchmark_returns_1d), 60)
+        s_tail = np.asarray(r[-n:], dtype=float)
+        m_tail = np.asarray(benchmark_returns_1d[-n:], dtype=float)
+        valid = (~np.isnan(s_tail)) & (~np.isnan(m_tail)) & (m_tail > 1e-4)
+        if valid.sum() >= 5:
+            ratios = s_tail[valid] / (m_tail[valid] + 1e-6)
+            # clip extreme outliers (single-stock limit-up on flat benchmark day)
+            ratios = np.clip(ratios, -10.0, 10.0)
+            result['upside_capture_60d'] = float(ratios.mean())
+        else:
+            result['upside_capture_60d'] = np.nan
+    else:
+        result['upside_capture_60d'] = np.nan
+
+    return result
+
+
+def compute_ng150_regime_market_features(
+    amv_var1: float,
+    amv_macd: float,
+    amv_var1_ma60: float,
+) -> Dict[str, float]:
+    """
+    Compute 1 market-level Tier B feature: soft bull probability from 0AMV state.
+
+      bull_score = 0.6 * tanh((var1/ma60 - 1) * 10) + 0.4 * tanh(macd * 5)
+      bull_prob  = (bull_score + 1) / 2    # map [-1, 1] → [0, 1]
+
+    amv_var1_ma60 is the 60-day moving average of amv_var1 (computed by the
+    caller). Provides a continuous regime signal (vs ng1.0.6's hard 0/1 switch).
+    """
+    result: Dict[str, float] = {}
+    if (np.isnan(amv_var1) or np.isnan(amv_macd) or np.isnan(amv_var1_ma60)
+            or amv_var1_ma60 <= 0):
+        result['amv_regime_bull_prob'] = np.nan
+        return result
+    var1_ratio = float(amv_var1) / float(amv_var1_ma60) - 1.0
+    score = 0.6 * np.tanh(var1_ratio * 10.0) + 0.4 * np.tanh(float(amv_macd) * 5.0)
+    result['amv_regime_bull_prob'] = float((score + 1.0) / 2.0)
+    return result

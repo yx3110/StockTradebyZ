@@ -32,7 +32,7 @@ if _PROJECT_ROOT not in sys.path:
 from ml_models.ng.ng_schema import (
     create_table, get_table_name, DB_PATH, create_moneyflow_table,
     version_ge, get_schema_version, DEFAULT_VERSION,
-    _is_1_2_branch, _is_1_3_branch, _version_in_range,
+    _is_1_2_branch, _is_1_3_branch, _is_1_5_branch, _version_in_range,
 )
 from ml_models.ng.ng130_downside_label import compute_all_downside_horizons
 from ml_models.ng.ng130_moneyflow_factors import compute_ng130_mf_factors, NG130_MF_FACTORS
@@ -48,6 +48,8 @@ from ml_models.ng.ng_feature_calculator import (
     compute_smoothing_features,
     compute_extended_market_features,
     compute_conditional_interaction_features,
+    compute_ng150_regime_stock_features,
+    compute_ng150_regime_market_features,
     filter_ng123_features,
     get_ng123_drop_features,
 )
@@ -408,6 +410,97 @@ class NGCacheUpdater:
         closes = np.array([float(r['close']) for r in rows])
         log_rets = np.diff(np.log(closes + 1e-8))
         return log_rets[-n_days:] if len(log_rets) >= n_days else log_rets
+
+    def _load_industry_5d_ret_history(
+        self, conn: sqlite3.Connection, date: str, n_calendar_days: int = 95
+    ) -> Tuple[Dict[str, np.ndarray], np.ndarray]:
+        """ng1.5.0: Load per-industry mean 1d return time series (from closes),
+        compute 5d rolling cumulative return per industry.
+
+        Returns:
+            industry_5d_hist: {industry_name: np.ndarray of 5d rets, last = latest date}
+            market_5d_hist: np.ndarray of benchmark 5d rets aligned with industry series
+
+        Used by ng150 `industry_regime_agreement` feature (60d sign agreement vs market).
+        Computes 1d returns from close prices via LAG() (daily_quotes.price_change_pct
+        is mostly NULL as of 2026-04). Single grouped query for all industries.
+        """
+        from datetime import datetime, timedelta
+        dt = datetime.strptime(date, '%Y-%m-%d')
+        hist_start = (dt - timedelta(days=n_calendar_days)).strftime('%Y-%m-%d')
+
+        rows = conn.execute(
+            '''WITH base AS (
+                   SELECT dq.security_id, s.industry, dq.trade_date, dq.close,
+                          LAG(dq.close) OVER (
+                              PARTITION BY dq.security_id ORDER BY dq.trade_date
+                          ) AS prev_close
+                   FROM daily_quotes dq
+                   JOIN securities s ON dq.security_id = s.id
+                   WHERE s.type = 'A股' AND s.industry IS NOT NULL
+                     AND dq.trade_date BETWEEN ? AND ?
+               )
+               SELECT trade_date, industry,
+                      AVG((close - prev_close) / prev_close) AS avg_1d
+               FROM base
+               WHERE prev_close IS NOT NULL AND prev_close > 0
+               GROUP BY trade_date, industry
+               ORDER BY industry, trade_date''',
+            (hist_start, date)
+        ).fetchall()
+
+        ind_by_date: Dict[str, Dict[str, float]] = defaultdict(dict)
+        for r in rows:
+            v = _safe_float(r['avg_1d'])
+            if not np.isnan(v):
+                ind_by_date[r['industry']][r['trade_date']] = v
+        if not ind_by_date:
+            return {}, np.array([])
+
+        # Benchmark close trajectory for market 5d returns (aligned date index)
+        bm_rows = conn.execute(
+            '''SELECT dq.trade_date, dq.close FROM daily_quotes dq
+               JOIN securities s ON dq.security_id = s.id
+               WHERE s.code = ? AND dq.trade_date BETWEEN ? AND ?
+               ORDER BY dq.trade_date''',
+            (BENCHMARK_CODE, hist_start, date)
+        ).fetchall()
+        if len(bm_rows) < 10:
+            return {}, np.array([])
+        bm_dates = [r['trade_date'] for r in bm_rows]
+        bm_closes = np.array([float(r['close']) for r in bm_rows])
+        n = len(bm_closes)
+        bm_5d = np.full(n, np.nan)
+        for i in range(4, n):
+            bm_5d[i] = bm_closes[i] / (bm_closes[i - 4] + 1e-8) - 1.0
+
+        industry_5d_hist: Dict[str, np.ndarray] = {}
+        for ind, dmap in ind_by_date.items():
+            rets_1d = np.array([dmap.get(d, np.nan) for d in bm_dates])
+            rets_5d = np.full(n, np.nan)
+            for i in range(4, n):
+                window = rets_1d[i - 4:i + 1]
+                if np.all(np.isfinite(window)):
+                    rets_5d[i] = float(np.prod(1.0 + window) - 1.0)
+            industry_5d_hist[ind] = rets_5d
+        return industry_5d_hist, bm_5d
+
+    def _load_amv_var1_ma60(
+        self, conn: sqlite3.Connection, date: str
+    ) -> float:
+        """ng1.5.0: 60-day MA of amv_var1 for amv_regime_bull_prob feature."""
+        rows = conn.execute(
+            '''SELECT var1 FROM market_amv
+               WHERE trade_date <= ? ORDER BY trade_date DESC LIMIT 60''',
+            (date,)
+        ).fetchall()
+        if not rows:
+            return np.nan
+        vals = [_safe_float(r['var1']) for r in rows if _safe_float(r['var1']) is not None
+                and not np.isnan(_safe_float(r['var1']))]
+        if len(vals) < 10:
+            return np.nan
+        return float(np.mean(vals))
 
     def _load_northbound_data(
         self, conn: sqlite3.Connection, date: str
@@ -1093,6 +1186,26 @@ class NGCacheUpdater:
                 northbound_std=nb_std,
             )
 
+            # 11.4 ng1.5.x: Load industry 5d ret history (~65d × all industries)
+            #      + benchmark 5d ret history for industry_regime_agreement feature.
+            ng150_industry_5d_hist: Dict[str, np.ndarray] = {}
+            ng150_benchmark_5d_hist: np.ndarray = np.array([])
+            ng150_bench_1d_rets: np.ndarray = np.array([])
+            ng150_amv_var1_ma60 = np.nan
+            if _is_1_5_branch(self.schema_version):
+                try:
+                    (ng150_industry_5d_hist,
+                     ng150_benchmark_5d_hist) = self._load_industry_5d_ret_history(conn, date)
+                except Exception as _e:
+                    print(f"  [{date}] WARN: ng150 industry history failed: {_e}")
+                # Benchmark 1d log-returns over 60+ days from already-loaded benchmark_closes
+                if len(benchmark_closes) >= 2:
+                    ng150_bench_1d_rets = np.diff(np.log(benchmark_closes.astype(float) + 1e-8))
+                try:
+                    ng150_amv_var1_ma60 = self._load_amv_var1_ma60(conn, date)
+                except Exception as _e:
+                    print(f"  [{date}] WARN: ng150 amv ma60 failed: {_e}")
+
             # 11.5 ng1.0.7: Load AMV data and compute extended market features
             ext_market_feats = {}
             amv_row = None
@@ -1348,6 +1461,26 @@ class NGCacheUpdater:
                         print(f"    WARN: smoothing_features failed for {code}: {e}")
                         smooth_feats = {}
 
+                # ng1.5.0: Regime-refined per-stock features (4)
+                ng150_feats: Dict[str, float] = {}
+                if _is_1_5_branch(self.schema_version):
+                    try:
+                        stock_1d_rets = (
+                            np.diff(np.log(closes.astype(float) + 1e-8))
+                            if len(closes) >= 2 else np.array([])
+                        )
+                        ind_5d_arr = ng150_industry_5d_hist.get(industry, np.array([]))
+                        ng150_feats = compute_ng150_regime_stock_features(
+                            closes=closes,
+                            stock_returns_1d=stock_1d_rets,
+                            benchmark_returns_1d=ng150_bench_1d_rets,
+                            industry_returns_5d_history=ind_5d_arr,
+                            benchmark_returns_5d_history=ng150_benchmark_5d_hist,
+                        )
+                    except Exception as e:
+                        print(f"    WARN: ng150_regime_stock failed for {code}: {e}")
+                        ng150_feats = {}
+
                 # --- Compute fundamental features (14) ---
                 fin = fin_data.get(sid, {})
                 pe_hist = pe_history.get(sid, np.array([]))
@@ -1540,6 +1673,7 @@ class NGCacheUpdater:
                     'ind_feats': ind_feats,
                     'mf_feats': mf_feats,
                     'smooth_feats': smooth_feats,
+                    'ng150_feats': ng150_feats,          # ng1.5.0: 4 Tier B regime-refined
                     'ng123_mf_feats': ng123_mf_feats,   # ng1.2.3: 12-factor moneyflow
                     'ng123_mined_feats': ng123_mined_feats,  # ng1.2.3: 6 mined alpha factors
                     'ng130_mf_feats': ng130_mf_feats,   # ng1.3.0: 3 Tier B moneyflow factors
@@ -1590,9 +1724,10 @@ class NGCacheUpdater:
                 industry_peer_arrays[ind] = arrays
 
             insert_rows = []
-            # ng1.2.x / ng1.3.x branch guards — used in both per-stock column gating and INSERT dispatch.
+            # ng1.2.x / ng1.3.x / ng1.5.x branch guards — used in both per-stock column gating and INSERT dispatch.
             is_12 = _is_1_2_branch(self.schema_version)
             is_13 = _is_1_3_branch(self.schema_version)
+            is_15 = _is_1_5_branch(self.schema_version)
 
             for sid, data in eligible_stocks.items():
                 industry = data['industry']
@@ -1692,10 +1827,13 @@ class NGCacheUpdater:
                     all_feats.update(ix_feats)
                 if version_ge(self.schema_version, 'ng1.0.4'):
                     all_feats.update(data.get('smooth_feats', {}))
-                if version_ge(self.schema_version, 'ng1.0.7') and self.version not in ('ng1.2.3', 'ng1.2.4') and not _is_1_3_branch(self.schema_version):
+                if (version_ge(self.schema_version, 'ng1.0.7')
+                        and self.version not in ('ng1.2.3', 'ng1.2.4')
+                        and not _is_1_3_branch(self.schema_version)
+                        and not _is_1_5_branch(self.schema_version)):
                     # ext_market_feats stored in features_json for scorer access
                     # (only non-AMV features; AMV values already in dedicated columns)
-                    # ng1.2.x and ng1.3.x branches do NOT inherit ng1.0.7 additions
+                    # ng1.2.x / ng1.3.x / ng1.5.x branches do NOT inherit ng1.0.7 additions
                     for k, v in ext_market_feats.items():
                         if k not in ('amv_var1', 'amv_macd', 'amv_regime_days'):
                             all_feats[k] = v
@@ -1706,6 +1844,18 @@ class NGCacheUpdater:
                         if k in ext_market_feats:
                             all_feats[k] = ext_market_feats[k]
                     all_feats.update(data.get('ng130_mf_feats', {}))
+                # ng1.5.x: add 3 AMV + 1 new market regime feature + 4 new stock regime features
+                if _is_1_5_branch(self.schema_version):
+                    for k in ('amv_var1', 'amv_macd', 'amv_regime_days'):
+                        if k in ext_market_feats:
+                            all_feats[k] = ext_market_feats[k]
+                    ng150_mkt = compute_ng150_regime_market_features(
+                        amv_var1=ext_market_feats.get('amv_var1', np.nan),
+                        amv_macd=ext_market_feats.get('amv_macd', np.nan),
+                        amv_var1_ma60=ng150_amv_var1_ma60,
+                    )
+                    all_feats.update(ng150_mkt)
+                    all_feats.update(data.get('ng150_feats', {}))
                 # ng1.2.3: add 12 moneyflow factors + 6 mined alpha factors to features_json
                 # (mf_feats from ng1.0.3 path was already dropped via filter above;
                 #  ng123_mf_feats replaces it with the new 12-factor set)
@@ -1749,9 +1899,11 @@ class NGCacheUpdater:
                             compute_downside_kd(_pm)
                         )
 
-                # ng1.3.0: compute 4-horizon downside labels (min-cumret semantics)
+                # ng1.3.x / ng1.5.x: compute 4-horizon downside labels (min-cumret semantics).
+                # ng1.5.0 stores them in the same schema shape as ng1.3.0 even though the
+                # trainer uses industry excess labels (Phase A per spec §2.2).
                 ng130_downside: Dict[str, float] = {}
-                if _is_1_3_branch(self.schema_version):
+                if _is_1_3_branch(self.schema_version) or _is_1_5_branch(self.schema_version):
                     today_close = data.get('today_close', np.nan)
                     future_closes_list = []
                     for _fd in future_dates[:16]:  # t+1..t+15
@@ -1764,8 +1916,10 @@ class NGCacheUpdater:
                         np.array(future_closes_list, dtype=np.float64),
                     )
 
-                # ng1.2.3+ and ng1.3.x use label-only base_row (no legacy downside_10d position)
-                if self.version in ('ng1.2.3', 'ng1.2.4') or _is_1_3_branch(self.schema_version):
+                # ng1.2.3+ / ng1.3.x / ng1.5.x use label-only base_row (no legacy downside_10d position)
+                if (self.version in ('ng1.2.3', 'ng1.2.4')
+                        or _is_1_3_branch(self.schema_version)
+                        or _is_1_5_branch(self.schema_version)):
                     base_row = (
                         data['code'],
                         date,
@@ -1797,7 +1951,7 @@ class NGCacheUpdater:
                 else:
                     raw_cols = ()
 
-                if version_ge(self.schema_version, 'ng1.0.4') and not is_12 and not is_13:
+                if version_ge(self.schema_version, 'ng1.0.4') and not is_12 and not is_13 and not is_15:
                     ng104_cols = (
                         _to_sql(stock_labels.get('maxdd_3d')),
                         _to_sql(stock_labels.get('maxdd_5d')),
@@ -1811,7 +1965,7 @@ class NGCacheUpdater:
                 else:
                     ng104_cols = ()
 
-                if version_ge(self.schema_version, 'ng1.0.7') and not is_12 and not is_13:
+                if version_ge(self.schema_version, 'ng1.0.7') and not is_12 and not is_13 and not is_15:
                     ng107_cols = (
                         _to_sql(stock_labels.get('cond_label_3d')),
                         _to_sql(stock_labels.get('cond_label_5d')),
@@ -1848,8 +2002,8 @@ class NGCacheUpdater:
                 else:
                     ng123_cols = ()
 
-                # ng1.3.0: 4-horizon downside labels (min-cumret semantics)
-                if is_13:
+                # ng1.3.x / ng1.5.x: 4-horizon downside labels (min-cumret semantics)
+                if is_13 or is_15:
                     ng130_cols = (
                         _to_sql(ng130_downside.get('downside_3d')),
                         _to_sql(ng130_downside.get('downside_5d')),
@@ -1880,8 +2034,8 @@ class NGCacheUpdater:
             # Write to database
             if insert_rows:
                 conn.row_factory = None
-                if is_13:
-                    # ng1.3.0: 25 columns — base(3) + labels(4) + label_raw(4) + downside_4(4) + market(10)
+                if is_13 or is_15:
+                    # ng1.3.x / ng1.5.x: 25 columns — base(3) + labels(4) + label_raw(4) + downside_4(4) + market(10)
                     # Same column structure as ng1.2.3 but different downside semantics (min-cumret)
                     conn.executemany(
                         f'''INSERT OR REPLACE INTO {self.table_name}
