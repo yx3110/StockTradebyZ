@@ -29,7 +29,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from ml_models.training.train_v395_multi_target import V485Trainer
 from ml_models.ng.ng_schema import (
-    get_table_name, version_ge, get_schema_version, _is_1_2_branch, _is_1_3_branch, _version_in_range,
+    get_table_name, version_ge, get_schema_version, _is_1_2_branch, _is_1_3_branch, _is_1_4_branch, _version_in_range,
 )
 from ml_models.common.lgb_rank_utils import RANK_BASE_PARAMS, build_groups_per_date
 from ml_models.ng.ng_margin_loss import make_margin_objective, make_margin_eval_metric
@@ -241,6 +241,26 @@ NG130_MARKET_FEATURES: List[str] = MARKET_FEATURE_NAMES + NG130_TIER_A_AMV
 NG130_ALL_FEATURES: List[str] = NG130_STOCK_FEATURES + NG130_MARKET_FEATURES
 NG130_VERSION = 'ng1.3.0'
 
+# ---------------------------------------------------------------------------
+# ng1.4.0: ng1.0.1 稳定底座 + Tier A (downside + AMV), 无 dual-head, 无 mf
+# 设计: docs/ng140_plan.md
+# ---------------------------------------------------------------------------
+# 保留 ng1.0.1: 53 stock + 10 market + industry excess labels + 6-algo MSE + 3-seed
+# 新增 Tier A (ng1.3.x 验证有用): 4 downside stock + 3 AMV market
+# 丢弃 (ng1.3.x 验证无用): mf (top-30 零命中), dual-head, β composite
+# 丢弃 (ng1.1.0 已识别重复): volume_contraction, sw_index_return_5d,
+#     industry_relative_strength (canonical 版本 volume_ratio_5d / industry_return_5d /
+#     residual_return_20d 保留, ng130 cache 里就不含这 3 个重复特征)
+_NG140_PRUNED_DUPES = frozenset({
+    'volume_contraction', 'sw_index_return_5d', 'industry_relative_strength',
+})
+NG140_STOCK_FEATURES: List[str] = (
+    [f for f in STOCK_FEATURE_NAMES if f not in _NG140_PRUNED_DUPES] + NG130_TIER_A_DOWNSIDE
+)
+NG140_MARKET_FEATURES: List[str] = MARKET_FEATURE_NAMES + NG130_TIER_A_AMV
+NG140_ALL_FEATURES: List[str] = NG140_STOCK_FEATURES + NG140_MARKET_FEATURES
+NG140_VERSION = 'ng1.4.0'
+
 # ng1.0.9: Persistent features (10-day rank autocorrelation >= 0.5)
 # 22 features that produce stable cross-sectional rankings over 10 days
 PERSISTENT_STOCK_FEATURES: List[str] = [
@@ -284,6 +304,7 @@ class NGTrainer(V485Trainer):
         self._head = head  # 'excess' (default) or 'downside' (ng1.3.x dual-head training)
         self.cache_table = get_table_name(self._ng_version)
         version_feature_table = [
+            ('ng1.4.0', NG140_ALL_FEATURES, NG140_STOCK_FEATURES, NG140_MARKET_FEATURES, []),
             ('ng1.3.0', NG130_ALL_FEATURES, NG130_STOCK_FEATURES, NG130_MARKET_FEATURES, []),
             ('ng1.1.0', NG110_ALL_FEATURES, NG110_STOCK_FEATURES, MARKET_FEATURE_NAMES, []),
             ('ng1.0.7', NG107_ALL_FEATURES, STOCK_FEATURE_NAMES,  NG107_MARKET_FEATURES, CONDITIONAL_IX_FEATURE_NAMES),
@@ -876,8 +897,9 @@ class NGTrainer(V485Trainer):
         # ng1.2.x branches from ng1.0.1 and skips ng1.0.4/1.0.7 columns; detect
         # separately so the numeric version_ge doesn't pull in non-existent cols.
         is_12 = _is_1_2_branch(self.schema_version)
-        # ng1.3.x: load 4-horizon downside labels for dual-head training
-        if _is_1_3_branch(self._ng_version):
+        # ng1.3.x dual-head and ng1.4.x (reuses ng130 cache) — ng1.4.x doesn't use
+        # downside_Nd for label swap but loading them is harmless (unused downstream).
+        if _is_1_3_branch(self._ng_version) or _is_1_4_branch(self._ng_version):
             extra_select = ", downside_3d, downside_5d, downside_10d, downside_15d"
         # ng1.2.3: 4-horizon downside_kd columns; ng1.2.4 has no downside cols
         elif is_12 and _version_in_range(self.schema_version, 'ng1.2.3', 'ng1.2.4'):
@@ -895,9 +917,11 @@ class NGTrainer(V485Trainer):
 
         # ng1.0.2 linear lineage has a single downside_10d column.
         # ng1.2.3 already has downside_10d inside extra_select (4-horizon block);
-        # ng1.2.1 has no downside_10d at all; ng1.3.x has 4-horizon block too — avoid duplicates.
+        # ng1.2.1 has no downside_10d at all; ng1.3.x and ng1.4.x reuse ng130 cache
+        # which has 4-horizon downside block too — avoid duplicate column selection.
         is_13 = _is_1_3_branch(self._ng_version)
-        downside_col = ", downside_10d" if version_ge(self.schema_version, 'ng1.0.2') and not is_12 and not is_13 else ""
+        is_14 = _is_1_4_branch(self._ng_version)
+        downside_col = ", downside_10d" if version_ge(self.schema_version, 'ng1.0.2') and not is_12 and not is_13 and not is_14 else ""
         query = f"""
         SELECT code, trade_date, features_json,
                label_3d, label_5d, label_10d, label_15d{downside_col}{extra_select},
@@ -931,8 +955,9 @@ class NGTrainer(V485Trainer):
         # (they are loaded from dedicated SQL columns instead — except ng1.3.x,
         # which stores AMV in features_json only since ng130_feature_cache has no amv_* columns)
         market_cols_to_load = list(MARKET_FEATURE_NAMES)
-        if _is_1_3_branch(self._ng_version):
-            # ng1.3.x: base 10 market + 3 AMV only; ext_market was useless in ng1.0.7.
+        if _is_1_3_branch(self._ng_version) or _is_1_4_branch(self._ng_version):
+            # ng1.3.x/ng1.4.x reuse ng130 cache: 10 base + 3 AMV only; ext_market was
+            # useless in ng1.0.7. AMV stored in features_json (not SQL columns).
             market_cols_to_load += NG130_TIER_A_AMV
         elif version_ge(self.schema_version, 'ng1.0.7'):
             market_cols_to_load += EXTENDED_MARKET_FEATURE_NAMES
@@ -963,7 +988,7 @@ class NGTrainer(V485Trainer):
         # ng1.3.x: AMV features live in features_json (not SQL columns).
         # Extract once from parsed_rows; fall back to NaN for any missing.
         amv_from_json = {}
-        if _is_1_3_branch(self._ng_version):
+        if _is_1_3_branch(self._ng_version) or _is_1_4_branch(self._ng_version):
             for col in NG130_TIER_A_AMV:
                 amv_from_json[col] = [d.get(col, np.nan) for d in parsed_rows]
 
@@ -1132,9 +1157,11 @@ class NGTrainer(V485Trainer):
         active_stock_features = self._get_active_stock_features()
 
         # Determine market feature columns (version-specific to avoid ext_market
-        # leaking into ng1.3.x training — ng1.3.x uses only 10 base + 3 AMV)
+        # leaking into ng1.3.x/ng1.4.x training — both use only 10 base + 3 AMV)
         if _is_1_3_branch(self._ng_version):
             active_market_cols = [c for c in NG130_MARKET_FEATURES if c in df.columns]
+        elif _is_1_4_branch(self._ng_version):
+            active_market_cols = [c for c in NG140_MARKET_FEATURES if c in df.columns]
         elif version_ge(self._ng_version, 'ng1.0.7'):
             active_market_cols = [c for c in NG107_MARKET_FEATURES if c in df.columns]
         else:
@@ -1459,11 +1486,12 @@ class NGTrainer(V485Trainer):
             return model_data, history
 
         # --- v1.0.2: Train downside model ---
-        # ng1.3.x skips this legacy NG102 single-horizon downside model — it has
-        # its own dual-head (4-horizon) architecture via --head downside instead.
-        # Skip the legacy training but still continue to pkl rename logic below.
-        if _is_1_3_branch(self._ng_version):
-            logger.info("ng1.3.x: skipping legacy downside_10d model (uses dual-head architecture)")
+        # ng1.3.x has dual-head (4-horizon) architecture via --head downside.
+        # ng1.4.x explicitly drops the downside auxiliary model (clean ng1.0.1-style).
+        # Both skip the legacy NG102 single-horizon downside model here.
+        skip_legacy_downside = _is_1_3_branch(self._ng_version) or _is_1_4_branch(self._ng_version)
+        if skip_legacy_downside:
+            logger.info(f"{self._ng_version}: skipping legacy downside_10d model")
         else:
             # Restore feature cols (WF parent may have modified them)
             if version_ge(self._ng_version, 'ng1.1.0'):
@@ -1475,7 +1503,7 @@ class NGTrainer(V485Trainer):
                 self.macro_feature_cols = list(NG107_MARKET_FEATURES)
                 self.feature_names = self.stock_feature_cols + self.macro_feature_cols
             logger.info("Training downside_10d model (separate LightGBM pass)...")
-        if not _is_1_3_branch(self._ng_version):
+        if not skip_legacy_downside:
             try:
                 df_full = self.load_data(start_date=start_date, end_date=end_date)
                 _result = self.prepare_features(df_full)
