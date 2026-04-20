@@ -32,7 +32,9 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from ml_models.training.train_v395_multi_target import V485Trainer
 from ml_models.ng.ng_schema import (
-    get_table_name, version_ge, get_schema_version, _is_1_2_branch, _is_1_3_branch, _is_1_4_branch, _version_in_range,
+    get_table_name, version_ge, get_schema_version,
+    _is_1_2_branch, _is_1_3_branch, _is_1_4_branch, _is_1_5_branch,
+    _version_in_range,
 )
 from ml_models.common.lgb_rank_utils import RANK_BASE_PARAMS, build_groups_per_date
 from ml_models.ng.ng_margin_loss import make_margin_objective, make_margin_eval_metric
@@ -943,9 +945,13 @@ class NGTrainer(V485Trainer):
         # ng1.2.x branches from ng1.0.1 and skips ng1.0.4/1.0.7 columns; detect
         # separately so the numeric version_ge doesn't pull in non-existent cols.
         is_12 = _is_1_2_branch(self.schema_version)
-        # ng1.3.x dual-head and ng1.4.x (reuses ng130 cache) — ng1.4.x doesn't use
-        # downside_Nd for label swap but loading them is harmless (unused downstream).
-        if _is_1_3_branch(self._ng_version) or _is_1_4_branch(self._ng_version):
+        is_13 = _is_1_3_branch(self._ng_version)
+        is_14 = _is_1_4_branch(self._ng_version)
+        is_15 = _is_1_5_branch(self._ng_version)
+        # ng1.3.x dual-head, ng1.4.x (reuses ng130 cache), ng1.5.x (own schema
+        # same shape as ng130 + 5 features in features_json). Downside labels are
+        # harmless/unused for ng1.4/1.5 single-head training.
+        if is_13 or is_14 or is_15:
             extra_select = ", downside_3d, downside_5d, downside_10d, downside_15d"
         # ng1.2.3: 4-horizon downside_kd columns; ng1.2.4 has no downside cols
         elif is_12 and _version_in_range(self.schema_version, 'ng1.2.3', 'ng1.2.4'):
@@ -962,12 +968,14 @@ class NGTrainer(V485Trainer):
             extra_select = ", ra_label_3d, ra_label_5d, ra_label_10d, ra_label_15d"
 
         # ng1.0.2 linear lineage has a single downside_10d column.
-        # ng1.2.3 already has downside_10d inside extra_select (4-horizon block);
-        # ng1.2.1 has no downside_10d at all; ng1.3.x and ng1.4.x reuse ng130 cache
-        # which has 4-horizon downside block too — avoid duplicate column selection.
-        is_13 = _is_1_3_branch(self._ng_version)
-        is_14 = _is_1_4_branch(self._ng_version)
-        downside_col = ", downside_10d" if version_ge(self.schema_version, 'ng1.0.2') and not is_12 and not is_13 and not is_14 else ""
+        # ng1.2.3/ng1.3.x/ng1.4.x/ng1.5.x already have downside_10d inside the
+        # 4-horizon extra_select block — avoid duplicate column selection.
+        downside_col = (
+            ", downside_10d"
+            if version_ge(self.schema_version, 'ng1.0.2')
+               and not is_12 and not is_13 and not is_14 and not is_15
+            else ""
+        )
         query = f"""
         SELECT code, trade_date, features_json,
                label_3d, label_5d, label_10d, label_15d{downside_col}{extra_select},
@@ -998,13 +1006,15 @@ class NGTrainer(V485Trainer):
         active_stock_features = self._get_active_stock_features()
 
         # Exclude market feature names that may appear in features_json
-        # (they are loaded from dedicated SQL columns instead — except ng1.3.x,
-        # which stores AMV in features_json only since ng130_feature_cache has no amv_* columns)
+        # (they are loaded from dedicated SQL columns instead — except ng1.3.x/ng1.4.x/ng1.5.x,
+        # which store AMV in features_json only since those caches have no amv_* columns)
         market_cols_to_load = list(MARKET_FEATURE_NAMES)
-        if _is_1_3_branch(self._ng_version) or _is_1_4_branch(self._ng_version):
-            # ng1.3.x/ng1.4.x reuse ng130 cache: 10 base + 3 AMV only; ext_market was
-            # useless in ng1.0.7. AMV stored in features_json (not SQL columns).
+        if is_13 or is_14 or is_15:
+            # ng1.3.x/ng1.4.x/ng1.5.x: 10 base + 3 AMV in features_json.
+            # ng1.5.x also has 1 regime feature (amv_regime_bull_prob) in features_json.
             market_cols_to_load += NG130_TIER_A_AMV
+            if is_15:
+                market_cols_to_load += NG150_MARKET_TIER_B
         elif version_ge(self.schema_version, 'ng1.0.7'):
             market_cols_to_load += EXTENDED_MARKET_FEATURE_NAMES
         market_set = set(market_cols_to_load)
@@ -1031,12 +1041,15 @@ class NGTrainer(V485Trainer):
             if col in df_stock_features.columns:
                 result[col] = df_stock_features[col].values
 
-        # ng1.3.x: AMV features live in features_json (not SQL columns).
-        # Extract once from parsed_rows; fall back to NaN for any missing.
+        # ng1.3.x/ng1.4.x/ng1.5.x: AMV features live in features_json (not SQL columns).
+        # ng1.5.x additionally has amv_regime_bull_prob in features_json.
         amv_from_json = {}
-        if _is_1_3_branch(self._ng_version) or _is_1_4_branch(self._ng_version):
+        if is_13 or is_14 or is_15:
             for col in NG130_TIER_A_AMV:
                 amv_from_json[col] = [d.get(col, np.nan) for d in parsed_rows]
+            if is_15:
+                for col in NG150_MARKET_TIER_B:
+                    amv_from_json[col] = [d.get(col, np.nan) for d in parsed_rows]
 
         for col in market_cols_to_load:
             if col in df_raw.columns:
@@ -1080,8 +1093,10 @@ class NGTrainer(V485Trainer):
             if ranked:
                 logger.info(f"  ng1.2.1: cross-sectional rank applied to {ranked} vn_label_* columns")
 
-        # ng1.0.7: Use conditional labels (bear: rank-based, bull: industry excess)
-        if version_ge(self._ng_version, 'ng1.0.7'):
+        # ng1.0.7: Use conditional labels (bear: rank-based, bull: industry excess).
+        # Skip for ng1.3.x / ng1.4.x / ng1.5.x — those caches do not have cond_label_*.
+        if (version_ge(self._ng_version, 'ng1.0.7')
+                and not is_13 and not is_14 and not is_15):
             for h in ['3d', '5d', '10d', '15d']:
                 cond_col = f'cond_label_{h}'
                 if cond_col in df_raw.columns:
@@ -1109,15 +1124,15 @@ class NGTrainer(V485Trainer):
                 if null_count > 0:
                     logger.warning(f"  ng1.2.3: {null_count} NULL {col} rows (partial cache? penalty=0 for those)")
 
-        # ng1.3.x: propagate 4-horizon downside columns from df_raw into result
-        if _is_1_3_branch(self._ng_version):
+        # ng1.3.x/ng1.5.x: propagate 4-horizon downside columns from df_raw into result
+        if is_13 or is_15:
             for h in [3, 5, 10, 15]:
                 col = f'downside_{h}d'
                 if col in df_raw.columns:
                     result[col] = pd.to_numeric(df_raw[col], errors='coerce').fillna(0.0).values
                 else:
                     result[col] = 0.0
-                    logger.warning(f"  ng1.3.x: {col} missing from cache — fill=0.0 (run ng_cache_updater first)")
+                    logger.warning(f"  {self._ng_version}: {col} missing from cache — fill=0.0 (run ng_cache_updater first)")
 
         # ng1.3.x dual-head: if head='downside', swap downside_Nd → label_Nd so
         # V485Trainer.walk_forward_train trains on downside values unchanged.
@@ -1203,8 +1218,11 @@ class NGTrainer(V485Trainer):
         active_stock_features = self._get_active_stock_features()
 
         # Determine market feature columns (version-specific to avoid ext_market
-        # leaking into ng1.3.x/ng1.4.x training — both use only 10 base + 3 AMV)
-        if _is_1_3_branch(self._ng_version):
+        # leaking into ng1.3.x/ng1.4.x/ng1.5.x training — each version has its own
+        # exact market feature list; no overflow from broader schema additions).
+        if _is_1_5_branch(self._ng_version):
+            active_market_cols = [c for c in NG150_MARKET_FEATURES if c in df.columns]
+        elif _is_1_3_branch(self._ng_version):
             active_market_cols = [c for c in NG130_MARKET_FEATURES if c in df.columns]
         elif self._ng_version == 'ng1.4.2':
             active_market_cols = [c for c in NG142_MARKET_FEATURES if c in df.columns]
