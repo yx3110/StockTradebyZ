@@ -889,7 +889,7 @@ def main():
     parser.add_argument('--version', default='v3.95',
                         choices=['v3.9', 'v3.95', 'v3.96', 'v4.3', 'v4.4', 'v4.4.2', 'v4.6', 'v4.7', 'v4.7.1', 'v4.7.2', 'v4.7.3', 'v4.7.4', 'v4.7.5', 'v4.7.6', 'v4.7.7', 'v4.7.8', 'v4.7.9', 'v4.8.0', 'v4.8.1', 'v4.8.2', 'v4.8.3', 'v4.8.4', 'v4.8.5', 'v4.8.6', 'v4.8.7', 'v4.8.8', 'v4.9.0', 'v4.9.0.1', 'v4.9.0.2', 'v4.9.1', 'v4.9.2', 'v4.9.3', 'v4.9.3a', 'v4.9.3b', 'v4.9.3c', 'v5.0', 'alpha158', 'ng1.0.0', 'ng1.0.1', 'ng1.0.2', 'ng1.0.3', 'ng1.0.4', 'ng1.0.7', 'ng1.1.0',
                                  'ng1.2.0', 'ng1.2.1', 'ng1.2.2', 'ng1.2.3', 'ng1.2.4',
-                                 'ng1.3.0'],
+                                 'ng1.3.0', 'ng1.4.0', 'ng1.4.1', 'ng1.4.2', 'ng1.5.0'],
                         help='评分版本 (default: v3.95)')
     parser.add_argument('--model-path', default=None,
                         help='指定模型文件路径 (覆盖默认模型查找)')
@@ -993,7 +993,7 @@ def main():
         # + industry neutralization). Other ng versions use NGProductionScorer.
         if args.version.startswith('ng1.3'):
             from ml_models.ng.ng_production_scorer import NG130DualHeadScorer
-            scorer = NG130DualHeadScorer()
+            scorer = NG130DualHeadScorer(model_dir=getattr(args, 'model_path', None))
         else:
             from ml_models.ng.ng_production_scorer import NGProductionScorer
             scorer = NGProductionScorer(

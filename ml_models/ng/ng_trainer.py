@@ -1556,8 +1556,14 @@ class NGTrainer(V485Trainer):
         # --- v1.0.2: Train downside model ---
         # ng1.3.x has dual-head (4-horizon) architecture via --head downside.
         # ng1.4.x explicitly drops the downside auxiliary model (clean ng1.0.1-style).
-        # Both skip the legacy NG102 single-horizon downside model here.
-        skip_legacy_downside = _is_1_3_branch(self._ng_version) or _is_1_4_branch(self._ng_version)
+        # ng1.5.x inherits ng1.4.x — also drops the legacy aux model. Running it
+        # here overwrites self.stock_feature_cols with NG110_STOCK_FEATURES (58)
+        # instead of the NG150/NG140 list, losing the new Tier A/B features.
+        skip_legacy_downside = (
+            _is_1_3_branch(self._ng_version)
+            or _is_1_4_branch(self._ng_version)
+            or _is_1_5_branch(self._ng_version)
+        )
         if skip_legacy_downside:
             logger.info(f"{self._ng_version}: skipping legacy downside_10d model")
         else:
