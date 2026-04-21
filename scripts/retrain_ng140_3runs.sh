@@ -5,6 +5,7 @@
 # subsequent ~30-45min.
 
 set -euo pipefail
+set -o pipefail
 cd "$(dirname "$0")/.."
 
 TS=$(date +%Y%m%d_%H%M%S)
@@ -15,12 +16,12 @@ for SEED in 42 123 456; do
   TAG="seed${SEED}"
   LOG="${LOG_DIR}/ng140_${TAG}.log"
   echo "=== [$(date '+%H:%M:%S')] Training ng1.4.0 ${TAG} ==="
-  python3 ml_models/ng/ng_trainer.py \
+  caffeinate -i python3 ml_models/ng/ng_trainer.py \
     --version ng1.4.0 \
     --seed "${SEED}" \
     --target-parallel 4 \
     --purge-days 15 \
-    > "${LOG}" 2>&1 || {
+    2>&1 | tee "${LOG}" || {
       echo "❌ ${TAG} FAILED — log: ${LOG}"
       exit 1
     }

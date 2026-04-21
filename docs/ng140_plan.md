@@ -30,7 +30,8 @@
 - ❌ 3 moneyflow features (sanity 证实 0/10 top-30 命中)
 - ❌ 行业中性化 at inference (可后加)
 
-**最终 ng1.4.0**: 56 stock + 4 downside + 10 market + 3 AMV = **73 特征**
+**最终 ng1.4.0**: 56 stock − 3 pruned dupes + 4 downside + 10 market + 3 AMV = **70 特征**
+(3 pruned dupes: `volume_contraction`, `sw_index_return_5d`, `industry_relative_strength` — canonical 版本已保留)
 
 ### 执行步骤
 
@@ -40,7 +41,7 @@
 - `ng_schema.py`: 新增 `ng1.4.0 → 'ng130_feature_cache'` 映射 (schema 层共用)
 - `NG140_STOCK_FEATURES` = `STOCK_FEATURE_NAMES + NG130_TIER_A_DOWNSIDE` (56 + 4, 不包含 mf)
 - `NG140_MARKET_FEATURES` = `MARKET_FEATURE_NAMES + NG130_TIER_A_AMV` (10 + 3)
-- `NG140_ALL_FEATURES` = 73 total
+- `NG140_ALL_FEATURES` = 70 total (56 − 3 pruned dupes + 4 downside + 10 + 3)
 
 **Pre-flight 验证**: Schema 列与 cache 一致 (ng130 cache 已有这些列)。
 
@@ -58,7 +59,7 @@
 python3 ml_models/ng/ng_trainer.py --version ng1.4.0 --fast-check --target-parallel 4
 ```
 
-验证: 特征矩阵 shape = `(N, 73)`, 2-window WF 10d OOS IC > 0.05 方向正。
+验证: 特征矩阵 shape = `(N, 70)`, 2-window WF 10d OOS IC > 0.05 方向正。
 
 #### B.4 Full train 3 seeds (~3-4h, 并行训练)
 

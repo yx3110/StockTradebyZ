@@ -81,13 +81,14 @@ def parse_v52_raw(north_star_output: str) -> tuple[float, float] | None:
 
 
 def write_postmortem(passed: bool, v52_pct: float, label: str, start: str, end: str,
-                     log_excerpt: str) -> Path:
+                     log_excerpt: str, version: str) -> Path:
     status = 'pass' if passed else 'rejected_v2'
-    out = REPORT_BASE / 'ng130' / f'stage35_{status}.md'
+    version_slug = version.replace('.', '')
+    out = REPORT_BASE / version_slug / f'stage35_{status}.md'
     out.parent.mkdir(parents=True, exist_ok=True)
     verdict = 'PASS' if passed else 'REJECTED'
     with open(out, 'w') as f:
-        f.write(f"# ng1.3.0 Stage 3.5 Gate — {verdict}\n\n")
+        f.write(f"# {version} Stage 3.5 Gate — {verdict}\n\n")
         f.write(f"- Date: {datetime.now():%Y-%m-%d %H:%M}\n")
         f.write(f"- Window: {start} → {end}\n")
         f.write(f"- Config: composite top10, 10d focus (spec gate config)\n")
@@ -122,7 +123,7 @@ def main() -> int:
             raise SystemExit(f"Report dir missing: {output_dir}")
 
     print(f"\n=== Step 2/3: running north_star_eval backtest ===")
-    label = f'NG130-STAGE35-{args.start}-{args.end}'
+    label = f'{args.version.upper()}-STAGE35-{args.start}-{args.end}'
     ns_output = run_north_star(output_dir, label)
     print(ns_output[-4000:])
 
@@ -131,17 +132,17 @@ def main() -> int:
     if parsed is None:
         print("⚠️ Could not parse V5.2 from north_star output — gate FAIL (parse error)")
         write_postmortem(False, 0.0, label, args.start, args.end,
-                         ns_output[-2000:])
+                         ns_output[-2000:], args.version)
         return 2
 
     v52_score, v52_pct = parsed
     passed = v52_pct >= args.threshold
     verdict = "✅ PASS" if passed else "❌ REJECTED"
-    print(f"\n{verdict}: V5.2 raw = {v52_pct:.1f}% ({v52_score:.1f}/105), "
+    print(f"\n{verdict}: V5.2 raw = {v52_pct:.1f}%, "
           f"threshold = {args.threshold}%")
 
     pm_path = write_postmortem(passed, v52_pct, label, args.start, args.end,
-                               ns_output[-4000:])
+                               ns_output[-4000:], args.version)
     print(f"Postmortem: {pm_path}")
     return 0 if passed else 1
 
