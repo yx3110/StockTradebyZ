@@ -33,7 +33,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from ml_models.training.train_v395_multi_target import V485Trainer
 from ml_models.ng.ng_schema import (
     get_table_name, version_ge, get_schema_version,
-    _is_1_2_branch, _is_1_3_branch, _is_1_4_branch, _is_1_5_branch,
+    _is_1_2_branch, _is_1_3_branch, _is_1_4_branch, _is_1_5_branch, _is_1_6_branch,
     _version_in_range,
 )
 from ml_models.common.lgb_rank_utils import RANK_BASE_PARAMS, build_groups_per_date
@@ -305,6 +305,28 @@ NG150_VERSION = 'ng1.5.0'
 # ng1.0.1 was 56 stock; the 3 ng1.4.0-pruned dupes explain the delta.
 assert len(NG150_ALL_FEATURES) == 75, f"ng150 feature count drift: {len(NG150_ALL_FEATURES)} != 75"
 
+# ---------------------------------------------------------------------------
+# ng1.6.1: ng1.0.1 底座 + cross-sectional factor-residual labels (F2)
+# 设计: docs/ng_next_iteration_plan.md#F2
+# ---------------------------------------------------------------------------
+# 目标: 复刻 ng1.0.6 β_UMD≈0 跨 regime 鲁棒性, 通过 label 端残差化 (不动架构).
+# 特征集同 ng1.0.1 (66 features). 只改 label: 每日 cross-sectional 对
+# (cs_rank_market_cap, cs_rank_pb, cs_rank_return_20d, industry_return_20d)
+# 回归 label_Nd, 用残差作为 "pure alpha" label.
+# 这是 pre-1.4.x 路线的分支 — 不继承 ng1.3.x/ng1.4.x 的 cache schema.
+NG161_STOCK_FEATURES: List[str] = list(STOCK_FEATURE_NAMES)
+NG161_MARKET_FEATURES: List[str] = list(MARKET_FEATURE_NAMES)
+NG161_ALL_FEATURES: List[str] = NG161_STOCK_FEATURES + NG161_MARKET_FEATURES
+NG161_VERSION = 'ng1.6.1'
+# Factor exposure proxies (subset of STOCK_FEATURE_NAMES). Used as X in
+# cross-sectional regression to residualize labels per trade_date.
+NG161_FACTOR_PROXIES = [
+    'log_adv_20d',            # SMB proxy (size via liquidity; no raw market_cap in base)
+    'pb',                     # HML proxy (value)
+    'cs_rank_return_20d',     # UMD proxy (momentum)
+    'industry_return_20d',    # MKT proxy (within-industry systematic)
+]
+
 # ng1.0.9: Persistent features (10-day rank autocorrelation >= 0.5)
 # 22 features that produce stable cross-sectional rankings over 10 days
 PERSISTENT_STOCK_FEATURES: List[str] = [
@@ -349,6 +371,7 @@ class NGTrainer(V485Trainer):
         self._head = head  # 'excess' (default) or 'downside' (ng1.3.x dual-head training)
         self.cache_table = get_table_name(self._ng_version)
         version_feature_table = [
+            ('ng1.6.1', NG161_ALL_FEATURES, NG161_STOCK_FEATURES, NG161_MARKET_FEATURES, []),
             ('ng1.5.0', NG150_ALL_FEATURES, NG150_STOCK_FEATURES, NG150_MARKET_FEATURES, []),
             ('ng1.4.2', NG142_ALL_FEATURES, NG142_STOCK_FEATURES, NG142_MARKET_FEATURES, []),
             ('ng1.4.1', NG141_ALL_FEATURES, NG141_STOCK_FEATURES, NG141_MARKET_FEATURES, []),
@@ -402,6 +425,55 @@ class NGTrainer(V485Trainer):
         key_str = (f"{self.__class__.__name__}_{self._ng_version}_{start_date}_{end_date}"
                    f"_{db_mtime:.0f}{lam_suffix}{head_suffix}_{feat_hash}")
         return hashlib.md5(key_str.encode()).hexdigest()[:12]
+
+    def _residualize_labels_cross_section(
+        self, df: pd.DataFrame, proxy_cols: List[str]
+    ) -> None:
+        """Replace label_Nd columns in-place with per-date cross-sectional
+        residuals vs factor exposure proxies.
+
+        For each trade_date:
+            y_i = label_Nd_i            (stock i's industry-excess return)
+            X_i = [proxy_cols values]   (size/value/momentum/industry proxies)
+            fit OLS y ~ X; label_Nd_i  <- y_i - predicted_i
+
+        Residual = "pure alpha" after removing systematic factor exposure.
+        Only labels change; features are untouched.
+        """
+        from numpy.linalg import lstsq
+        available = [c for c in proxy_cols if c in df.columns]
+        if len(available) < 2:
+            logger.warning(
+                f"  ng1.6.x: only {len(available)} factor proxies in df, "
+                f"skipping label residualization (need ≥2)"
+            )
+            return
+        label_cols = [f'label_{h}' for h in ('3d', '5d', '10d', '15d') if f'label_{h}' in df.columns]
+        logger.info(
+            f"  ng1.6.x F2: cross-sectional factor residualization — "
+            f"proxies={available}, labels={label_cols}"
+        )
+        date_groups = df.groupby('trade_date', sort=False).indices
+        n_residualized = 0
+        for date, idx in date_groups.items():
+            if len(idx) < 30:
+                continue
+            X = df.loc[idx, available].values.astype(float)
+            X = np.nan_to_num(X, nan=0.0)
+            X_aug = np.column_stack([X, np.ones(len(idx))])
+            for lab in label_cols:
+                y = df.loc[idx, lab].values.astype(float)
+                mask = ~np.isnan(y)
+                if mask.sum() < 30:
+                    continue
+                try:
+                    beta, *_ = lstsq(X_aug[mask], y[mask], rcond=None)
+                    pred = X_aug @ beta
+                    df.loc[idx, lab] = y - pred
+                except Exception as e:
+                    logger.debug(f'residualize failed {date}/{lab}: {e}')
+            n_residualized += 1
+        logger.info(f"  ng1.6.x F2: residualized {n_residualized} trade dates")
 
     def _warn_on_feature_count_mismatch(self, model_data: dict) -> None:
         """Probe first probeable booster; warn if its n_features != len(self.feature_names)."""
@@ -1195,6 +1267,12 @@ class NGTrainer(V485Trainer):
 
         result = result.dropna(subset=['label_3d', 'label_5d', 'label_10d'])
         result = result.sort_values(['trade_date', 'code']).reset_index(drop=True)
+
+        # ng1.6.1 F2: cross-sectional factor residualization on labels.
+        # For each trade_date, regress label_Nd across stocks on factor exposure
+        # proxies (size/value/momentum/industry), use residual as "pure alpha".
+        if _is_1_6_branch(self._ng_version):
+            self._residualize_labels_cross_section(result, NG161_FACTOR_PROXIES)
 
         # Stub market_calculator for V475 serialization
         mkt_df = result[['trade_date'] + [c for c in MARKET_FEATURE_NAMES if c in result.columns]].drop_duplicates('trade_date')

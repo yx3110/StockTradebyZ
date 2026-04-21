@@ -43,6 +43,7 @@ VERSION_TABLE_MAP = {
     'ng1.4.1': 'ng130_feature_cache',  # ng1.4.0 - 4 downside (ablation)
     'ng1.4.2': 'ng130_feature_cache',  # ng1.4.0 - 3 AMV (ablation)
     'ng1.5.0': 'ng150_feature_cache',  # ng1.4.0 底座 + 5 Tier B regime-refined features (78 total)
+    'ng1.6.1': 'ng101_feature_cache',  # F2: ng1.0.1 特征 + cross-sectional factor-residual labels (动态)
 }
 
 DEFAULT_VERSION = 'ng1.0.3'
@@ -65,6 +66,7 @@ SCHEMA_VERSION_MAP = {
     'ng1.4.1': 'ng1.3.0',  # ablation variant, same schema as ng140
     'ng1.4.2': 'ng1.3.0',  # ablation variant, same schema as ng140
     'ng1.5.0': 'ng1.5.0',  # own schema (ng1.4.0 base + 5 Tier B regime-refined features in features_json)
+    'ng1.6.1': 'ng1.0.1',  # reuses ng101 cache; only label transform differs (factor residualization)
 }
 
 
@@ -109,6 +111,13 @@ def _is_1_5_branch(ver: str) -> bool:
     Stores label_raw_* + downside_* (same as ng1.3.x cache) + 5 new features in features_json.
     """
     return ver.startswith('ng1.5.')
+
+
+def _is_1_6_branch(ver: str) -> bool:
+    """ng1.6.x = ng1.0.1 base + label-engineering variants (no schema change).
+    Reuses ng101_feature_cache; trainer dynamically residualizes labels.
+    """
+    return ver.startswith('ng1.6.')
 
 
 def _version_in_range(ver: str, lo: str, hi: str) -> bool:
