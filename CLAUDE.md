@@ -7,6 +7,133 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - 不要随意删除或覆盖数据库中的内容！
 - 所有报告必须保存在 `reports/` 相应子目录中
 
+## 🛑 模型迭代 Pre-flight Checklist (feature backfill / 训练 启动前强制核查)
+
+任何模型迭代 (新特征、新 schema、新标签、新训练流程) 在**启动 feature backfill 或 training** 之前，**必须**完成以下三项代码核查。没通过不许 kickoff 长跑任务 (避免数据浪费 + 数小时返工)。
+
+### Check 1: Schema 一致性 (DB ⇔ Training)
+
+- 数据库 (`{version}_feature_cache` 表) 的列名、顺序、类型, 必须和 trainer 里读取 feature 时写死的列列表**逐字匹配** (含大小写、下划线位置)
+- 检查点: `ml_models/ng/ng_schema.py:STOCK_FEATURE_NAMES` / `MARKET_FEATURE_NAMES` vs cache_updater 的 `INSERT` 列 vs trainer 的 `X = df[feature_cols]`
+- Pre-flight 命令示例:
+  ```bash
+  python3 -c "
+  import sqlite3
+  from ml_models.ng.ng_schema import get_stock_feature_names, get_table_name
+  table = get_table_name('ng1.0.1')
+  conn = sqlite3.connect('data_adapter/stock_data.db')
+  db_cols = [r[1] for r in conn.execute(f'PRAGMA table_info({table})').fetchall()]
+  schema_cols = get_stock_feature_names('ng1.0.1')
+  missing = set(schema_cols) - set(db_cols)
+  extra = set(db_cols) - set(schema_cols) - {'id','code','trade_date','features_json'}
+  print('MISSING (schema but not in DB):', missing)
+  print('EXTRA (DB but not in schema):', extra)
+  "
+  ```
+- 历史惨案: ng1.1.0 误走 ng1.0.7 超集分支的 INSERT bug (2026-04-13); `revenue_growth` 用了 `gross_profit_margin` 字段 (ng1.0.1 原始 bug, 4-12 重训才修)
+
+### Check 2: Feature Backfill 逻辑正确性
+
+- `{version}_cache_updater.py` 的 `version` 参数必须显式传递, 不能走 fallback 默认版本导致 INSERT 进错表
+- pass-1 (raw values) 和 pass-2 (CS rank + residuals) 的产出列必须和 schema 声明一致, **计算公式不能静默 fallback** (如 `revenue_growth` 无 `or_yoy` 数据时不许自动用 gross_profit_margin 顶替)
+- 时间范围确保覆盖所有 WF 窗口 + pre-2020 评估段 (若要跑向后泛化评估)
+- Pre-flight: 跑 1 天回填 + `pred_10d` 非零数验证:
+  ```bash
+  python3 ml_models/{version}/cache_updater.py --start-date 2026-04-18 --end-date 2026-04-18 --version {version}
+  python3 -c "
+  import sqlite3, json
+  from ml_models.ng.ng_schema import get_table_name
+  conn = sqlite3.connect('data_adapter/stock_data.db')
+  n = conn.execute(f'SELECT COUNT(*) FROM {get_table_name(\"{version}\")} WHERE trade_date=?', ('2026-04-18',)).fetchone()[0]
+  print('Rows:', n)  # 应 ~3000+
+  "
+  ```
+- 历史惨案: ng1.2.3 `schema_version` 缺失导致 ng1.1.0 写入错 schema (2026-04-13)
+
+### Check 3: 训练 / 回填最高效执行路径
+
+- **profile 过再 kickoff**, 不要猜瓶颈
+- trainer 窗口内 4-target 并行: 用 `--target-parallel N` (M5 Max 1.38x 加速, `training_target_parallel.md`)
+- Fast-check 先跑: `--fast-check` 2min 判生死, 再决定是否长跑 (CLAUDE.md `fast_check_mode.md`)
+- Feature backfill 并发: cache_updater 默认支持日期粒度并行; 但 **Pool 通过 pipe 传 DataFrame 会死锁** — 用 `--num-workers 0` 顺序或直接用 `v39_feature_cache_updater.py` 模式 (memory: 多进程 Pool 死锁)
+- Auto-WF: V4901/新版训练默认 turbo-check 3 配置 (expanding / sliding-720d / sliding-500d+decay730), `--no-auto-wf` 跳过. 6min 换 10d ICIR 最优配置, 值得跑
+- 不要在 hot path 里做 `SELECT *` / N+1 / 逐股 SQL; 用 `IN (?,?,...)` 批量
+- 历史惨案: ng1.2.x 没 fast-check 直接 kickoff 浪费 8+ 小时; single_stock_review.py 的 N+1 fetch_snapshot 迄今未批量化
+
+### Check 4: Acceptance Criteria + Early ABORT Gate (写死不回头)
+
+**惨案**: ng1.2.4 Stage 3.5 V5.2=48.5% 才叫停, 烧 8h. ng1.2.3 fast-check PASS 但 production 反向.
+
+- kickoff 前白纸黑字写死: "成功 = V5.2 ≥ 65% A + Sharpe ≥ 2.0 + Pre-2020 ≥ 55%" (根据版本调整阈值)
+- 中间阶段 ABORT 线: 第 1 个 WF 窗口 10d ICIR < 0.3 立即 kill, 不要想着"后面能补"
+- **Production spot check gate**: 训到一半拿 checkpoint 跑 5 日 recent regime 快检, 不对就 kill
+
+### Check 5: Baseline 公平对比方案 (避免"赢了数字输了现实")
+
+**惨案**: 新版本和 ng1.0.1 比, WF 配置 / seed / 评估期经常偷偷换了, 数字好看但不 fair.
+
+- 固定: 相同 WF 模式 (expanding) + 相同 purge-days (15) + 相同 seed (42 或 42/123/456) + 相同评估窗口
+- 对比表模板预先建好: `ng1.0.1 | 新版 | Δ` × `10d ICIR / Sharpe / MaxDD / V5.2 / Pre-2020 / 换手`
+
+### Check 6: Checkpointing + 落盘日志 (Mac sleep / OOM 保命)
+
+**惨案**: M5 Max 跑 6-8h, 中途息屏 throttle / OOM / auto-claude 误杀血亏.
+
+- 每个 WF 窗口结束后 `joblib.dump` 中间模型 (不是只保存最终)
+- `nohup` 或 `caffeinate -i python3 ...` 防止 sleep
+- log 必须 `tee logs/train_{version}_{timestamp}.log` (而不是只 stdout), 事后 grep ┃ 进度条对进度有用
+- PID 写到固定位置方便 `tail -f` + 问进度
+
+### Check 7: 数据泄露 Pre-scan
+
+**惨案**: V4.9.0.1 β_UMD=3.029 隐性动量泄露直到 WF OOS 才暴露.
+
+- 每个新特征上线前过 `factor_returns.py` 看 β 暴露; |β| > 1.5 警告, > 2.5 拒绝
+- grep 新特征计算里的 `shift(-` / `rolling` + 同日 close→feature 之类的未来信息泄露
+- Purge days 够不够 cover label horizon (15d label 就至少 purge 15 天, 不然 test 和 train 数据重叠)
+
+### Check 8: 资源预算 + 抢占检查
+
+**惨案**: 磁盘 208GB 了, pickle 77MB × seed × version 很快 GB 级. 另外其他训练任务在跑会抢 CPU.
+
+- `df -h` 确认磁盘剩余 ≥ 20GB
+- `ps aux | grep -E "train|backfill|quick_daily" | grep -v grep` 扫已跑任务, 避免 `--target-parallel 4 × 2 任务 = 8 线程抢 8 核`
+- `htop` 或 `vm_stat` 看 RAM 水位 (ng1.0.1 训练峰值 ~20GB)
+
+### Check 9: 可重现性元数据写进 pickle
+
+**惨案**: 3-Seed Ensemble 发现 seed 传播 bug 才意识到之前几版模型的 seed 根本没生效.
+
+训练脚本在 pickle 里必写入:
+- `git_commit_hash` (当前 HEAD)
+- `schema_version` + `feature_names` 列表 (scorer 加载时校验)
+- `seed` + `wf_mode` + `purge_days` + `target_parallel`
+- `training_duration_sec` + `host` (M5 Max / 某 EC2)
+
+### Check 10: /simplify 过一遍再 kickoff
+
+**惨案**: `/simplify` 发现 seed 传播 bug / N+1 query 等跑前挑出来才不浪费数小时.
+
+trainer / cache_updater 改动后, `/simplify scripts/xxx.py` 过一遍. N+1 / 死循环 / seed 没传这类 bug 通常这步就能挑出. Memory 明文规定每步 3 轮 /simplify, 长跑前最容易忘.
+
+### 执行规范
+
+开始任何 model iteration 前, 用户应该能读到 Claude 输出类似:
+
+> Pre-flight checklist:
+> - ✅ **Check 1** Schema: DB `ng124_feature_cache` 66 列, `get_stock_feature_names('ng1.2.4')` 66 列, 完全一致
+> - ✅ **Check 2** Backfill: 2026-04-18 单日试跑 3095 行, pred_10d 非零, cache_updater `--version ng1.2.4` 显式传入
+> - ✅ **Check 3** 效率: fast-check 已过 (IC 10d=0.09 方向正), `--target-parallel 4` 启用, auto-WF 启用, 预计 40min/WF
+> - ✅ **Check 4** 接受准则: V5.2 ≥ 65% / Sharpe ≥ 2.0 / Pre-2020 ≥ 55%; ABORT 线: 第1个 WF ICIR < 0.3
+> - ✅ **Check 5** Baseline: 对齐 ng1.0.1 (expanding / purge=15 / seed=42); 对比表模板已建
+> - ✅ **Check 6** 保命: `caffeinate -i` 启, `tee logs/train_ng124_20260419.log`, WF 窗口 checkpoint 启用
+> - ✅ **Check 7** 泄露: 新特征 β < 1.5, grep 无 `shift(-` / 未来信息, purge 15d 足够 cover 15d label
+> - ✅ **Check 8** 资源: `df -h` 40GB 剩余, 无竞争训练任务, RAM 水位 18/64GB
+> - ✅ **Check 9** 元数据: git hash `bc495123`, schema `ng1.2.4`, seed 42, host `M5Max-local` 已写入 pickle dump
+> - ✅ **Check 10** /simplify 过: trainer + cache_updater 3 轮 clean
+
+10 项有任何一项不通过, **不许继续**, 回头改代码. 通过后再 kickoff 长跑任务.
+
 ## 🎯 工作风格 (必须遵守)
 
 ### 执行优先，禁止空转
@@ -80,8 +207,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 # Individual components
 python3 fetch_data/quick_daily_update.py --date 20250930  # Complete data update (30-45 sec)
   # 🆕 Includes: Market quotes, market indices, daily basic, financial indicators, technical indicators
-python3 tomorrow_stock_selector.py 2025-09-30                             # Stock selection (默认ng1.0.1)
-python3 tomorrow_stock_selector.py 2025-09-30 --scoring-version ng1.0.1   # 🏆 生产推荐 66特征 bugfix重训 V5.2=72.1% A+ Sharpe=2.753
+python3 tomorrow_stock_selector.py 2025-09-30                             # Stock selection (默认 ng1.0.62 MOE)
+python3 tomorrow_stock_selector.py 2025-09-30 --scoring-version ng1.0.62  # 🏆 生产 MOE v2 AMV switch: bull→ng1.0.7, bear→ng1.0.4, V5.2=79% (2024-2026)
+python3 tomorrow_stock_selector.py 2025-09-30 --scoring-version ng1.0.6   # MOE v1 (bull→ng1.0.1), V5.2=78%
+python3 tomorrow_stock_selector.py 2025-09-30 --scoring-version ng1.0.1   # 单模型基线 66 feat V5.2=72.1% A+ Sharpe=2.753
 python3 tomorrow_stock_selector.py 2025-09-30 --scoring-version ng1.1.0   # 68特征 ng1.0.1精简+4 P2新因子, Sharpe=2.065
 python3 tomorrow_stock_selector.py 2025-09-30 --scoring-version v4.9.0.1  # v4.9.0.1 (含数据泄露, 仅内部参考)
 python3 tomorrow_stock_selector.py 2025-09-30 --scoring-version v3.9      # v3.9 旧版
@@ -441,16 +570,27 @@ AI analysis configuration and weights
 - ⚠️ 不要用8策略做ML的pre-filter — 已实证让v4.7.5从A+降到B
 
 ### ML Scoring Systems (活跃版本)
-1. **🏆 NG v1.0.1 Production** (生产推荐, 4-12 bugfix重训, 裸信号最强):
-   - 66特征, 行业超额标签, ICIR 自适应权重, 特征与模型对齐
-   - 关键修复: `revenue_growth` 改用真 `or_yoy` (原值误用毛利率) — 模型首次获得成长性信号
-   - 性能: V5.2=72.1% A+, 年化165.7%, Sharpe=2.753, MaxDD=-11.7%
-   - Pre-2020 OOS: 73.7% A+ (唯一跨 regime A+ 基座)
+
+> **⚠️ 2026-04-20 全量复核后的重大结论**: ng1.0.6 (0AMV 牛熊切换) 综合指标实际**胜过** ng1.0.1 (WF-OOS V5.2: 78.9% vs 73.4%; 10d Sharpe: 2.81 vs 2.37; Pre-2020 年化: +0.7% vs -19.0%; β_UMD: +0.005 vs +0.38). ng1.0.1 唯一优势是 MaxDD (-11.7% vs -22.9%). 生产切换待 ng1.0.6+ng1.0.5 风控叠加测试完成后确认。
+
+1. **🎯 NG v1.0.6 (0AMV 牛熊切换)** (2026-04-20 发现综合最优, 待切生产):
+   - 核心: 0AMV 活筹指数做 regime 状态机, **牛→ng101, 熊→ng104-3s** (牛市信号模型 + 熊市风险模型混合)
+   - 性能 (WF-OOS 2018-2026 1606 天): **V5.2=78.9% A+, 10d Sharpe=2.808, 年化(净)=115.7%, 15d Sharpe=2.081/年化81%, MaxDD=-21.4%~-22.9%**
+   - Pre-2020 (2018-2019): 年化+0.7%, Sharpe+0.18 — **全 NG 系列唯一正收益**
+   - β 归因: β_UMD=+0.005 (ng1.0.1 的 1/76), β_SMB=+1.54 (边界), Alpha t=4.54, R²=2.9% — 动量暴露几乎为零
+   - 控制: `backtest/regime_switch_backtest.py` + `indicators/market_amv.py`, 选股 `--scoring-version ng1.0.6`
+   - **短板**: MaxDD=-22.9% 是 ng1.0.1 的两倍, 单独用风险过大, 需叠加 ng1.0.5 三层风控
+
+2. **🏆 NG v1.0.1 Production** (当前生产, 4-12 bugfix重训, MaxDD 最小):
+   - 66特征, 行业超额标签, ICIR 自适应权重
+   - 关键修复: `revenue_growth` 改用真 `or_yoy` (原值误用毛利率) — regime tradeoff (WF-OOS 提升, Pre-2020 退化)
+   - 性能 (WF-OOS 2018-2026): V5.2=73.4% A+, 年化165.7%, Sharpe=2.753, **MaxDD=-11.7%** (所有 NG 版本最优), β_UMD=+0.38 (t=5.4, 清洁)
+   - Pre-2020 OOS (2018-2019): V5.2=**45.5% B** (10d composite, 4-12 bugfix pkl), 年化 -19%, Sharpe -0.33; 老文档 "73.7% A+" 已证实是 4-10 评估 bug ghost number
    - Scorer: `ml_models/ng/ng_production_scorer.py` (version='ng1.0.1')
    - 模型: `ml_models/trained_models/ng/ng101_seed42_multi_target_20260412_233749.pkl`
    - 缓存表: `ng101_feature_cache` (与 ng1.1.0 共表, 由日常流程填充)
 
-2. **NG v1.1.0** (ng1.0.1 精简+P2新因子):
+3. **NG v1.1.0** (ng1.0.1 精简+P2新因子):
    - 68特征 (58 stock + 10 market), 4 alpha P2新因子 (peg_proxy/pb_roe_ratio/cs_rank_pb/cs_rank_dv)
    - 性能: V5.2=70.4% A+, 年化122.8%, Sharpe=2.065, MaxDD=-12.5%
    - 模型: `ng110_seed42_multi_target_20260412_214553.pkl`
