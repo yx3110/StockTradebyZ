@@ -836,6 +836,16 @@ def quick_daily_update(date: str = None, skip_financial: bool = True):
     except Exception as e:
         logger.warning(f"  0AMV更新失败(非关键): {e}")
 
+    # 16. 刷新 ST 戴帽 / 改名 (securities.name)
+    logger.info("【步骤16/16】刷新股票名称 (ST namechange)...")
+    try:
+        from scripts.refresh_stock_names import fetch_latest_names, update_db_names
+        latest = fetch_latest_names(lookback_days=540)
+        changed, _ = update_db_names(latest)
+        logger.info(f"  更新 {changed} 只股票名称 (共 {len(latest)} 条 namechange)")
+    except Exception as e:
+        logger.warning(f"  名称刷新失败(非关键): {e}")
+
     logger.info("="*60)
 
     # 显示数据库统计信息
