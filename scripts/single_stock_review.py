@@ -29,15 +29,34 @@ def version_tag(version: str) -> str:
     return version.replace('.', '').replace('_', '')
 
 
+# Versions whose report dir diverges from the default tag (MOE variants, etc).
+# tomorrow_stock_selector.py writes ng1.0.62 → daily_selection_ng106v2[_fullmarket].
+VERSION_DIR_ALIASES: dict[str, list[str]] = {
+    'ng1.0.62': ['ng106v2'],
+    'ng1.0.6': ['ng106'],
+}
+
+
+def _candidate_tags(version: str) -> list[str]:
+    tags = [version_tag(version)]
+    for alias in VERSION_DIR_ALIASES.get(version, []):
+        if alias not in tags:
+            tags.append(alias)
+    return tags
+
+
 def find_todays_report(version: str, date_str: str) -> Path:
     """Locate the day's report JSON. date_str: YYYYMMDD."""
-    tag = version_tag(version)
-    candidates = [
-        PROJECT_ROOT / f'reports/daily_selection_{tag}_fullmarket/analysis_data_{date_str}.json',
-        PROJECT_ROOT / f'reports/daily_selection_{tag}/analysis_data_{date_str}.json',
+    candidates: list[Path] = []
+    for tag in _candidate_tags(version):
+        candidates.extend([
+            PROJECT_ROOT / f'reports/daily_selection_{tag}_fullmarket/analysis_data_{date_str}.json',
+            PROJECT_ROOT / f'reports/daily_selection_{tag}/analysis_data_{date_str}.json',
+        ])
+    candidates.extend([
         PROJECT_ROOT / f'reports/daily_selection_{version}_fast/analysis_data_{date_str}.json',
         PROJECT_ROOT / f'reports/daily_selection_{version}_fullmarket/analysis_data_{date_str}.json',
-    ]
+    ])
     for p in candidates:
         if p.exists():
             return p
@@ -67,13 +86,14 @@ def scan_historical_hits(
 
     Callers filter by rank threshold as needed. Returns dict[code] -> [(date, rank, pred_10d)].
     """
-    tag = version_tag(version)
-    search_dirs = [
-        PROJECT_ROOT / f'reports/daily_selection_{tag}',
-        PROJECT_ROOT / f'reports/daily_selection_{tag}_fullmarket',
+    search_dirs: list[Path] = []
+    for tag in _candidate_tags(version):
+        search_dirs.append(PROJECT_ROOT / f'reports/daily_selection_{tag}')
+        search_dirs.append(PROJECT_ROOT / f'reports/daily_selection_{tag}_fullmarket')
+    search_dirs.extend([
         PROJECT_ROOT / f'reports/daily_selection_{version}_fast',
         PROJECT_ROOT / f'reports/daily_selection_{version}_fullmarket',
-    ]
+    ])
     targets = set(target_codes)
     hits: dict[str, list[tuple[str, int, float]]] = defaultdict(list)
 

@@ -557,8 +557,9 @@ def update_ng_feature_cache(date_str: str):
         date_dash = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
 
         # 生产版本优先; ng1.0.3/ng1.0.4 供 ng1.0.6 牛熊切换回退使用
+        # ng1.0.1 是 daily-selection 流程的独立参考信号 (与生产 MOE 解耦), 需单独刷表
         # 多版本共表时 (如 ng1.1.0/ng1.0.1 同写 ng101_feature_cache) 仅跑一次避免重复I/O
-        versions = [PRODUCTION_VERSION, 'ng1.0.3', 'ng1.0.4']
+        versions = [PRODUCTION_VERSION, 'ng1.0.1', 'ng1.0.3', 'ng1.0.4']
         seen_tables: set[str] = set()
         for ver in versions:
             table = get_table_name(ver)
