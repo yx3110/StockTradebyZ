@@ -606,6 +606,34 @@ def update_sw_index_daily(date_str: str):
         return 0
 
 
+def update_altdata_daily(date_str: str) -> dict:
+    """更新 alt-alpha 数据源 (龙虎榜 / 融资融券 / 北向十大活跃股).
+
+    三个数据源独立运行, 一个失败不影响其他. 返回每个的条数.
+    """
+    logger.info(f"开始更新 {date_str} 的 alt-alpha 数据 (top_list/margin/hsgt_top10)...")
+    counts = {"top_list": 0, "margin": 0, "hsgt_top10": 0}
+    try:
+        from fetch_data.alternative_alpha_fetcher import (
+            TopListFetcher, MarginDetailFetcher, HsgtTop10Fetcher, _load_pro_api,
+        )
+        pro = _load_pro_api()
+        for key, cls in [("top_list", TopListFetcher),
+                          ("margin", MarginDetailFetcher),
+                          ("hsgt_top10", HsgtTop10Fetcher)]:
+            try:
+                counts[key] = cls(pro=pro).fetch_single_date(date_str)
+            except Exception as e:
+                logger.warning(f"alt-alpha {key} 更新失败: {e}")
+    except Exception as e:
+        logger.warning(f"alt-alpha 整体更新异常: {e}")
+    logger.info(
+        f"alt-alpha 完成: 龙虎榜 {counts['top_list']} 条, "
+        f"两融 {counts['margin']} 条, 北向十大 {counts['hsgt_top10']} 条"
+    )
+    return counts
+
+
 def update_hsgt_daily(date_str: str):
     """更新沪深港通资金流向数据"""
     logger.info(f"开始更新 {date_str} 的北向资金数据...")
@@ -699,6 +727,9 @@ def quick_daily_update(date: str = None, skip_financial: bool = True):
         'sw_industry': 0,
         'sw_index': 0,
         'hsgt': 0,
+        'top_list': 0,
+        'margin': 0,
+        'hsgt_top10': 0,
         'financial': 0,
         'technical': 0,
         'v39_cache': 0,
@@ -750,6 +781,13 @@ def quick_daily_update(date: str = None, skip_financial: bool = True):
     # 7. 更新北向资金数据 — API调用
     logger.info("【步骤7/14】更新北向资金数据...")
     stats['hsgt'] = update_hsgt_daily(date)
+
+    # 7b. 更新 alt-alpha 数据 (龙虎榜 / 融资融券 / 北向十大活跃股) — API调用
+    logger.info("【步骤7b/14】更新 alt-alpha 数据...")
+    altdata_counts = update_altdata_daily(date)
+    stats['top_list'] = altdata_counts['top_list']
+    stats['margin'] = altdata_counts['margin']
+    stats['hsgt_top10'] = altdata_counts['hsgt_top10']
 
     # 8. 更新财务指标（如果有）
     if not skip_financial:
@@ -816,6 +854,9 @@ def quick_daily_update(date: str = None, skip_financial: bool = True):
     logger.info(f"申万行业分类: {stats['sw_industry']:,} 条")
     logger.info(f"申万行业指数: {stats['sw_index']:,} 条")
     logger.info(f"北向资金: {stats['hsgt']:,} 条")
+    logger.info(f"龙虎榜: {stats['top_list']:,} 条")
+    logger.info(f"融资融券: {stats['margin']:,} 条")
+    logger.info(f"北向十大活跃股: {stats['hsgt_top10']:,} 条")
     logger.info(f"财务指标: {stats['financial']:,} 条")
     logger.info(f"技术指标: {stats['technical']:,} 条")
     logger.info(f"V3.9/V3.95特征缓存: {stats['v39_cache']:,} 条")
