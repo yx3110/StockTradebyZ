@@ -3839,6 +3839,19 @@ class TomorrowStockSelector:
             except Exception as e:
                 logger.warning(f"post-filter 失败, 保留原列表: {e}")
 
+        # Multi-horizon execution alignment tag (annotates only, no filtering)
+        # 🟢 ALIGN: all 4 horizons positive → T+1 buy ok
+        # 🟡 MIXED: 10d/15d positive but 3d/5d has negative → short-term pullback likely
+        # 🔴 DIVERGE: 10d positive but 15d ≤ 0 → unstable signal
+        # ⚪ WEAK/NO_DATA: 10d ≤ 0 or missing predictions
+        if stock_with_scores:
+            try:
+                from stock_selctor.post_filters import annotate_horizon_alignment
+                tag_counts = annotate_horizon_alignment(stock_with_scores)
+                logger.info(f"exec_tag 分布: {tag_counts}")
+            except Exception as e:
+                logger.warning(f"horizon alignment tag 失败: {e}")
+
         # 定义推荐等级权重用于排序
         def get_recommendation_weight(stock):
             rec = stock.get('recommendation', '观望')
@@ -3928,6 +3941,7 @@ class TomorrowStockSelector:
 - **所属行业**: {stock.get('industry', '未知')}
 - **注册地**: {stock.get('area', '未知')}
 - **上市日期**: {stock.get('list_date', '未知')}
+- **执行窗口**: {stock.get('exec_tag', '⚪NO_DATA')}  _(🟢ALIGN=可直接T+1买, 🟡MIXED=短期或回调, 🔴DIVERGE=信号不稳)_
 
 **市场表现**
 - **分析日期**: {stock.get('analysis_date', '未知')}

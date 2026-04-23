@@ -4,7 +4,12 @@ Two filters:
 1. exclude_unreliable_by_trust: drop 🔴 stocks using signal_trust_scores
 2. cap_industry_concentration: limit per-industry count in the ranked list
 
-Both are pure functions on the stock list; no side effects on caller state.
+Plus one annotator (doesn't change the list, adds a tag for T+1 execution timing):
+3. annotate_horizon_alignment: label 🟢 ALIGN / 🟡 MIXED / 🔴 DIVERGE based on
+   whether the 3d/5d/10d/15d predictions agree on direction.
+
+All pure functions; no side effects on caller state beyond in-place dict updates
+for the annotator.
 """
 from __future__ import annotations
 
@@ -153,6 +158,57 @@ def apply_post_filters(
     summary["stocks"] = stocks
     summary["output_count"] = len(stocks)
     return summary
+
+
+EXEC_TAG_ALIGN = "🟢ALIGN"      # all 4 horizons positive → T+1 buy ok
+EXEC_TAG_MIXED = "🟡MIXED"       # 10d/15d positive but 3d or 5d negative → wait for pullback
+EXEC_TAG_DIVERGE = "🔴DIVERGE"   # 10d positive but 15d ≤ 0 → unstable signal, caution
+EXEC_TAG_WEAK = "⚪WEAK"         # 10d ≤ 0 → model doesn't even see alpha; tag for audit
+EXEC_TAG_NO_DATA = "⚪NO_DATA"
+
+
+def _horizon_alignment(pred_3d: float, pred_5d: float, pred_10d: float, pred_15d: float) -> str:
+    """Classify T+1 execution timing based on sign agreement across 4 horizons.
+
+    Priority: WEAK → DIVERGE → ALIGN → MIXED. Logic reflects the idea that 10d
+    is the primary alpha signal; 15d cross-validates persistence; 3d/5d are
+    short-term execution-window indicators (not alpha gates).
+    """
+    if pred_10d <= 0:
+        return EXEC_TAG_WEAK
+    if pred_15d <= 0:
+        return EXEC_TAG_DIVERGE
+    if pred_3d > 0 and pred_5d > 0:
+        return EXEC_TAG_ALIGN
+    return EXEC_TAG_MIXED
+
+
+def annotate_horizon_alignment(stocks: list[dict]) -> dict:
+    """Attach an `exec_tag` field to every stock with 4-horizon predictions.
+
+    Stocks missing any of pred_3d/5d/10d/15d get `⚪NO_DATA`. Returns a count
+    summary for logging. Mutates the input dicts in place.
+    """
+    counts: dict[str, int] = defaultdict(int)
+    for s in stocks:
+        try:
+            p3 = float(s.get("pred_3d", 0) or 0)
+            p5 = float(s.get("pred_5d", 0) or 0)
+            p10 = float(s.get("pred_10d", 0) or 0)
+            p15 = float(s.get("pred_15d", 0) or 0)
+        except (TypeError, ValueError):
+            s["exec_tag"] = EXEC_TAG_NO_DATA
+            counts[EXEC_TAG_NO_DATA] += 1
+            continue
+        # No model output at all → NO_DATA
+        if p3 == 0 and p5 == 0 and p10 == 0 and p15 == 0:
+            s["exec_tag"] = EXEC_TAG_NO_DATA
+            counts[EXEC_TAG_NO_DATA] += 1
+            continue
+        tag = _horizon_alignment(p3, p5, p10, p15)
+        s["exec_tag"] = tag
+        counts[tag] += 1
+    return dict(counts)
 
 
 def format_drop_log(summary: dict, top_preview: int = 10) -> str:
