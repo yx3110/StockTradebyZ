@@ -5779,16 +5779,27 @@ def main(target_date: str = None, scoring_version: str = "v3", stocks_only: bool
             import sqlite3 as _sql
             _db = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data_adapter', 'stock_data.db')
             _conn = _sql.connect(_db, timeout=30)
-            _regime = _conn.execute(
-                'SELECT amv_regime FROM market_amv ORDER BY trade_date DESC LIMIT 1'
-            ).fetchone()
+            # 按 target_date 读 regime (回填历史报告时必须按当日 regime 路由),
+            # 否则全部退化成"今天的 regime"分支, 使历史 Top-50 失真.
+            if target_date:
+                _regime = _conn.execute(
+                    'SELECT amv_regime FROM market_amv WHERE trade_date <= ? '
+                    'ORDER BY trade_date DESC LIMIT 1',
+                    (target_date,)
+                ).fetchone()
+                _regime_label = f"{target_date}"
+            else:
+                _regime = _conn.execute(
+                    'SELECT amv_regime FROM market_amv ORDER BY trade_date DESC LIMIT 1'
+                ).fetchone()
+                _regime_label = "最新"
             _conn.close()
             if _regime and _regime[0] == 1:
                 scoring_version = bull_model
-                print(f"🐂 {version_tag}: 0AMV判定当前【牛市】→ 使用 {bull_model}")
+                print(f"🐂 {version_tag}: 0AMV判定 {_regime_label}【牛市】→ 使用 {bull_model}")
             else:
                 scoring_version = bear_model
-                print(f"🐻 {version_tag}: 0AMV判定当前【熊市】→ 使用 {bear_model}")
+                print(f"🐻 {version_tag}: 0AMV判定 {_regime_label}【熊市】→ 使用 {bear_model}")
         except Exception as e:
             scoring_version = bull_model
             print(f"⚠️ {version_tag}: 读取AMV regime失败({e})，默认使用 {bull_model}")
