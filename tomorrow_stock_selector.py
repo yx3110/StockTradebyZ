@@ -169,6 +169,10 @@ class TomorrowStockSelector:
             from portfolio_optimizer import PortfolioOptimizer
             self.portfolio_optimizer = PortfolioOptimizer(params_path=kwargs.get('optimizer_params_path'))
 
+        # Post-scoring hard filters (Signal Trust 🔴 exclusion + industry cap)
+        self.enable_trust_filter = kwargs.get('enable_trust_filter', True)
+        self.industry_cap = kwargs.get('industry_cap', 3)
+
         # Deprecation warning for old versions
         if scoring_version in DEPRECATED_VERSIONS:
             import warnings
@@ -3808,6 +3812,33 @@ class TomorrowStockSelector:
             except Exception as e:
                 logger.warning(f"*ST/涨停/停牌过滤失败: {e}")
 
+        # Post-scoring hard filters: Signal Trust 🔴 exclusion + industry concentration cap
+        # Input is pre-sorted so industry cap keeps the highest-ranked per industry.
+        # Downstream sort at composite_sort_key re-orders with error-aware tiebreaks.
+        if stock_with_scores and (self.enable_trust_filter or self.industry_cap > 0):
+            try:
+                from stock_selctor.post_filters import apply_post_filters, format_drop_log
+                pre_sorted = sorted(
+                    stock_with_scores,
+                    key=lambda s: float(s.get('rank_score') or s.get('composite') or 0),
+                    reverse=True,
+                )
+                db_path = os.path.join(
+                    os.path.dirname(os.path.abspath(__file__)),
+                    'data_adapter', 'stock_data.db',
+                )
+                summary = apply_post_filters(
+                    pre_sorted,
+                    db_path,
+                    enable_trust_filter=self.enable_trust_filter,
+                    industry_cap=self.industry_cap,
+                )
+                if summary['trust_dropped'] or summary['industry_dropped']:
+                    stock_with_scores = summary['stocks']
+                    logger.info(format_drop_log(summary))
+            except Exception as e:
+                logger.warning(f"post-filter 失败, 保留原列表: {e}")
+
         # 定义推荐等级权重用于排序
         def get_recommendation_weight(stock):
             rec = stock.get('recommendation', '观望')
@@ -5708,7 +5739,7 @@ class TomorrowStockSelector:
 # is_trading_day 已提取到 core.trading_calendar 模块
 from core.trading_calendar import is_trading_day
 
-def main(target_date: str = None, scoring_version: str = "v3", stocks_only: bool = False, skip_strategies: bool = False, full_market: bool = False, optimizer_version: str = 'v1', optimizer_params_path: str = None):
+def main(target_date: str = None, scoring_version: str = "v3", stocks_only: bool = False, skip_strategies: bool = False, full_market: bool = False, optimizer_version: str = 'v1', optimizer_params_path: str = None, enable_trust_filter: bool = True, industry_cap: int = 3):
     """主函数
 
     Args:
@@ -5766,7 +5797,8 @@ def main(target_date: str = None, scoring_version: str = "v3", stocks_only: bool
     
     # 创建选股器，传入评分版本和股票筛选选项
     selector = TomorrowStockSelector(scoring_version=scoring_version, stocks_only=stocks_only, skip_strategies=skip_strategies,
-                                     optimizer_version=optimizer_version, optimizer_params_path=optimizer_params_path)
+                                     optimizer_version=optimizer_version, optimizer_params_path=optimizer_params_path,
+                                     enable_trust_filter=enable_trust_filter, industry_cap=industry_cap)
     if ng106_mode:
         selector._ng106_mode = True
         selector._ng106_tag = version_tag  # 'ng1.0.6' or 'ng1.0.62'
@@ -6165,6 +6197,10 @@ if __name__ == "__main__":
                        help='价格/仓位优化器版本: v1=旧逻辑, v2=自适应价格+风险预算(默认)')
     parser.add_argument('--optimizer-params', default=None,
                        help='v2优化器参数文件路径 (默认optimizer_params.json)')
+    parser.add_argument('--no-trust-filter', action='store_true',
+                       help='禁用 Signal Trust 🔴 高风险股硬剔除 (默认启用)')
+    parser.add_argument('--industry-cap', type=int, default=3,
+                       help='单一行业在最终列表的最大股数, 0=关闭 (默认3)')
 
     args = parser.parse_args()
 
@@ -6172,4 +6208,6 @@ if __name__ == "__main__":
     main(target_date=args.date, scoring_version=args.scoring_version,
          stocks_only=args.stocks_only, skip_strategies=args.skip_strategies,
          full_market=full_market, optimizer_version=getattr(args, 'optimizer', 'v1'),
-         optimizer_params_path=getattr(args, 'optimizer_params', None))
+         optimizer_params_path=getattr(args, 'optimizer_params', None),
+         enable_trust_filter=not args.no_trust_filter,
+         industry_cap=args.industry_cap)
