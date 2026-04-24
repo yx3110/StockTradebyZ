@@ -324,7 +324,48 @@ class NGProductionScorer:
             else:
                 result[col] = 0.0
 
+        # ng1.7.0: JOIN altdata_factor_cache for 4 alt-alpha factors.
+        # Detect by altdata_* in stock_feature_cols (model-driven, not hardcoded version).
+        altdata_cols = [c for c in self.stock_feature_cols if c.startswith('altdata_')]
+        if altdata_cols:
+            self._join_altdata_factors(result, date, altdata_cols)
+
         return result
+
+    def _join_altdata_factors(self, result: pd.DataFrame, date: str,
+                               altdata_cols: List[str]) -> None:
+        """Pull altdata factor values for a single date and inject into result in place.
+
+        Missing (code, date) rows → 0.0 (LHB is legitimately sparse).
+        """
+        # Drop upstream-placeholder altdata cols so merge doesn't suffix-rename.
+        for col in altdata_cols:
+            if col in result.columns:
+                result.drop(columns=[col], inplace=True)
+
+        conn = sqlite3.connect(self.db_path, timeout=30)
+        try:
+            cols_select = ", ".join(altdata_cols)
+            factor_df = pd.read_sql(
+                f"SELECT code, {cols_select} FROM altdata_factor_cache "
+                f"WHERE trade_date = ?",
+                conn,
+                params=[date],
+            )
+        except Exception as e:
+            logger.warning(f"altdata_factor_cache JOIN failed ({date}): {e}. Filling 0.")
+            factor_df = pd.DataFrame(columns=['code'] + altdata_cols)
+        finally:
+            conn.close()
+
+        if factor_df.empty:
+            for col in altdata_cols:
+                result[col] = 0.0
+            return
+
+        merged = result.merge(factor_df, on='code', how='left')
+        for col in altdata_cols:
+            result[col] = pd.to_numeric(merged[col], errors='coerce').fillna(0.0).values
 
     # ------------------------------------------------------------------
     # Cross-sectional normalization

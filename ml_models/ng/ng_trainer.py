@@ -327,6 +327,31 @@ NG161_FACTOR_PROXIES = [
     'industry_return_20d',    # MKT proxy (within-industry systematic)
 ]
 
+# ---------------------------------------------------------------------------
+# ng1.7.0: ng1.0.1 底座 (66) + 4 alt-alpha 因子 (70 total)
+# 设计: memory/ng17_candidate_factors.md
+# ---------------------------------------------------------------------------
+# 4 factors passed 2026-04-23 fast-check (IC/ICIR gate |IC|>=0.015 AND |ICIR|>=0.25):
+#   altdata_rzmre_5d_ratio:   IC=-0.1024 ICIR=-0.72 (散户融资追高反向)
+#   altdata_rzye_chg_10d:     IC=-0.0462 ICIR=-0.92 (融资加速反向)
+#   altdata_lhb_inst_net_5d:  IC=+0.0391 ICIR=+0.26 (机构 smart money)
+#   altdata_lhb_count_20d:    IC=-0.0724 ICIR=-0.83 (过度炒作反向)
+#
+# Reuses ng101_feature_cache (ng1.0.1 base) — the 4 altdata factors are joined
+# from altdata_factor_cache at data-load time (trainer) and inference-time (scorer).
+# Cross-factor Spearman corr ≤ 0.32, language-independent信号, 3 反向 + 1 正 alpha.
+NG170_ALTDATA_FEATURES: List[str] = [
+    'altdata_rzmre_5d_ratio',
+    'altdata_rzye_chg_10d',
+    'altdata_lhb_inst_net_5d',
+    'altdata_lhb_count_20d',
+]
+NG170_STOCK_FEATURES: List[str] = list(STOCK_FEATURE_NAMES) + NG170_ALTDATA_FEATURES
+NG170_MARKET_FEATURES: List[str] = list(MARKET_FEATURE_NAMES)
+NG170_ALL_FEATURES: List[str] = NG170_STOCK_FEATURES + NG170_MARKET_FEATURES
+NG170_VERSION = 'ng1.7.0'
+assert len(NG170_ALL_FEATURES) == 70, f"ng170 feature count drift: {len(NG170_ALL_FEATURES)} != 70"
+
 # ng1.0.9: Persistent features (10-day rank autocorrelation >= 0.5)
 # 22 features that produce stable cross-sectional rankings over 10 days
 PERSISTENT_STOCK_FEATURES: List[str] = [
@@ -371,6 +396,7 @@ class NGTrainer(V485Trainer):
         self._head = head  # 'excess' (default) or 'downside' (ng1.3.x dual-head training)
         self.cache_table = get_table_name(self._ng_version)
         version_feature_table = [
+            ('ng1.7.0', NG170_ALL_FEATURES, NG170_STOCK_FEATURES, NG170_MARKET_FEATURES, []),
             ('ng1.6.1', NG161_ALL_FEATURES, NG161_STOCK_FEATURES, NG161_MARKET_FEATURES, []),
             ('ng1.5.0', NG150_ALL_FEATURES, NG150_STOCK_FEATURES, NG150_MARKET_FEATURES, []),
             ('ng1.4.2', NG142_ALL_FEATURES, NG142_STOCK_FEATURES, NG142_MARKET_FEATURES, []),
@@ -994,6 +1020,44 @@ class NGTrainer(V485Trainer):
     # Data loading
     # ------------------------------------------------------------------
 
+    def _append_altdata_factors(self, result: pd.DataFrame) -> int:
+        """ng1.7.0 only: LEFT-JOIN altdata_factor_cache on (code, trade_date).
+
+        Missing cells become 0.0 (sparse factors, especially LHB — legitimate
+        "no signal on this stock/day"). Mutates `result` in place.
+        Returns number of factor columns added.
+        """
+        from ml_models.ng.altdata_factor_cache import FACTOR_COLS
+        # Drop any placeholder altdata cols upstream loader may have added as NaN —
+        # otherwise the merge would suffix-rename and break column lookup.
+        for col in FACTOR_COLS:
+            if col in result.columns:
+                result.drop(columns=[col], inplace=True)
+        if result.empty:
+            for col in FACTOR_COLS:
+                result[col] = 0.0
+            return len(FACTOR_COLS)
+        dates = result['trade_date'].unique().tolist()
+        in_dates = ",".join("?" * len(dates))
+        cols_select = ", ".join(FACTOR_COLS)
+        conn = sqlite3.connect(self.db_path, timeout=30)
+        try:
+            factor_df = pd.read_sql(
+                f"""
+                SELECT code, trade_date, {cols_select}
+                FROM altdata_factor_cache
+                WHERE trade_date IN ({in_dates})
+                """,
+                conn,
+                params=dates,
+            )
+        finally:
+            conn.close()
+        merged = result.merge(factor_df, on=['code', 'trade_date'], how='left')
+        for col in FACTOR_COLS:
+            result[col] = merged[col].fillna(0.0).values
+        return len(FACTOR_COLS)
+
     def load_data(self, start_date: str = None, end_date: str = None) -> pd.DataFrame:
         """Load training data from ng_feature_cache.
 
@@ -1130,6 +1194,12 @@ class NGTrainer(V485Trainer):
                 result[col] = amv_from_json[col]
             else:
                 result[col] = np.nan
+
+        # ng1.7.0: JOIN altdata_factor_cache to append 4 alt-alpha factors.
+        # Missing (code, date) rows get 0.0 (sparse factors like LHB legitimately miss most stocks).
+        if self._ng_version == 'ng1.7.0':
+            n_added = self._append_altdata_factors(result)
+            logger.info(f"  ng1.7.0: appended {n_added} altdata factor columns")
 
         # Labels (industry excess returns in v1.0.3)
         result['label_3d'] = pd.to_numeric(df_raw['label_3d'], errors='coerce').values
