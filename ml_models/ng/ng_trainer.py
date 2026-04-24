@@ -1711,6 +1711,7 @@ class NGTrainer(V485Trainer):
             _is_1_3_branch(self._ng_version)
             or _is_1_4_branch(self._ng_version)
             or _is_1_5_branch(self._ng_version)
+            or self._ng_version == 'ng1.7.0'  # ng1.7.0: altdata factors require NG170 feature set; legacy reset to NG110 breaks alignment
         )
         if skip_legacy_downside:
             logger.info(f"{self._ng_version}: skipping legacy downside_10d model")
