@@ -200,3 +200,63 @@ class RegimeClassifier:
 def classify(amv_df: pd.DataFrame, preset: str = DEFAULT_PRESET) -> np.ndarray:
     """便捷函数. 等价 RegimeClassifier(preset).fit_predict(amv_df)."""
     return RegimeClassifier(preset).fit_predict(amv_df)
+
+
+# ============================================================
+# ng2.0a: Multi-beta vote regime
+# ============================================================
+
+def compute_regime_v2(
+    v11_bull: pd.Series,
+    b1_bull: pd.Series,
+    b2_bull: pd.Series,
+    system_streak: int = 3,
+) -> pd.DataFrame:
+    """ng2.0a: hard vote across 3 binary signals + system-level streak.
+
+    Args:
+        v11_bull, b1_bull, b2_bull: each 1=bull, 0=bear, NaN allowed (treated as 0)
+            All three Series must share the same DatetimeIndex.
+        system_streak: streak_days at vote-output level (default 3)
+
+    Returns:
+        DataFrame indexed same as inputs with columns:
+            vote_count: int 0..3 (count of bulls)
+            regime_v2_raw: +1 if vote >= 2 else -1
+            regime_v2_streak: consecutive days where raw majority side is the same
+            regime_v2: +1/-1 (after system_streak applied to raw)
+    """
+    if not (v11_bull.index.equals(b1_bull.index) and v11_bull.index.equals(b2_bull.index)):
+        raise ValueError('v11_bull / b1_bull / b2_bull indices must match')
+
+    v = v11_bull.fillna(0).astype(int)
+    b1 = b1_bull.fillna(0).astype(int)
+    b2 = b2_bull.fillna(0).astype(int)
+
+    vote = v + b1 + b2  # 0..3
+    raw_bull_int = (vote >= 2).astype(int)  # 1=bull, 0=bear
+
+    # Apply system-level streak using existing persist_n
+    raw_arr = raw_bull_int.to_numpy()
+    confirmed = persist_n(raw_arr, n_days=system_streak)  # +1/-1
+
+    # Track streak length of consecutive raw majority side
+    n = len(raw_arr)
+    streak = np.zeros(n, dtype=np.int32)
+    cur_run = 1
+    for i in range(1, n):
+        if raw_arr[i] == raw_arr[i - 1]:
+            cur_run += 1
+        else:
+            cur_run = 1
+        streak[i] = cur_run
+    if n > 0:
+        streak[0] = 1
+
+    out = pd.DataFrame({
+        'vote_count': vote.astype('Int8'),
+        'regime_v2_raw': np.where(raw_bull_int == 1, 1, -1).astype(np.int8),
+        'regime_v2_streak': streak,
+        'regime_v2': confirmed.astype(np.int8),
+    }, index=v11_bull.index)
+    return out
