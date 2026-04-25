@@ -245,7 +245,13 @@ def compute_and_save(db_path: str = None):
     for key, arr in amv.items():
         df[key] = arr
 
-    df['amv_regime'] = compute_regime(amv['var1'], amv['amv_ma60'], amv['amv_macd'])
+    # 2026-04-25: 切到 v1 0AMV regime classifier (preset=v11_loose_smooth3)
+    # 旧规则 compute_regime() 保留供测试/回滚, 不再被生产调用
+    try:
+        from indicators.regime_classifier import RegimeClassifier
+    except ModuleNotFoundError:
+        from regime_classifier import RegimeClassifier
+    df['amv_regime'] = RegimeClassifier().fit_predict(df)
 
     save_to_db(conn, df)
     conn.close()
