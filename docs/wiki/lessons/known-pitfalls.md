@@ -127,6 +127,16 @@
 - **根因**: 初始只算了 0.15% 单边手续费
 - **解决**: 总成本 0.302%（含双边滑点 0.1% + 过户费）；CPPI 调仓 exposure 变化 >1% 时扣减
 
+### 稀疏 trading 年化膨胀 (sparse-trading annualization)
+- **现象**: 加 cash filter 跳过 50%+ 天数的策略报告 Sharpe>4 / 年化 200-500%, 看似 SOTA 但与历史结论矛盾
+- **根因**: `backtest_report_based.run_single_backtest` 用 `n_dates`(=报告字典 size) 算年化, cash 跳过的日子从分母里消失, 等价"模型每年只工作 X% 时间", 单位时间收益被放大 3-5 倍
+- **解决**:
+  1. Sharpe>4 立即怀疑 — 检查 cash 比例
+  2. cash >20% 的策略, 必须算 calendar-time 年化 `(1+cumret)^(252/total_calendar_days)-1` 做对照
+  3. 决策依据用 robust 指标: MaxDD (天然 calendar-based), cumulative return over fixed span, monthly win rate
+  4. 跨多次实验对比时, 同口径 (相同 cash 比例 / 相同 framework 计算方式) 才公允
+- **历史**: 2026-04-25 V15 三重危机 cash filter pre-2020 表面 +74% 净 / Sharpe 7.285, 实际 calendar-time 估打 3-5 折; 与 4-22 "crisis overlay -6pp 全败" 矛盾
+
 ---
 
 ## 工程类

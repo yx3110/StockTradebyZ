@@ -579,6 +579,7 @@ AI analysis configuration and weights
    - Pre-2020 (2018-2019): 年化+0.7%, Sharpe+0.18 — **全 NG 系列唯一正收益**
    - β 归因: β_UMD=+0.005 (ng1.0.1 的 1/76), β_SMB=+1.54 (边界), Alpha t=4.54, R²=2.9% — 动量暴露几乎为零
    - 控制: `backtest/regime_switch_backtest.py` + `indicators/market_amv.py`, 选股 `--scoring-version ng1.0.6`
+   - **🆕 2026-04-25 regime classifier v1**: `indicators/regime_classifier.py` 替换硬编码 `compute_regime`, 默认 preset=`v11_loose_smooth3` (位置+水上/上升+3日平滑, 击败旧 V3 strict +5pp 三窗口平均). 详见 `docs/wiki/architecture/regime-classifier-v1.md`
    - **短板**: MaxDD=-22.9% 是 ng1.0.1 的两倍, 单独用风险过大, 需叠加 ng1.0.5 三层风控
 
 2. **🏆 NG v1.0.1 Production** (当前生产, 4-12 bugfix重训, MaxDD 最小):
