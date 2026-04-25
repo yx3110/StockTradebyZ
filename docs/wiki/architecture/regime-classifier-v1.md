@@ -191,3 +191,42 @@ regime_arr = classify(amv_df, preset='v11_loose_smooth3')
 - [ ] 改 `indicators/market_amv.py:compute_regime` 路由到 `RegimeClassifier(...)`
 - [ ] 重算 market_amv 表 + 重生成 ng106v2 历史报告
 - [ ] 灰度 1-2 周后切生产
+
+## 10. 急跌 panic-drop overlay 实验 — REJECTED (2026-04-25)
+
+**动机**: 用户提议 var1 单日 ≤ -2.3% 作为牛→熊触发 (V3 strict 已含但是 AND 三重确认偏保守, 实际很少触发).
+
+**测试**: 在 V11 base 上加 5 种 panic 触发模式, 三窗口 × 7 variant 对比:
+
+- **V16 panic_immediate** — V11 + 单日 -2.3% OR-trigger 强制熊
+- **V17 panic_cooldown_3d** — V11 + 急跌后未来 3 日强制熊 (含触发日)
+- **V18 panic_cash_3d** — V11 + 急跌后未来 3 日强制 cash (3-state)
+- **V19 panic_AND_position** — V11 + 急跌 AND var1<ma60 强制熊
+- **V20 panic_streak_2d** — V11 + 2 日累计 ≤ -3.5% 强制熊
+
+**结果** (Top-10, 10d hold):
+
+| Window | V11 baseline | V16/V17/V19/V20 | V18 |
+|---|---|---|---|
+| 2024-2026 | 净 108.9% / Sharpe 1.989 / MaxDD -14.0% | **完全等同 V11** | 净 93.9% / Sharpe 2.312 / MaxDD -14.0% |
+| 2020-2026 | 净 97.5% / Sharpe 2.386 / MaxDD -23.7% | **完全等同 V11** | 净 91.0% / Sharpe 2.603 / MaxDD -23.6% |
+| pre-2020 | 净 -17.8% / Sharpe -0.498 / MaxDD -31.7% | **完全等同 V11** | 净 -12.2% / Sharpe -0.269 / MaxDD -29.1% |
+
+**关键发现**: 全市场 2018-2026 共 76 个 panic 事件, V16 仅在 8 天上覆盖 V11 的牛判定 (主要在 2018-2020), 落入回测窗口后财报指标**完全一致到三位小数**. 原因: V11 = `位置 AND (水上 OR 上升) + 3 日平滑`, 急跌日通常已破水上 + 加速条件, V11 的 raw_bull 已为 False, panic overlay 是**结构性冗余**.
+
+**门槛检查** (写死在 plan 第 5 节):
+- V18 直接破 2020 净年化 ≥ 92.5% gate (91.0% < 92.5%) → FAIL
+- V16/V17/V19/V20 数字 = V11, 即"通过门槛但无增益" → 替换毫无收益, 实质 FAIL
+
+**生产决策**: DEFAULT_PRESET **保持** `v11_loose_smooth3` 不变, ng2.0a v2 vote 路径独立运行.
+
+**教训**:
+1. 不要再在 V11 base 上叠 OR-trigger overlay (与 memory 4-22 "crisis overlay -6pp 全败" 一致)
+2. 不要 grid search panic 阈值 (-2.3% → -1.8% / -3% 等), 是结构性冗余不是参数问题
+3. 想"急跌时更防御"应改 bear 子专家 (ng104 系列), 不是改 regime classifier
+
+**留底文件** (V16-V20 永久保留作 reference):
+- `indicators/regime_classifier.py:sig_panic_drop / sig_panic_streak2 / _v16-_v20`
+- `scripts/regime_variant_compare.py:regime_v16-v20`
+- `reports/regime_variant_compare_{2024,2020,pre2020}_panic.md`
+- `docs/superpowers/plans/2026-04-25-regime-panic-drop.md`

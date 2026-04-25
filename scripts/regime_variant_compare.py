@@ -84,6 +84,20 @@ def sig_var1_above_c34(var1, c34, **_):
     return var1 > c34
 
 
+def sig_panic_drop(var1, drop_thresh: float = -0.023, **_):
+    """急跌信号: var1 单日跌幅 ≤ drop_thresh (默认 -2.3%)"""
+    arr = np.zeros(len(var1), dtype=bool)
+    arr[1:] = (var1[1:] - var1[:-1]) / (var1[:-1] + 1e-15) <= drop_thresh
+    return arr
+
+
+def sig_panic_streak2(var1, streak_thresh: float = -0.035, **_):
+    """2 日累计跌信号: (var1[t]-var1[t-2])/var1[t-2] ≤ streak_thresh"""
+    arr = np.zeros(len(var1), dtype=bool)
+    arr[2:] = (var1[2:] - var1[:-2]) / (var1[:-2] + 1e-15) <= streak_thresh
+    return arr
+
+
 # ============================================================
 # Regime 组合器
 # ============================================================
@@ -270,6 +284,53 @@ def regime_v10_v2_asymmetric(amv: dict) -> np.ndarray:
     return regime
 
 
+def regime_v16_panic_immediate(amv: dict) -> np.ndarray:
+    """V11 + 单日急跌 OR-trigger 强制熊"""
+    base = regime_v11_loose_smooth3(amv)
+    panic = sig_panic_drop(**amv)
+    base[panic] = -1
+    return base
+
+
+def regime_v17_panic_cooldown_3d(amv: dict) -> np.ndarray:
+    """V11 + 急跌触发未来 3 日强制熊 (含触发日)"""
+    base = regime_v11_loose_smooth3(amv)
+    panic = sig_panic_drop(**amv)
+    n = len(base)
+    for i in np.where(panic)[0]:
+        for j in range(i, min(i + 3, n)):
+            base[j] = -1
+    return base
+
+
+def regime_v18_panic_cash_3d(amv: dict) -> np.ndarray:
+    """V11 + 急跌触发未来 3 日强制 cash (3-state)"""
+    base = regime_v11_loose_smooth3(amv)
+    panic = sig_panic_drop(**amv)
+    n = len(base)
+    for i in np.where(panic)[0]:
+        for j in range(i, min(i + 3, n)):
+            base[j] = 0
+    return base
+
+
+def regime_v19_panic_AND_position(amv: dict) -> np.ndarray:
+    """V11 + 急跌 AND var1<ma60 强制熊"""
+    base = regime_v11_loose_smooth3(amv)
+    panic = sig_panic_drop(**amv)
+    below = amv['var1'] < amv['ma60']
+    base[panic & below] = -1
+    return base
+
+
+def regime_v20_panic_streak_2d(amv: dict) -> np.ndarray:
+    """V11 + 2 日累计跌 ≤ -3.5% 强制熊"""
+    base = regime_v11_loose_smooth3(amv)
+    panic2 = sig_panic_streak2(**amv)
+    base[panic2] = -1
+    return base
+
+
 VARIANTS = [
     ('V1 simple        位置', regime_v1_simple),
     ('V2 macd          位置+MACD水上', regime_v2_macd),
@@ -286,6 +347,11 @@ VARIANTS = [
     ('V13 crisis_dd     V11+60dDD>15%→cash', regime_v13_v11_crisis_dd),
     ('V14 crisis_macd   V11+macd<-3→cash', regime_v14_v11_crisis_macd),
     ('V15 crisis_combo  V11+三重危机OR→cash', regime_v15_v11_crisis_combo),
+    ('V16 panic_imm    V11+单日-2.3%→bear', regime_v16_panic_immediate),
+    ('V17 panic_cd3d   V11+急跌→未来3日bear', regime_v17_panic_cooldown_3d),
+    ('V18 panic_cash3d V11+急跌→未来3日cash', regime_v18_panic_cash_3d),
+    ('V19 panic_ANDpos V11+急跌AND var1<ma60→bear', regime_v19_panic_AND_position),
+    ('V20 panic_str2d  V11+2日累计-3.5%→bear', regime_v20_panic_streak_2d),
 ]
 
 

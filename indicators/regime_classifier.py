@@ -47,6 +47,20 @@ def sig_compass_align(c5, c13, c34, **_):
     return (c5 > c13) & (c13 > c34)
 
 
+def sig_panic_drop(var1, drop_thresh: float = -0.023, **_):
+    """急跌信号: var1 单日跌幅 ≤ drop_thresh (默认 -2.3%)."""
+    arr = np.zeros(len(var1), dtype=bool)
+    arr[1:] = (var1[1:] - var1[:-1]) / (var1[:-1] + 1e-15) <= drop_thresh
+    return arr
+
+
+def sig_panic_streak2(var1, streak_thresh: float = -0.035, **_):
+    """2 日累计跌信号: (var1[t] - var1[t-2]) / var1[t-2] ≤ streak_thresh."""
+    arr = np.zeros(len(var1), dtype=bool)
+    arr[2:] = (var1[2:] - var1[:-2]) / (var1[:-2] + 1e-15) <= streak_thresh
+    return arr
+
+
 # ============================================================
 # 平滑器
 # ============================================================
@@ -154,13 +168,65 @@ def _v11_loose_smooth3(amv: dict) -> np.ndarray:
     return persist_n(raw, 3)
 
 
+def _v16_panic_immediate(amv: dict) -> np.ndarray:
+    """V11 + 单日急跌 OR-trigger 强制熊 (覆盖 V11 牛市判定)."""
+    base = _v11_loose_smooth3(amv)
+    panic = sig_panic_drop(**amv)
+    base[panic] = -1
+    return base
+
+
+def _v17_panic_cooldown_3d(amv: dict) -> np.ndarray:
+    """V11 + 急跌触发 3 日强制熊 (含触发日)."""
+    base = _v11_loose_smooth3(amv)
+    panic = sig_panic_drop(**amv)
+    n = len(base)
+    for i in np.where(panic)[0]:
+        for j in range(i, min(i + 3, n)):
+            base[j] = -1
+    return base
+
+
+def _v18_panic_cash_3d(amv: dict) -> np.ndarray:
+    """V11 + 急跌触发 3 日强制 cash (3-state)."""
+    base = _v11_loose_smooth3(amv)
+    panic = sig_panic_drop(**amv)
+    n = len(base)
+    for i in np.where(panic)[0]:
+        for j in range(i, min(i + 3, n)):
+            base[j] = 0
+    return base
+
+
+def _v19_panic_AND_position(amv: dict) -> np.ndarray:
+    """V11 + 急跌 AND var1<ma60 强制熊."""
+    base = _v11_loose_smooth3(amv)
+    panic = sig_panic_drop(**amv)
+    below = amv['var1'] < amv['ma60']
+    base[panic & below] = -1
+    return base
+
+
+def _v20_panic_streak_2d(amv: dict) -> np.ndarray:
+    """V11 + 2 日累计跌 ≤ -3.5% 强制熊."""
+    base = _v11_loose_smooth3(amv)
+    panic2 = sig_panic_streak2(**amv)
+    base[panic2] = -1
+    return base
+
+
 PRESETS = {
-    'v1_simple':           _v1_simple,
-    'v2_base':             _v2_base,
-    'v3_strict':           _v3_strict,
-    'v5_smooth3':          _v5_smooth3,
-    'v9_loose':            _v9_loose,
-    'v11_loose_smooth3':   _v11_loose_smooth3,
+    'v1_simple':              _v1_simple,
+    'v2_base':                _v2_base,
+    'v3_strict':              _v3_strict,
+    'v5_smooth3':             _v5_smooth3,
+    'v9_loose':               _v9_loose,
+    'v11_loose_smooth3':      _v11_loose_smooth3,
+    'v16_panic_immediate':    _v16_panic_immediate,
+    'v17_panic_cooldown_3d':  _v17_panic_cooldown_3d,
+    'v18_panic_cash_3d':      _v18_panic_cash_3d,
+    'v19_panic_AND_position': _v19_panic_AND_position,
+    'v20_panic_streak_2d':    _v20_panic_streak_2d,
 }
 
 DEFAULT_PRESET = 'v11_loose_smooth3'   # 改这一行可以切生产
