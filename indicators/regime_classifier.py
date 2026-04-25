@@ -240,18 +240,9 @@ def compute_regime_v2(
     raw_arr = raw_bull_int.to_numpy()
     confirmed = persist_n(raw_arr, n_days=system_streak)  # +1/-1
 
-    # Track streak length of consecutive raw majority side
-    n = len(raw_arr)
-    streak = np.zeros(n, dtype=np.int32)
-    cur_run = 1
-    for i in range(1, n):
-        if raw_arr[i] == raw_arr[i - 1]:
-            cur_run += 1
-        else:
-            cur_run = 1
-        streak[i] = cur_run
-    if n > 0:
-        streak[0] = 1
+    # Track streak length of consecutive raw majority side (vectorized)
+    grp = (raw_bull_int != raw_bull_int.shift()).cumsum()
+    streak = (raw_bull_int.groupby(grp).cumcount() + 1).astype(np.int32)
 
     out = pd.DataFrame({
         'vote_count': vote.astype('Int8'),

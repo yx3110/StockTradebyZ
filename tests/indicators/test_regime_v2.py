@@ -13,8 +13,8 @@ def test_regime_v2_unanimous_bull():
     b1 = pd.Series([1] * n, index=idx)
     b2 = pd.Series([1] * n, index=idx)
     out = compute_regime_v2(v11, b1, b2, system_streak=3)
-    # After streak_days=3, all should be bull (+1)
-    assert (out['regime_v2'].iloc[3:] == 1).all()
+    # After streak_days=3, all should be bull (+1); flip confirmed at index 2
+    assert (out['regime_v2'].iloc[2:] == 1).all()
 
 
 def test_regime_v2_unanimous_bear():
