@@ -210,6 +210,7 @@ python3 fetch_data/quick_daily_update.py --date 20250930  # Complete data update
 python3 tomorrow_stock_selector.py 2025-09-30                             # Stock selection (默认 ng1.0.62 MOE)
 python3 tomorrow_stock_selector.py 2025-09-30 --scoring-version ng1.0.62  # 🏆 生产 MOE v2 AMV switch: bull→ng1.0.7, bear→ng1.0.4, V5.2=79% (2024-2026)
 python3 tomorrow_stock_selector.py 2025-09-30 --scoring-version ng1.0.6   # MOE v1 (bull→ng1.0.1), V5.2=78%
+python3 tomorrow_stock_selector.py 2025-09-30 --scoring-version ng2.0a    # 🆕 灰度: multi-beta vote regime → ng1.0.1 bull/ng1.0.4 bear, WF-OOS V5.2=79.3% A+, MaxDD=-17.6% (vs 生产 -23.7%)
 python3 tomorrow_stock_selector.py 2025-09-30 --scoring-version ng1.0.1   # 单模型基线 66 feat V5.2=72.1% A+ Sharpe=2.753
 python3 tomorrow_stock_selector.py 2025-09-30 --scoring-version ng1.1.0   # 68特征 ng1.0.1精简+4 P2新因子, Sharpe=2.065
 python3 tomorrow_stock_selector.py 2025-09-30 --scoring-version v4.9.0.1  # v4.9.0.1 (含数据泄露, 仅内部参考)
@@ -573,7 +574,22 @@ AI analysis configuration and weights
 
 > **⚠️ 2026-04-20 全量复核后的重大结论**: ng1.0.6 (0AMV 牛熊切换) 综合指标实际**胜过** ng1.0.1 (WF-OOS V5.2: 78.9% vs 73.4%; 10d Sharpe: 2.81 vs 2.37; Pre-2020 年化: +0.7% vs -19.0%; β_UMD: +0.005 vs +0.38). ng1.0.1 唯一优势是 MaxDD (-11.7% vs -22.9%). 生产切换待 ng1.0.6+ng1.0.5 风控叠加测试完成后确认。
 
-1. **🎯 NG v1.0.6 (0AMV 牛熊切换)** (2026-04-20 发现综合最优, 待切生产):
+1. **🆕 NG v2.0a (multi-beta vote regime + ng106v1 sub-model)** (2026-04-26, 灰度评估中):
+   - 核心: V11 (0AMV 位置+水上/上升+3日平滑) + B1 (% 股票 above MA20/MA60) + B2 (沪深300 60d RV percentile) hard vote (2-of-3) + 3d streak
+   - Sub-model: bull → ng1.0.1 (= ng106v1 bull), bear → ng1.0.4 (single-model, 与 ng106v1/v2 生产同 scorer)
+   - 性能 (Phase A 单日 smoke + Phase C 全量 sweep, sub-model = ng1.0.1 + ng1.0.4-3s offline 评估):
+     - WF-OOS V5.2 = **79.3% A+** (vs 80.4% S 生产 ng106v2, -1.1pp)
+     - **WF-OOS MaxDD = -17.6%** (vs -23.7% 生产, **改善 6.1pp** = 用户喜欢这个的关键卖点)
+     - WF-OOS Sharpe = 2.751, 净年化 89.3%, ICIR=0.7189
+     - Pre-2020 V5.2 = 37.2% C, 净年化 -17.3% (回撤大但与 ng106v2 同档)
+   - Calibration: variant `baseline` (Phase C sweep 后用户选定; `unanimous` 备选 — Pre-2020 净年化 +6.3pp 改善但 WF-OOS MaxDD 退到 -23.2%)
+   - 选股: `python3 tomorrow_stock_selector.py YYYY-MM-DD --scoring-version ng2.0a`
+   - 报告: `reports/daily_selection_ng2_0a_fullmarket/`
+   - regime 表: `market_regime_signals` (主表, baseline 校准); 备选 variant 表: `market_regime_signals_unanimous`
+   - 控制: `tomorrow_stock_selector.py:5811-5847` ng200a_mode 分支 + `indicators/breadth.py`/`realized_vol.py`/`regime_classifier.py:compute_regime_v2` + `scripts/build_regime_v2_history*.py`
+   - 后续: ng2.0b sample-weighted sub-model retrain (Phase B 待跑)
+
+2. **🎯 NG v1.0.6 (0AMV 牛熊切换)** (2026-04-20 发现综合最优, 待切生产):
    - 核心: 0AMV 活筹指数做 regime 状态机, **牛→ng101, 熊→ng104-3s** (牛市信号模型 + 熊市风险模型混合)
    - 性能 (WF-OOS 2018-2026 1606 天): **V5.2=78.9% A+, 10d Sharpe=2.808, 年化(净)=115.7%, 15d Sharpe=2.081/年化81%, MaxDD=-21.4%~-22.9%**
    - Pre-2020 (2018-2019): 年化+0.7%, Sharpe+0.18 — **全 NG 系列唯一正收益**
@@ -582,7 +598,7 @@ AI analysis configuration and weights
    - **🆕 2026-04-25 regime classifier v1**: `indicators/regime_classifier.py` 替换硬编码 `compute_regime`, 默认 preset=`v11_loose_smooth3` (位置+水上/上升+3日平滑, 击败旧 V3 strict +5pp 三窗口平均). 详见 `docs/wiki/architecture/regime-classifier-v1.md`
    - **短板**: MaxDD=-22.9% 是 ng1.0.1 的两倍, 单独用风险过大, 需叠加 ng1.0.5 三层风控
 
-2. **🏆 NG v1.0.1 Production** (当前生产, 4-12 bugfix重训, MaxDD 最小):
+3. **🏆 NG v1.0.1 Production** (当前生产, 4-12 bugfix重训, MaxDD 最小):
    - 66特征, 行业超额标签, ICIR 自适应权重
    - 关键修复: `revenue_growth` 改用真 `or_yoy` (原值误用毛利率) — regime tradeoff (WF-OOS 提升, Pre-2020 退化)
    - 性能 (WF-OOS 2018-2026): V5.2=73.4% A+, 年化165.7%, Sharpe=2.753, **MaxDD=-11.7%** (所有 NG 版本最优), β_UMD=+0.38 (t=5.4, 清洁)
@@ -591,18 +607,18 @@ AI analysis configuration and weights
    - 模型: `ml_models/trained_models/ng/ng101_seed42_multi_target_20260412_233749.pkl`
    - 缓存表: `ng101_feature_cache` (与 ng1.1.0 共表, 由日常流程填充)
 
-3. **NG v1.1.0** (ng1.0.1 精简+P2新因子):
+4. **NG v1.1.0** (ng1.0.1 精简+P2新因子):
    - 68特征 (58 stock + 10 market), 4 alpha P2新因子 (peg_proxy/pb_roe_ratio/cs_rank_pb/cs_rank_dv)
    - 性能: V5.2=70.4% A+, 年化122.8%, Sharpe=2.065, MaxDD=-12.5%
    - 模型: `ng110_seed42_multi_target_20260412_214553.pkl`
    - 与 ng1.0.1 共用 `ng101_feature_cache` (schema 别名通过 `get_schema_version()`)
 
-3. **V4.9.0.1** (仅内部参考, 含数据泄露):
+5. **V4.9.0.1** (仅内部参考, 含数据泄露):
    - 61特征, Q95 Widen-then-Concentrate, V4=92.8% S级但 V5.2 只有 54.1% B 级
    - Scorer: `ml_models/v39/v492_production_scorer.py` / `v490_production_scorer.py`
    - 配置: `production_config.json`, 回测: `python3 backtest/run_north_star_eval.py --production`
 
-4. **V3.9 Production Scorer** (旧版):
+6. **V3.9 Production Scorer** (旧版):
    - 42个增强特征 + 17个扩展财务指标
    - 训练脚本: `ml_models/training/train_v390_from_cache.py`
 
