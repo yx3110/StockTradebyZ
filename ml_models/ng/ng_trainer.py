@@ -1009,11 +1009,47 @@ class NGTrainer(V485Trainer):
         return weights
 
     def compute_sample_weights(self, df, y):
-        """NG v1.0.3: parent weights + optional regime weighting."""
+        """NG v1.0.3: parent weights + optional regime weighting.
+
+        ng2.0b: optional regime_v2-based mode (`_regime_weight_mode in {'bull','bear'}`)
+        applies a multiplier reading from market_regime_signals.regime_v2:
+          mode='bull': bull samples (regime_v2=+1) × 2.0, bear samples × 0.5
+          mode='bear': bear samples (regime_v2=-1) × 2.0, bull samples × 0.5
+        Multiplier is 1.0 for missing regime data (pre-warmup or unmapped dates).
+        """
         weights = super().compute_sample_weights(df, y)
         if getattr(self, '_regime_weight', False):
             regime_w = self._compute_regime_weights(df)
             weights = weights * regime_w
+        mode = getattr(self, '_regime_weight_mode', None)
+        if mode in ('bull', 'bear'):
+            target_regime = 1 if mode == 'bull' else -1
+            conn = sqlite3.connect(self.db_path, timeout=30)
+            conn.execute('PRAGMA busy_timeout=30000')
+            try:
+                rows = conn.execute(
+                    'SELECT trade_date, regime_v2 FROM market_regime_signals '
+                    'WHERE regime_v2 IS NOT NULL'
+                ).fetchall()
+            finally:
+                conn.close()
+            regime_map = {d: int(r) for d, r in rows}
+            multipliers = np.ones(len(df), dtype=np.float64)
+            dates = df['trade_date'].astype(str).values
+            for i, td in enumerate(dates):
+                r = regime_map.get(td)
+                if r == target_regime:
+                    multipliers[i] = 2.0
+                elif r == -target_regime:
+                    multipliers[i] = 0.5
+            weights = weights * multipliers
+            n_up = int((multipliers == 2.0).sum())
+            n_down = int((multipliers == 0.5).sum())
+            n_keep = int((multipliers == 1.0).sum())
+            logger.info(
+                f"  [regime_weight_mode={mode}] "
+                f"{n_up:,} ×2.0, {n_down:,} ×0.5, {n_keep:,} ×1.0 (no regime)"
+            )
         return weights
 
     # ------------------------------------------------------------------
@@ -1862,6 +1898,7 @@ class NGTrainer(V485Trainer):
             model_data['seed'] = seed_val
             model_data['wf_mode'] = getattr(self, '_wf_mode', 'expanding')
             model_data['purge_days'] = getattr(self, '_purge_days', None)
+            model_data['regime_weight_mode'] = getattr(self, '_regime_weight_mode', None)
 
             joblib.dump(model_data, new_path)
             logger.info(f"\nNG {self._ng_version} model saved: {new_path}")
@@ -1943,7 +1980,12 @@ if __name__ == '__main__':
     parser.add_argument('--wf-windows', type=int, default=3,
                         help='Target WF windows (3 or 8)')
     parser.add_argument('--regime-weight', action='store_true',
-                        help='Enable market regime sample weighting')
+                        help='Enable legacy market_return_20d-based regime sample weighting')
+    parser.add_argument('--regime-weight-mode', choices=['none', 'bull', 'bear'], default='none',
+                        help='ng2.0b: regime_v2-based sample weighting. '
+                             'bull: bull samples ×2 / bear samples ×0.5; '
+                             'bear: opposite. Reads from market_regime_signals table. '
+                             'Distinct from --regime-weight (legacy market_return_20d-based).')
     parser.add_argument('--seed', type=int, default=None,
                         help='Global random seed (for multi-seed ensemble)')
     # ng1.0.4 new arguments
@@ -1986,6 +2028,9 @@ if __name__ == '__main__':
         trainer._enable_moneyflow = args.enable_moneyflow
         trainer._enable_interaction = args.enable_interaction
         trainer._regime_weight = args.regime_weight
+        trainer._regime_weight_mode = (
+            args.regime_weight_mode if args.regime_weight_mode != 'none' else None
+        )
         trainer._lambda_risk = args.lambda_risk
         trainer._risk_filter_quantile = args.risk_filter_quantile
         trainer._persistent_features = args.persistent_features
