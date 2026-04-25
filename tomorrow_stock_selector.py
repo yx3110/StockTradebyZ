@@ -5061,6 +5061,12 @@ class TomorrowStockSelector:
         if getattr(self, '_ng106_mode', False):
             regime_label = "牛市→ng1.0.1" if self.scoring_version in ("ng1.0.1",) else "熊市→ng1.0.4"
             version_title = f"NG1.0.6 0AMV牛熊切换版 (当前{regime_label})"
+        # ng2.0a 覆盖标题
+        if getattr(self, '_ng200a_mode', False):
+            bull = getattr(self, '_ng200a_bull_model', 'ng1.0.1')
+            bear = getattr(self, '_ng200a_bear_model', 'ng1.0.4')
+            regime_label = f"牛市→{bull}" if self.scoring_version == bull else f"熊市→{bear}"
+            version_title = f"NG2.0a multi-beta vote regime (V11+B1+B2) (当前{regime_label})"
         
         # 为不同版本添加特殊说明
         if hasattr(self, 'scoring_version') and self.scoring_version == "v3.41":
@@ -5805,6 +5811,45 @@ def main(target_date: str = None, scoring_version: str = "v3", stocks_only: bool
         except Exception as e:
             scoring_version = bull_model
             print(f"⚠️ {version_tag}: 读取AMV regime失败({e})，默认使用 {bull_model}")
+    # ng2.0a: multi-beta vote regime (V11+B1+B2 hard vote, 3d streak) → 牛 ng1.0.1 / 熊 ng1.0.4
+    # WF-OOS V5.2=79.3% A+, MaxDD=-17.6% (vs 生产 ng106v2 -23.7%, 改善 6pp)
+    # Phase C calibration: baseline (variant `unanimous` 备选, 见 docs/superpowers/plans/2026-04-26-ng2_0a-followup-CAB.md)
+    ng200a_mode = False
+    if scoring_version == "ng2.0a":
+        ng200a_mode = True
+        bull_model = "ng1.0.1"
+        bear_model = "ng1.0.4"
+        regime_table = "market_regime_signals"  # baseline variant per Phase C decision
+        version_tag = "ng2.0a"
+        try:
+            import sqlite3 as _sql
+            _db = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data_adapter', 'stock_data.db')
+            _conn = _sql.connect(_db, timeout=30)
+            _conn.execute('PRAGMA busy_timeout=30000')
+            if target_date:
+                _regime = _conn.execute(
+                    f'SELECT regime_v2 FROM {regime_table} '
+                    f'WHERE regime_v2 IS NOT NULL AND trade_date <= ? '
+                    f'ORDER BY trade_date DESC LIMIT 1',
+                    (target_date,),
+                ).fetchone()
+                _regime_label = f"{target_date}"
+            else:
+                _regime = _conn.execute(
+                    f'SELECT regime_v2 FROM {regime_table} '
+                    f'WHERE regime_v2 IS NOT NULL ORDER BY trade_date DESC LIMIT 1'
+                ).fetchone()
+                _regime_label = "最新"
+            _conn.close()
+            if _regime and _regime[0] == 1:
+                scoring_version = bull_model
+                print(f"🐂 {version_tag}: v2 regime判定 {_regime_label}【牛市】→ 使用 {bull_model}")
+            else:
+                scoring_version = bear_model
+                print(f"🐻 {version_tag}: v2 regime判定 {_regime_label}【熊市】→ 使用 {bear_model}")
+        except Exception as e:
+            scoring_version = bull_model
+            print(f"⚠️ {version_tag}: 读取v2 regime失败({e})，默认使用 {bull_model}")
     # v3.6、v3.7、v3.8、v3.9、v3.94、v3.95版本应该只评价股票，因为ETF等因子无法与股票直接对比
     if scoring_version in ["v3.6", "v3.7", "v3.8", "v3.81", "v3.9", "v3.94", "v3.95", "v3.96", "v4.0", "v4.2", "v4.3", "v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.7.9", "v4.8.0", "v4.8.1", "v4.8.2", "v4.8.4", "v4.9.0.2", "v5.0"] and not stocks_only:
         stocks_only = True
@@ -5829,6 +5874,11 @@ def main(target_date: str = None, scoring_version: str = "v3", stocks_only: bool
     if ng106_mode:
         selector._ng106_mode = True
         selector._ng106_tag = version_tag  # 'ng1.0.6' or 'ng1.0.62'
+    if ng200a_mode:
+        selector._ng200a_mode = True
+        selector._ng200a_bull_model = bull_model
+        selector._ng200a_bear_model = bear_model
+        selector._ng200a_regime_table = regime_table
     
     # 获取分析日期
     if target_date:
@@ -6060,6 +6110,8 @@ def main(target_date: str = None, scoring_version: str = "v3", stocks_only: bool
         report_dir = Path("reports/daily_selection_ng106v2"
                           if version_tag == 'ng1.0.62'
                           else "reports/daily_selection_ng106")
+    elif ng200a_mode:
+        report_dir = Path("reports/daily_selection_ng2_0a")
     elif scoring_version == "v5.0":
         report_dir = Path("reports/daily_selection_v5.0")
     elif scoring_version.startswith("ng"):
@@ -6201,7 +6253,7 @@ if __name__ == "__main__":
                        choices=['v2', 'v3', 'v3.1', 'v3.2', 'v3.3', 'v3.4', 'v3.41',
                                 'v3.5', 'v3.51', 'v3.52', 'v3.53', 'v3.6', 'v3.7',
                                 'v3.8', 'v3.81', 'v3.9', 'v3.94', 'v3.95', 'v3.96',
-                                'v4', 'v4.0', 'v4.2', 'v4.3', 'v4.4', 'v4.4.2', 'v4.5', 'v4.6', 'v4.7.1', 'v4.7.2', 'v4.7.3', 'v4.7.5', 'v4.7.6', 'v4.7.7', 'v4.7.8', 'v4.7.9', 'v4.8', 'v4.8.0', 'v4.8.1', 'v4.8.2', 'v4.8.4', 'v4.8.5', 'v4.8.6', 'v4.8.7', 'v4.8.8', 'v4.9.0', 'v4.9.0.1', 'v4.9.0.2', 'v4.9.1', 'v5.0', 'ng1.0.0', 'ng1.0.1', 'ng1.0.2', 'ng1.0.3', 'ng1.0.4', 'ng1.0.6', 'ng1.0.62', 'ng1.0.7', 'ng1.1.0', 'ng1.7.0'],
+                                'v4', 'v4.0', 'v4.2', 'v4.3', 'v4.4', 'v4.4.2', 'v4.5', 'v4.6', 'v4.7.1', 'v4.7.2', 'v4.7.3', 'v4.7.5', 'v4.7.6', 'v4.7.7', 'v4.7.8', 'v4.7.9', 'v4.8', 'v4.8.0', 'v4.8.1', 'v4.8.2', 'v4.8.4', 'v4.8.5', 'v4.8.6', 'v4.8.7', 'v4.8.8', 'v4.9.0', 'v4.9.0.1', 'v4.9.0.2', 'v4.9.1', 'v5.0', 'ng1.0.0', 'ng1.0.1', 'ng1.0.2', 'ng1.0.3', 'ng1.0.4', 'ng1.0.6', 'ng1.0.62', 'ng1.0.7', 'ng1.1.0', 'ng1.7.0', 'ng2.0a'],
                        default=PRODUCTION_VERSION,
                        help=f'评分版本 (默认{PRODUCTION_VERSION}, 生产推荐, 66特征bugfix重训, V5.2=72.1%% A+, 年化165.7%%, Sharpe=2.753, MaxDD=-11.7%%)。'
                             '活跃版本: v3.9(生产A级), v3.96(Robust Z-Score,ICIR>0.2), '
