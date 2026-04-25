@@ -211,6 +211,7 @@ def compute_regime_v2(
     b1_bull: pd.Series,
     b2_bull: pd.Series,
     system_streak: int = 3,
+    vote_threshold: int = 2,
 ) -> pd.DataFrame:
     """ng2.0a: hard vote across 3 binary signals + system-level streak.
 
@@ -218,23 +219,27 @@ def compute_regime_v2(
         v11_bull, b1_bull, b2_bull: each 1=bull, 0=bear, NaN allowed (treated as 0)
             All three Series must share the same DatetimeIndex.
         system_streak: streak_days at vote-output level (default 3)
+        vote_threshold: minimum bull count to call bull (default 2 = majority;
+            3 = unanimous).
 
     Returns:
         DataFrame indexed same as inputs with columns:
             vote_count: int 0..3 (count of bulls)
-            regime_v2_raw: +1 if vote >= 2 else -1
+            regime_v2_raw: +1 if vote >= vote_threshold else -1
             regime_v2_streak: consecutive days where raw majority side is the same
             regime_v2: +1/-1 (after system_streak applied to raw)
     """
     if not (v11_bull.index.equals(b1_bull.index) and v11_bull.index.equals(b2_bull.index)):
         raise ValueError('v11_bull / b1_bull / b2_bull indices must match')
+    if vote_threshold not in (1, 2, 3):
+        raise ValueError(f'vote_threshold={vote_threshold} must be in {{1, 2, 3}}')
 
     v = v11_bull.fillna(0).astype(int)
     b1 = b1_bull.fillna(0).astype(int)
     b2 = b2_bull.fillna(0).astype(int)
 
     vote = v + b1 + b2  # 0..3
-    raw_bull_int = (vote >= 2).astype(int)  # 1=bull, 0=bear
+    raw_bull_int = (vote >= vote_threshold).astype(int)  # 1=bull, 0=bear
 
     # Apply system-level streak using existing persist_n
     raw_arr = raw_bull_int.to_numpy()
