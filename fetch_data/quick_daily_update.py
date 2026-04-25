@@ -870,7 +870,7 @@ def quick_daily_update(date: str = None, skip_financial: bool = True):
     logger.info("="*60)
 
     # 15. 更新0AMV市场活跃市值指标
-    logger.info("【步骤15/15】更新0AMV活跃市值指标...")
+    logger.info("【步骤15/17】更新0AMV活跃市值指标...")
     try:
         from indicators.market_amv import compute_and_save
         compute_and_save()
@@ -878,8 +878,29 @@ def quick_daily_update(date: str = None, skip_financial: bool = True):
     except Exception as e:
         logger.warning(f"  0AMV更新失败(非关键): {e}")
 
-    # 16. 刷新 ST 戴帽 / 改名 (securities.name)
-    logger.info("【步骤16/16】刷新股票名称 (ST namechange)...")
+    # 15b. 刷新 ng2.0a v2 regime (market_regime_signals) — 依赖 market_amv 已更新
+    # 7d 滚动窗口保 idempotent (--replace 删除区间后重写)
+    logger.info("【步骤16/17】刷新 v2 multi-beta regime (market_regime_signals)...")
+    try:
+        import subprocess
+        from datetime import datetime, timedelta
+        end = datetime.now().strftime('%Y-%m-%d')
+        start = (datetime.now() - timedelta(days=7)).strftime('%Y-%m-%d')
+        result = subprocess.run([
+            'python3', 'scripts/build_regime_v2_history.py',
+            '--start', start, '--end', end, '--replace',
+        ], capture_output=True, text=True, cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        if result.returncode == 0:
+            # Last line typically "      written N rows: bull=X, bear=Y"
+            tail_lines = [l for l in result.stdout.strip().split('\n') if l.strip()][-1:]
+            logger.info(f"  v2 regime 更新完成: {tail_lines[0] if tail_lines else 'OK'}")
+        else:
+            logger.warning(f"  v2 regime 更新失败 (returncode={result.returncode}): {result.stderr[:200]}")
+    except Exception as e:
+        logger.warning(f"  v2 regime 更新失败(非关键): {e}")
+
+    # 17. 刷新 ST 戴帽 / 改名 (securities.name)
+    logger.info("【步骤17/17】刷新股票名称 (ST namechange)...")
     try:
         from scripts.refresh_stock_names import fetch_latest_names, update_db_names
         latest = fetch_latest_names(lookback_days=540)
