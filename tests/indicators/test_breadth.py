@@ -64,3 +64,17 @@ def test_breadth_streak_required_for_flip():
     )
     # 0.60 spike: 1 day raw_bull=1, streak=1, but persist_n requires 3 → stay bear
     assert bull.iloc[3] == 0
+
+
+def test_breadth_warmup_window_returns_nan_for_pct():
+    """First (ma_long - 1) rows should have NaN in pct/score columns."""
+    panel = _fake_close_panel(n_dates=80, n_stocks=10)
+    out = compute_breadth_signal(panel, ma_short=20, ma_long=60, streak_days=3)
+    # First 19 rows: no MA20 yet
+    assert out['pct_above_ma20'].iloc[:19].isna().all()
+    # First 59 rows: no MA60 yet
+    assert out['pct_above_ma60'].iloc[:59].isna().all()
+    # b1_score depends on both, so first 59 rows NaN
+    assert out['b1_score'].iloc[:59].isna().all()
+    # b1_bull is integer-typed (Int8), so it shouldn't be NaN — should be the initial value (0)
+    assert (out['b1_bull'].iloc[:59] == 0).all()

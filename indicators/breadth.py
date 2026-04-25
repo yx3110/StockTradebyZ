@@ -79,8 +79,8 @@ def apply_threshold_with_hysteresis_and_streak(
         confirmed[i] = cur
 
     return (
-        pd.Series(confirmed, index=score.index, name='b1_bull'),
-        pd.Series(streak_arr, index=score.index, name='b1_streak'),
+        pd.Series(confirmed, index=score.index, name='confirmed_bull'),
+        pd.Series(streak_arr, index=score.index, name='streak'),
     )
 
 
