@@ -1,0 +1,29 @@
+======================================================================
+Step A Validation: regime_v1 (V11) vs regime_v2 (ng2.0a multi-beta vote)
+======================================================================
+
+[Main window 2020-2026: 1526 trading days]
+
+1. Regime distribution:
+   V11 (v1):    bull=33.49%  bear=66.51%  total=1526d
+   ng2.0a (v2): bull=40.63%  bear=59.37%  total=1526d
+   Δ%bull: 7.14pp
+
+2. Flip count (transitions):
+   V11 (v1):    63 flips
+   ng2.0a (v2): 55 flips
+   ratio v2/v1: 0.87x
+
+3. Agreement matrix (V11 × ng2.0a):
+   agree: 1285/1526 = 84.21%
+   both_bull=445, both_bear=840
+   v1_bull_v2_bear=66, v1_bear_v2_bull=175
+
+4. 2018-2019 sanity check:
+   2018 Q4 (selloff expected): v2 bear days = 37/59 (v1: 38)
+   2019 Q1 (rebound expected): v2 bull days = 40/56 (v1: 26)
+
+5. PASS/ABORT decision (spec gates):
+   Step A primary gates PASS — proceed to Step B end-to-end backtest
+
+Report saved to reports/ng2_0a_step_a_report.md
