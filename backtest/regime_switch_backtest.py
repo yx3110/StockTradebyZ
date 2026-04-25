@@ -19,20 +19,35 @@ DB_PATH = os.path.join(
 )
 
 
-def load_regime(db_path=None):
-    """加载每日amv_regime，返回 {date_str: regime_int}"""
+def load_regime(db_path=None, version: str = 'v1'):
+    """加载每日 regime，返回 {date_str: regime_int}.
+
+    version='v1': use market_amv.amv_regime (legacy V11 0AMV)
+    version='v2': use market_regime_signals.regime_v2 (ng2.0a multi-beta vote)
+    """
     if db_path is None:
         db_path = DB_PATH
     conn = sqlite3.connect(db_path, timeout=30)
-    rows = conn.execute(
-        'SELECT trade_date, amv_regime FROM market_amv ORDER BY trade_date'
-    ).fetchall()
-    conn.close()
-    regime = {}
-    for date_str, r in rows:
-        # Keep YYYY-MM-DD format to match report keys from load_reports()
-        regime[date_str] = r
-    return regime
+    conn.execute('PRAGMA busy_timeout=30000')
+    try:
+        if version == 'v1':
+            cur = conn.execute(
+                'SELECT trade_date, amv_regime FROM market_amv ORDER BY trade_date'
+            )
+        elif version == 'v2':
+            cur = conn.execute(
+                'SELECT trade_date, regime_v2 FROM market_regime_signals '
+                'WHERE regime_v2 IS NOT NULL ORDER BY trade_date'
+            )
+        else:
+            raise ValueError(f'unknown regime version: {version!r}')
+        regime = {}
+        for date_str, r in cur.fetchall():
+            # Keep YYYY-MM-DD format to match report keys from load_reports()
+            regime[date_str] = int(r)
+        return regime
+    finally:
+        conn.close()
 
 
 def merge_reports_by_regime(bull_reports, bear_reports, regime):
@@ -110,13 +125,17 @@ def run_comparison(
     top_n=10,
     focus_days=10,
     rank_field='score',
+    regime_version='v1',
+    out_dir=None,
 ):
     """运行三方对比回测"""
+    if out_dir is None:
+        out_dir = f'reports/daily_selection_regime_switch_{regime_version}'
     print('=' * 70)
-    print('  0AMV牛熊切换 双模型回测')
+    print(f'  0AMV牛熊切换 双模型回测 (regime={regime_version})')
     print('=' * 70)
 
-    regime = load_regime()
+    regime = load_regime(version=regime_version)
     if not regime:
         print('ERROR: market_amv表为空，先运行 indicators/market_amv.py')
         return
@@ -142,7 +161,7 @@ def run_comparison(
         return
 
     # 生成合并报告目录（供后续北极星评估）
-    merged_dir = 'reports/daily_selection_regime_switch'
+    merged_dir = out_dir
     generate_merged_report_dir(bull_dir, bear_dir, regime, merged_dir)
 
     # 三方回测
@@ -210,9 +229,15 @@ if __name__ == '__main__':
     parser.add_argument('--top-n', type=int, default=10)
     parser.add_argument('--focus-days', type=int, default=10)
     parser.add_argument('--rank-field', default='score')
+    parser.add_argument('--regime-version', choices=['v1', 'v2'], default='v1',
+                        help='regime来源: v1=market_amv (V11 0AMV), v2=market_regime_signals (ng2.0a多beta投票)')
+    parser.add_argument('--out-dir', default=None,
+                        help='合并报告输出目录 (默认: reports/daily_selection_regime_switch_{regime-version})')
     args = parser.parse_args()
     run_comparison(
         bull_dir=args.bull_dir, bear_dir=args.bear_dir,
         top_n=args.top_n, focus_days=args.focus_days,
         rank_field=args.rank_field,
+        regime_version=args.regime_version,
+        out_dir=args.out_dir,
     )
