@@ -19,11 +19,13 @@ DB_PATH = os.path.join(
 )
 
 
-def load_regime(db_path=None, version: str = 'v1'):
+def load_regime(db_path=None, version: str = 'v1', table: str = None):
     """加载每日 regime，返回 {date_str: regime_int}.
 
     version='v1': use market_amv.amv_regime (legacy V11 0AMV)
     version='v2': use market_regime_signals.regime_v2 (ng2.0a multi-beta vote)
+    table: optional v2 table override (e.g. 'market_regime_signals_unanimous').
+        Ignored when version='v1'.
     """
     if db_path is None:
         db_path = DB_PATH
@@ -35,9 +37,10 @@ def load_regime(db_path=None, version: str = 'v1'):
                 'SELECT trade_date, amv_regime FROM market_amv ORDER BY trade_date'
             )
         elif version == 'v2':
+            tbl = table or 'market_regime_signals'
             cur = conn.execute(
-                'SELECT trade_date, regime_v2 FROM market_regime_signals '
-                'WHERE regime_v2 IS NOT NULL ORDER BY trade_date'
+                f'SELECT trade_date, regime_v2 FROM {tbl} '
+                f'WHERE regime_v2 IS NOT NULL ORDER BY trade_date'
             )
         else:
             raise ValueError(f'unknown regime version: {version!r}')
@@ -126,16 +129,18 @@ def run_comparison(
     focus_days=10,
     rank_field='score',
     regime_version='v1',
+    regime_table=None,
     out_dir=None,
 ):
     """运行三方对比回测"""
     if out_dir is None:
         out_dir = f'reports/daily_selection_regime_switch_{regime_version}'
     print('=' * 70)
-    print(f'  0AMV牛熊切换 双模型回测 (regime={regime_version})')
+    print(f'  0AMV牛熊切换 双模型回测 (regime={regime_version}'
+          + (f', table={regime_table}' if regime_table else '') + ')')
     print('=' * 70)
 
-    regime = load_regime(version=regime_version)
+    regime = load_regime(version=regime_version, table=regime_table)
     if not regime:
         print('ERROR: market_amv表为空，先运行 indicators/market_amv.py')
         return
@@ -231,6 +236,8 @@ if __name__ == '__main__':
     parser.add_argument('--rank-field', default='score')
     parser.add_argument('--regime-version', choices=['v1', 'v2'], default='v1',
                         help='regime来源: v1=market_amv (V11 0AMV), v2=market_regime_signals (ng2.0a多beta投票)')
+    parser.add_argument('--regime-table', default=None,
+                        help='v2 regime 自定义表 (e.g. market_regime_signals_unanimous). 默认: market_regime_signals')
     parser.add_argument('--out-dir', default=None,
                         help='合并报告输出目录 (默认: reports/daily_selection_regime_switch_{regime-version})')
     args = parser.parse_args()
@@ -239,5 +246,6 @@ if __name__ == '__main__':
         top_n=args.top_n, focus_days=args.focus_days,
         rank_field=args.rank_field,
         regime_version=args.regime_version,
+        regime_table=args.regime_table,
         out_dir=args.out_dir,
     )
