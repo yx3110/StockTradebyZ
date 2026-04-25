@@ -49,7 +49,7 @@ VERSION_TABLE_MAP = {
 
 DEFAULT_VERSION = 'ng1.0.3'
 
-PRODUCTION_VERSION = 'ng1.0.62'  # MOE: ng1.0.7 bull + ng1.0.4 bear (V5.2=79%, 2024-2026)
+PRODUCTION_VERSION = 'ng1.0.6'  # MOE v1: ng1.0.1 bull + ng1.0.4 bear; 4-25 真零泄漏 OOS Pre-2020 验证 v1 (Top10 +0.87%) > v2 ng1.0.62 (+0.49%) 78%, v1→v2 切换被回滚
 
 # Versions that reuse another version's cache schema (table columns + feature semantics)
 # ng1.1.0 is a pruning+bugfix iteration on top of ng1.0.1, uses identical ng101_feature_cache schema
