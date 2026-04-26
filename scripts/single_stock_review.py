@@ -31,9 +31,11 @@ def version_tag(version: str) -> str:
 
 # Versions whose report dir diverges from the default tag (MOE variants, etc).
 # tomorrow_stock_selector.py writes ng1.0.62 → daily_selection_ng106v2[_fullmarket].
+# ng2.0a writes daily_selection_ng2_0a[_fullmarket] (underscore preserved in dir name).
 VERSION_DIR_ALIASES: dict[str, list[str]] = {
     'ng1.0.62': ['ng106v2'],
     'ng1.0.6': ['ng106'],
+    'ng2.0a': ['ng2_0a'],
 }
 
 
