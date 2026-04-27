@@ -256,7 +256,7 @@
 
 | # | 项目 | 状态 | Commit | 备注 |
 |---|---|---|---|---|
-| P0.2 | Annualization bug | ⏳ 待办 | — | — |
+| P0.2 | Annualization bug | ✅ 完成 | 79e23650 | calendar-time 校正 + cash_ratio + Sharpe>4 warning, 5 单测 PASS |
 | P0.1 | Forward test 框架 | ⏳ 待办 | — | — |
 | P1.1 | L1-L5 overlay 入生产 | ⏳ 待办 | — | — |
 | P2.2 | In-sample/OOS 标签 | ⏳ 待办 | — | — |
