@@ -136,6 +136,25 @@ def blend_scores(p_bull: np.ndarray, bull_score: np.ndarray, bear_score: np.ndar
     return p * np.asarray(bull_score, dtype=float) + (1.0 - p) * np.asarray(bear_score, dtype=float)
 
 
+def smooth_proba_ema(p_bull: np.ndarray, span: int = 5) -> np.ndarray:
+    """EMA-smooth a P_bull series (length T) to suppress daily logistic noise.
+
+    Empirically (regime_proba_smoke 2018-2026): raw P has ~22% more turnover
+    than V11 hard switching due to daily macd/streak jitter. EMA(span=5)
+    drops total turnover ~19% below hard while keeping graceful transitions.
+    Use this in production rather than raw `compute_bull_proba` output.
+    """
+    arr = np.asarray(p_bull, dtype=float)
+    if arr.size == 0:
+        return arr
+    alpha = 2.0 / (span + 1.0)
+    out = np.empty_like(arr)
+    out[0] = arr[0]
+    for i in range(1, len(arr)):
+        out[i] = alpha * arr[i] + (1.0 - alpha) * out[i - 1]
+    return out
+
+
 # ============================================================
 # 平滑器
 # ============================================================

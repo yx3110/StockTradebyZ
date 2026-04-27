@@ -4,7 +4,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from indicators.regime_classifier import compute_bull_proba, blend_scores
+from indicators.regime_classifier import compute_bull_proba, blend_scores, smooth_proba_ema
 
 
 def test_strong_bull_inputs_gives_high_prob():
@@ -111,6 +111,35 @@ def test_blend_clips_out_of_range_proba():
     out = blend_scores(p, bull, bear)
     assert out[0] == 10.0  # clipped to 1.0
     assert out[1] == 0.0   # clipped to 0.0
+
+
+# ─────────────── smooth_proba_ema ───────────────
+
+def test_smooth_constant_input_unchanged():
+    p = np.array([0.7] * 20)
+    out = smooth_proba_ema(p, span=5)
+    assert np.allclose(out, 0.7)
+
+
+def test_smooth_reduces_step_response():
+    """Step from 0 to 1: smoothed series approaches but stays below raw step."""
+    raw = np.array([0.0] * 5 + [1.0] * 5)
+    out = smooth_proba_ema(raw, span=5)
+    # First post-step value should be much less than 1.0
+    assert out[5] < 0.5
+    # Eventually approaches 1.0
+    assert out[-1] > 0.85
+
+
+def test_smooth_first_value_passthrough():
+    p = np.array([0.42, 0.99])
+    out = smooth_proba_ema(p, span=5)
+    assert out[0] == 0.42
+
+
+def test_smooth_empty_safe():
+    out = smooth_proba_ema(np.array([]))
+    assert out.size == 0
 
 
 if __name__ == '__main__':
