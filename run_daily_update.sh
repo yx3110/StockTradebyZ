@@ -208,7 +208,21 @@ run_main_program() {
         if [ -f "$SCRIPT_DIR/reports/ai_enhanced/AI增强选股报告_最新.md" ]; then
             print_info "已生成AI增强选股报告: reports/ai_enhanced/AI增强选股报告_最新.md"
         fi
-        
+
+        # P0.2 (2026-04-27): forward OOS scan + 90d rolling dashboard
+        # 每日尾声把生产报告 D-7..D 增量 scan 进 forward_samples.csv, 重算 dashboard.
+        # 任一步失败不应阻塞主流程 (forward 收益要等 N 个交易日才能算, 早期日为空很正常).
+        print_info "Forward OOS tracking..."
+        $PYTHON_CMD scripts/forward_test_tracker.py scan \
+            --scoring-version ng1.0.6 \
+            2>&1 | tail -3 || print_info "(forward scan skipped — non-fatal)"
+        $PYTHON_CMD scripts/forward_test_dashboard.py \
+            --scoring-version ng1.0.6 --window-days 90 --horizon 10d \
+            2>&1 | tail -3 || print_info "(forward dashboard skipped — non-fatal)"
+        if [ -f "$SCRIPT_DIR/reports/forward_test/dashboard.md" ]; then
+            print_info "已更新 forward OOS dashboard: reports/forward_test/dashboard.md"
+        fi
+
         # 显示数据库统计信息（如果使用数据库模式）
         if [ "$USE_DATABASE" = "true" ]; then
             print_info "数据库统计信息:"
