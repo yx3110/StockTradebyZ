@@ -589,10 +589,17 @@ def _compute_period_risk_metrics(period_returns: pd.Series, holding_days: int,
         period_returns: 每个调仓期的收益率序列（每个值覆盖N天）
         holding_days: 持仓天数
         risk_free_rate: 年化无风险利率
+
+    年化策略 (P0.2 修复 sparse-trading 膨胀):
+        - 主 annual_return: 用 DatetimeIndex 推算 calendar span 算 (calendar-time, 正确口径)
+        - annual_return_active: 用 n_periods × holding_days (legacy, sparse 时膨胀, 保留作对照)
+        - cash_ratio: 1 - active_days / expected_calendar_active_days, 用于探测 sparse trading
+        - Sharpe > 4 时打印 warning
     """
     if len(period_returns) < 5:
         return {k: 0 for k in [
-            'annual_return', 'annual_volatility', 'downside_volatility',
+            'annual_return', 'annual_return_active', 'cash_ratio',
+            'annual_volatility', 'downside_volatility',
             'sharpe_ratio', 'sortino_ratio', 'calmar_ratio',
             'max_drawdown', 'max_dd_duration_days', 'max_dd_recovery_days',
             'var_95', 'cvar_95', 'omega_ratio',
@@ -604,11 +611,29 @@ def _compute_period_risk_metrics(period_returns: pd.Series, holding_days: int,
     n_periods = len(returns)
     periods_per_year = 252 / holding_days  # 年化因子
 
-    # 累计收益 & 年化收益
+    # 累计收益
     cumulative_return = (1 + returns).prod() - 1
-    # 实际覆盖天数
-    total_days = n_periods * holding_days
-    annual_return = (1 + cumulative_return) ** (252 / total_days) - 1
+
+    # 年化收益 — calendar-time 优先, active-days 作对照
+    active_trading_days = n_periods * holding_days
+    annual_return_active = (1 + cumulative_return) ** (252 / active_trading_days) - 1
+
+    if isinstance(returns.index, pd.DatetimeIndex) and n_periods > 1:
+        # Calendar span: 从首期到末期的实际跨度 + 末期持仓天数
+        first_date = returns.index.min()
+        last_date = returns.index.max()
+        calendar_days = (last_date - first_date).days + holding_days
+        # 校准到 252 trading-day 年: 252 / 365.25 ≈ 0.69
+        calendar_trading_days = max(active_trading_days,
+                                     calendar_days * 252.0 / 365.25)
+        annual_return = (1 + cumulative_return) ** (252 / calendar_trading_days) - 1
+        cash_ratio = max(0.0, 1.0 - active_trading_days / calendar_trading_days)
+    else:
+        # 回退: 无 DatetimeIndex 时用 legacy active-days 口径
+        annual_return = annual_return_active
+        cash_ratio = 0.0
+
+    total_days = active_trading_days  # 兼容下游 'n_trading_days' 字段
 
     # 波动率 (period-level std × sqrt(periods_per_year))
     period_rf = (1 + risk_free_rate) ** (holding_days / 252) - 1
@@ -618,8 +643,22 @@ def _compute_period_risk_metrics(period_returns: pd.Series, holding_days: int,
     negative_returns = returns[returns < 0]
     downside_vol = negative_returns.std() * np.sqrt(periods_per_year) if len(negative_returns) > 0 else 1e-8
 
-    # Sharpe = (annual_return - Rf) / annual_vol
+    # Sharpe = (annual_return - Rf) / annual_vol  (用 calendar-time annual_return)
     sharpe = (annual_return - risk_free_rate) / annual_volatility if annual_volatility > 1e-8 else 0
+
+    # Sparse-trading 检测: Sharpe > 4 + cash_ratio > 20% 是 red flag
+    if sharpe > 4 or cash_ratio > 0.2:
+        import warnings as _warnings
+        sharpe_active = ((annual_return_active - risk_free_rate) / annual_volatility
+                         if annual_volatility > 1e-8 else 0)
+        _warnings.warn(
+            f"[sparse-trading] Sharpe={sharpe:.2f} (active={sharpe_active:.2f}), "
+            f"cash_ratio={cash_ratio:.1%}, calendar_days_implied="
+            f"{int(active_trading_days / max(1-cash_ratio, 0.01))}, "
+            f"active_days={active_trading_days}. "
+            f"年化已用 calendar-time 校正 ({annual_return:.1%} vs active {annual_return_active:.1%})",
+            stacklevel=2,
+        )
 
     # Sortino
     sortino = (annual_return - risk_free_rate) / downside_vol if downside_vol > 1e-8 else 0
@@ -701,6 +740,8 @@ def _compute_period_risk_metrics(period_returns: pd.Series, holding_days: int,
 
     return {
         'annual_return': annual_return,
+        'annual_return_active': annual_return_active,
+        'cash_ratio': cash_ratio,
         'cumulative_return': cumulative_return,
         'annual_volatility': annual_volatility,
         'downside_volatility': downside_vol,
