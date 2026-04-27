@@ -21,7 +21,11 @@ from typing import Iterable
 logger = logging.getLogger(__name__)
 
 RED_TAG_MARKER = "高风险"
+YELLOW_TAG_MARKER = "存疑"
 UNKNOWN_INDUSTRY = {"未知", "Unknown", "unknown", "", None}
+
+# P1.3: 🟡 存疑标签的 score 软扣分系数
+DEFAULT_TRUST_YELLOW_PENALTY = 0.7
 
 
 def _get_code(stock: dict) -> str:
@@ -44,19 +48,22 @@ def _is_a_share(stock: dict) -> bool:
     return stype in ("", "A股") or stype.startswith("A")
 
 
-def _load_red_codes(db_path: str, codes: Iterable[str]) -> set[str]:
+def _load_trust_codes(db_path: str, codes: Iterable[str]) -> tuple[set[str], set[str]]:
+    """Load (red_codes, yellow_codes) for the given list of codes.
+
+    Returns (set(), set()) on DB error (caller should treat as 'no filter').
+    """
     codes = [c for c in codes if c]
     if not codes:
-        return set()
+        return set(), set()
     try:
         conn = sqlite3.connect(db_path)
         conn.execute("PRAGMA busy_timeout = 30000")
     except sqlite3.OperationalError as e:
         logger.warning(f"signal_trust 读取失败, 跳过过滤: {e}")
-        return set()
+        return set(), set()
+    red, yellow = set(), set()
     try:
-        # Chunk for SQLite parameter limit (999)
-        red = set()
         for i in range(0, len(codes), 900):
             chunk = codes[i : i + 900]
             placeholders = ",".join("?" * len(chunk))
@@ -68,13 +75,23 @@ def _load_red_codes(db_path: str, codes: Iterable[str]) -> set[str]:
                 ).fetchall()
             except sqlite3.OperationalError as e:
                 logger.warning(f"signal_trust_scores 查询失败: {e}")
-                return set()
+                return red, yellow
             for code, tag in rows:
-                if tag and RED_TAG_MARKER in tag:
+                if not tag:
+                    continue
+                if RED_TAG_MARKER in tag:
                     red.add(code)
-        return red
+                elif YELLOW_TAG_MARKER in tag:
+                    yellow.add(code)
     finally:
         conn.close()
+    return red, yellow
+
+
+def _load_red_codes(db_path: str, codes: Iterable[str]) -> set[str]:
+    """Backward-compat thin wrapper."""
+    red, _ = _load_trust_codes(db_path, codes)
+    return red
 
 
 def exclude_unreliable_by_trust(
@@ -98,6 +115,42 @@ def exclude_unreliable_by_trust(
         else:
             kept.append(s)
     return kept, dropped
+
+
+def penalize_unreliable_by_trust_yellow(
+    stocks: list[dict],
+    db_path: str,
+    penalty_factor: float = DEFAULT_TRUST_YELLOW_PENALTY,
+) -> tuple[list[dict], list[dict]]:
+    """P1.3: Soft-penalize 🟡存疑 stocks by multiplying rank_score / composite by penalty_factor.
+
+    Mutates rank_score (and composite if present) in place; stores original in
+    `_orig_rank_score` / `_orig_composite` for audit. Tags stock with
+    `_trust_penalty_applied=True`.
+
+    Returns (kept, penalized) — both reference into `stocks` (kept includes penalized).
+    Does NOT re-sort (caller must re-sort after if needed).
+    """
+    a_codes = [_get_code(s) for s in stocks if _is_a_share(s)]
+    _, yellow = _load_trust_codes(db_path, a_codes)
+    if not yellow:
+        return stocks, []
+
+    penalized = []
+    for s in stocks:
+        if _is_a_share(s) and _get_code(s) in yellow:
+            for fld in ("rank_score", "composite"):
+                if fld in s and s[fld] is not None:
+                    try:
+                        orig = float(s[fld])
+                        s[f"_orig_{fld}"] = orig
+                        s[fld] = orig * penalty_factor
+                    except (TypeError, ValueError):
+                        pass
+            s["_trust_penalty_applied"] = True
+            s["_trust_penalty_factor"] = penalty_factor
+            penalized.append(s)
+    return stocks, penalized
 
 
 def cap_industry_concentration(
@@ -133,16 +186,21 @@ def apply_post_filters(
     db_path: str,
     enable_trust_filter: bool = True,
     industry_cap: int = 3,
+    enable_trust_yellow_penalty: bool = True,
+    yellow_penalty_factor: float = DEFAULT_TRUST_YELLOW_PENALTY,
 ) -> dict:
-    """Run both filters and return a summary dict for logging.
+    """Run filters and return a summary dict for logging.
 
     Caller should use `result['stocks']` as the new list. Input `stocks` must be
     pre-sorted descending by rank_score so industry cap preserves the highest-ranked
     stocks per industry.
+
+    P1.3 添加: 🟡存疑 软扣分 (rank_score *= 0.7 默认), 在 industry_cap 之前重排.
     """
     summary = {
         "input_count": len(stocks),
         "trust_dropped": [],
+        "trust_penalized": [],
         "industry_dropped": [],
         "stocks": stocks,
     }
@@ -150,6 +208,17 @@ def apply_post_filters(
     if enable_trust_filter:
         stocks, trust_dropped = exclude_unreliable_by_trust(stocks, db_path)
         summary["trust_dropped"] = trust_dropped
+
+    # P1.3: 🟡 软扣分, 重排, 再过 industry cap
+    if enable_trust_yellow_penalty and yellow_penalty_factor < 1.0:
+        stocks, penalized = penalize_unreliable_by_trust_yellow(
+            stocks, db_path, penalty_factor=yellow_penalty_factor)
+        summary["trust_penalized"] = penalized
+        if penalized:
+            stocks.sort(
+                key=lambda s: float(s.get("rank_score") or s.get("composite") or 0),
+                reverse=True,
+            )
 
     if industry_cap > 0:
         stocks, ind_dropped = cap_industry_concentration(stocks, industry_cap)
@@ -221,12 +290,16 @@ def format_drop_log(summary: dict, top_preview: int = 10) -> str:
 
     lines = [
         f"post-filter: {summary['input_count']} → {summary['output_count']} "
-        f"(trust 剔除 {len(summary['trust_dropped'])}, "
+        f"(🔴剔除 {len(summary['trust_dropped'])}, "
+        f"🟡软扣 {len(summary.get('trust_penalized', []))}, "
         f"行业限流 {len(summary['industry_dropped'])})"
     ]
     if summary["trust_dropped"]:
         lines.append("  🔴 Trust 剔除:")
         lines.extend(_fmt(summary["trust_dropped"]))
+    if summary.get("trust_penalized"):
+        lines.append(f"  🟡 Trust 软扣分 (×{DEFAULT_TRUST_YELLOW_PENALTY}):")
+        lines.extend(_fmt(summary["trust_penalized"]))
     if summary["industry_dropped"]:
         lines.append("  🏭 行业限流剔除:")
         lines.extend(_fmt(summary["industry_dropped"]))
