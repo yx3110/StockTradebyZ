@@ -578,6 +578,57 @@ def _detect_report_date_range(report_dir):
     return sorted_dates[0], sorted_dates[-1], len(sorted_dates)
 
 
+def _infer_data_split(report_dir: str, start_date: str = None, end_date: str = None) -> tuple[str, str]:
+    """P2.2: 从 report_dir 路径 + 日期范围推断数据来源标签.
+
+    Returns: (split_label, reason)
+    """
+    if not report_dir:
+        return 'unknown', '无 report_dir'
+    name = str(report_dir).lower()
+    # 路径关键字优先
+    if 'pre2020' in name or 'pre_2020' in name:
+        return 'pre2020', "目录名含 'pre2020'"
+    if 'wf_oos' in name or 'wfoos' in name or '_oos' in name:
+        return 'wf_oos', "目录名含 'wf_oos'"
+    if 'forward' in name and 'forward_test' not in name:
+        return 'forward', "目录名含 'forward'"
+    # 日期范围启发: pre-2020 是 2018-2019, 训练后 2026-04+ 是 forward
+    if start_date and end_date and start_date != 'auto' and end_date != 'auto':
+        if end_date < '2020-01-01':
+            return 'pre2020', f"日期 {start_date}→{end_date} 早于 2020"
+        if start_date >= '2026-04-12':
+            return 'forward', f"日期 {start_date}→{end_date} 在训练后"
+    # 默认: batch_generate 跑训练区间 = in_sample
+    return 'in_sample', "默认 (batch_generate on training period 即 in-sample)"
+
+
+_SPLIT_DESCRIPTIONS = {
+    'in_sample':  '🚨 IN-SAMPLE — 评估区间与训练区间重叠, 数字 inflate ~3x, 不可作生产决策依据',
+    'wf_oos':     '✅ WF-OOS — Walk-Forward 测试段, 真无泄漏 OOS',
+    'pre2020':    '✅ PRE-2020 — 训练区前真零泄漏 OOS (regime mismatch caveat)',
+    'forward':    '🌟 FORWARD — 训练完成后真 forward (paper trade), 最高置信',
+    'unknown':    '❓ UNKNOWN — 数据来源未指定, 默认按 in-sample 处理',
+}
+
+
+def _print_data_split_banner(split: str, reason: str, label: str = '',
+                             start_date: str = None, end_date: str = None) -> None:
+    """P2.2: 报告头部强制打印数据来源 banner."""
+    desc = _SPLIT_DESCRIPTIONS.get(split, _SPLIT_DESCRIPTIONS['unknown'])
+    bar = '═' * 78
+    print()
+    print(bar)
+    print(f"  📊 北极星评估 — {label}")
+    print(f"  📌 数据来源: [{split.upper()}]  {desc}")
+    print(f"  📅 评估窗口: {start_date or 'auto'} → {end_date or 'auto'}")
+    print(f"  💡 推断依据: {reason}")
+    if split == 'in_sample':
+        print(f"  ⚠️  生产切换前必须叠加 P0.1 forward test (≥20 交易日, IC ≥ in-sample × 0.6)")
+    print(bar)
+    print()
+
+
 def main():
     parser = argparse.ArgumentParser(description='北极星指标快速评估 (V2)')
     parser.add_argument('--generate-reports', action='store_true', help='生成选股报告')
@@ -593,6 +644,9 @@ def main():
     parser.add_argument('--extended-dir', type=str, default=None,
                         help='扩展期报告目录 (用于--extended)')
     parser.add_argument('--label', type=str, default='v3.95', help='标签名')
+    parser.add_argument('--data-split', type=str, default='auto',
+                        choices=['auto', 'in_sample', 'wf_oos', 'pre2020', 'forward', 'unknown'],
+                        help='评估数据来源标签 (P2.2): in_sample/wf_oos/pre2020/forward/unknown. auto = 从 report-dir 名推断')
     parser.add_argument('--top-n', type=int, default=20, help='Top N选股')
     parser.add_argument('--benchmark', type=str, default='000905.SH', help='基准指数')
     parser.add_argument('--focus-days', type=int, default=10, help='重点持仓天数')
@@ -721,6 +775,16 @@ def main():
     cache = EvalCache()
 
     if args.backtest:
+        # P2.2: 数据来源标签 (强制可见, 防止 in-sample inflation 被误读为真实表现)
+        if args.data_split == 'auto':
+            split_label, split_reason = _infer_data_split(
+                args.report_dir, resolved_start, resolved_end)
+        else:
+            split_label = args.data_split
+            split_reason = '用户显式指定'
+        _print_data_split_banner(split_label, split_reason, args.label,
+                                 resolved_start, resolved_end)
+
         _overlay_kwargs = dict(
             ema_alpha=args.ema_alpha,
             wf_summary_path=args.wf_summary,
