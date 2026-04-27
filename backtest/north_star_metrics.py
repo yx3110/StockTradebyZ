@@ -3874,3 +3874,125 @@ def compute_v52_score(metric_values: Dict[str, float],
         'layer_details': layer_details, 'metric_scores': metric_scores,
         'style_profile': style, 'skipped_metrics': skipped_metrics,
     }
+
+
+# ═══════════════════════════════════════════════════════
+# V_ALPHA — 纯 alpha 评分卡 (P2.1, 2026-04-27)
+# ═══════════════════════════════════════════════════════
+#
+# Why: V5.2 是 risk-adjusted 综合卡 (L1 信号占 22%), 实测 ng1.0.62 > ng1.0.1 V5.2 1pp
+# 但真零泄漏 OOS Pre-2020 ng1.0.1 raw alpha 强 78%. V5.2 系统性低估 alpha 强者.
+#
+# What: 8 指标 (L1 信号 50% + L5 超额 35% + L4 鲁棒性 15%), 不混 risk profile.
+#
+# Caveat (4-25 reviewer 批评接受): V_ALPHA 单跑 batch_generate 仍是 in-sample,
+# 必须搭配 P0.1 forward test 才有 ground-truth 意义. V5.2 / V_ALPHA 双卡并存,
+# V5.2 看 risk profile, V_ALPHA 看 alpha 强度, 决策时同步看两个 + forward IC.
+
+V_ALPHA_METRICS = {
+    # L1 信号质量 (50%, 3 metrics)
+    'daily_ic':            {'weight': 0.20, 'layer': 'signal'},
+    'icir':                {'weight': 0.20, 'layer': 'signal'},
+    'ic_positive_pct':     {'weight': 0.10, 'layer': 'signal'},
+    # L5 超额收益 (35%, 3 metrics)
+    'excess_annual_return': {'weight': 0.15, 'layer': 'excess'},
+    'information_ratio':    {'weight': 0.10, 'layer': 'excess'},
+    'excess_win_rate':       {'weight': 0.10, 'layer': 'excess'},
+    # L4 鲁棒性 (15%, 2 metrics)
+    'wfer':                {'weight': 0.08, 'layer': 'robustness'},
+    'oos_ic_half_life':    {'weight': 0.07, 'layer': 'robustness'},
+}
+
+
+def compute_v_alpha_score(metric_values: Dict[str, float],
+                           n_trading_days: int = 500) -> Dict:
+    """V_ALPHA 评分: alpha-focused, 不掺 risk-adjusted.
+
+    用 V5.2 同款 score_metric_v5 (0-5 连续插值) 给每个 metric 打分,
+    按 V_ALPHA_METRICS 权重加权取 0-100% 总分.
+
+    Returns:
+        dict with keys: total_pct, grade, layer_pcts, metric_scores, skipped
+    """
+    targets = NORTH_STAR_TARGETS_V52  # 复用 V5.2 阈值
+
+    metric_scores: Dict[str, tuple] = {}
+    layer_sums: Dict[str, float] = {'signal': 0.0, 'excess': 0.0, 'robustness': 0.0}
+    layer_max: Dict[str, float] = {'signal': 0.0, 'excess': 0.0, 'robustness': 0.0}
+    weighted_score = 0.0
+    skipped = []
+
+    for name, info in V_ALPHA_METRICS.items():
+        weight = info['weight']
+        layer = info['layer']
+        layer_max[layer] += weight
+
+        target_info = targets.get(name)
+        if target_info is None:
+            skipped.append((name, 'no target def'))
+            metric_scores[name] = (0.0, None, None)
+            continue
+
+        value = metric_values.get(name)
+        if value is None:
+            skipped.append((name, 'no value'))
+            metric_scores[name] = (0.0, None, None)
+            continue
+
+        min_days = target_info.get('min_days', 0)
+        if min_days > 0 and n_trading_days < min_days:
+            skipped.append((name, f'n_days={n_trading_days} < {min_days}'))
+            metric_scores[name] = (0.0, None, value)
+            continue
+
+        score_raw = score_metric_v5(value, target_info)  # 0-5
+        score_pct = score_raw / 5.0                       # 0-1
+        weighted_score += score_pct * weight
+        layer_sums[layer] += score_pct * weight
+        metric_scores[name] = (score_raw, score_pct, value)
+
+    layer_pcts = {
+        ly: (layer_sums[ly] / layer_max[ly]) if layer_max[ly] > 0 else 0.0
+        for ly in layer_max
+    }
+    total_pct = weighted_score * 100
+    grade = compute_v5_grade(total_pct)
+
+    return {
+        'total_pct': total_pct,
+        'grade': grade,
+        'layer_pcts': layer_pcts,
+        'metric_scores': metric_scores,
+        'skipped': skipped,
+        'n_metrics': len(V_ALPHA_METRICS),
+        'n_used': len(V_ALPHA_METRICS) - len(skipped),
+    }
+
+
+def format_v_alpha_report(result: Dict, label: str = '') -> str:
+    """格式化 V_ALPHA 报告 (markdown / plaintext friendly)."""
+    lines = [
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        f"  🎯 V_ALPHA {label} — 纯 alpha 评分 (P2.1)",
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        f"  总分: {result['total_pct']:.1f}% [{result['grade']}级]"
+        f" ({result['n_used']}/{result['n_metrics']} 指标可用)",
+        f"  分层:"
+        f"  信号 {result['layer_pcts']['signal']:.1%}"
+        f" | 超额 {result['layer_pcts']['excess']:.1%}"
+        f" | 鲁棒 {result['layer_pcts']['robustness']:.1%}",
+        f"  --- metric breakdown ---",
+    ]
+    for name, info in V_ALPHA_METRICS.items():
+        score_raw, score_pct, value = result['metric_scores'].get(name, (0, None, None))
+        if value is None:
+            lines.append(f"    {name:25s} [skip] (weight {info['weight']:.0%})")
+        else:
+            lines.append(
+                f"    {name:25s} value={value:>+8.4f}  "
+                f"score={score_raw:.2f}/5  ({info['weight']:.0%}, {info['layer']})"
+            )
+    if result['skipped']:
+        lines.append(f"  跳过指标: {result['skipped']}")
+    lines.append(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    return '\n'.join(lines)

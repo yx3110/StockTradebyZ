@@ -181,6 +181,13 @@ def _inject_wf_summary(result, wf_summary_path, focus_days):
                              n_trading_days=n_reports)
         print(f"  ℹ V5.2注入完成: WFER={wfer}, OOS半衰期={oos_hl}")
 
+        # P2.1: V_ALPHA 评分卡 (纯 alpha, 与 V5.2 双卡并存)
+        if globals().get('_PRINT_V_ALPHA', False):
+            from backtest.north_star_metrics import compute_v_alpha_score, format_v_alpha_report
+            v_alpha = compute_v_alpha_score(s, n_trading_days=n_reports)
+            print()
+            print(format_v_alpha_report(v_alpha, label=result.get('label', '')))
+
 
 def run_backtest(report_dir, label, top_n=20, benchmark='000905.SH', focus_days=10,
                  retention_bonus=0.0, score_floor=0.0, min_holdings=3,
@@ -644,6 +651,8 @@ def main():
     parser.add_argument('--extended-dir', type=str, default=None,
                         help='扩展期报告目录 (用于--extended)')
     parser.add_argument('--label', type=str, default='v3.95', help='标签名')
+    parser.add_argument('--v-alpha', action='store_true',
+                        help='P2.1: 同时输出 V_ALPHA 纯 alpha 评分卡 (alpha-focused, 不混 risk-adjusted)')
     parser.add_argument('--data-split', type=str, default='auto',
                         choices=['auto', 'in_sample', 'wf_oos', 'pre2020', 'forward', 'unknown'],
                         help='评估数据来源标签 (P2.2): in_sample/wf_oos/pre2020/forward/unknown. auto = 从 report-dir 名推断')
@@ -775,6 +784,9 @@ def main():
     cache = EvalCache()
 
     if args.backtest:
+        # P2.1: 设全局开关给 _print_full_scorecards 触发 V_ALPHA
+        globals()['_PRINT_V_ALPHA'] = bool(args.v_alpha)
+
         # P2.2: 数据来源标签 (强制可见, 防止 in-sample inflation 被误读为真实表现)
         if args.data_split == 'auto':
             split_label, split_reason = _infer_data_split(
