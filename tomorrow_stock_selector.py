@@ -5819,19 +5819,36 @@ def main(target_date: str = None, scoring_version: str = "v3", stocks_only: bool
     # - ng1.0.6   (v1): 牛市→ng1.0.1, 熊市→ng1.0.4  (WF-OOS V5.2=78.9%)
     # - ng1.0.62  (v2): 牛市→ng1.0.7, 熊市→ng1.0.4  (2024-2026 V5.2=79%, +1pp)
     # - +overlay 后缀 (P1.1): 复用 ng2.1 的 L1-L5 风控 (regime-aware industry cap / SL / VT / crisis stop)
-    #   ng2.1 实证 overlay 让 MaxDD -23.7%→-18.4% (改善 5.3pp), 超额年化 80%→188% (2.3x)
+    # - +alt  后缀 (P4.1): 牛市子模型 ng1.0.1 → ng1.7.0 (含 4 个 alt-data 因子, 龙虎榜+融资融券)
+    #   ng1.7.0 raw alpha IC 比 ng1.0.62 强 (memory ng17_resurrect), risk profile 较弱时 +overlay 同时启用补偿
     ng106_mode = False
     ng106_overlay_mode = False
-    if scoring_version in ("ng1.0.6", "ng1.0.62", "ng1.0.6+overlay", "ng1.0.62+overlay"):
+    ng106_alt_mode = False
+    if scoring_version.startswith("ng1.0.6") or scoring_version.startswith("ng1.0.62"):
         ng106_mode = True
-        if scoring_version.endswith("+overlay"):
-            ng106_overlay_mode = True
-            base_version = scoring_version.replace("+overlay", "")
-        else:
-            base_version = scoring_version
-        bull_model = "ng1.0.7" if base_version == "ng1.0.62" else "ng1.0.1"
-        bear_model = "ng1.0.4"
         version_tag = scoring_version
+        # 解析后缀
+        suffixes = []
+        base_version = scoring_version
+        for suf in ("+overlay", "+alt"):
+            if suf in base_version:
+                suffixes.append(suf)
+                base_version = base_version.replace(suf, "")
+        ng106_overlay_mode = "+overlay" in suffixes
+        ng106_alt_mode = "+alt" in suffixes
+
+        if base_version not in ("ng1.0.6", "ng1.0.62"):
+            # 不识别的子版本 → 回退到默认
+            base_version = "ng1.0.6"
+
+        # bull 子模型选择
+        if ng106_alt_mode:
+            bull_model = "ng1.7.0"   # P4.1: alt-data 增强子模型
+        elif base_version == "ng1.0.62":
+            bull_model = "ng1.0.7"
+        else:
+            bull_model = "ng1.0.1"
+        bear_model = "ng1.0.4"
         try:
             import sqlite3 as _sql
             _db = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data_adapter', 'stock_data.db')
@@ -6363,7 +6380,7 @@ if __name__ == "__main__":
                        choices=['v2', 'v3', 'v3.1', 'v3.2', 'v3.3', 'v3.4', 'v3.41',
                                 'v3.5', 'v3.51', 'v3.52', 'v3.53', 'v3.6', 'v3.7',
                                 'v3.8', 'v3.81', 'v3.9', 'v3.94', 'v3.95', 'v3.96',
-                                'v4', 'v4.0', 'v4.2', 'v4.3', 'v4.4', 'v4.4.2', 'v4.5', 'v4.6', 'v4.7.1', 'v4.7.2', 'v4.7.3', 'v4.7.5', 'v4.7.6', 'v4.7.7', 'v4.7.8', 'v4.7.9', 'v4.8', 'v4.8.0', 'v4.8.1', 'v4.8.2', 'v4.8.4', 'v4.8.5', 'v4.8.6', 'v4.8.7', 'v4.8.8', 'v4.9.0', 'v4.9.0.1', 'v4.9.0.2', 'v4.9.1', 'v5.0', 'ng1.0.0', 'ng1.0.1', 'ng1.0.2', 'ng1.0.3', 'ng1.0.4', 'ng1.0.6', 'ng1.0.62', 'ng1.0.6+overlay', 'ng1.0.62+overlay', 'ng1.0.7', 'ng1.1.0', 'ng1.7.0', 'ng2.0a', 'ng2.1'],
+                                'v4', 'v4.0', 'v4.2', 'v4.3', 'v4.4', 'v4.4.2', 'v4.5', 'v4.6', 'v4.7.1', 'v4.7.2', 'v4.7.3', 'v4.7.5', 'v4.7.6', 'v4.7.7', 'v4.7.8', 'v4.7.9', 'v4.8', 'v4.8.0', 'v4.8.1', 'v4.8.2', 'v4.8.4', 'v4.8.5', 'v4.8.6', 'v4.8.7', 'v4.8.8', 'v4.9.0', 'v4.9.0.1', 'v4.9.0.2', 'v4.9.1', 'v5.0', 'ng1.0.0', 'ng1.0.1', 'ng1.0.2', 'ng1.0.3', 'ng1.0.4', 'ng1.0.6', 'ng1.0.62', 'ng1.0.6+overlay', 'ng1.0.62+overlay', 'ng1.0.6+alt', 'ng1.0.6+alt+overlay', 'ng1.0.7', 'ng1.1.0', 'ng1.7.0', 'ng2.0a', 'ng2.1'],
                        default=PRODUCTION_VERSION,
                        help=f'评分版本 (默认{PRODUCTION_VERSION}, 生产推荐, 66特征bugfix重训, V5.2=72.1%% A+, 年化165.7%%, Sharpe=2.753, MaxDD=-11.7%%)。'
                             '活跃版本: v3.9(生产A级), v3.96(Robust Z-Score,ICIR>0.2), '
