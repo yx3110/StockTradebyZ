@@ -79,6 +79,23 @@ def test_yellow_penalty_disabled_when_factor_one(trust_db):
     assert summary["trust_penalized"] == []
 
 
+def test_yellow_penalty_OFF_by_default(trust_db):
+    """默认 OFF: 不传 enable_trust_yellow_penalty 时, 🟡 不应被扣分 (修复 silent prod 行为变更)."""
+    from stock_selctor.post_filters import apply_post_filters
+
+    stocks = [_stock("000001", 0.10), _stock("000002", 0.09)]   # 🟢 + 🟡
+    summary = apply_post_filters(
+        stocks, trust_db,
+        enable_trust_filter=False,
+        industry_cap=0,
+        # NOT passing enable_trust_yellow_penalty
+    )
+    # 默认 False, 🟡 stocks 应保持原 score
+    s2 = next(s for s in summary["stocks"] if s["stock_code"] == "000002")
+    assert abs(s2["rank_score"] - 0.09) < 1e-6, "默认 OFF 时 🟡 不应被扣分"
+    assert summary["trust_penalized"] == []
+
+
 def test_full_pipeline_red_drop_yellow_penalize_industry_cap(trust_db):
     """完整路径: 🔴 剔除 + 🟡 扣分 + industry cap."""
     from stock_selctor.post_filters import apply_post_filters

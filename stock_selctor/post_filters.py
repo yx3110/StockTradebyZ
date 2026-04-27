@@ -186,7 +186,7 @@ def apply_post_filters(
     db_path: str,
     enable_trust_filter: bool = True,
     industry_cap: int = 3,
-    enable_trust_yellow_penalty: bool = True,
+    enable_trust_yellow_penalty: bool = False,
     yellow_penalty_factor: float = DEFAULT_TRUST_YELLOW_PENALTY,
 ) -> dict:
     """Run filters and return a summary dict for logging.
@@ -195,7 +195,8 @@ def apply_post_filters(
     pre-sorted descending by rank_score so industry cap preserves the highest-ranked
     stocks per industry.
 
-    P1.3 添加: 🟡存疑 软扣分 (rank_score *= 0.7 默认), 在 industry_cap 之前重排.
+    P1.3: 🟡存疑 软扣分 (rank_score *= 0.7 默认), 在 industry_cap 之前重排.
+    **默认 OFF** (避免静默改变生产行为); 调用方需显式 enable_trust_yellow_penalty=True.
     """
     summary = {
         "input_count": len(stocks),

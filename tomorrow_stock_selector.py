@@ -178,6 +178,8 @@ class TomorrowStockSelector:
 
         # Post-scoring hard filters (Signal Trust 🔴 exclusion + industry cap)
         self.enable_trust_filter = kwargs.get('enable_trust_filter', True)
+        # P1.3: 🟡 存疑软扣分 (默认 OFF, 显式开启避免静默改变生产行为)
+        self.enable_trust_yellow_penalty = kwargs.get('enable_trust_yellow_penalty', False)
         self.industry_cap = kwargs.get('industry_cap', 3)
 
         # Deprecation warning for old versions
@@ -3839,8 +3841,12 @@ class TomorrowStockSelector:
                     db_path,
                     enable_trust_filter=self.enable_trust_filter,
                     industry_cap=self.industry_cap,
+                    enable_trust_yellow_penalty=getattr(self, 'enable_trust_yellow_penalty', False),
                 )
-                if summary['trust_dropped'] or summary['industry_dropped']:
+                # P1.3 fix: 包含 trust_penalized — 仅 🟡 软扣分时也要 commit 重排后的列表
+                if (summary['trust_dropped']
+                        or summary['industry_dropped']
+                        or summary.get('trust_penalized')):
                     stock_with_scores = summary['stocks']
                     logger.info(format_drop_log(summary))
             except Exception as e:
@@ -5802,7 +5808,7 @@ class TomorrowStockSelector:
 # is_trading_day 已提取到 core.trading_calendar 模块
 from core.trading_calendar import is_trading_day
 
-def main(target_date: str = None, scoring_version: str = "v3", stocks_only: bool = False, skip_strategies: bool = False, full_market: bool = False, optimizer_version: str = 'v1', optimizer_params_path: str = None, enable_trust_filter: bool = True, industry_cap: int = 3):
+def main(target_date: str = None, scoring_version: str = "v3", stocks_only: bool = False, skip_strategies: bool = False, full_market: bool = False, optimizer_version: str = 'v1', optimizer_params_path: str = None, enable_trust_filter: bool = True, industry_cap: int = 3, enable_trust_yellow_penalty: bool = False):
     """主函数
 
     Args:
@@ -5854,7 +5860,8 @@ def main(target_date: str = None, scoring_version: str = "v3", stocks_only: bool
     # 创建选股器，传入评分版本和股票筛选选项
     selector = TomorrowStockSelector(scoring_version=scoring_version, stocks_only=stocks_only, skip_strategies=skip_strategies,
                                      optimizer_version=optimizer_version, optimizer_params_path=optimizer_params_path,
-                                     enable_trust_filter=enable_trust_filter, industry_cap=industry_cap)
+                                     enable_trust_filter=enable_trust_filter, industry_cap=industry_cap,
+                                     enable_trust_yellow_penalty=enable_trust_yellow_penalty)
     if ng106_mode:
         selector._ng106_mode = True
         selector._ng106_tag = version_tag  # 'ng1.0.6' / 'ng1.0.62' [+overlay]
@@ -6250,7 +6257,7 @@ if __name__ == "__main__":
                        choices=['v2', 'v3', 'v3.1', 'v3.2', 'v3.3', 'v3.4', 'v3.41',
                                 'v3.5', 'v3.51', 'v3.52', 'v3.53', 'v3.6', 'v3.7',
                                 'v3.8', 'v3.81', 'v3.9', 'v3.94', 'v3.95', 'v3.96',
-                                'v4', 'v4.0', 'v4.2', 'v4.3', 'v4.4', 'v4.4.2', 'v4.5', 'v4.6', 'v4.7.1', 'v4.7.2', 'v4.7.3', 'v4.7.5', 'v4.7.6', 'v4.7.7', 'v4.7.8', 'v4.7.9', 'v4.8', 'v4.8.0', 'v4.8.1', 'v4.8.2', 'v4.8.4', 'v4.8.5', 'v4.8.6', 'v4.8.7', 'v4.8.8', 'v4.9.0', 'v4.9.0.1', 'v4.9.0.2', 'v4.9.1', 'v5.0', 'ng1.0.0', 'ng1.0.1', 'ng1.0.2', 'ng1.0.3', 'ng1.0.4', 'ng1.0.6', 'ng1.0.62', 'ng1.0.6+overlay', 'ng1.0.62+overlay', 'ng1.0.6+alt', 'ng1.0.6+alt+overlay', 'ng1.0.7', 'ng1.1.0', 'ng1.7.0', 'ng2.0a', 'ng2.1'],
+                                'v4', 'v4.0', 'v4.2', 'v4.3', 'v4.4', 'v4.4.2', 'v4.5', 'v4.6', 'v4.7.1', 'v4.7.2', 'v4.7.3', 'v4.7.5', 'v4.7.6', 'v4.7.7', 'v4.7.8', 'v4.7.9', 'v4.8', 'v4.8.0', 'v4.8.1', 'v4.8.2', 'v4.8.4', 'v4.8.5', 'v4.8.6', 'v4.8.7', 'v4.8.8', 'v4.9.0', 'v4.9.0.1', 'v4.9.0.2', 'v4.9.1', 'v5.0', 'ng1.0.0', 'ng1.0.1', 'ng1.0.2', 'ng1.0.3', 'ng1.0.4', 'ng1.0.6', 'ng1.0.62', 'ng1.0.6+overlay', 'ng1.0.62+overlay', 'ng1.0.6+alt', 'ng1.0.6+alt+overlay', 'ng1.0.62+alt', 'ng1.0.62+alt+overlay', 'ng1.0.7', 'ng1.1.0', 'ng1.7.0', 'ng2.0a', 'ng2.1'],
                        default=PRODUCTION_VERSION,
                        help=f'评分版本 (默认{PRODUCTION_VERSION}, 生产推荐, 66特征bugfix重训, V5.2=72.1%% A+, 年化165.7%%, Sharpe=2.753, MaxDD=-11.7%%)。'
                             '活跃版本: v3.9(生产A级), v3.96(Robust Z-Score,ICIR>0.2), '
@@ -6275,6 +6282,8 @@ if __name__ == "__main__":
                        help='v2优化器参数文件路径 (默认optimizer_params.json)')
     parser.add_argument('--no-trust-filter', action='store_true',
                        help='禁用 Signal Trust 🔴 高风险股硬剔除 (默认启用)')
+    parser.add_argument('--trust-yellow-penalty', action='store_true',
+                       help='P1.3: 启用 Signal Trust 🟡 存疑软扣分 (rank_score×0.7), 默认关闭')
     parser.add_argument('--industry-cap', type=int, default=3,
                        help='单一行业在最终列表的最大股数, 0=关闭 (默认3)')
 
@@ -6286,4 +6295,5 @@ if __name__ == "__main__":
          full_market=full_market, optimizer_version=getattr(args, 'optimizer', 'v1'),
          optimizer_params_path=getattr(args, 'optimizer_params', None),
          enable_trust_filter=not args.no_trust_filter,
+         enable_trust_yellow_penalty=args.trust_yellow_penalty,
          industry_cap=args.industry_cap)
