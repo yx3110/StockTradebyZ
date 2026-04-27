@@ -258,10 +258,10 @@
 |---|---|---|---|---|
 | P0.2 | Annualization bug | ✅ 完成 | 79e23650 | calendar-time 校正 + cash_ratio + Sharpe>4 warning, 5 单测 PASS |
 | P0.1 | Forward test 框架 | ✅ 完成 | 3cbbddc9 | scan/report/gate 三命令, ng1.0.6 实测 inflation 3.4× 验证框架 |
-| P1.1 | L1-L5 overlay 入生产 | ⚠️ 部分完成 | 待提交 | CLI 路由 ✅; 评估反结果 (in-sample 反退步), 不默认切生产, 仅灰度选项. 见 [评估](../../wiki/evaluation/p11_overlay_evaluation_2026_04_27.md) |
-| P2.2 | In-sample/OOS 标签 | ⏳ 待办 | — | — |
-| P1.3 | Signal Trust 过滤 | ⏳ 待办 | — | — |
-| P2.1 | V_ALPHA 评分卡 | ⏳ 待办 | — | — |
-| P3.2 | reports/ 清理 | ⏳ 待办 | — | — |
-| P4.1 | Alt-data 重训 ng1.0.1' | ⏳ 待办 | — | — |
-| P3.1 | selector 拆分 | ⏳ 待办 | — | — |
+| P1.1 | L1-L5 overlay 入生产 | ⚠️ 部分完成 | f1493f77 | CLI 路由 ✅; 评估反结果 (in-sample 反退步), 不默认切生产, 仅灰度选项. 见 [评估](../../wiki/evaluation/p11_overlay_evaluation_2026_04_27.md) |
+| P2.2 | In-sample/OOS 标签 | ✅ 完成 | 8754ee50 | --data-split flag + auto-infer + banner, in_sample 自动提示叠 P0.1 |
+| P1.3 | Signal Trust 过滤 | ✅ 完成 | 7d1a9878+37ae6a26 | 🟡 软扣分 (×0.7) opt-in (--trust-yellow-penalty), 4 单测 PASS |
+| P2.1 | V_ALPHA 评分卡 | ✅ 完成 | c509ded6 | 8 metric 加权 (L1+L5+L4), 双卡设计, 5 单测 PASS |
+| P3.2 | reports/ 清理 | ✅ 完成 | d21a9417 | 30 REJECTED 目录归档 (296 → 267); cleanup_reports.py + archive README |
+| P4.1 | Alt-data 接入 | ✅ 路由完成 | bb518278 | 复用 ng1.7.0 alt-data 基础设施, 新增 +alt 后缀, 验证待 P0.1 forward |
+| P3.1 | selector 拆分 | ⚠️ 部分完成 | 472802b0 | 抽 scoring_router 模块 (-130 行); 完整 4-5 模块拆分 (quant_filter/post_score/report_writer) 留后续 |
