@@ -64,6 +64,11 @@ SCORER_REGISTRY = {
                 'scoring_engine_v44', 'v44_batch_cache', {'version': 'ng1.1.0'}, False),
     'ng1.7.0': ('ml_models.ng.ng_production_scorer', 'NGProductionScorer',
                 'scoring_engine_v44', 'v44_batch_cache', {'version': 'ng1.7.0'}, False),
+    # ng2.1 specialists (regime-filtered training; reuse ng101 cache + scorer)
+    'ng2.1-bull': ('ml_models.ng.ng_production_scorer', 'NGProductionScorer',
+                   'scoring_engine_v44', 'v44_batch_cache', {'version': 'ng2.1-bull'}, False),
+    'ng2.1-bear': ('ml_models.ng.ng_production_scorer', 'NGProductionScorer',
+                   'scoring_engine_v44', 'v44_batch_cache', {'version': 'ng2.1-bear'}, False),
     # ng1.3.x: dual-head scorer (3 seeds × 2 heads = 6 pkl) + β composite
     'ng1.3.0': ('ml_models.ng.ng_production_scorer', 'NG130DualHeadScorer',
                 'scoring_engine_v44', 'v44_batch_cache', {}, False),
@@ -3841,6 +3846,42 @@ class TomorrowStockSelector:
             except Exception as e:
                 logger.warning(f"post-filter 失败, 保留原列表: {e}")
 
+        # ng2.1: L1-L5 risk overlay (regime-aware industry cap / SL / VT / crisis stop)
+        # Triggered only when scoring_version=='ng2.1' (selector._ng21_mode set upstream).
+        # Overlay attaches per-stock metadata (_ng21_pos_cap / _ng21_stop_loss_pct etc.)
+        # AND overrides industry_cap by regime (bull=3 / bear=2) + crisis hard-stop.
+        if getattr(self, '_ng21_mode', False) and stock_with_scores:
+            try:
+                from stock_selctor.ng21_risk_overlay import build_risk_decision, apply_overlay_to_picks
+                _td = target_date if target_date else (
+                    pd.Timestamp.now().strftime('%Y-%m-%d')
+                )
+                _decision = build_risk_decision(
+                    regime=getattr(self, '_ng21_regime', 'bull'),
+                    target_date=_td,
+                    db_path=os.path.join(
+                        os.path.dirname(os.path.abspath(__file__)),
+                        'data_adapter', 'stock_data.db',
+                    ),
+                    base_top_n=10,
+                    regime_table=getattr(self, '_ng21_regime_table', 'market_regime_signals'),
+                )
+                logger.info(f"[ng2.1 risk overlay] {_decision.regime} regime decision:")
+                for n in _decision.notes:
+                    logger.info(f"  {n}")
+                kept, dropped_by_overlay = apply_overlay_to_picks(stock_with_scores, _decision)
+                if dropped_by_overlay:
+                    logger.info(
+                        f"[ng2.1] L1+L2 dropped {len(dropped_by_overlay)} picks "
+                        f"(reasons in _drop_reason)"
+                    )
+                # Replace stock_with_scores with overlaid kept list (top_n already capped)
+                self._ng21_decision = _decision  # for report stamping
+                self._ng21_dropped_by_overlay = dropped_by_overlay
+                stock_with_scores = kept
+            except Exception as e:
+                logger.warning(f"ng2.1 risk overlay 失败, 保留原列表: {e}")
+
         # Multi-horizon execution alignment tag (annotates only, no filtering)
         # 🟢 ALIGN: all 4 horizons positive → T+1 buy ok
         # 🟡 MIXED: 10d/15d positive but 3d/5d has negative → short-term pullback likely
@@ -5777,10 +5818,18 @@ def main(target_date: str = None, scoring_version: str = "v3", stocks_only: bool
     # ng1.0.6 / ng1.0.62: 0AMV牛熊切换模型 (MOE)
     # - ng1.0.6   (v1): 牛市→ng1.0.1, 熊市→ng1.0.4  (WF-OOS V5.2=78.9%)
     # - ng1.0.62  (v2): 牛市→ng1.0.7, 熊市→ng1.0.4  (2024-2026 V5.2=79%, +1pp)
+    # - +overlay 后缀 (P1.1): 复用 ng2.1 的 L1-L5 风控 (regime-aware industry cap / SL / VT / crisis stop)
+    #   ng2.1 实证 overlay 让 MaxDD -23.7%→-18.4% (改善 5.3pp), 超额年化 80%→188% (2.3x)
     ng106_mode = False
-    if scoring_version in ("ng1.0.6", "ng1.0.62"):
+    ng106_overlay_mode = False
+    if scoring_version in ("ng1.0.6", "ng1.0.62", "ng1.0.6+overlay", "ng1.0.62+overlay"):
         ng106_mode = True
-        bull_model = "ng1.0.7" if scoring_version == "ng1.0.62" else "ng1.0.1"
+        if scoring_version.endswith("+overlay"):
+            ng106_overlay_mode = True
+            base_version = scoring_version.replace("+overlay", "")
+        else:
+            base_version = scoring_version
+        bull_model = "ng1.0.7" if base_version == "ng1.0.62" else "ng1.0.1"
         bear_model = "ng1.0.4"
         version_tag = scoring_version
         try:
@@ -5804,12 +5853,17 @@ def main(target_date: str = None, scoring_version: str = "v3", stocks_only: bool
             _conn.close()
             if _regime and _regime[0] == 1:
                 scoring_version = bull_model
-                print(f"🐂 {version_tag}: 0AMV判定 {_regime_label}【牛市】→ 使用 {bull_model}")
+                ng106_overlay_regime = "bull"
+                _overlay_tag = " + L1-L5 牛市风控" if ng106_overlay_mode else ""
+                print(f"🐂 {version_tag}: 0AMV判定 {_regime_label}【牛市】→ 使用 {bull_model}{_overlay_tag}")
             else:
                 scoring_version = bear_model
-                print(f"🐻 {version_tag}: 0AMV判定 {_regime_label}【熊市】→ 使用 {bear_model}")
+                ng106_overlay_regime = "bear"
+                _overlay_tag = " + L1-L5 熊市风控" if ng106_overlay_mode else ""
+                print(f"🐻 {version_tag}: 0AMV判定 {_regime_label}【熊市】→ 使用 {bear_model}{_overlay_tag}")
         except Exception as e:
             scoring_version = bull_model
+            ng106_overlay_regime = "bull"
             print(f"⚠️ {version_tag}: 读取AMV regime失败({e})，默认使用 {bull_model}")
     # ng2.0a: multi-beta vote regime (V11+B1+B2 hard vote, 3d streak) → 牛 ng1.0.1 / 熊 ng1.0.4
     # WF-OOS V5.2=79.3% A+, MaxDD=-17.6% (vs 生产 ng106v2 -23.7%, 改善 6pp)
@@ -5850,6 +5904,49 @@ def main(target_date: str = None, scoring_version: str = "v3", stocks_only: bool
         except Exception as e:
             scoring_version = bull_model
             print(f"⚠️ {version_tag}: 读取v2 regime失败({e})，默认使用 {bull_model}")
+    # ng2.1: same V11 router as ng2.0a, but routes to ng2.1-bull/ng2.1-bear specialists
+    # AND applies L1-L5 risk overlay at output time (see stock_selctor/ng21_risk_overlay.py).
+    # NOTE: Models ng2.1-bull/ng2.1-bear must be trained first (Stage 2/3 of ng2.1 plan).
+    ng21_mode = False
+    if scoring_version == "ng2.1":
+        ng21_mode = True
+        bull_model = "ng2.1-bull"
+        bear_model = "ng2.1-bear"
+        regime_table = "market_regime_signals"  # baseline V11 calibration (same as ng2.0a)
+        version_tag = "ng2.1"
+        try:
+            import sqlite3 as _sql
+            _db = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data_adapter', 'stock_data.db')
+            _conn = _sql.connect(_db, timeout=30)
+            _conn.execute('PRAGMA busy_timeout=30000')
+            if target_date:
+                _regime = _conn.execute(
+                    f'SELECT regime_v2 FROM {regime_table} '
+                    f'WHERE regime_v2 IS NOT NULL AND trade_date <= ? '
+                    f'ORDER BY trade_date DESC LIMIT 1',
+                    (target_date,),
+                ).fetchone()
+                _regime_label = f"{target_date}"
+            else:
+                _regime = _conn.execute(
+                    f'SELECT regime_v2 FROM {regime_table} '
+                    f'WHERE regime_v2 IS NOT NULL ORDER BY trade_date DESC LIMIT 1'
+                ).fetchone()
+                _regime_label = "最新"
+            _conn.close()
+            if _regime and _regime[0] == 1:
+                scoring_version = bull_model
+                ng21_regime = "bull"
+                print(f"🐂 {version_tag}: V11 regime判定 {_regime_label}【牛市】→ {bull_model} + L1-L5 牛市风控")
+            else:
+                scoring_version = bear_model
+                ng21_regime = "bear"
+                print(f"🐻 {version_tag}: V11 regime判定 {_regime_label}【熊市】→ {bear_model} + L1-L5 熊市风控")
+        except Exception as e:
+            scoring_version = bull_model
+            ng21_regime = "bull"
+            print(f"⚠️ {version_tag}: 读取 V11 regime 失败({e})，默认使用 {bull_model}")
+
     # v3.6、v3.7、v3.8、v3.9、v3.94、v3.95版本应该只评价股票，因为ETF等因子无法与股票直接对比
     if scoring_version in ["v3.6", "v3.7", "v3.8", "v3.81", "v3.9", "v3.94", "v3.95", "v3.96", "v4.0", "v4.2", "v4.3", "v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.7.9", "v4.8.0", "v4.8.1", "v4.8.2", "v4.8.4", "v4.9.0.2", "v5.0"] and not stocks_only:
         stocks_only = True
@@ -5873,12 +5970,25 @@ def main(target_date: str = None, scoring_version: str = "v3", stocks_only: bool
                                      enable_trust_filter=enable_trust_filter, industry_cap=industry_cap)
     if ng106_mode:
         selector._ng106_mode = True
-        selector._ng106_tag = version_tag  # 'ng1.0.6' or 'ng1.0.62'
+        selector._ng106_tag = version_tag  # 'ng1.0.6' / 'ng1.0.62' [+overlay]
+        if ng106_overlay_mode:
+            # P1.1: 复用 ng2.1 overlay 路径 (apply_overlay_to_picks 检查 _ng21_mode)
+            selector._ng21_mode = True
+            selector._ng21_regime = ng106_overlay_regime  # 'bull' | 'bear'
+            selector._ng21_regime_table = "market_regime_signals"
+            selector._ng21_bull_model = bull_model
+            selector._ng21_bear_model = bear_model
     if ng200a_mode:
         selector._ng200a_mode = True
         selector._ng200a_bull_model = bull_model
         selector._ng200a_bear_model = bear_model
         selector._ng200a_regime_table = regime_table
+    if ng21_mode:
+        selector._ng21_mode = True
+        selector._ng21_regime = ng21_regime  # 'bull' | 'bear'
+        selector._ng21_regime_table = regime_table
+        selector._ng21_bull_model = bull_model
+        selector._ng21_bear_model = bear_model
     
     # 获取分析日期
     if target_date:
@@ -6253,7 +6363,7 @@ if __name__ == "__main__":
                        choices=['v2', 'v3', 'v3.1', 'v3.2', 'v3.3', 'v3.4', 'v3.41',
                                 'v3.5', 'v3.51', 'v3.52', 'v3.53', 'v3.6', 'v3.7',
                                 'v3.8', 'v3.81', 'v3.9', 'v3.94', 'v3.95', 'v3.96',
-                                'v4', 'v4.0', 'v4.2', 'v4.3', 'v4.4', 'v4.4.2', 'v4.5', 'v4.6', 'v4.7.1', 'v4.7.2', 'v4.7.3', 'v4.7.5', 'v4.7.6', 'v4.7.7', 'v4.7.8', 'v4.7.9', 'v4.8', 'v4.8.0', 'v4.8.1', 'v4.8.2', 'v4.8.4', 'v4.8.5', 'v4.8.6', 'v4.8.7', 'v4.8.8', 'v4.9.0', 'v4.9.0.1', 'v4.9.0.2', 'v4.9.1', 'v5.0', 'ng1.0.0', 'ng1.0.1', 'ng1.0.2', 'ng1.0.3', 'ng1.0.4', 'ng1.0.6', 'ng1.0.62', 'ng1.0.7', 'ng1.1.0', 'ng1.7.0', 'ng2.0a'],
+                                'v4', 'v4.0', 'v4.2', 'v4.3', 'v4.4', 'v4.4.2', 'v4.5', 'v4.6', 'v4.7.1', 'v4.7.2', 'v4.7.3', 'v4.7.5', 'v4.7.6', 'v4.7.7', 'v4.7.8', 'v4.7.9', 'v4.8', 'v4.8.0', 'v4.8.1', 'v4.8.2', 'v4.8.4', 'v4.8.5', 'v4.8.6', 'v4.8.7', 'v4.8.8', 'v4.9.0', 'v4.9.0.1', 'v4.9.0.2', 'v4.9.1', 'v5.0', 'ng1.0.0', 'ng1.0.1', 'ng1.0.2', 'ng1.0.3', 'ng1.0.4', 'ng1.0.6', 'ng1.0.62', 'ng1.0.6+overlay', 'ng1.0.62+overlay', 'ng1.0.7', 'ng1.1.0', 'ng1.7.0', 'ng2.0a', 'ng2.1'],
                        default=PRODUCTION_VERSION,
                        help=f'评分版本 (默认{PRODUCTION_VERSION}, 生产推荐, 66特征bugfix重训, V5.2=72.1%% A+, 年化165.7%%, Sharpe=2.753, MaxDD=-11.7%%)。'
                             '活跃版本: v3.9(生产A级), v3.96(Robust Z-Score,ICIR>0.2), '

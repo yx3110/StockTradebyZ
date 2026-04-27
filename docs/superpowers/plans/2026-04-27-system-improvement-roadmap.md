@@ -257,8 +257,8 @@
 | # | 项目 | 状态 | Commit | 备注 |
 |---|---|---|---|---|
 | P0.2 | Annualization bug | ✅ 完成 | 79e23650 | calendar-time 校正 + cash_ratio + Sharpe>4 warning, 5 单测 PASS |
-| P0.1 | Forward test 框架 | ⏳ 待办 | — | — |
-| P1.1 | L1-L5 overlay 入生产 | ⏳ 待办 | — | — |
+| P0.1 | Forward test 框架 | ✅ 完成 | 3cbbddc9 | scan/report/gate 三命令, ng1.0.6 实测 inflation 3.4× 验证框架 |
+| P1.1 | L1-L5 overlay 入生产 | ⚠️ 部分完成 | 待提交 | CLI 路由 ✅; 评估反结果 (in-sample 反退步), 不默认切生产, 仅灰度选项. 见 [评估](../../wiki/evaluation/p11_overlay_evaluation_2026_04_27.md) |
 | P2.2 | In-sample/OOS 标签 | ⏳ 待办 | — | — |
 | P1.3 | Signal Trust 过滤 | ⏳ 待办 | — | — |
 | P2.1 | V_ALPHA 评分卡 | ⏳ 待办 | — | — |
