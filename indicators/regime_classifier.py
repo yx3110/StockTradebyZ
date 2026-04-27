@@ -62,6 +62,81 @@ def sig_panic_streak2(var1, streak_thresh: float = -0.035, **_):
 
 
 # ============================================================
+# P2.7: soft-MOE — V11 hard switch → P_bull probability
+# ============================================================
+
+def compute_bull_proba(
+    var1: np.ndarray,
+    ma60: np.ndarray,
+    macd: np.ndarray,
+    streak: np.ndarray | None = None,
+    *,
+    pos_weight: float = 5.0,
+    water_weight: float = 1.0,
+    rising_weight: float = 1.0,
+    streak_weight: float = 1.0,
+    streak_clip: int = 5,
+) -> np.ndarray:
+    """Logistic softening of V11 hard rule into P_bull ∈ (0, 1).
+
+    Combines the same atomic signals as V11 (position vs MA60, MACD water,
+    MACD rising, streak persistence) but exposes a continuous probability
+    so downstream MOE inference can blend bull/bear scores instead of hard
+    switching on regime change days.
+
+    Inputs (same shape, length T):
+      var1, ma60, macd: float arrays of the 0AMV series.
+      streak: optional int array (positive=bull streak, negative=bear). If
+              None, treated as 0 (neutral).
+
+    Score:
+      z = pos_w * (var1 - ma60) / max(|ma60|, eps)
+        + water_w * 1[macd > 0]
+        + rising_w * 1[macd > prev macd]
+        + streak_w * clip(streak, ±N) / N
+      P_bull = sigmoid(z)
+    """
+    var1 = np.asarray(var1, dtype=float)
+    ma60 = np.asarray(ma60, dtype=float)
+    macd = np.asarray(macd, dtype=float)
+    n = len(var1)
+    if not (len(ma60) == len(macd) == n):
+        raise ValueError("var1, ma60, macd must have equal length")
+
+    pos = (var1 - ma60) / np.maximum(np.abs(ma60), 1e-9)
+    water = (macd > 0).astype(float)
+    rising = np.zeros(n, dtype=float)
+    rising[1:] = (macd[1:] > macd[:-1]).astype(float)
+
+    if streak is None:
+        streak_norm = np.zeros(n, dtype=float)
+    else:
+        s = np.asarray(streak, dtype=float)
+        if len(s) != n:
+            raise ValueError("streak must align with var1")
+        streak_norm = np.clip(s, -streak_clip, streak_clip) / streak_clip
+
+    z = (pos_weight * pos
+         + water_weight * water
+         + rising_weight * rising
+         + streak_weight * streak_norm)
+    # Clip to avoid overflow at extremes; sigmoid saturates well within ±30.
+    z = np.clip(z, -30.0, 30.0)
+    return np.where(z >= 0,
+                    1.0 / (1.0 + np.exp(-z)),
+                    np.exp(z) / (1.0 + np.exp(z)))
+
+
+def blend_scores(p_bull: np.ndarray, bull_score: np.ndarray, bear_score: np.ndarray) -> np.ndarray:
+    """Inference-side soft MOE: composite = P × bull + (1 - P) × bear.
+
+    All inputs aligned by row (one row per stock at the same trade_date).
+    """
+    p = np.clip(np.asarray(p_bull, dtype=float), 0.0, 1.0)
+    return p * np.asarray(bull_score, dtype=float) + (1.0 - p) * np.asarray(bear_score, dtype=float)
+
+
+# ============================================================
 # 平滑器
 # ============================================================
 
