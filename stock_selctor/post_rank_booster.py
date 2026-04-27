@@ -42,12 +42,25 @@ STRATEGY_BONUS_BY_REGIME: Dict[str, Dict[str, float]] = {
 DEAD_STRATEGIES = frozenset({'知行战法', 'TePu战法', '填坑战法', '上穿60放量战法'})
 
 # Signal-trust multiplier (history of "predicted vs realized" credibility).
+# Production tag format from signal_trust_scores is the emoji optionally
+# followed by a Chinese descriptor (e.g. '🟢可信', '🔴高风险'). We match by
+# leading emoji only via _trust_lookup below.
 TRUST_MULT: Dict[str, float] = {
     '🟢': 1.00,   # high credibility
     '🟡': 0.85,   # mild penalty (some doubt)
     '🔴': 0.60,   # heavy penalty (historical false signals)
     '⚪': 1.00,   # no data → neutral
 }
+
+
+def _trust_lookup(tag: Optional[str]) -> float:
+    """Find multiplier by leading emoji, robust to '🟡存疑' / '🟢可信' suffixes."""
+    if not tag:
+        return 1.0
+    for emoji, mult in TRUST_MULT.items():
+        if tag.startswith(emoji):
+            return mult
+    return 1.0
 
 
 def _strategy_bonus(strategies: Iterable[str], regime: str) -> float:
@@ -82,8 +95,7 @@ def apply_post_rank_booster(
     out = []
     for s in picks:
         bonus = _strategy_bonus(s.get(strategy_field) or (), regime)
-        trust = s.get(trust_field) or '⚪'
-        mult = TRUST_MULT.get(trust, 1.0)
+        mult = _trust_lookup(s.get(trust_field))
         base = float(s.get(score_field, 0.0) or 0.0)
         boosted = (base + bonus) * mult
         s2 = dict(s)
