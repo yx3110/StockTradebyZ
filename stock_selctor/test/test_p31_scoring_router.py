@@ -49,7 +49,8 @@ def test_ng106_bull_regime(db_with_regime):
     assert res.bull_model == "ng1.0.1"
     assert res.bear_model == "ng1.0.4"
     assert res.ng106_mode is True
-    assert res.ng106_overlay_mode is False
+    # P0.1 (2026-04-27): overlay default-on for ng1.0.6 base.
+    assert res.ng106_overlay_mode is True
     assert res.ng106_alt_mode is False
     assert res.ng106_overlay_regime == "bull"
 

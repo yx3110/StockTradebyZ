@@ -3881,6 +3881,28 @@ class TomorrowStockSelector:
                         f"[ng2.1] L1+L2 dropped {len(dropped_by_overlay)} picks "
                         f"(reasons in _drop_reason)"
                     )
+                # P0.1 (2026-04-27): L3 vol-target sizing + L5 stop-loss persistence.
+                # Picks now carry `position_size` / `stop_loss_pct` (and `trailing_stop_pct`
+                # in bear regime) so JSON consumers can size positions directly.
+                from stock_selctor.ng21_risk_overlay import (
+                    compute_position_size, estimate_portfolio_vol,
+                )
+                _db = os.path.join(
+                    os.path.dirname(os.path.abspath(__file__)),
+                    'data_adapter', 'stock_data.db',
+                )
+                est_vol = estimate_portfolio_vol(kept, _db, _td)
+                kept = compute_position_size(kept, _decision, est_portfolio_vol=est_vol)
+                _avg_pos = (
+                    sum(s.get('position_size', 0.0) for s in kept) / max(len(kept), 1)
+                )
+                _total_pos = sum(s.get('position_size', 0.0) for s in kept)
+                logger.info(
+                    f"[P0.1 sizing] est_vol={est_vol:.2%}, "
+                    f"VT={_decision.vol_target_annual:.0%}, "
+                    f"avg_pos={_avg_pos:.2%}, total_invested={_total_pos:.2%}, "
+                    f"cash={(1-_total_pos):.2%}"
+                )
                 # Replace stock_with_scores with overlaid kept list (top_n already capped)
                 self._ng21_decision = _decision  # for report stamping
                 self._ng21_dropped_by_overlay = dropped_by_overlay

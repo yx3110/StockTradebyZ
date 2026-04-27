@@ -109,7 +109,13 @@ def route_ng106(scoring_version: str, target_date: Optional[str], db_path: str) 
     for suf in ("+overlay", "+alt"):
         if suf in base_version:
             base_version = base_version.replace(suf, "")
-    res.ng106_overlay_mode = "+overlay" in scoring_version
+    # P0.1 (2026-04-27): default-on overlay for ng1.0.6 / ng1.0.62 base versions.
+    # Old behavior required '+overlay' suffix; we keep the suffix as a no-op to
+    # remain backwards compatible with existing scripts.
+    res.ng106_overlay_mode = (
+        "+overlay" in scoring_version
+        or scoring_version in ("ng1.0.6", "ng1.0.62")
+    )
     res.ng106_alt_mode = "+alt" in scoring_version
     if base_version not in ("ng1.0.6", "ng1.0.62"):
         base_version = "ng1.0.6"
