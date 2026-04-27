@@ -5815,154 +5815,24 @@ def main(target_date: str = None, scoring_version: str = "v3", stocks_only: bool
     # v4.8 alias → v4.8.0
     if scoring_version == "v4.8":
         scoring_version = "v4.8.0"
-    # ng1.0.6 / ng1.0.62: 0AMV牛熊切换模型 (MOE)
-    # - ng1.0.6   (v1): 牛市→ng1.0.1, 熊市→ng1.0.4  (WF-OOS V5.2=78.9%)
-    # - ng1.0.62  (v2): 牛市→ng1.0.7, 熊市→ng1.0.4  (2024-2026 V5.2=79%, +1pp)
-    # - +overlay 后缀 (P1.1): 复用 ng2.1 的 L1-L5 风控 (regime-aware industry cap / SL / VT / crisis stop)
-    # - +alt  后缀 (P4.1): 牛市子模型 ng1.0.1 → ng1.7.0 (含 4 个 alt-data 因子, 龙虎榜+融资融券)
-    #   ng1.7.0 raw alpha IC 比 ng1.0.62 强 (memory ng17_resurrect), risk profile 较弱时 +overlay 同时启用补偿
-    ng106_mode = False
-    ng106_overlay_mode = False
-    ng106_alt_mode = False
-    if scoring_version.startswith("ng1.0.6") or scoring_version.startswith("ng1.0.62"):
-        ng106_mode = True
-        version_tag = scoring_version
-        # 解析后缀
-        suffixes = []
-        base_version = scoring_version
-        for suf in ("+overlay", "+alt"):
-            if suf in base_version:
-                suffixes.append(suf)
-                base_version = base_version.replace(suf, "")
-        ng106_overlay_mode = "+overlay" in suffixes
-        ng106_alt_mode = "+alt" in suffixes
-
-        if base_version not in ("ng1.0.6", "ng1.0.62"):
-            # 不识别的子版本 → 回退到默认
-            base_version = "ng1.0.6"
-
-        # bull 子模型选择
-        if ng106_alt_mode:
-            bull_model = "ng1.7.0"   # P4.1: alt-data 增强子模型
-        elif base_version == "ng1.0.62":
-            bull_model = "ng1.0.7"
-        else:
-            bull_model = "ng1.0.1"
-        bear_model = "ng1.0.4"
-        try:
-            import sqlite3 as _sql
-            _db = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data_adapter', 'stock_data.db')
-            _conn = _sql.connect(_db, timeout=30)
-            # 按 target_date 读 regime (回填历史报告时必须按当日 regime 路由),
-            # 否则全部退化成"今天的 regime"分支, 使历史 Top-50 失真.
-            if target_date:
-                _regime = _conn.execute(
-                    'SELECT amv_regime FROM market_amv WHERE trade_date <= ? '
-                    'ORDER BY trade_date DESC LIMIT 1',
-                    (target_date,)
-                ).fetchone()
-                _regime_label = f"{target_date}"
-            else:
-                _regime = _conn.execute(
-                    'SELECT amv_regime FROM market_amv ORDER BY trade_date DESC LIMIT 1'
-                ).fetchone()
-                _regime_label = "最新"
-            _conn.close()
-            if _regime and _regime[0] == 1:
-                scoring_version = bull_model
-                ng106_overlay_regime = "bull"
-                _overlay_tag = " + L1-L5 牛市风控" if ng106_overlay_mode else ""
-                print(f"🐂 {version_tag}: 0AMV判定 {_regime_label}【牛市】→ 使用 {bull_model}{_overlay_tag}")
-            else:
-                scoring_version = bear_model
-                ng106_overlay_regime = "bear"
-                _overlay_tag = " + L1-L5 熊市风控" if ng106_overlay_mode else ""
-                print(f"🐻 {version_tag}: 0AMV判定 {_regime_label}【熊市】→ 使用 {bear_model}{_overlay_tag}")
-        except Exception as e:
-            scoring_version = bull_model
-            ng106_overlay_regime = "bull"
-            print(f"⚠️ {version_tag}: 读取AMV regime失败({e})，默认使用 {bull_model}")
-    # ng2.0a: multi-beta vote regime (V11+B1+B2 hard vote, 3d streak) → 牛 ng1.0.1 / 熊 ng1.0.4
-    # WF-OOS V5.2=79.3% A+, MaxDD=-17.6% (vs 生产 ng106v2 -23.7%, 改善 6pp)
-    # Phase C calibration: baseline (variant `unanimous` 备选, 见 docs/superpowers/plans/2026-04-26-ng2_0a-followup-CAB.md)
-    ng200a_mode = False
-    if scoring_version == "ng2.0a":
-        ng200a_mode = True
-        bull_model = "ng1.0.1"
-        bear_model = "ng1.0.4"
-        regime_table = "market_regime_signals"  # baseline variant per Phase C decision
-        version_tag = "ng2.0a"
-        try:
-            import sqlite3 as _sql
-            _db = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data_adapter', 'stock_data.db')
-            _conn = _sql.connect(_db, timeout=30)
-            _conn.execute('PRAGMA busy_timeout=30000')
-            if target_date:
-                _regime = _conn.execute(
-                    f'SELECT regime_v2 FROM {regime_table} '
-                    f'WHERE regime_v2 IS NOT NULL AND trade_date <= ? '
-                    f'ORDER BY trade_date DESC LIMIT 1',
-                    (target_date,),
-                ).fetchone()
-                _regime_label = f"{target_date}"
-            else:
-                _regime = _conn.execute(
-                    f'SELECT regime_v2 FROM {regime_table} '
-                    f'WHERE regime_v2 IS NOT NULL ORDER BY trade_date DESC LIMIT 1'
-                ).fetchone()
-                _regime_label = "最新"
-            _conn.close()
-            if _regime and _regime[0] == 1:
-                scoring_version = bull_model
-                print(f"🐂 {version_tag}: v2 regime判定 {_regime_label}【牛市】→ 使用 {bull_model}")
-            else:
-                scoring_version = bear_model
-                print(f"🐻 {version_tag}: v2 regime判定 {_regime_label}【熊市】→ 使用 {bear_model}")
-        except Exception as e:
-            scoring_version = bull_model
-            print(f"⚠️ {version_tag}: 读取v2 regime失败({e})，默认使用 {bull_model}")
-    # ng2.1: same V11 router as ng2.0a, but routes to ng2.1-bull/ng2.1-bear specialists
-    # AND applies L1-L5 risk overlay at output time (see stock_selctor/ng21_risk_overlay.py).
-    # NOTE: Models ng2.1-bull/ng2.1-bear must be trained first (Stage 2/3 of ng2.1 plan).
-    ng21_mode = False
-    if scoring_version == "ng2.1":
-        ng21_mode = True
-        bull_model = "ng2.1-bull"
-        bear_model = "ng2.1-bear"
-        regime_table = "market_regime_signals"  # baseline V11 calibration (same as ng2.0a)
-        version_tag = "ng2.1"
-        try:
-            import sqlite3 as _sql
-            _db = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data_adapter', 'stock_data.db')
-            _conn = _sql.connect(_db, timeout=30)
-            _conn.execute('PRAGMA busy_timeout=30000')
-            if target_date:
-                _regime = _conn.execute(
-                    f'SELECT regime_v2 FROM {regime_table} '
-                    f'WHERE regime_v2 IS NOT NULL AND trade_date <= ? '
-                    f'ORDER BY trade_date DESC LIMIT 1',
-                    (target_date,),
-                ).fetchone()
-                _regime_label = f"{target_date}"
-            else:
-                _regime = _conn.execute(
-                    f'SELECT regime_v2 FROM {regime_table} '
-                    f'WHERE regime_v2 IS NOT NULL ORDER BY trade_date DESC LIMIT 1'
-                ).fetchone()
-                _regime_label = "最新"
-            _conn.close()
-            if _regime and _regime[0] == 1:
-                scoring_version = bull_model
-                ng21_regime = "bull"
-                print(f"🐂 {version_tag}: V11 regime判定 {_regime_label}【牛市】→ {bull_model} + L1-L5 牛市风控")
-            else:
-                scoring_version = bear_model
-                ng21_regime = "bear"
-                print(f"🐻 {version_tag}: V11 regime判定 {_regime_label}【熊市】→ {bear_model} + L1-L5 熊市风控")
-        except Exception as e:
-            scoring_version = bull_model
-            ng21_regime = "bull"
-            print(f"⚠️ {version_tag}: 读取 V11 regime 失败({e})，默认使用 {bull_model}")
+    # P3.1: 路由逻辑抽到 stock_selctor/scoring_router.py (146 行 → 7 行)
+    # 三个 MOE 版本 (ng1.0.6 / ng2.0a / ng2.1) 的 regime 读取 + bull/bear 选择全部委托给 router.
+    from stock_selctor.scoring_router import route_scoring_version
+    _db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            'data_adapter', 'stock_data.db')
+    _route = route_scoring_version(scoring_version, target_date, _db_path)
+    scoring_version = _route.scoring_version
+    version_tag = _route.version_tag or scoring_version
+    bull_model = _route.bull_model
+    bear_model = _route.bear_model
+    ng106_mode = _route.ng106_mode
+    ng106_overlay_mode = _route.ng106_overlay_mode
+    ng106_alt_mode = _route.ng106_alt_mode
+    ng106_overlay_regime = _route.ng106_overlay_regime
+    ng200a_mode = _route.ng200a_mode
+    regime_table = _route.ng200a_regime_table or _route.ng21_regime_table
+    ng21_mode = _route.ng21_mode
+    ng21_regime = _route.ng21_regime
 
     # v3.6、v3.7、v3.8、v3.9、v3.94、v3.95版本应该只评价股票，因为ETF等因子无法与股票直接对比
     if scoring_version in ["v3.6", "v3.7", "v3.8", "v3.81", "v3.9", "v3.94", "v3.95", "v3.96", "v4.0", "v4.2", "v4.3", "v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.7.9", "v4.8.0", "v4.8.1", "v4.8.2", "v4.8.4", "v4.9.0.2", "v5.0"] and not stocks_only:
