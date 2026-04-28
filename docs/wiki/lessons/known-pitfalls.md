@@ -188,3 +188,14 @@
 - **根因**: 策略表现有强 regime 依赖 — 少负=牛市特化(Sharpe=1.75), 暴力K=熊市特化(Sharpe=2.05), 上穿60放量在牛市反而 -1.19%。单一 regime 窗口会把"regime 幸运"伪装成"策略优劣"
 - **教训**: 评价任何选股策略的 alpha 必须跨越至少一个完整市场周期(>=3年, 含牛熊转换)
 - **解决**: 长期回测脚本 `backtest/backtest_strategy_metrics.py` + regime 拆解 `backtest/analyze_strategy_longhorizon.py`; 详见 [8策略长期回测](../evaluation/quant-strategies-2018-2026.md)
+
+### Score-scale 量纲混淆: 0-100 阈值 × NG 预测收益 score (2026-04-28, P0.1+P2.8 双 regression)
+- **现象**: 2026-04-09 起生产 `reports/daily_selection_ng106` 不再有新报告; 手动跑 selector 报告 "全市场总股票: 0只" 但日志显示 ML 评分了 7376 只. 启用 `--enable-booster` 后 Top-10 全是 rank_score=0 的策略候选股 (rsb=8.0), 真 ML picks (rank_score=0.003) 反被排到底部.
+- **根因**: 跨世代代码做了"阈值 / 加权"操作, 假设 score 在 0-100 区间, 但 NG 模型 (ng1.0.1/ng1.0.4) 的 `rank_score` 是预测收益小数, 区间 ≈ [-0.05, +0.02].
+  1. **P0.1 overlay**: `apply_overlay_to_picks` 用 `L1_SCORE_FLOOR=30` 做硬阈值, NG max(rank_score)≈0.016 全部 < 30 → 全 drop → 0 picks
+  2. **P2.8 booster**: `_strategy_bonus` 加 8 pts (V3 0-100 量纲) 到 NG 0.003 量级 score, 量级差 2700×, 让 ML 未评分的策略候选股 (rank_score=0+bonus 8) 完全压过真 picks
+- **解决** (commit `f87a7671` + `6a8ec051`):
+  - overlay: 检测 `max(scores) < 1.0` 时切到 percentile floor (默认底 10%), 否则保持绝对 floor=30
+  - booster: 同样 NG-scale 检测, `bonus_scale = pos_max/100` 让 1pt bonus ≈ 1% lift; 同时 `skip_when_score_zero=True` 防 ML 未评分的 strategy 候选股错误上位
+- **教训**: 跨版本代码若涉及"score 阈值/加权", 永远先 `df.score.describe()` 看分布, 不要假设量纲. 写测试时既测 0-100 也测 [0, 1) 两种 scale.
+- **未来防御**: 任何 score-comparison 函数应该: (a) auto-detect scale, OR (b) 文档明确入参 scale + 在外层 normalize. 全栈静态约定不可靠.
