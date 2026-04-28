@@ -91,21 +91,43 @@ def compute_label_vol_10d(close_panel: pd.DataFrame, n: int = 10) -> pd.DataFram
     return fwd_vol.stack().rename("y").reset_index()
 
 
-def train_lgb(X: np.ndarray, y: np.ndarray, valid_mask: np.ndarray, seed: int = 42) -> lgb.Booster:
+def train_lgb(X: np.ndarray, y: np.ndarray, valid_mask: np.ndarray, seed: int = 42,
+              params_override: Optional[dict] = None,
+              min_iter: int = 0, patience: int = 100) -> lgb.Booster:
+    """Train LightGBM regressor with optional custom params + min-iter guard.
+
+    For noisy labels (e.g. forward 60d maxDD) lgb early-stopping at iter=1 if
+    the first round overshoots: bump min_iter so the booster gets a chance to
+    find a useful split, and use a lower learning rate.
+    """
     params = dict(
         objective="regression", metric="rmse",
         learning_rate=0.05, num_leaves=63, min_data_in_leaf=200,
         feature_fraction=0.8, bagging_fraction=0.8, bagging_freq=5,
         verbose=-1, seed=seed,
     )
+    if params_override:
+        params.update(params_override)
     train_set = lgb.Dataset(X[~valid_mask], y[~valid_mask])
     valid_set = lgb.Dataset(X[valid_mask], y[valid_mask], reference=train_set)
-    return lgb.train(
+    callbacks = [
+        lgb.early_stopping(stopping_rounds=patience, verbose=False, min_delta=0,
+                           first_metric_only=True),
+        lgb.log_evaluation(0),
+    ]
+    booster = lgb.train(
         params, train_set, num_boost_round=2000,
         valid_sets=[valid_set],
-        callbacks=[lgb.early_stopping(stopping_rounds=100, verbose=False),
-                   lgb.log_evaluation(0)],
+        callbacks=callbacks,
     )
+    # Guard: if early-stop triggered before min_iter, force more rounds.
+    if booster.best_iteration < min_iter:
+        booster = lgb.train(
+            params, train_set, num_boost_round=min_iter,
+            valid_sets=[valid_set],
+            callbacks=[lgb.log_evaluation(0)],
+        )
+    return booster
 
 
 def evaluate_oos_ic(model: lgb.Booster, X_oos: np.ndarray, y_oos: np.ndarray,
@@ -186,7 +208,17 @@ def main() -> int:
     X_fit = X[fit_mask]
     y_fit = y[fit_mask]
     valid_mask_in_fit = valid_mask[fit_mask]
-    model = train_lgb(X_fit, y_fit, valid_mask_in_fit, seed=args.seed)
+    # maxdd_60d label is noisy (mean-reverting cumulative drawdown);
+    # use lower lr + minimum iter guard to avoid degenerate 1-tree models.
+    if args.target == "maxdd_60d":
+        params_override = dict(learning_rate=0.02, num_leaves=31,
+                               min_data_in_leaf=500)
+        min_iter, patience = 50, 200
+    else:
+        params_override, min_iter, patience = None, 0, 100
+    model = train_lgb(X_fit, y_fit, valid_mask_in_fit, seed=args.seed,
+                      params_override=params_override,
+                      min_iter=min_iter, patience=patience)
     print(f"  best_iter={model.best_iteration}, num_trees={model.num_trees()}")
 
     print("[5/5] OOS IC evaluation...")
