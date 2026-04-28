@@ -3852,6 +3852,31 @@ class TomorrowStockSelector:
             except Exception as e:
                 logger.warning(f"post-filter 失败, 保留原列表: {e}")
 
+        # P2.8c (2026-04-28): post-rank booster — 8策略 regime-conditional bonus.
+        # Trust filtering already done by post_filters (drop 🔴, penalize 🟡), so we
+        # call booster with trust_field='' to skip its own trust mult and only apply
+        # strategy bonus. Behind --enable-booster flag (default OFF) for safe gray-launch.
+        if getattr(self, '_enable_booster', False) and stock_with_scores:
+            try:
+                from stock_selctor.post_rank_booster import apply_post_rank_booster
+                _booster_regime = getattr(self, '_ng21_regime', None) or getattr(self, '_ng106_overlay_regime', None) or 'bull'
+                _before_top10 = [s.get('stock_code') for s in stock_with_scores[:10]]
+                stock_with_scores = apply_post_rank_booster(
+                    stock_with_scores, regime=_booster_regime,
+                    strategy_field='strategies',  # selector uses 'strategies' (zh names)
+                    trust_field='',  # skip; post_filters already handled trust
+                    score_field='rank_score',
+                )
+                _after_top10 = [s.get('stock_code') for s in stock_with_scores[:10]]
+                _swapped = len(set(_before_top10) - set(_after_top10))
+                _avg_bonus = sum(s.get('_booster_strategy_bonus', 0) for s in stock_with_scores[:10]) / 10
+                logger.info(
+                    f"[P2.8 booster] regime={_booster_regime}, "
+                    f"top-10 swapped {_swapped}/10, avg bonus={_avg_bonus:.2f}pts"
+                )
+            except Exception as e:
+                logger.warning(f"booster 失败, 保留原列表: {e}")
+
         # ng2.1: L1-L5 risk overlay (regime-aware industry cap / SL / VT / crisis stop)
         # Triggered only when scoring_version=='ng2.1' (selector._ng21_mode set upstream).
         # Overlay attaches per-stock metadata (_ng21_pos_cap / _ng21_stop_loss_pct etc.)
@@ -5830,7 +5855,7 @@ class TomorrowStockSelector:
 # is_trading_day 已提取到 core.trading_calendar 模块
 from core.trading_calendar import is_trading_day
 
-def main(target_date: str = None, scoring_version: str = "v3", stocks_only: bool = False, skip_strategies: bool = False, full_market: bool = False, optimizer_version: str = 'v1', optimizer_params_path: str = None, enable_trust_filter: bool = True, industry_cap: int = 3, enable_trust_yellow_penalty: bool = False):
+def main(target_date: str = None, scoring_version: str = "v3", stocks_only: bool = False, skip_strategies: bool = False, full_market: bool = False, optimizer_version: str = 'v1', optimizer_params_path: str = None, enable_trust_filter: bool = True, industry_cap: int = 3, enable_trust_yellow_penalty: bool = False, enable_booster: bool = False):
     """主函数
 
     Args:
@@ -5884,6 +5909,7 @@ def main(target_date: str = None, scoring_version: str = "v3", stocks_only: bool
                                      optimizer_version=optimizer_version, optimizer_params_path=optimizer_params_path,
                                      enable_trust_filter=enable_trust_filter, industry_cap=industry_cap,
                                      enable_trust_yellow_penalty=enable_trust_yellow_penalty)
+    selector._enable_booster = enable_booster
     if ng106_mode:
         selector._ng106_mode = True
         selector._ng106_tag = version_tag  # 'ng1.0.6' / 'ng1.0.62' [+overlay]
@@ -6308,6 +6334,10 @@ if __name__ == "__main__":
                        help='P1.3: 启用 Signal Trust 🟡 存疑软扣分 (rank_score×0.7), 默认关闭')
     parser.add_argument('--industry-cap', type=int, default=3,
                        help='单一行业在最终列表的最大股数, 0=关闭 (默认3)')
+    parser.add_argument('--enable-booster', action='store_true',
+                       help='P2.8: 启用 post-rank booster (8策略regime-conditional bonus). '
+                            'A/B 实测 +33bp/10d. trust 过滤已由 post_filters 做, '
+                            'booster 只加 strategy bonus. 默认关闭, 灰度切换.')
 
     args = parser.parse_args()
 
@@ -6318,4 +6348,5 @@ if __name__ == "__main__":
          optimizer_params_path=getattr(args, 'optimizer_params', None),
          enable_trust_filter=not args.no_trust_filter,
          enable_trust_yellow_penalty=args.trust_yellow_penalty,
-         industry_cap=args.industry_cap)
+         industry_cap=args.industry_cap,
+         enable_booster=args.enable_booster)
