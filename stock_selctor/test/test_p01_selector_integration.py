@@ -91,5 +91,39 @@ def test_estimate_portfolio_vol_empty_picks():
     assert estimate_portfolio_vol([], '/dummy', '2026-04-24') == 0.25
 
 
+# ─────────────── P0.1 regression: percentile floor for NG return-scale scores ───────────────
+
+def test_overlay_percentile_floor_for_return_scale_scores(bull_decision):
+    """NG models emit rank_score ∈ [-0.05, +0.02]. Absolute floor=30 would drop
+    everything; overlay should auto-switch to percentile-floor mode (drop bottom 10%).
+    Regression: 2026-04-24 selector returned 0 picks because all 7376 stocks had
+    rank_score < 30."""
+    # Simulate 100 stocks with realistic ng rank_score distribution
+    picks = []
+    for i in range(100):
+        rs = -0.04 + 0.06 * (i / 99)  # spans [-0.04, +0.02]
+        picks.append({'code': f'{i:06d}.SZ', 'rank_score': rs,
+                      'industry': f'ind_{i % 10}'})
+    kept, dropped = apply_overlay_to_picks(picks, bull_decision)
+    # Default percentile floor is 10% — expect ~90 to survive L1, then top_n=10 cap
+    assert len(kept) == 10  # top_n cap
+    assert len(dropped) >= 9  # at least the bottom 10% dropped
+    assert all('_ng21_pos_cap' in s for s in kept)
+    # L1 drop reason should mention percentile, not absolute 30
+    pcl_dropped = [d for d in dropped if 'p10' in d.get('_drop_reason', '')]
+    assert len(pcl_dropped) >= 9
+
+
+def test_overlay_absolute_floor_for_legacy_0_100_scores(bull_decision):
+    """Legacy V3 composite ∈ [0, 100]: keep absolute floor=30 behavior."""
+    scores = [80, 70, 60, 50, 40] + [25, 20, 15, 10, 5] * 2
+    picks = [{'code': f'{i:06d}.SZ', 'rank_score': scores[i],
+              'industry': f'ind_{i}'} for i in range(15)]
+    kept, dropped = apply_overlay_to_picks(picks, bull_decision)
+    # Only the 5 picks with score ≥ 30 should survive L1
+    assert len(kept) == 5
+    assert all(s.get('rank_score', 0) >= 30 for s in kept)
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])

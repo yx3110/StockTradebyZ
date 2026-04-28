@@ -58,9 +58,14 @@ BEAR_PARAMS = {
     'crisis_cash_floor': 0.70,    # 现金下限
 }
 
-# L1 universal
+# L1 universal — score floor in 0-100 scale (legacy V3 composite). NG models
+# emit rank_score as predicted return ∈ [-0.05, +0.02]; for those we percentile
+# floor instead. _resolve_floor() picks per-call based on observed scale.
 L1_SCORE_FLOOR = 30
 L1_DEFAULT_TOP_N = 10
+# When all scores are < 1, treat them as predicted-return scale and drop bottom
+# N% (rather than absolute floor). Default 10% bottom-cut.
+L1_PERCENTILE_FLOOR_PCT = 0.10
 
 
 # ---------------------------------------------------------------------------
@@ -239,10 +244,23 @@ def apply_overlay_to_picks(
     dropped: list[dict] = []
     industry_count: dict[str, int] = {}
 
+    # Resolve effective floor based on score scale to handle both legacy V3
+    # 0-100 composite and NG predicted-return rank_score (typically in
+    # [-0.05, +0.02]). If max score < 1, switch to percentile floor.
+    raw_scores = [float(s.get('rank_score') or s.get('composite') or 0) for s in picks]
+    if raw_scores and max(raw_scores) < 1.0:
+        sorted_scores = sorted(raw_scores)
+        cutoff_idx = int(len(sorted_scores) * L1_PERCENTILE_FLOOR_PCT)
+        effective_floor = sorted_scores[cutoff_idx] if cutoff_idx < len(sorted_scores) else sorted_scores[-1]
+        floor_label = f'L1 score<p{int(L1_PERCENTILE_FLOOR_PCT*100)} ({effective_floor:+.4f})'
+    else:
+        effective_floor = L1_SCORE_FLOOR
+        floor_label = f'L1 score<{L1_SCORE_FLOOR}'
+
     for s in picks:
         score = float(s.get('rank_score') or s.get('composite') or 0)
-        if score < L1_SCORE_FLOOR:
-            d = dict(s); d['_drop_reason'] = f'L1 score<{L1_SCORE_FLOOR}'
+        if score < effective_floor:
+            d = dict(s); d['_drop_reason'] = floor_label
             dropped.append(d)
             continue
 
