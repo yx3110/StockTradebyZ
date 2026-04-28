@@ -78,6 +78,7 @@ def apply_post_rank_booster(
     trust_field: str = 'trust_tag',
     score_field: str = 'rank_score',
     top_n: Optional[int] = None,
+    skip_when_score_zero: bool = True,
 ) -> List[Dict]:
     """Add `rank_score_boosted` and re-sort.
 
@@ -88,19 +89,43 @@ def apply_post_rank_booster(
       regime: 'bull' or 'bear'. Wrong values fall through to no bonus.
       strategy_field / trust_field / score_field: column names if non-default.
       top_n: trim to top N after re-sort (default: keep all).
+      skip_when_score_zero: if True (default), picks with score == 0 (e.g.
+        strategy candidates the ML scoring step did not score) are NOT
+        promoted by strategy bonus — they keep score = 0 and fall to the bottom.
+        This prevents the regression where strategy hits without ML scores
+        outrank legitimately scored picks.
+
+    Bonus magnitude is auto-scaled when score field is in NG predicted-return
+    scale (max < 1.0): 8 pts becomes 8 × max(score) / 100, so the bonus is
+    proportional to typical score magnitude rather than overwhelming it.
 
     Returns:
       A new list (does not mutate the input items beyond adding boost fields).
     """
+    raw_scores = [float(p.get(score_field, 0.0) or 0.0) for p in picks]
+    pos_max = max((s for s in raw_scores if s > 0), default=0.0)
+    # If scores live in [0, 100] (legacy V3 composite), keep bonus pts as-is.
+    # If in NG predicted-return scale (max < 1), scale bonus to 1% of typical
+    # positive score per point so 8 pts ≈ 8% lift relative to top-tier alpha.
+    if 0 < pos_max < 1.0:
+        bonus_scale = pos_max / 100.0
+    else:
+        bonus_scale = 1.0
+
     out = []
     for s in picks:
-        bonus = _strategy_bonus(s.get(strategy_field) or (), regime)
+        bonus_raw = _strategy_bonus(s.get(strategy_field) or (), regime)
         mult = _trust_lookup(s.get(trust_field))
         base = float(s.get(score_field, 0.0) or 0.0)
+        # Skip bonus when ML did not score this pick (avoids strategy-only
+        # candidates outranking real ML picks).
+        bonus = 0.0 if (skip_when_score_zero and base == 0.0) else bonus_raw * bonus_scale
         boosted = (base + bonus) * mult
         s2 = dict(s)
         s2['rank_score_boosted'] = round(boosted, 6)
         s2['_booster_strategy_bonus'] = round(bonus, 6)
+        s2['_booster_strategy_bonus_raw'] = round(bonus_raw, 6)
+        s2['_booster_bonus_scale'] = round(bonus_scale, 6)
         s2['_booster_trust_mult'] = mult
         out.append(s2)
     out.sort(key=lambda x: -float(x.get('rank_score_boosted', 0.0)))
