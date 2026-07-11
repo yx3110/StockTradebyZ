@@ -199,3 +199,27 @@
   - booster: 同样 NG-scale 检测, `bonus_scale = pos_max/100` 让 1pt bonus ≈ 1% lift; 同时 `skip_when_score_zero=True` 防 ML 未评分的 strategy 候选股错误上位
 - **教训**: 跨版本代码若涉及"score 阈值/加权", 永远先 `df.score.describe()` 看分布, 不要假设量纲. 写测试时既测 0-100 也测 [0, 1) 两种 scale.
 - **未来防御**: 任何 score-comparison 函数应该: (a) auto-detect scale, OR (b) 文档明确入参 scale + 在外层 normalize. 全栈静态约定不可靠.
+
+### sqlite3 不接受 pd.Timestamp 绑定 — L4 熔断静默失效 2.5 个月 (2026-07-11)
+- **现象**: 生产日志每天出现 `L4 crisis check skipped (DB error: Error binding parameter 1: type 'Timestamp' is not supported)`, 从 2026-04-28 上线起熊市危机熔断从未真正评估过
+- **根因**: 双重叠加 — (1) selector 把 `pd.Timestamp` 原样传给 `WHERE trade_date = ?` 绑定; (2) 风控层 except 全部只 `logger.warning` 后继续, 失败被淹没在日志里
+- **解决** (commit `977ff401`): 日期入口统一 `_norm_date()` 归一化为 'YYYY-MM-DD' 字符串; 风控层 (post_filters/booster/overlay/L4/est_vol) 异常升 ERROR + `analysis['risk_layer_degraded']` 报告头部盖戳
+- **教训**: **风控层的失败模式必须"高可见 fail-open"而不是"静默 fail-open"**。任何 `except → warning → 继续` 的风控代码都等价于没有风控。同类事故: est_vol 因 `'code'/'stock_code'` 键错配恒走 0.25 fallback (仓位系统性超配 50%), 也是靠 warning 埋了 2.5 个月
+
+### "选股管道过滤" 不能截断全市场数据产物 (2026-07-11)
+- **现象**: 全市场报告/JSON 从 7343 只 → 440 只 (04-23 post_filters industry_cap) → 10 只 (04-28 overlay top_n); 下游 Signal Trust 贴标签、forward tracker、OOS `pred_10d` 非零校验、webapp 全部失真
+- **根因**: 给 Top-N 选股设计的过滤器 (行业限流/信任过滤/overlay 截断) 被直接赋值回 `all_stocks_with_scores`
+- **解决** (commit `977ff401`): 风控筛选链在 `pick_pipeline` 副本上执行; 全市场列表保持完整, 淘汰股打 `_post_filter_drop`/`_drop_reason` 标记; overlay 最终持仓单独存 `analysis['risk_overlay']`
+- **教训**: 区分两种数据产物 — "全市场排名表" (信息完整性优先) 和 "最终持仓清单" (风控优先)。过滤器只能作用于后者
+
+### 模型加载 mtime-glob = 生产模型可被任何重训静默顶替 (2026-07-11)
+- **现象**: ng1.0.6 生产 bull 专家自 04-28 起实际是未验收的重训 pkl; bear ensemble glob 到 7 个 pkl (seed42×3 + 5-seed 实验遗留), 偏离已验证 3-seed 配置
+- **根因**: scorer 按 `glob + mtime 最新` 选模型, 任何实验性重训/rename 失败的 specialist pkl 都会自动"上生产"
+- **解决** (commit `00f79e53`): `ng_schema.PINNED_PRODUCTION_MODELS` 固定生产 pkl 文件名; ensemble 按 seed 去重; ng21 specialist pkl 打 `ng21_variant` 标记 + scorer 拒载
+- **教训**: 生产模型必须显式 pin (文件名/checksum), 换模型 = 改注册表 + review, 绝不能靠文件系统 mtime
+
+### SQLite 类型排序: INTEGER 恒 < TEXT — 日期双格式劈表 (2026-07-11)
+- **现象**: financial_indicator 81% 行 (TEXT 'YYYY-MM-DD') 对 NG 特征的整数边界查询 (`ann_date BETWEEN 20250606 AND 20260710`) 完全不可见; roe/or_yoy 等生产特征大面积静默 NaN; 同一财报双格式共存 37,556 对击穿 UNIQUE 约束
+- **根因**: 两个写入方约定不同 — backfill 写 TEXT 带杠, quick_daily 写 Tushare 原始整数; SQLite 动态类型允许同列混存, 比较时按类型排序 (INTEGER < TEXT), 不做隐式转换
+- **解决** (commit `0f1d09d6`): `scripts/migrate_financial_indicator_date_format.py` 一次性迁移 (备份→去重→统一 TEXT); 读写两侧统一 'YYYY-MM-DD'
+- **教训**: SQLite 日期列必须全仓约定单一格式 ('YYYY-MM-DD' TEXT); 新写入方上线前 `SELECT typeof(col), COUNT(*) GROUP BY 1` 验证与存量一致

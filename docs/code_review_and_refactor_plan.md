@@ -188,3 +188,51 @@ Week 4:  Phase 4 (性能) + Phase 5 (工程治理)
 2. **Phase 3 重构需要全面的回归测试** — 建议先建立 baseline 输出快照
 3. **`stock_selctor` 重命名影响面大** — 需要全局搜索替换，建议单独一个 commit
 4. **生产环境切换窗口** — 重构期间保留旧路径兼容，确认无误后再清理
+
+---
+
+# 六、2026-07-11 全面审计复核 + 重构执行记录
+
+> 执行: Claude Fable 5 (12 审计智能体核实 25 项旧发现 + 93 项新发现, 随后修复)
+> 详细审计数据: 见本次 session; 教训已沉淀 `docs/wiki/lessons/known-pitfalls.md`
+
+## 旧计划 25 项现状 (审计核实)
+
+- **已修复** (历史 session 完成): P0-2 fallback 泄漏, P1-9 shuffle 切分, P1-11 data_adapter import, P2-16 bare except, P2-21 循环 concat, P2-22 scorer 缓存并存; Phase 1 安全加固 (826f6175)、P3.1 scoring router (472802b0)、P5 治理 (63b0f479) 有 commit 记录
+- **部分修复**: P0-1 密钥 (config.json 从未入库+gitignore, 但明文仍落盘, **建议轮换**), P0-5 SQL 注入 (get_multiple_stocks_data 仍缺白名单), P0-6 webapp (app.py 硬编码 debug=True+0.0.0.0), P0-3 v44 T+1 (offline_mode 默认仍 True), P2-15/18/20
+- **仍未做**: P1-13 三套 DB 管理器统一, P2-14 主文件拆分 (6400 行), P2-23 stock_selctor 拼写, P1-10→**本次已修** (模型固定加载)
+
+## 本次修复 (2026-07-11, 8 个 commit)
+
+| Commit | 内容 |
+|---|---|
+| `977ff401` | selector 风控管线 9 个实弹 bug (L4 熔断失效 2.5 月 / est_vol 恒 fallback / 全市场截断 440→10 / 涨停股"强烈买入" / ETF 灌入 / booster no-op / trust 负分反转 / env_score 恒 50 / 异常吞噬) |
+| `655b266f` | shell 流程 (P0.2 监控从未执行 / 归档脚本死调用 / API 失败 exit 0) |
+| `43fe5b19` | 回测正确性 (成本双扣 / 稀疏年化 4x 膨胀 / Sharpe 恒 0 / 日期过滤 / factor 缓存截断) + eval_cache prune 工具 |
+| `00f79e53` | 模型完整性 (PINNED_PRODUCTION_MODELS / seed 去重 / ng21 拒载 / trainer locals bug / purge_days 元数据) |
+| `3c3b7ac2` | 测试全绿 (root 316 / stock_selctor 115) + requirements 重建 + git 卫生 |
+| `0f1d09d6` | financial_indicator 日期双格式迁移 (81% 行不可见→100%) + 财报自动 catch-up |
+
+⚠️ **评估口径变更**: 成本双扣与年化修复后, 历史北极星数字不可与新跑数字直接混比; 基线对比表需重跑 (Check 5)。
+
+## 遗留 Roadmap (按优先级)
+
+### P0 待用户决策 (破坏性/大空间释放)
+1. `.eval_cache` 91.5GB → `python3 backtest/eval_cache.py --prune-days 30 --max-gb 20 --apply` 可释放 ~90GB (已 dry-run 验证)
+2. stock_data.db 实际 241GB (文档写 4GB), 其中 ≥120GB 是已 REJECT 版本的 feature cache 表 (ng12x/ng13x/ng14x/ng15x 等) — DROP 前需用户确认
+3. `.claude/worktrees/` 1.8GB 陈旧 session worktree — 逐个核查未合并工作后 `git worktree remove`
+4. config.json 明文密钥轮换 + 迁 .env (core/config.py 已支持环境变量)
+5. **financial_indicator 修复后的模型层跟进**: 历史 ng101/ng104 特征缓存是在 81% 财报不可见时构建的 — 需评估重跑 cache backfill + 重训是否值得 (训练特征分布已改变)
+
+### P1 结构重构 (多 session)
+6. tomorrow_stock_selector.py 拆分 (6400 行; 4 巨型函数占 56%; ~1200 行 16 个死版本分支可先删)
+7. 双份 Selector.py 合并 (根目录 vs stock_selctor/, 分叉 2118 行; 测试已修但根因未除)
+8. 三套 DB 管理器统一 (data_adapter/database_manager + db_manager + webapp/core/database)
+9. backtest/ 19 个零引用实验脚本 + scripts/ 35 个死脚本归档
+10. v39/v40/ng 三代 cache updater 去重 (~5400 行, 重复度 60-70%)
+
+### P2 加固
+11. webapp 安全 (debug=True/0.0.0.0/CORS 全开/无鉴权) + 功能腐化修复 (训练入口指 v3.8 等)
+12. 模型 manifest (sha256) 体系; v44 offline_mode 默认改 False; get_multiple_stocks_data 白名单
+13. _enhance_prices_with_optimizer_v2 N+1 SQL (每天 ~5500 次连接) 批量化
+14. financial_indicator 新鲜度纳入 smoke check (滞后 >30 天 WARN)

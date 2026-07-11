@@ -1,5 +1,12 @@
 # 下 Session 入口 (Handoff Doc)
 
+> ⚠️ **2026-07-11 更新**: 本文档的"已 LIVE 4 层风控"描述已过时 — 当天全仓审计发现
+> L4 熔断/vol-target/全市场截断/模型 mtime 劫持等多个层实际带伤运行, 已集中修复
+> (8 commits, 977ff401..0f1d09d6)。最新状态与遗留 roadmap 见
+> `docs/code_review_and_refactor_plan.md` 第六节; 教训见 wiki known-pitfalls 新增 4 条。
+> 本文档 P1.3 Step B / P2.7 等待办仍有效, 但 sanity check 期望值需按新行为更新
+> (全市场 JSON 恢复 ~5400 只, overlay 持仓在 `analysis['risk_overlay']`)。
+
 > 状态: 2026-04-28 EOS. 3 sessions 完成 P0/P1/P2 16 子任务 + 2 regression 修复.
 > 下 session 直接从这里开始, 不需重读全部历史.
 

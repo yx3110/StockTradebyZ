@@ -605,6 +605,9 @@ AI analysis configuration and weights
    - Pre-2020 OOS (2018-2019): V5.2=**45.5% B** (10d composite, 4-12 bugfix pkl), 年化 -19%, Sharpe -0.33; 老文档 "73.7% A+" 已证实是 4-10 评估 bug ghost number
    - Scorer: `ml_models/ng/ng_production_scorer.py` (version='ng1.0.1')
    - 模型: `ml_models/trained_models/ng/ng101_seed42_multi_target_20260412_233749.pkl`
+   - 🆕 **模型固定加载 (2026-07-11)**: 生产模型 pkl 写死在 `ng_schema.PINNED_PRODUCTION_MODELS`
+     (ng1.0.1 单模型 + ng1.0.4 三 seed), scorer 不再 mtime-glob 取最新 — **切换生产模型必须改注册表**。
+     背景: 4-28 未验收重训 pkl 曾因 mtime 被生产静默加载 2.5 个月
    - 缓存表: `ng101_feature_cache` (与 ng1.1.0 共表, 由日常流程填充)
 
 4. **NG v1.1.0** (ng1.0.1 精简+P2新因子):
@@ -832,7 +835,7 @@ python3 ml_models/training/train_v395_multi_target.py --help
 - **Basic/Financial**: 5400+ stocks PE/PB/market cap in 10 seconds
 - **Technical Indicators**: 5400+ stocks calculated in 15 seconds
 - **Database Performance**: 1800x faster than CSV mode
-- **Storage**: ~4GB database
+- **Storage**: ~241GB database (⚠️ 2026-07 实测; 其中 ≥120GB 是已 REJECT 实验版本的 feature cache 表, 清理待决策; 另 `.eval_cache/` ~91GB 可用 `python3 backtest/eval_cache.py --prune-days 30 --max-gb 20 --apply` 释放)
 - **Coverage**: 10,073 securities (A-shares, ETFs, indices)
 - **相似度分析**: 4285只A股，25分钟完成全市场扫描
 
