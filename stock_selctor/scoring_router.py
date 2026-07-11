@@ -41,53 +41,101 @@ class RouteResult:
     ng21_mode: bool = False
     ng21_regime: str = 'bull'
     ng21_regime_table: str = 'market_regime_signals'
+    # 2026-07-11: 降级与溯源
+    regime_degraded: str = ''       # 非空 = regime 读取降级原因 (进报告降级盖戳)
+    regime_source_date: str = ''    # 实际使用的 regime 信号日期 (staleness 可审计)
 
 
 # ────────────────────────────────────────────────────────────
 # DB regime 读取
 # ────────────────────────────────────────────────────────────
 
-def _read_amv_regime(db_path: str, target_date: Optional[str]) -> tuple[Optional[int], str]:
-    """读 0AMV regime (ng1.0.6 路径). 返回 (regime_value, label)."""
-    conn = sqlite3.connect(db_path, timeout=30)
+#: regime 信号允许的最大陈旧天数 (日历日)。超过 → 视为断更, fail-defensive 按熊市处理。
+#: 2026-07-11: 此前无任何 staleness 校验, market_amv 停更 30 天生产仍静默用旧 regime。
+REGIME_MAX_STALE_DAYS = 7
+
+
+def _staleness_days(row_date: Optional[str], target_date: Optional[str]) -> int:
+    """regime 信号日期与目标日期的日历天差 (无法计算时返回 0 = 不触发)."""
+    if not row_date or not target_date:
+        return 0
     try:
-        if target_date:
-            row = conn.execute(
-                'SELECT amv_regime FROM market_amv WHERE trade_date <= ? '
-                'ORDER BY trade_date DESC LIMIT 1', (target_date,)
-            ).fetchone()
-            label = f"{target_date}"
-        else:
-            row = conn.execute(
-                'SELECT amv_regime FROM market_amv ORDER BY trade_date DESC LIMIT 1'
-            ).fetchone()
-            label = "最新"
-    finally:
-        conn.close()
-    return (row[0] if row else None), label
+        from datetime import date
+        d1 = date.fromisoformat(str(row_date)[:10])
+        d2 = date.fromisoformat(str(target_date)[:10])
+        return (d2 - d1).days
+    except ValueError:
+        return 0
 
 
-def _read_v2_regime(db_path: str, regime_table: str, target_date: Optional[str]) -> tuple[Optional[int], str]:
-    """读 v2 multi-beta regime (ng2.0a / ng2.1 路径)."""
+def _read_amv_regime(db_path: str, target_date: Optional[str]) -> tuple[Optional[int], str, str]:
+    """读 0AMV regime (ng1.0.6 路径). 返回 (regime_value, row_date, label)."""
     conn = sqlite3.connect(db_path, timeout=30)
     conn.execute('PRAGMA busy_timeout=30000')
     try:
         if target_date:
             row = conn.execute(
-                f'SELECT regime_v2 FROM {regime_table} '
+                'SELECT amv_regime, trade_date FROM market_amv WHERE trade_date <= ? '
+                'ORDER BY trade_date DESC LIMIT 1', (target_date,)
+            ).fetchone()
+            label = f"{target_date}"
+        else:
+            row = conn.execute(
+                'SELECT amv_regime, trade_date FROM market_amv ORDER BY trade_date DESC LIMIT 1'
+            ).fetchone()
+            label = "最新"
+    finally:
+        conn.close()
+    return (row[0] if row else None), (row[1] if row else ''), label
+
+
+def _read_v2_regime(db_path: str, regime_table: str, target_date: Optional[str]) -> tuple[Optional[int], str, str]:
+    """读 v2 multi-beta regime (ng2.0a / ng2.1 路径). 返回 (regime_value, row_date, label)."""
+    conn = sqlite3.connect(db_path, timeout=30)
+    conn.execute('PRAGMA busy_timeout=30000')
+    try:
+        if target_date:
+            row = conn.execute(
+                f'SELECT regime_v2, trade_date FROM {regime_table} '
                 f'WHERE regime_v2 IS NOT NULL AND trade_date <= ? '
                 f'ORDER BY trade_date DESC LIMIT 1', (target_date,)
             ).fetchone()
             label = f"{target_date}"
         else:
             row = conn.execute(
-                f'SELECT regime_v2 FROM {regime_table} '
+                f'SELECT regime_v2, trade_date FROM {regime_table} '
                 f'WHERE regime_v2 IS NOT NULL ORDER BY trade_date DESC LIMIT 1'
             ).fetchone()
             label = "最新"
     finally:
         conn.close()
-    return (row[0] if row else None), label
+    return (row[0] if row else None), (row[1] if row else ''), label
+
+
+def _resolve_regime(reader, scoring_version: str, target_date: Optional[str]) -> tuple[int, str, str, str]:
+    """统一的 regime 解析 + fail-defensive.
+
+    返回 (regime, row_date, label, degraded_reason)。任何异常/无数据/信号陈旧
+    (> REGIME_MAX_STALE_DAYS 日历日) → regime=-1 (熊市 = 防御姿态) + 降级原因。
+
+    2026-07-11 修复: 此前 DB 异常 fail-open 到 bull (最激进配置), 而表空却判 bear
+    — 同一种"不知道"状态两个相反方向; 且降级只 print 不进报告盖戳系统。
+    数据管道故障与市场异动日高度相关, 故障日必须选防御侧。
+    """
+    try:
+        regime, row_date, label = reader()
+    except Exception as e:
+        logger.error(f"{scoring_version}: 读取 regime 失败({e}) → fail-defensive 按熊市处理")
+        return -1, '', str(target_date or '最新'), f"regime 读取失败({e}), 已按熊市防御路由"
+    if regime is None:
+        logger.error(f"{scoring_version}: regime 表无 {target_date or '任何'} 前记录 → 按熊市处理")
+        return -1, row_date, label, "regime 表无记录, 已按熊市防御路由"
+    stale = _staleness_days(row_date, target_date)
+    if stale > REGIME_MAX_STALE_DAYS:
+        logger.error(f"{scoring_version}: regime 信号陈旧 (最近 {row_date}, 距 {target_date} "
+                     f"{stale} 天 > {REGIME_MAX_STALE_DAYS}) → fail-defensive 按熊市处理")
+        return -1, row_date, label, f"regime 信号陈旧 {stale} 天 (最近 {row_date}), 已按熊市防御路由"
+    return int(regime), row_date, label, ''
 
 
 # ────────────────────────────────────────────────────────────
@@ -129,13 +177,10 @@ def route_ng106(scoring_version: str, target_date: Optional[str], db_path: str) 
         res.bull_model = "ng1.0.1"
     res.bear_model = "ng1.0.4"
 
-    try:
-        regime, label = _read_amv_regime(db_path, target_date)
-    except Exception as e:
-        res.scoring_version = res.bull_model
-        res.ng106_overlay_regime = "bull"
-        print(f"⚠️ {scoring_version}: 读取 AMV regime 失败({e}), 默认使用 {res.bull_model}")
-        return res
+    regime, row_date, label, degraded = _resolve_regime(
+        lambda: _read_amv_regime(db_path, target_date), scoring_version, target_date)
+    res.regime_degraded = degraded
+    res.regime_source_date = row_date
 
     if regime == 1:
         res.scoring_version = res.bull_model
@@ -146,7 +191,8 @@ def route_ng106(scoring_version: str, target_date: Optional[str], db_path: str) 
         res.scoring_version = res.bear_model
         res.ng106_overlay_regime = "bear"
         overlay_tag = " + L1-L5 熊市风控" if res.ng106_overlay_mode else ""
-        print(f"🐻 {scoring_version}: 0AMV判定 {label}【熊市】→ 使用 {res.bear_model}{overlay_tag}")
+        deg_tag = f" [⚠️降级: {degraded}]" if degraded else ""
+        print(f"🐻 {scoring_version}: 0AMV判定 {label}【熊市】→ 使用 {res.bear_model}{overlay_tag}{deg_tag}")
     return res
 
 
@@ -158,19 +204,19 @@ def route_ng200a(scoring_version: str, target_date: Optional[str], db_path: str)
     res.bear_model = "ng1.0.4"
     res.ng200a_regime_table = "market_regime_signals"
 
-    try:
-        regime, label = _read_v2_regime(db_path, res.ng200a_regime_table, target_date)
-    except Exception as e:
-        res.scoring_version = res.bull_model
-        print(f"⚠️ ng2.0a: 读取 v2 regime 失败({e}), 默认使用 {res.bull_model}")
-        return res
+    regime, row_date, label, degraded = _resolve_regime(
+        lambda: _read_v2_regime(db_path, res.ng200a_regime_table, target_date),
+        'ng2.0a', target_date)
+    res.regime_degraded = degraded
+    res.regime_source_date = row_date
 
     if regime == 1:
         res.scoring_version = res.bull_model
         print(f"🐂 ng2.0a: v2 regime判定 {label}【牛市】→ 使用 {res.bull_model}")
     else:
         res.scoring_version = res.bear_model
-        print(f"🐻 ng2.0a: v2 regime判定 {label}【熊市】→ 使用 {res.bear_model}")
+        deg_tag = f" [⚠️降级: {degraded}]" if degraded else ""
+        print(f"🐻 ng2.0a: v2 regime判定 {label}【熊市】→ 使用 {res.bear_model}{deg_tag}")
     return res
 
 
@@ -182,13 +228,11 @@ def route_ng21(scoring_version: str, target_date: Optional[str], db_path: str) -
     res.bear_model = "ng2.1-bear"
     res.ng21_regime_table = "market_regime_signals"
 
-    try:
-        regime, label = _read_v2_regime(db_path, res.ng21_regime_table, target_date)
-    except Exception as e:
-        res.scoring_version = res.bull_model
-        res.ng21_regime = "bull"
-        print(f"⚠️ ng2.1: 读取 V11 regime 失败({e}), 默认使用 {res.bull_model}")
-        return res
+    regime, row_date, label, degraded = _resolve_regime(
+        lambda: _read_v2_regime(db_path, res.ng21_regime_table, target_date),
+        'ng2.1', target_date)
+    res.regime_degraded = degraded
+    res.regime_source_date = row_date
 
     if regime == 1:
         res.scoring_version = res.bull_model
@@ -197,7 +241,8 @@ def route_ng21(scoring_version: str, target_date: Optional[str], db_path: str) -
     else:
         res.scoring_version = res.bear_model
         res.ng21_regime = "bear"
-        print(f"🐻 ng2.1: V11 regime判定 {label}【熊市】→ {res.bear_model} + L1-L5 熊市风控")
+        deg_tag = f" [⚠️降级: {degraded}]" if degraded else ""
+        print(f"🐻 ng2.1: V11 regime判定 {label}【熊市】→ {res.bear_model} + L1-L5 熊市风控{deg_tag}")
     return res
 
 

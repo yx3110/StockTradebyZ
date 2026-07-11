@@ -93,11 +93,24 @@ def test_ng106_alt_overlay_combo(db_with_regime):
     assert res.scoring_version == "ng1.7.0"
 
 
-def test_ng106_db_error_fallback_to_bull():
-    """DB 不存在时, fallback 到 bull."""
+def test_ng106_db_error_fail_defensive_to_bear():
+    """DB 不存在时, fail-defensive 到 bear + 降级标记 (2026-07-11 行为变更).
+
+    旧行为 fail-open 到 bull = 数据管道故障日用最激进配置; 数据故障与市场
+    异动日高度相关, 故障必须选防御侧, 且降级要可见。
+    """
     res = route_ng106("ng1.0.6", "2026-04-20", "/non/existent/path.db")
-    assert res.scoring_version == res.bull_model
-    assert res.ng106_overlay_regime == "bull"
+    assert res.scoring_version == res.bear_model
+    assert res.ng106_overlay_regime == "bear"
+    assert res.regime_degraded  # 降级原因非空
+
+
+def test_ng106_stale_regime_fail_defensive_to_bear(db_with_regime):
+    """regime 信号陈旧 (> REGIME_MAX_STALE_DAYS) 时按熊市防御路由."""
+    # db_with_regime 的最新 amv 行日期是 2026-04-20 附近; 用远未来 target_date 触发 staleness
+    res = route_ng106("ng1.0.6", "2026-06-30", db_with_regime)
+    assert res.scoring_version == res.bear_model
+    assert "陈旧" in res.regime_degraded
 
 
 # ────────────────────────────────────────────────────────────

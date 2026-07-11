@@ -3455,6 +3455,10 @@ class TomorrowStockSelector:
         self._ng21_overlay_picks = None
         self._ng21_decision = None
         self._ng21_dropped_by_overlay = []
+        # 2026-07-11: regime 路由降级 (读取失败/表空/信号陈旧→熊市防御) 走同一盖戳通道
+        _route = getattr(self, '_route_result', None)
+        if _route is not None and getattr(_route, 'regime_degraded', ''):
+            self._risk_layer_errors.append(f"regime路由: {_route.regime_degraded}")
 
         # 预计算环境评分供 v2 优化器 (filter_and_allocate / per-stock 定价) 使用。
         # 旧逻辑在 generate_report 里才赋值 _cached_env_score, 但消费点在
@@ -3527,8 +3531,28 @@ class TomorrowStockSelector:
                             else:
                                 logger.info(f"📊 使用composite绝对值fallback阈值（未校准）")
                 except Exception as e:
-                    logger.warning(f"⚠️ V4.4批量预计算失败，将使用单只评分: {e}")
+                    logger.error(f"⚠️ V4.4批量预计算失败，将使用单只评分: {e}")
                     self.v44_batch_cache = {}
+                    self._risk_layer_errors.append(f"批量评分失败({e}), 逐股 fallback")
+
+            # 2026-07-11 空评分 gate: 非零 pred_10d 覆盖率 <50% → 排名无效,
+            # 报告降级盖戳 + generate_report 跳过 rank-override (防止"随机顺序
+            # 强烈买入"事故, ng1.1.0 迭代期真实发生过 pred_10d 全零报告)
+            if self.scoring_version.startswith("ng") and self.v44_batch_cache:
+                _nonzero = sum(1 for r in self.v44_batch_cache.values()
+                               if float(r.get('pred_10d', 0) or 0) != 0)
+                _cov = _nonzero / max(len(self.v44_batch_cache), 1)
+                if _cov < 0.5:
+                    self._scoring_degraded = (f"非零 pred_10d 覆盖率仅 {_cov:.0%} "
+                                              f"({_nonzero}/{len(self.v44_batch_cache)}), 排名不可信")
+                    self._risk_layer_errors.append(f"空评分gate: {self._scoring_degraded}")
+                    logger.error(f"🚨 空评分 gate 触发: {self._scoring_degraded}")
+                else:
+                    self._scoring_degraded = None
+            elif self.scoring_version.startswith("ng"):
+                self._scoring_degraded = "批量评分缓存为空, 全市场将使用 50 分占位"
+                self._risk_layer_errors.append(f"空评分gate: {self._scoring_degraded}")
+                logger.error(f"🚨 空评分 gate 触发: {self._scoring_degraded}")
 
         # 🚀 V4.3批量评分预计算
         if hasattr(self, 'scoring_version') and self.scoring_version == "v4.3" and all_stocks:
@@ -4116,7 +4140,35 @@ class TomorrowStockSelector:
             }
         if getattr(self, '_risk_layer_errors', None):
             analysis["risk_layer_degraded"] = list(self._risk_layer_errors)
-                
+
+        # 2026-07-11 provenance: 日报 JSON 此前零元数据 — MOE 下同一目录每天可能
+        # 由不同子模型生成, 事后归因/forward 追踪只能靠 md 标题反推 (对齐 Check 9)
+        _route = getattr(self, '_route_result', None)
+        _engine = getattr(self, 'scoring_engine_v44', None)
+        try:
+            import subprocess
+            _git_hash = subprocess.run(
+                ['git', 'rev-parse', '--short', 'HEAD'],
+                capture_output=True, text=True, timeout=5,
+                cwd=os.path.dirname(os.path.abspath(__file__))).stdout.strip() or None
+        except Exception:
+            _git_hash = None
+        analysis["provenance"] = {
+            "version_tag": getattr(_route, 'version_tag', None) or self.scoring_version,
+            "resolved_scoring_version": self.scoring_version,
+            "regime": (getattr(_route, 'ng106_overlay_regime', '') or
+                       getattr(_route, 'ng21_regime', '') or None) if _route else None,
+            "regime_source_date": getattr(_route, 'regime_source_date', None) if _route else None,
+            "regime_degraded": getattr(_route, 'regime_degraded', '') or None if _route else None,
+            "model_paths": ([os.path.basename(getattr(s, '_loaded_model_file', ''))
+                             for s in getattr(_engine, '_ensemble_scorers', [])]
+                            or (os.path.basename(getattr(_engine, '_loaded_model_file', ''))
+                                if getattr(_engine, '_loaded_model_file', None) else None)),
+            "scoring_degraded": getattr(self, '_scoring_degraded', None),
+            "git_hash": _git_hash,
+            "generated_at": datetime.now().isoformat(timespec='seconds'),
+        }
+
         return analysis
         
     def _generate_stock_detail(self, stock: Dict[str, Any]) -> str:
@@ -5587,9 +5639,24 @@ class TomorrowStockSelector:
             # 涨停/停牌股 (exec_warning) 保持 '观望'、🔴 trust 股保持 '回避',
             # 不参与按排名覆盖, 也不占用 强烈买入/买入 名额
             # (曾出现涨停股被覆盖成 '强烈买入')
+            # 2026-07-11: 扩展到«一切风控淘汰股» (_post_filter_drop 任意值 /
+            # overlay _drop_reason) — 生产实证 2026-07-10 Top-5 中 3 只
+            # industry_cap 淘汰券商股被标'强烈买入'且占用名额, 行业帽形同虚设。
+            # 淘汰股 recommendation 统一改写为 '风控剔除', 消费端不会误读为买入级。
+            # 2026-07-11: 空评分 gate 触发时跳过整个 rank-override —
+            # 占位分排序是插入序, 按它发'强烈买入'就是随机推荐
+            _scoring_degraded = getattr(self, '_scoring_degraded', None)
+            if _scoring_degraded:
+                logger.error(f"🚨 rank-override 已跳过: {_scoring_degraded}")
             rank_i = 0
             for s in stocks_data:
                 if s.get('exec_warning') or s.get('_post_filter_drop') == 'trust_red':
+                    continue
+                if s.get('_post_filter_drop') or s.get('_drop_reason'):
+                    _reason = s.get('_drop_reason') or s.get('_post_filter_drop')
+                    s['recommendation'] = f"风控剔除({_reason})"
+                    continue
+                if _scoring_degraded:
                     continue
                 if rank_i < rec_ranks['strong_buy']:
                     s['recommendation'] = '强烈买入'
@@ -6104,6 +6171,9 @@ def main(target_date: str = None, scoring_version: str = "v3", stocks_only: bool
                                      enable_trust_filter=enable_trust_filter, industry_cap=industry_cap,
                                      enable_trust_yellow_penalty=enable_trust_yellow_penalty)
     selector._enable_booster = enable_booster
+    # 2026-07-11: 路由结果挂到 selector — regime 降级进 risk_layer_errors 盖戳通道,
+    # 溯源信息进 analysis['provenance']
+    selector._route_result = _route
     if ng106_mode:
         selector._ng106_mode = True
         selector._ng106_tag = version_tag  # 'ng1.0.6' / 'ng1.0.62' [+overlay]
