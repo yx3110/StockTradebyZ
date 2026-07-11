@@ -76,3 +76,4 @@ logs/security/
 autoresearch-results.tsv
 backtest/.v475_score_cache.pkl
 scripts/.score_cache_v4.8.1.pkl
+.claude/worktrees/
