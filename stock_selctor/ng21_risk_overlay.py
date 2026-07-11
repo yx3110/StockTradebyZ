@@ -413,3 +413,56 @@ def estimate_portfolio_vol(
     if not vols:
         return _fallback('所有成分股波动率计算无效 (数据不足或超界)')
     return float(sum(vols) / len(vols))
+
+
+def estimate_portfolio_vol_forward(
+    picks: List[Dict],
+    db_path: str,
+    target_date: str,
+) -> Optional[float]:
+    """前瞻组合波动率: P1.6 vol_10d 风险头对成分股的预测均值 (年化).
+
+    2026-07-11 影子模式: 与 estimate_portfolio_vol (60d 后视统计) 并排产出,
+    只记录不参与 sizing — VT 阈值 (0.25/0.15) 需先在该度量空间重 sweep
+    才能切换消费。协议修复后 3 折 WF 均值 IC=+0.60 (risk_head pkl 内有 fold 明细)。
+    任何失败返回 None (影子信号缺失不降级生产)。
+    """
+    try:
+        import json as _json
+        import joblib
+        from pathlib import Path
+        pkl = (Path(db_path).resolve().parent.parent / 'ml_models' / 'trained_models'
+               / 'ng' / 'risk_head_vol_10d_seed42.pkl')
+        if not pkl.exists():
+            return None
+        bundle = joblib.load(pkl)
+        model, feat_cols = bundle['model'], bundle['feat_cols']
+        codes = [(s.get('stock_code') or s.get('code') or '').split('.')[0] for s in picks]
+        codes = [c for c in codes if c]
+        if not codes:
+            return None
+        target_date = _norm_date(target_date)
+        conn = sqlite3.connect(db_path, timeout=30)
+        conn.execute('PRAGMA busy_timeout=30000')
+        try:
+            ph = ','.join('?' * len(codes))
+            rows = conn.execute(
+                f"SELECT code, features_json FROM ng101_feature_cache "
+                f"WHERE trade_date = ? AND code IN ({ph})",
+                [target_date] + codes,
+            ).fetchall()
+        finally:
+            conn.close()
+        if not rows:
+            return None
+        feats = [{**_json.loads(fj)} for _, fj in rows]
+        import numpy as _np
+        X = _np.array([[float(f.get(c, 0.0) or 0.0) for c in feat_cols] for f in feats])
+        preds = model.predict(X)
+        preds = preds[(preds > 0.05) & (preds < 2.0)]
+        if len(preds) == 0:
+            return None
+        return float(preds.mean())
+    except Exception as e:  # 影子信号, 任何异常不干扰生产
+        logger.warning(f"forward vol shadow 计算失败: {e}")
+        return None

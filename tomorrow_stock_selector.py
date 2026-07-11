@@ -4022,19 +4022,25 @@ class TomorrowStockSelector:
                 # in bear regime) so JSON consumers can size positions directly.
                 from stock_selctor.ng21_risk_overlay import (
                     compute_position_size, estimate_portfolio_vol,
+                    estimate_portfolio_vol_forward,
                 )
                 _db = os.path.join(
                     os.path.dirname(os.path.abspath(__file__)),
                     'data_adapter', 'stock_data.db',
                 )
                 est_vol = estimate_portfolio_vol(kept, _db, _td)
+                # 2026-07-11 影子模式: 前瞻 vol 头 (3折WF IC=+0.60) 并排记录,
+                # 不参与 sizing — 切换消费前需在该度量空间重 sweep VT 阈值
+                est_vol_fwd = estimate_portfolio_vol_forward(kept, _db, _td)
+                self._est_vol_forward_shadow = est_vol_fwd
                 kept = compute_position_size(kept, _decision, est_portfolio_vol=est_vol)
                 _avg_pos = (
                     sum(s.get('position_size', 0.0) for s in kept) / max(len(kept), 1)
                 )
                 _total_pos = sum(s.get('position_size', 0.0) for s in kept)
+                _fwd_tag = f", est_vol_fwd(shadow)={est_vol_fwd:.2%}" if est_vol_fwd else ""
                 logger.info(
-                    f"[P0.1 sizing] est_vol={est_vol:.2%}, "
+                    f"[P0.1 sizing] est_vol={est_vol:.2%}{_fwd_tag}, "
                     f"VT={_decision.vol_target_annual:.0%}, "
                     f"avg_pos={_avg_pos:.2%}, total_invested={_total_pos:.2%}, "
                     f"cash={(1-_total_pos):.2%}"
@@ -4159,6 +4165,8 @@ class TomorrowStockSelector:
                 "decision": self._ng21_decision.as_dict(),
                 "picks": self._ng21_overlay_picks,
                 "dropped_count": len(getattr(self, '_ng21_dropped_by_overlay', [])),
+                # 影子前瞻 vol (vol_10d 风险头, 不参与 sizing) — 供 VT 重校准对照
+                "est_vol_forward_shadow": getattr(self, '_est_vol_forward_shadow', None),
             }
         if getattr(self, '_risk_layer_errors', None):
             analysis["risk_layer_degraded"] = list(self._risk_layer_errors)
