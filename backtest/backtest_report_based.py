@@ -212,6 +212,13 @@ def _parse_single_report(json_file, rank_field):
         code = s.get('stock_code', '')
         score = s.get('score', 0)
         pred_ret = s.get('predicted_return_5d', None)
+        # 2026-07-12: 排除数据缺失占位行 (score 恰为 50.0 且全部 pred 为零/缺失
+        # = selector 无特征缓存时的 fallback 指纹)。此前占位行进入排名宇宙,
+        # 且预测偏负的模型 (如 Calmar 标签) 下占位 0 值百分位霸榜 →
+        # Top-N 全是无数据股 (ng1.6.2 评估实测 -57.9% 假 MaxDD)
+        _preds = (s.get('pred_3d'), s.get('pred_5d'), s.get('pred_10d'), s.get('pred_15d'))
+        if score == 50.0 and not any(_preds):
+            continue
         if code and score > 0:
             entry = {
                 'code': code,
