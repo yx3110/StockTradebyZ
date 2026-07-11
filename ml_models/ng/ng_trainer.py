@@ -2052,7 +2052,14 @@ class NGTrainer(V485Trainer):
             except Exception as _e:
                 model_data['label_csv_sha'] = None
 
+            # ng2.1/ng2.1v2 specialist 标记: scorer 据此拒绝把牛/熊专家误当生产 ng1.0.1 加载
+            _ng21_tag = getattr(self, '_ng21_variant', None) or getattr(self, '_ng21v2_variant', None)
+            if _ng21_tag:
+                model_data['ng21_variant'] = _ng21_tag
+
             joblib.dump(model_data, new_path)
+            # 记录本次保存的确切路径 (ng21 rename 用, 替代 mtime-glob 竞态)
+            self._last_saved_pkl = str(new_path)
             logger.info(f"\nNG {self._ng_version} model saved: {new_path}")
             logger.info(f"  Size: {new_path.stat().st_size / 1024 / 1024:.1f} MB")
 
@@ -2190,7 +2197,7 @@ if __name__ == '__main__':
 
     version = args.version or NG_VERSION
 
-    def _apply_trainer_switches(trainer):
+    def _apply_trainer_switches(trainer, seed_for_subdir=None):
         """Apply CLI switches to a trainer instance."""
         trainer._enable_moneyflow = args.enable_moneyflow
         trainer._enable_interaction = args.enable_interaction
@@ -2208,6 +2215,8 @@ if __name__ == '__main__':
         # P1.3 Step B: label override mode (industry_excess|calmar|sortino) + CSV path.
         trainer._label_mode = args.label_mode
         trainer._label_csv = args.label_csv
+        # Check 9 复现元数据: _purge_days 此前从未赋值, pkl 里恒为 None
+        trainer._purge_days = args.purge_days
         if args.fast_check:
             trainer._fast_check = True
             trainer._fast_check_max_windows = 2
@@ -2223,8 +2232,11 @@ if __name__ == '__main__':
             # Per-seed subdir so each seed's WF predictions are preserved.
             # The trainer's "清空旧WF报告" step would otherwise wipe previous
             # seed's fold predictions when the next seed starts (verified bug).
+            # NOTE: 旧实现用 locals().get('seed_val') 永远取不到 (seed_val 不是本
+            # 函数局部变量), 多 seed 全落 seed42/ 互擦 — 现由调用方显式传入。
             from pathlib import Path as _Path
-            seed_for_subdir = locals().get('seed_val', args.seed if args.seed is not None else 42)
+            if seed_for_subdir is None:
+                seed_for_subdir = args.seed if args.seed is not None else 42
             trainer._wf_report_dir = str(_Path(args.wf_report_dir) / f'seed{seed_for_subdir}')
 
     if args.wf_windows > 3:
@@ -2245,7 +2257,7 @@ if __name__ == '__main__':
             _trainer_mod._GLOBAL_RANDOM_SEED = seed_val
 
             trainer = NGTrainer(version=version, head=args.head)
-            _apply_trainer_switches(trainer)
+            _apply_trainer_switches(trainer, seed_for_subdir=seed_val)
 
             model_data, history = trainer.walk_forward_train(
                 start_date=args.start_date,

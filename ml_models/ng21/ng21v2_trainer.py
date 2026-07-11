@@ -193,29 +193,24 @@ class NG21v2Trainer(NGTrainer):
         return result
 
     def _rename_saved_pkl(self):
+        """用父类记录的确切保存路径重命名, 不再 mtime-glob (避免劫持真 ng1.0.1;
+        失败必须 raise, 否则 specialist 永久伪装成生产 ng1.0.1)."""
         from pathlib import Path
         import shutil
 
-        try:
-            project_root = Path(__file__).resolve().parents[2]
-            ng_dir = project_root / 'ml_models' / 'trained_models' / 'ng'
-            if not ng_dir.exists():
-                return
-            cands = sorted(
-                ng_dir.glob('ng101_seed*_multi_target_*.pkl'),
-                key=lambda p: p.stat().st_mtime,
+        src_path = getattr(self, '_last_saved_pkl', None)
+        if not src_path or not Path(src_path).exists():
+            raise RuntimeError(
+                f'NG21v2 rename failed: 找不到本次训练保存的 pkl '
+                f'(_last_saved_pkl={src_path!r}) — 检查父类保存流程'
             )
-            if not cands:
-                logger.warning('No ng101 pkl to rename')
-                return
-            src = cands[-1]
-            tag = self._ng21v2_variant.replace('.', '')  # ng21v2-bull
-            new_name = src.name.replace('ng101', tag)
-            dst = src.parent / new_name
-            shutil.move(str(src), str(dst))
-            logger.info(f'NG21v2 pkl renamed: {src.name} → {new_name}')
-        except Exception as e:
-            logger.warning(f'NG21v2 pkl rename failed: {e}')
+        src = Path(src_path)
+        tag = self._ng21v2_variant.replace('.', '')  # ng21v2-bull
+        new_name = src.name.replace('ng101', tag)
+        dst = src.parent / new_name
+        shutil.move(str(src), str(dst))
+        self._last_saved_pkl = str(dst)
+        logger.info(f'NG21v2 pkl renamed: {src.name} → {new_name}')
 
 
 # ---------------------------------------------------------------------------

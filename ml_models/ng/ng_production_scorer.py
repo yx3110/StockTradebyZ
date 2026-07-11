@@ -41,7 +41,7 @@ from .ng_trainer import (
     MONEYFLOW_FEATURE_NAMES,
     INTERACTION_FEATURE_NAMES,
 )
-from .ng_schema import get_table_name, version_ge
+from .ng_schema import get_table_name, version_ge, get_pinned_models
 
 # Ensemble members whose raw outputs are ranks/probabilities rather than
 # return-scale regressions. We rescale them into the regression heads' mean/std
@@ -121,22 +121,50 @@ class NGProductionScorer:
         if model_path:
             path = Path(model_path)
         else:
-            glob_pat = f"{version.replace('.', '')}*.pkl" if version else 'ng*.pkl'
-            ng_files = sorted(
-                self.model_dir.glob(glob_pat),
-                key=lambda f: f.stat().st_mtime
-            )
-            if not ng_files:
-                logger.warning("No NG model found in %s matching %s", self.model_dir, glob_pat)
-                print(f"NG scorer: No model found in {self.model_dir} matching {glob_pat}")
-                return
-            path = ng_files[-1]
+            path = None
+            # 生产版本优先用固定 pkl (PINNED_PRODUCTION_MODELS), 不做 mtime-glob —
+            # 4-28 未验收重训 pkl 曾因 mtime 更新被生产静默加载 2.5 个月
+            pinned = get_pinned_models(version) if version else None
+            if pinned:
+                cand = self.model_dir / pinned[0]
+                if cand.exists():
+                    path = cand
+                    logger.info("NG scorer: 使用固定生产模型 %s", cand.name)
+                else:
+                    logger.error(
+                        "固定生产模型缺失: %s — 降级为 mtime-glob (结果可能偏离已验证配置!)",
+                        cand,
+                    )
+            if path is None:
+                glob_pat = f"{version.replace('.', '')}*.pkl" if version else 'ng*.pkl'
+                ng_files = sorted(
+                    self.model_dir.glob(glob_pat),
+                    key=lambda f: f.stat().st_mtime
+                )
+                if not ng_files:
+                    logger.warning("No NG model found in %s matching %s", self.model_dir, glob_pat)
+                    print(f"NG scorer: No model found in {self.model_dir} matching {glob_pat}")
+                    return
+                path = ng_files[-1]
 
         try:
             model_data = joblib.load(str(path))
         except Exception as e:
             logger.error("Failed to load NG model %s: %s", path, e)
             return
+
+        # ng2.1 specialist 拒载: rename 失败的专家 pkl 会以 ng101_* 名字滞留目录,
+        # 不能被当成生产 ng1.0.1 加载 (请求版本本身是 ng2.1* 时放行)
+        _ng21_tag = model_data.get('ng21_variant')
+        self._loaded_ng21_variant = _ng21_tag
+        if _ng21_tag and version and not str(version).startswith('ng2.1'):
+            logger.error(
+                "拒载 %s: pkl 是 ng2.1 specialist (%s), 请求版本却是 %s — "
+                "可能是 rename 失败滞留的专家模型", path.name, _ng21_tag, version,
+            )
+            return
+
+        self._loaded_model_file = str(path)
 
         # Warn if reproducibility metadata is missing (pre-2026-04-20 models)
         for _field in ('git_commit_hash', 'host', 'schema_version'):
@@ -224,10 +252,40 @@ class NGProductionScorer:
         """Load all seed models for a given version and set up ensemble averaging."""
         ver_tag = version.replace('.', '')  # ng104
 
-        seed_files = sorted(
-            self.model_dir.glob(f'{ver_tag}_seed*_multi_target_*.pkl'),
-            key=lambda f: f.stat().st_mtime
-        )
+        # 生产版本用固定 pkl 清单 (已验证的 seed 组合); 未固定版本 glob 后按 seed
+        # 去重 (每 seed 只留 mtime 最新一份) — 旧行为全量加载导致 ng104 ensemble
+        # 变成 7 模型平均且 seed42 权重 ×3, 偏离已验证的 3-seed 配置
+        pinned = get_pinned_models(version)
+        if pinned:
+            seed_files = [self.model_dir / p for p in pinned]
+            missing = [p for p in seed_files if not p.exists()]
+            if missing:
+                logger.error(
+                    "固定 ensemble 成员缺失 %s — 降级为 glob (结果可能偏离已验证配置!)",
+                    [p.name for p in missing],
+                )
+                seed_files = []
+            else:
+                logger.info("NG ensemble: 使用固定生产模型清单 (%d 个)", len(seed_files))
+        else:
+            seed_files = []
+
+        if not seed_files:
+            import re as _re
+            raw_files = sorted(
+                self.model_dir.glob(f'{ver_tag}_seed*_multi_target_*.pkl'),
+                key=lambda f: f.stat().st_mtime
+            )
+            by_seed = {}
+            for f in raw_files:  # mtime 升序, 后写覆盖 → 每 seed 留最新
+                m = _re.search(r'_seed(\d+)_', f.name)
+                by_seed[m.group(1) if m else f.name] = f
+            seed_files = sorted(by_seed.values(), key=lambda f: f.name)
+            if len(raw_files) != len(seed_files):
+                logger.warning(
+                    "NG ensemble seed 去重: %d 个 pkl → %d 个 (每 seed 取最新)",
+                    len(raw_files), len(seed_files),
+                )
 
         if not seed_files:
             # Fallback: look for single model without seed tag
@@ -248,7 +306,16 @@ class NGProductionScorer:
         for sf in seed_files:
             scorer = NGProductionScorer(db_path=self.db_path, model_path=str(sf))
             scorer._ensemble_scorers = None  # prevent recursion
+            # 拒载伪装成本版本的 ng2.1 specialist (rename 失败滞留的 pkl)
+            if getattr(scorer, '_loaded_ng21_variant', None) and not version.startswith('ng2.1'):
+                logger.error("ensemble 成员 %s 是 ng2.1 specialist, 跳过", sf.name)
+                continue
             self._ensemble_scorers.append(scorer)
+        logger.info(
+            "NG ensemble (%s) 最终成员: %s",
+            version, [Path(s._loaded_model_file).name if getattr(s, '_loaded_model_file', None)
+                      else '?' for s in self._ensemble_scorers],
+        )
 
         # Copy metadata from first scorer
         first = self._ensemble_scorers[0]
@@ -304,7 +371,23 @@ class NGProductionScorer:
         df_stock = pd.DataFrame(parsed)
 
         # Ensure expected columns (handles v1.0.0 / v1.0.3 / v1.0.3+ data)
-        # Fill missing moneyflow/interaction features with 0 for older cache entries
+        # Fill missing moneyflow/interaction features with 0 for older cache entries.
+        # 防线: 缺失特征超过 30% 说明模型-缓存 schema 严重错配 (如拿错表打分),
+        # 静默填 0 会产出无告警的漂移预测 — 直接报错
+        _missing_cols = [c for c in self.stock_feature_cols if c not in df_stock.columns]
+        if _missing_cols:
+            _ratio = len(_missing_cols) / max(len(self.stock_feature_cols), 1)
+            if _ratio > 0.30:
+                raise ValueError(
+                    f"cache {self.cache_table} @ {date} 缺失 "
+                    f"{len(_missing_cols)}/{len(self.stock_feature_cols)} 个模型特征 "
+                    f"({_ratio:.0%} > 30%): 模型-缓存 schema 错配, 拒绝静默填 0。"
+                    f"缺失示例: {_missing_cols[:8]}"
+                )
+            logger.warning(
+                "cache %s @ %s 缺失 %d 个特征 (填 0): %s",
+                self.cache_table, date, len(_missing_cols), _missing_cols[:8],
+            )
         for col in self.stock_feature_cols:
             if col not in df_stock.columns:
                 df_stock[col] = 0.0

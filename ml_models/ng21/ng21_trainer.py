@@ -179,37 +179,32 @@ class NG21Trainer(NGTrainer):
         return result
 
     def _rename_saved_pkl(self):
-        """Find the most recent ng101_*.pkl this run created and rename to ng21<variant>_*.pkl."""
+        """Rename the pkl this run just saved to ng21<variant>_*.pkl.
+
+        用父类记录的确切保存路径 (self._last_saved_pkl), 不再 mtime-glob 抢最新
+        ng101 pkl — 旧实现在并发训练时可能劫持真 ng1.0.1 模型, 且 rename 失败被
+        吞掉后 specialist 会永久伪装成生产 ng1.0.1 (scorer 现已按 ng21_variant
+        字段拒载, 双保险)。
+        """
         from pathlib import Path
         import shutil
 
-        try:
-            project_root = Path(__file__).resolve().parents[2]
-            ng_dir = project_root / 'ml_models' / 'trained_models' / 'ng'
-            if not ng_dir.exists():
-                logger.warning(f'ng dir missing: {ng_dir}')
-                return
-
-            # ng_trainer saves as ng101_seed{N}_multi_target_{ts}.pkl.
-            candidates = sorted(
-                ng_dir.glob('ng101_seed*_multi_target_*.pkl'),
-                key=lambda p: p.stat().st_mtime,
+        src_path = getattr(self, '_last_saved_pkl', None)
+        if not src_path or not Path(src_path).exists():
+            raise RuntimeError(
+                f'NG21 rename failed: 找不到本次训练保存的 pkl '
+                f'(_last_saved_pkl={src_path!r}) — 检查父类保存流程'
             )
-            if not candidates:
-                logger.warning('No ng101 pkl found to rename')
-                return
-
-            src = candidates[-1]  # most recent
-            # New name: ng21-bull_seed42_multi_target_TIMESTAMP.pkl (etc.)
-            # Keep the dash so glob pattern from scorer (`ver.replace('.', '')`)
-            # matches: 'ng2.1-bull'.replace('.', '') == 'ng21-bull'.
-            tag = self._ng21_variant.replace('.', '')  # 'ng2.1-bull' → 'ng21-bull'
-            new_name = src.name.replace('ng101', tag)
-            dst = src.parent / new_name
-            shutil.move(str(src), str(dst))
-            logger.info(f'NG21 pkl renamed: {src.name} → {new_name}')
-        except Exception as e:
-            logger.warning(f'NG21 pkl rename failed: {e}')
+        src = Path(src_path)
+        # New name: ng21-bull_seed42_multi_target_TIMESTAMP.pkl (etc.)
+        # Keep the dash so glob pattern from scorer (`ver.replace('.', '')`)
+        # matches: 'ng2.1-bull'.replace('.', '') == 'ng21-bull'.
+        tag = self._ng21_variant.replace('.', '')  # 'ng2.1-bull' → 'ng21-bull'
+        new_name = src.name.replace('ng101', tag)
+        dst = src.parent / new_name
+        shutil.move(str(src), str(dst))
+        self._last_saved_pkl = str(dst)
+        logger.info(f'NG21 pkl renamed: {src.name} → {new_name}')
 
     # ------------------------------------------------------------------
     # Data loading: filter by regime, then optionally rewrite label

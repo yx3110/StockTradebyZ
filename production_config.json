@@ -6,8 +6,8 @@
 
   "model": {
     "scoring_version": "ng1.0.1",
-    "model_path": "ml_models/trained_models/ng/ng101_multi_target_20260405_013038.pkl",
-    "features": 69,
+    "model_path": "ml_models/trained_models/ng/ng101_seed42_multi_target_20260412_233749.pkl",
+    "features": 66,
     "rank_field": "score",
     "cache_table": "ng101_feature_cache",
     "downside_model": false,

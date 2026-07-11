@@ -54,6 +54,27 @@ DEFAULT_VERSION = 'ng1.0.3'
 
 PRODUCTION_VERSION = 'ng1.0.6'  # MOE v1: ng1.0.1 bull + ng1.0.4 bear; 4-25 真零泄漏 OOS Pre-2020 验证 v1 (Top10 +0.87%) > v2 ng1.0.62 (+0.49%) 78%, v1→v2 切换被回滚
 
+# 生产模型 pkl 固定注册 (2026-07-11): scorer 加载生产版本时不再 mtime-glob 取最新。
+# 事故背景: 4-28 风控 session 的未验收重训 pkl 因 mtime 更新被生产静默加载 2.5 个月;
+# ng1.0.4 ensemble glob 到 7 个 pkl (seed42 × 3 份 + 5-seed 实验遗留), 偏离已验证的
+# 3-seed (42/123/456) 配置。切换生产模型必须显式改这里 (与 PRODUCTION_VERSION 同步)。
+# 值为文件名列表: 单模型版本 1 个, ensemble 版本 N 个 (全部相对 trained_models/ng/)。
+PINNED_PRODUCTION_MODELS = {
+    # 4-12 revenue_growth bugfix 重训版 (CLAUDE.md/wiki 记录的生产模型)
+    'ng1.0.1': ['ng101_seed42_multi_target_20260412_233749.pkl'],
+    # ng104-3s: 已验证的 3-seed ensemble (WF-OOS V5.2=78.1% 评估所用配置)
+    'ng1.0.4': [
+        'ng104_seed42_multi_target_20260408_041932.pkl',
+        'ng104_seed123_multi_target_20260408_060319.pkl',
+        'ng104_seed456_multi_target_20260408_073609.pkl',
+    ],
+}
+
+
+def get_pinned_models(version: str):
+    """Return pinned pkl filenames for a production version, or None if unpinned."""
+    return PINNED_PRODUCTION_MODELS.get(version)
+
 # Versions that reuse another version's cache schema (table columns + feature semantics)
 # ng1.1.0 is a pruning+bugfix iteration on top of ng1.0.1, uses identical ng101_feature_cache schema
 # ng1.2.0/ng1.2.2 are training-layer variants on ng1.0.1 (same features, different loss/label transform)
