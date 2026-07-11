@@ -236,3 +236,12 @@ Week 4:  Phase 4 (性能) + Phase 5 (工程治理)
 12. 模型 manifest (sha256) 体系; v44 offline_mode 默认改 False; get_multiple_stocks_data 白名单
 13. _enhance_prices_with_optimizer_v2 N+1 SQL (每天 ~5500 次连接) 批量化
 14. financial_indicator 新鲜度纳入 smoke check (滞后 >30 天 WARN)
+
+### 附: 双 Selector.py 合并调查结论 (2026-07-11, 未执行)
+
+调查实证: 两副本是**语义分叉的活变体**, 非陈旧漂移 — shim 模拟合并跑出 296 passed / 20 failed。
+硬冲突 4 处: compute_kdj (根=K/D种子50 vs ss=ewm 与 DB 口径一致)、BBIKDJSelector (根带知行闸门+当日约束)、
+BBIShortLongSelector (签名/阈值/逻辑三重分叉, configs.json 依赖根签名)、MA60 默认参数。
+裁决选项: (1) 双变体并存 — 根副本类改名 Strict 版并入 stock_selctor, 零行为变化 (推荐);
+(2) ss 为准 — 改 8 个测试断言 + configs.json + 接受 select_stock.py 行为变化;
+(3) compute_kdj 无论如何应以 ss (ewm, 与 technical_indicator_calculator 一致) 为准。
