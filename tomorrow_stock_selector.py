@@ -3557,14 +3557,16 @@ class TomorrowStockSelector:
                     self.v44_batch_cache = {}
                     self._risk_layer_errors.append(f"批量评分失败({e}), 逐股 fallback")
 
-            # 2026-07-11 空评分 gate: 非零 pred_10d 覆盖率 <50% → 排名无效,
+            # 2026-07-11 空评分 gate: 非零 pred_10d 覆盖率 <30% → 排名无效,
             # 报告降级盖戳 + generate_report 跳过 rank-override (防止"随机顺序
-            # 强烈买入"事故, ng1.1.0 迭代期真实发生过 pred_10d 全零报告)
+            # 强烈买入"事故, ng1.1.0 迭代期真实发生过 pred_10d 全零报告)。
+            # 阈值 30%: 正常日 ~52% (特征缓存 mv_filter 只覆盖 ~2800/5400 只),
+            # 降级日 ~0% — 50% 离正常水位太近会误报
             if self.scoring_version.startswith("ng") and self.v44_batch_cache:
                 _nonzero = sum(1 for r in self.v44_batch_cache.values()
                                if float(r.get('pred_10d', 0) or 0) != 0)
                 _cov = _nonzero / max(len(self.v44_batch_cache), 1)
-                if _cov < 0.5:
+                if _cov < 0.3:
                     self._scoring_degraded = (f"非零 pred_10d 覆盖率仅 {_cov:.0%} "
                                               f"({_nonzero}/{len(self.v44_batch_cache)}), 排名不可信")
                     self._risk_layer_errors.append(f"空评分gate: {self._scoring_degraded}")
@@ -4192,7 +4194,7 @@ class TomorrowStockSelector:
             "regime_source_date": getattr(_route, 'regime_source_date', None) if _route else None,
             "regime_degraded": getattr(_route, 'regime_degraded', '') or None if _route else None,
             "model_paths": ([os.path.basename(getattr(s, '_loaded_model_file', ''))
-                             for s in getattr(_engine, '_ensemble_scorers', [])]
+                             for s in (getattr(_engine, '_ensemble_scorers', None) or [])]
                             or (os.path.basename(getattr(_engine, '_loaded_model_file', ''))
                                 if getattr(_engine, '_loaded_model_file', None) else None)),
             "scoring_degraded": getattr(self, '_scoring_degraded', None),
