@@ -1,10 +1,9 @@
 #!/bin/bash
-"""
-AI增强每日选股系统 - 自动化运行脚本
-集成量化选股、AI分析、情绪分析和交易建议生成
-"""
+# AI增强每日选股系统 - 自动化运行脚本
+# 集成量化选股、AI分析、情绪分析和交易建议生成
 
 set -e  # 遇到错误立即退出
+set -o pipefail  # 管道任一环节失败即整体失败 (否则 `python3 .. | tee` 只取 tee 的退出码, 掩盖 python 失败)
 
 # 脚本配置
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

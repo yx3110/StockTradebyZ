@@ -2194,7 +2194,8 @@ def main():
     parser.add_argument('--start-date', help='Backfill start date (YYYY-MM-DD)')
     parser.add_argument('--end-date', help='Backfill end date (YYYY-MM-DD)')
     parser.add_argument('--db-path', help='Override database path')
-    parser.add_argument('--version', default='ng1.0.3', help='NG version (default: ng1.0.3)')
+    # 版本必须显式传递, 禁止默认 fallback (CLAUDE.md Check 2 — 历史惨案: 忘带 --version 时静默写错表)
+    parser.add_argument('--version', required=True, help='NG version (必须显式指定, 如 ng1.0.1)')
     parser.add_argument('--penalty-power', type=float, default=1.5,
                         help='Risk-adjusted label penalty power (default: 1.5, ng1.0.4)')
     args = parser.parse_args()

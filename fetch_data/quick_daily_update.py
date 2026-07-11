@@ -706,6 +706,22 @@ def update_neural_embeddings(date_str: str):
         return 0
 
 
+def _is_trading_day(date_str: str):
+    """查询 Tushare 交易日历判断 date_str (YYYYMMDD) 是否交易日
+
+    Returns:
+        True/False: 日历明确判定是/否交易日
+        None: 日历查询失败 (网络/token故障), 无法判定
+    """
+    try:
+        df = pro.trade_cal(exchange='SSE', start_date=date_str, end_date=date_str)
+        if df is not None and not df.empty:
+            return int(df.iloc[0]['is_open']) == 1
+    except Exception as e:
+        logger.warning(f"交易日历查询失败: {e}")
+    return None
+
+
 def quick_daily_update(date: str = None, skip_financial: bool = True):
     """快速每日更新 - 包含市场行情、基本面、财务和技术指标
 
@@ -743,11 +759,19 @@ def quick_daily_update(date: str = None, skip_financial: bool = True):
     quotes_count = batch_update_stocks(date)
     stats['quotes'] += quotes_count
 
-    # 非交易日检测: 如果A股行情返回0条，说明今天非交易日，跳过后续步骤
+    # A股行情返回0条时, 用交易日历区分「非交易日正常跳过」和「交易日但API全线失败」
+    # (2026-07-11 修复: 此前两种情况都当非交易日 exit 0, API 故障时选股照常在陈旧数据上运行)
     if quotes_count == 0:
-        logger.info(f"⚠️ {date} 非交易日或无数据，跳过后续更新步骤")
-        elapsed = time.time() - start_time
-        logger.info(f"数据更新完成 (非交易日)，耗时: {elapsed:.1f}秒")
+        is_open = _is_trading_day(date)
+        if is_open is False:
+            logger.info(f"⚠️ {date} 非交易日，跳过后续更新步骤")
+            elapsed = time.time() - start_time
+            logger.info(f"数据更新完成 (非交易日)，耗时: {elapsed:.1f}秒")
+            return stats
+        # 交易日 (或日历也查不到 = API 全线故障) 但行情 0 条 → 数据更新失败,
+        # 标记 failed 让 __main__ exit 1, 阻断 run_daily_update.sh 继续选股
+        logger.error(f"❌ {date} 为交易日但A股行情更新 0 条 (API失败/token失效/限流?), 中止更新")
+        stats['failed'] = True
         return stats
 
     # API限流等待
@@ -968,4 +992,7 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    quick_daily_update(args.date, skip_financial=not args.include_financial)
+    result_stats = quick_daily_update(args.date, skip_financial=not args.include_financial)
+    # 交易日但 API 全线失败时以非零码退出, 让 run_daily_update.sh 停止后续选股流程
+    if result_stats and result_stats.get('failed'):
+        sys.exit(1)

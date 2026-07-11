@@ -91,6 +91,22 @@ backup_reports() {
     find "$SCRIPT_DIR/backups" -name "*.md" -mtime +30 -delete 2>/dev/null
 }
 
+# P0.2 (2026-04-27): forward OOS scan + 90d rolling dashboard
+# 每日尾声把生产报告 D-7..D 增量 scan 进 forward_samples.csv, 重算 dashboard.
+# 任一步失败不应阻塞主流程 (forward 收益要等 N 个交易日才能算, 早期日为空很正常).
+run_forward_oos_tracking() {
+    print_info "Forward OOS tracking..."
+    $PYTHON_CMD $SCRIPT_DIR/scripts/forward_test_tracker.py scan \
+        --scoring-version ng1.0.6 \
+        2>&1 | tail -3 || print_info "(forward scan skipped — non-fatal)"
+    $PYTHON_CMD $SCRIPT_DIR/scripts/forward_test_dashboard.py \
+        --scoring-version ng1.0.6 --window-days 90 --horizon 10d \
+        2>&1 | tail -3 || print_info "(forward dashboard skipped — non-fatal)"
+    if [ -f "$SCRIPT_DIR/reports/forward_test/dashboard.md" ]; then
+        print_info "已更新 forward OOS dashboard: reports/forward_test/dashboard.md"
+    fi
+}
+
 # 运行主程序
 run_main_program() {
     print_info "开始执行每日更新任务..."
@@ -129,17 +145,11 @@ run_main_program() {
                 exit 1
             fi
             
-            # 步骤1.5: 更新基础数据（每周执行）
-            WEEKDAY=$(date +%u)  # 1=Monday, 7=Sunday
-            if [ "$WEEKDAY" -eq 1 ]; then  # 每周一更新
-                print_info "步骤1.5: 更新基础数据（行业、地区信息）"
-                $PYTHON_CMD $SCRIPT_DIR/update_fundamental_data.py
-                
-                if [ $? -ne 0 ]; then
-                    print_warning "基础数据更新失败，但不影响主流程"
-                fi
-            fi
-            
+            # 步骤1.5 (已移除 2026-07-11): 原每周一调用 update_fundamental_data.py 更新行业/地区信息,
+            # 但该脚本已归档 (archive/root_scripts/, 且其依赖的 temp_scripts/complete_database_update.py 亦已归档),
+            # 每周一实际只报 "can't open file" 假失败。行业分类现由 quick_daily_update.py 步骤5
+            # check_sw_industry (月度检查) 覆盖, 股票名称/ST 状态由其步骤17 refresh_stock_names 覆盖。
+
             # 步骤2: 生成选股报告
             print_info "步骤2: 生成量化选股报告"
             $PYTHON_CMD $SCRIPT_DIR/tomorrow_stock_selector.py
@@ -171,6 +181,11 @@ run_main_program() {
                 fi
             fi
             
+            # P0.2 Forward OOS 监控 (2026-07-11 修复: 原块在函数尾部, both 模式提前 return 从未执行)
+            run_forward_oos_tracking
+
+            echo "$(date): 完整流程(both)执行完成" >> "$LOG_FILE"
+
             print_info "✅ 每日更新流程完成"
             return 0
         fi
@@ -209,19 +224,8 @@ run_main_program() {
             print_info "已生成AI增强选股报告: reports/ai_enhanced/AI增强选股报告_最新.md"
         fi
 
-        # P0.2 (2026-04-27): forward OOS scan + 90d rolling dashboard
-        # 每日尾声把生产报告 D-7..D 增量 scan 进 forward_samples.csv, 重算 dashboard.
-        # 任一步失败不应阻塞主流程 (forward 收益要等 N 个交易日才能算, 早期日为空很正常).
-        print_info "Forward OOS tracking..."
-        $PYTHON_CMD scripts/forward_test_tracker.py scan \
-            --scoring-version ng1.0.6 \
-            2>&1 | tail -3 || print_info "(forward scan skipped — non-fatal)"
-        $PYTHON_CMD scripts/forward_test_dashboard.py \
-            --scoring-version ng1.0.6 --window-days 90 --horizon 10d \
-            2>&1 | tail -3 || print_info "(forward dashboard skipped — non-fatal)"
-        if [ -f "$SCRIPT_DIR/reports/forward_test/dashboard.md" ]; then
-            print_info "已更新 forward OOS dashboard: reports/forward_test/dashboard.md"
-        fi
+        # P0.2 Forward OOS 监控 (逻辑抽到 run_forward_oos_tracking, 与 both 模式共用)
+        run_forward_oos_tracking
 
         # 显示数据库统计信息（如果使用数据库模式）
         if [ "$USE_DATABASE" = "true" ]; then
