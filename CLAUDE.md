@@ -188,6 +188,12 @@ trainer / cache_updater 改动后, `/simplify scripts/xxx.py` 过一遍. N+1 / �
 - 日报 JSON 的 Top-50 会追加 `trust_tag`/`trust_samples`/`trust_details` 字段
 - 周度全局统计: `python3 scripts/weekly_signal_trust_stats.py` → `reports/signal_trust/`
 
+### 🆕 市场行情三页面 (webapp, 2026-07-11)
+- webapp (`cd webapp && python3 app.py`, 端口8000) 新增: 板块排行 `/market-rotation` (轮动日历+创新高日历), 资金流向 `/market-fundflow` (主力净流入/出TOP20日历), 全A行情 `/market-sentiment` (涨停/新高情绪图)
+- 板块口径: 申万一级/二级 (成分等权聚合) + 东财概念 (dc_index 官方涨幅)
+- 数据: `python3 fetch_data/market_board_fetcher.py --backfill|--daily` → `python3 scripts/build_market_pulse.py`; 已接入 quick_daily_update 步骤18
+- 陷阱与链路详见 `docs/wiki/architecture/market-pulse.md` (is_limit_up 全0 用 limit_list_d; moneyflow code_6 NULL 用 substr(code))
+
 ### Daily Data Update Components (🆕 已扩展支持大盘分析 + v3.9财务指标)
 1. **Market Quotes**: Open, High, Low, Close, Volume (7000+ stocks/ETFs)
 2. **🆕 Market Indices**: 10个重要指数数据 (上证指数、深证成指、创业板指、科创50、上证50、沪深300、中证500、中证1000、中证2000、中证全指)

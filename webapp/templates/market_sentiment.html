@@ -1,0 +1,136 @@
+{% extends "base.html" %}
+
+{% block title %}全A行情 - StockTradebyZ{% endblock %}
+
+{% block extra_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/market.css') }}">
+{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center flex-wrap gap-3 mb-3">
+    <h4 class="mb-0"><i class="bi bi-activity"></i> 全A行情 · 市场情绪</h4>
+    <select class="form-select form-select-sm w-auto" id="daysSelect">
+        <option value="60">近60日</option>
+        <option value="120">近120日</option>
+        <option value="250" selected>近250日</option>
+        <option value="500">近500日</option>
+    </select>
+    <span class="text-muted small" id="statusLine"></span>
+</div>
+
+<div class="row g-3 mb-3" id="statCards">
+    <div class="col-6 col-md-2">
+        <div class="card"><div class="card-body py-2 sentiment-stat">
+            🔴 涨停 <b class="text-danger" id="valLimitUp">--</b> 只
+        </div></div>
+    </div>
+    <div class="col-6 col-md-2">
+        <div class="card"><div class="card-body py-2 sentiment-stat">
+            🟢 跌停 <b class="text-success" id="valLimitDown">--</b> 只
+        </div></div>
+    </div>
+    <div class="col-6 col-md-2">
+        <div class="card"><div class="card-body py-2 sentiment-stat">
+            💥 炸板 <b class="text-warning" id="valBroken">--</b> 只
+        </div></div>
+    </div>
+    <div class="col-6 col-md-2">
+        <div class="card"><div class="card-body py-2 sentiment-stat">
+            涨/跌 <b id="valUpDown">--</b>
+        </div></div>
+    </div>
+    <div class="col-6 col-md-2">
+        <div class="card"><div class="card-body py-2 sentiment-stat">
+            沪深300新高 <b class="text-danger" id="valHs300">--</b> 只
+        </div></div>
+    </div>
+    <div class="col-6 col-md-2">
+        <div class="card"><div class="card-body py-2 sentiment-stat">
+            中证2000新高 <b class="text-danger" id="valZz2000">--</b> 只
+        </div></div>
+    </div>
+</div>
+
+<div class="card mb-3">
+    <div class="card-body">
+        <div class="market-section-title">涨停 / 跌停 / 炸板家数</div>
+        <div id="chartLimit" style="min-height:220px"></div>
+    </div>
+</div>
+<div class="card mb-3">
+    <div class="card-body">
+        <div class="market-section-title">沪深300 成分股 20日新高数<span class="hint">权重股强度</span></div>
+        <div id="chartHs300" style="min-height:220px"></div>
+    </div>
+</div>
+<div class="card mb-3">
+    <div class="card-body">
+        <div class="market-section-title">中证2000 成分股 20日新高数<span class="hint">小票强度</span></div>
+        <div id="chartZz2000" style="min-height:220px"></div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="{{ url_for('static', filename='js/market_common.js') }}"></script>
+<script>
+let charts = [];
+
+function lineChart(el, series, dates, colors) {
+    const chart = new ApexCharts(document.querySelector(el), {
+        chart: {
+            type: 'line', height: 230, group: 'sentiment', id: el,
+            toolbar: { show: false }, animations: { enabled: false },
+            zoom: { enabled: true }
+        },
+        series: series,
+        colors: colors,
+        stroke: { width: 2, curve: 'straight' },
+        xaxis: {
+            categories: dates,
+            labels: { rotate: 0, hideOverlappingLabels: true, style: { fontSize: '10px' } },
+            tickAmount: 12, tooltip: { enabled: false }
+        },
+        yaxis: { labels: { minWidth: 36, style: { fontSize: '10px' } } },
+        tooltip: { shared: true, x: { formatter: (i) => dates[i - 1] || '' } },
+        legend: { show: series.length > 1, position: 'top', horizontalAlign: 'right' },
+        grid: { borderColor: '#f0f0f0' }
+    });
+    chart.render();
+    charts.push(chart);
+}
+
+function load() {
+    const days = document.getElementById('daysSelect').value;
+    api.get('/api/market/sentiment', { days: days }).done(d => {
+        if (!d.success || !d.dates.length) {
+            document.getElementById('statusLine').textContent =
+                '暂无数据 — 请先运行 market_board_fetcher.py --backfill 和 build_market_pulse.py';
+            return;
+        }
+        const s = d.series, li = d.dates.length - 1;
+        setStatusLine(d.dates);
+        document.getElementById('valLimitUp').textContent = s.limit_up[li];
+        document.getElementById('valLimitDown').textContent = s.limit_down[li];
+        document.getElementById('valBroken').textContent = s.broken[li];
+        document.getElementById('valUpDown').innerHTML =
+            `<span class="text-danger">${s.up_cnt[li]}</span> / <span class="text-success">${s.down_cnt[li]}</span>`;
+        document.getElementById('valHs300').textContent = s.hs300_newhigh20[li];
+        document.getElementById('valZz2000').textContent = s.zz2000_newhigh20[li];
+
+        charts.forEach(c => c.destroy());
+        charts = [];
+        const dates = d.dates.map(x => x.slice(5));
+        lineChart('#chartLimit', [
+            { name: '涨停', data: s.limit_up },
+            { name: '跌停', data: s.limit_down },
+            { name: '炸板', data: s.broken }
+        ], dates, ['#ef4444', '#10b981', '#f59e0b']);
+        lineChart('#chartHs300', [{ name: '沪深300 20日新高', data: s.hs300_newhigh20 }], dates, ['#ef4444']);
+        lineChart('#chartZz2000', [{ name: '中证2000 20日新高', data: s.zz2000_newhigh20 }], dates, ['#3b82f6']);
+    });
+}
+
+initMarketPage(load);
+</script>
+{% endblock %}

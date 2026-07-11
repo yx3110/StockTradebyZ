@@ -567,7 +567,7 @@ class NGCacheUpdater:
         rows = []
         for _, row in df_mf.iterrows():
             rows.append((
-                row['ts_code'], date,
+                row['ts_code'], row['ts_code'][:6], date,
                 float(row.get('buy_sm_amount') or 0),
                 float(row.get('sell_sm_amount') or 0),
                 float(row.get('buy_md_amount') or 0),
@@ -581,10 +581,10 @@ class NGCacheUpdater:
 
         conn.executemany(
             """INSERT OR REPLACE INTO moneyflow_daily
-               (code, trade_date, buy_sm_amount, sell_sm_amount,
+               (code, code_6, trade_date, buy_sm_amount, sell_sm_amount,
                 buy_md_amount, sell_md_amount, buy_lg_amount, sell_lg_amount,
                 buy_elg_amount, sell_elg_amount, net_mf_amount)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
             rows
         )
         conn.commit()

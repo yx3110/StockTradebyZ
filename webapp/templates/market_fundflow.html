@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+
+{% block title %}资金流向 - StockTradebyZ{% endblock %}
+
+{% block extra_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/market.css') }}">
+{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center flex-wrap gap-3 mb-3">
+    <h4 class="mb-0"><i class="bi bi-cash-stack"></i> 资金流向</h4>
+    <div class="btn-group taxonomy-tabs" id="taxonomyTabs" role="group">
+        <button type="button" class="btn btn-outline-primary active" data-taxonomy="sw_l1">一级行业</button>
+        <button type="button" class="btn btn-outline-primary" data-taxonomy="sw_l2">二级行业</button>
+        <button type="button" class="btn btn-outline-primary" data-taxonomy="concept">概念板块</button>
+    </div>
+    <select class="form-select form-select-sm w-auto" id="daysSelect">
+        <option value="20">近20日</option>
+        <option value="40" selected>近40日</option>
+        <option value="60">近60日</option>
+        <option value="120">近120日</option>
+    </select>
+    <span class="text-muted small" id="statusLine"></span>
+</div>
+
+<div class="card mb-3">
+    <div class="card-body">
+        <div class="market-section-title text-danger">
+            🔴 主力净流入 TOP20<span class="hint">大单+超大单净买入 · 单位: 亿元</span>
+        </div>
+        <div class="calendar-scroll" id="inflowWrap">
+            <div class="text-center text-muted py-5" id="loading">
+                <div class="spinner-border spinner-border-sm"></div> 加载中...
+            </div>
+            <div id="inflow"></div>
+        </div>
+    </div>
+</div>
+
+<div class="card mb-3">
+    <div class="card-body">
+        <div class="market-section-title text-success">
+            🟢 主力净流出 TOP20<span class="hint">单位: 亿元</span>
+        </div>
+        <div class="calendar-scroll" id="outflowWrap">
+            <div id="outflow"></div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="{{ url_for('static', filename='js/market_common.js') }}"></script>
+<script>
+let TAXONOMY = 'sw_l1';
+
+function renderFlowCell(it) {
+    const fmt = (it.amount >= 0 ? '+' : '') + it.amount.toFixed(1);
+    return {
+        name: it.name,
+        label: it.name,
+        sub: fmt + '亿',
+        title: `${it.name} 主力净流${it.amount >= 0 ? '入' : '出'} ${fmt}亿`
+    };
+}
+
+function load() {
+    const days = document.getElementById('daysSelect').value;
+    document.getElementById('loading').style.display = '';
+    api.get('/api/market/fundflow', { taxonomy: TAXONOMY, days: days }).done(d => {
+        document.getElementById('loading').style.display = 'none';
+        if (!d.success || !d.dates.length) {
+            document.getElementById('inflow').innerHTML = MARKET_NO_DATA_HTML;
+            document.getElementById('outflow').innerHTML = '';
+            return;
+        }
+        setStatusLine(d.dates);
+        document.getElementById('inflow').innerHTML =
+            buildCalendarTable(TAXONOMY, d.dates, d.inflow, renderFlowCell, 150);
+        document.getElementById('outflow').innerHTML =
+            buildCalendarTable(TAXONOMY, d.dates, d.outflow, renderFlowCell, 150);
+        scrollToRight(document.getElementById('inflowWrap'));
+        scrollToRight(document.getElementById('outflowWrap'));
+    });
+}
+
+bindTaxonomyTabs('taxonomyTabs', t => { TAXONOMY = t; load(); });
+initMarketPage(load);
+</script>
+{% endblock %}

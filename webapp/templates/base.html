@@ -45,6 +45,23 @@
                             <i class="bi bi-calendar-check"></i> 日常任务
                         </a>
                     </li>
+                    <li class="nav-item dropdown">
+                        <a class="nav-link dropdown-toggle {% if request.endpoint in ['market_rotation', 'market_fundflow', 'market_sentiment'] %}active{% endif %}"
+                           href="#" role="button" data-bs-toggle="dropdown">
+                            <i class="bi bi-bar-chart-steps"></i> 市场行情
+                        </a>
+                        <ul class="dropdown-menu">
+                            <li><a class="dropdown-item {% if request.endpoint == 'market_rotation' %}active{% endif %}"
+                                   href="{{ url_for('market_rotation') }}">
+                                <i class="bi bi-grid-3x3-gap"></i> 板块排行</a></li>
+                            <li><a class="dropdown-item {% if request.endpoint == 'market_fundflow' %}active{% endif %}"
+                                   href="{{ url_for('market_fundflow') }}">
+                                <i class="bi bi-cash-stack"></i> 资金流向</a></li>
+                            <li><a class="dropdown-item {% if request.endpoint == 'market_sentiment' %}active{% endif %}"
+                                   href="{{ url_for('market_sentiment') }}">
+                                <i class="bi bi-activity"></i> 全A行情</a></li>
+                        </ul>
+                    </li>
                     <li class="nav-item">
                         <a class="nav-link {% if request.endpoint == 'model_training' %}active{% endif %}"
                            href="{{ url_for('model_training') }}">

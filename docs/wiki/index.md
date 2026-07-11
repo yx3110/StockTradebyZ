@@ -11,6 +11,7 @@
 - [Signal Trust 信号可信度系统](architecture/signal-trust.md) — 给选股贴 🟢🟡🔴 可信度标签, 识别假信号
 - [0AMV Regime Classifier v1](architecture/regime-classifier-v1.md) — 牛熊分辨器 V11 上线 (位置+水上/上升+3日平滑), 三窗口击败旧 V3 strict
 - [风控管线](architecture/risk-control-pipeline.md) — 选股报告 4 层风控 (post_filters → booster → ng21 overlay → P0.1 sizing) + score-scale 自适应约定
+- [市场行情三页面](architecture/market-pulse.md) — webapp 板块排行/资金流向/全A行情 (对标 A股全景), 数据链路与口径陷阱
 
 ## 模型演化
 - [模型世代总览](models/evolution.md) — V3.8 → V3.9 → V4.x → NG 系列演化路径与关键转折

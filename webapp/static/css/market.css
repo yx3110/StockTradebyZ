@@ -1,0 +1,63 @@
+/* 市场行情三页面共用样式 (板块排行 / 资金流向 / 全A行情) */
+
+.taxonomy-tabs .btn { font-size: 0.85rem; }
+
+.calendar-scroll {
+    overflow-x: auto;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    background: #fff;
+    padding: 8px;
+}
+
+.rotation-calendar {
+    border-collapse: separate;
+    border-spacing: 3px 3px;
+    table-layout: fixed;
+    font-size: 0.78rem;
+}
+.rotation-calendar th {
+    color: #6b7280;
+    font-weight: 500;
+    font-size: 0.75rem;
+    text-align: center;
+    padding: 2px 4px;
+    border-bottom: 1px solid #e5e7eb;
+    position: sticky;
+    top: 0;
+    background: #fff;
+}
+.rotation-calendar td { padding: 0; }
+
+.sector-chip {
+    display: block;
+    padding: 3px 6px;
+    border-radius: 4px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    cursor: default;
+}
+.sector-chip small {
+    margin-left: 4px;
+    font-size: 0.68rem;
+    opacity: 0.85;
+}
+
+.market-section-title {
+    font-size: 0.95rem;
+    font-weight: 600;
+    margin: 4px 0 8px;
+}
+.market-section-title .hint {
+    font-weight: 400;
+    font-size: 0.75rem;
+    color: #6b7280;
+    margin-left: 8px;
+}
+
+.sentiment-stat {
+    font-size: 0.9rem;
+    color: #374151;
+}
+.sentiment-stat b { font-size: 1.1rem; }

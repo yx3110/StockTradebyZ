@@ -70,6 +70,21 @@ def create_app(config_name='default'):
         """数据探索页面"""
         return render_template('data_explorer.html')
 
+    @app.route('/market-rotation')
+    def market_rotation():
+        """板块排行页面"""
+        return render_template('market_rotation.html')
+
+    @app.route('/market-fundflow')
+    def market_fundflow():
+        """资金流向页面"""
+        return render_template('market_fundflow.html')
+
+    @app.route('/market-sentiment')
+    def market_sentiment():
+        """全A行情(市场情绪)页面"""
+        return render_template('market_sentiment.html')
+
     @app.route('/stock/<code>')
     def stock_detail(code):
         """个股详情页"""
@@ -135,6 +150,7 @@ def register_blueprints(app):
     from api.data_management import data_management_bp
     from api.stock import stock_bp
     from api.data_explorer import data_explorer_bp   # NEW
+    from api.market import market_bp
 
     app.register_blueprint(daily_tasks_bp, url_prefix='/api/daily')
     app.register_blueprint(model_training_bp, url_prefix='/api/models')
@@ -144,6 +160,7 @@ def register_blueprints(app):
     app.register_blueprint(data_management_bp, url_prefix='/api/data')
     app.register_blueprint(stock_bp, url_prefix='/api/stock')
     app.register_blueprint(data_explorer_bp, url_prefix='/api/explorer')  # NEW
+    app.register_blueprint(market_bp, url_prefix='/api/market')
 
 
 def register_error_handlers(app):
