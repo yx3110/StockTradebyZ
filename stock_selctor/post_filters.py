@@ -144,7 +144,12 @@ def penalize_unreliable_by_trust_yellow(
                     try:
                         orig = float(s[fld])
                         s[f"_orig_{fld}"] = orig
-                        s[fld] = orig * penalty_factor
+                        # NG rank_score 可为负 (预测收益): 负值 ×0.7 反而升排名,
+                        # 必须按符号选方向, 保证惩罚永远降低排名
+                        if orig >= 0:
+                            s[fld] = orig * penalty_factor
+                        else:
+                            s[fld] = orig / penalty_factor
                     except (TypeError, ValueError):
                         pass
             s["_trust_penalty_applied"] = True

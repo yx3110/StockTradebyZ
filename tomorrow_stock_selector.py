@@ -3439,6 +3439,17 @@ class TomorrowStockSelector:
             "full_market_mode": has_full_market,
         }
 
+        # 预计算环境评分供 v2 优化器 (filter_and_allocate / per-stock 定价) 使用。
+        # 旧逻辑在 generate_report 里才赋值 _cached_env_score, 但消费点在
+        # analyze_results 中先执行 → 环境自适应恒用中性 50.0 (上线以来 no-op)
+        if target_date is not None and not hasattr(self, '_cached_env_score'):
+            try:
+                _env_pre = self.analyze_trading_environment(target_date)
+                self._cached_env_score = _env_pre.get('total_score', 50.0)
+                logger.info(f"环境评分预计算: {self._cached_env_score:.1f}/100")
+            except Exception as e:
+                logger.warning(f"环境评分预计算失败, 优化器用中性50: {e}")
+
         # 统计每个真实策略的结果
         all_picks = set()
         for strategy, picks in real_strategies.items():
@@ -3824,6 +3835,15 @@ class TomorrowStockSelector:
         # Post-scoring hard filters: Signal Trust 🔴 exclusion + industry concentration cap
         # Input is pre-sorted so industry cap keeps the highest-ranked per industry.
         # Downstream sort at composite_sort_key re-orders with error-aware tiebreaks.
+        # ------------------------------------------------------------------
+        # 风控筛选链 (post_filters → booster → overlay) 在选股管道 pick_pipeline
+        # 上执行; 全市场列表 stock_with_scores 保持完整不截断。
+        # 旧行为的两次截断事故: 2026-04-23 起 industry_cap 把全市场表砍到 ~440 只,
+        # 04-28 起 overlay 再砍到 10 只 — 下游 Signal Trust / forward tracker /
+        # OOS pred_10d 校验 / webapp 全部失真。被淘汰股票现以
+        # _post_filter_drop / _drop_reason 标记保留在完整列表中。
+        # ------------------------------------------------------------------
+        pick_pipeline = stock_with_scores
         if stock_with_scores and (self.enable_trust_filter or self.industry_cap > 0):
             try:
                 from stock_selctor.post_filters import apply_post_filters, format_drop_log
@@ -3847,46 +3867,71 @@ class TomorrowStockSelector:
                 if (summary['trust_dropped']
                         or summary['industry_dropped']
                         or summary.get('trust_penalized')):
-                    stock_with_scores = summary['stocks']
+                    pick_pipeline = summary['stocks']
+                    # dropped 是同一批 dict 引用, 直接标记即可反映到完整列表
+                    for _d in summary['trust_dropped']:
+                        _d['_post_filter_drop'] = 'trust_red'
+                        _d['recommendation'] = '回避'
+                    for _d in summary['industry_dropped']:
+                        _d['_post_filter_drop'] = 'industry_cap'
                     logger.info(format_drop_log(summary))
             except Exception as e:
-                logger.warning(f"post-filter 失败, 保留原列表: {e}")
+                # 风控层失败不许静默: 升 ERROR + 记录降级 (报告头部盖戳)
+                logger.error(f"post-filter 失败, 风控降级保留原列表: {e}")
+                self._risk_layer_errors = getattr(self, '_risk_layer_errors', [])
+                self._risk_layer_errors.append(f"post_filters: {e}")
 
         # P2.8c (2026-04-28): post-rank booster — 8策略 regime-conditional bonus.
         # Trust filtering already done by post_filters (drop 🔴, penalize 🟡), so we
         # call booster with trust_field='' to skip its own trust mult and only apply
         # strategy bonus. Behind --enable-booster flag (default OFF) for safe gray-launch.
-        if getattr(self, '_enable_booster', False) and stock_with_scores:
+        if getattr(self, '_enable_booster', False) and pick_pipeline:
             try:
                 from stock_selctor.post_rank_booster import apply_post_rank_booster
-                _booster_regime = getattr(self, '_ng21_regime', None) or getattr(self, '_ng106_overlay_regime', None) or 'bull'
-                _before_top10 = [s.get('stock_code') for s in stock_with_scores[:10]]
-                stock_with_scores = apply_post_rank_booster(
-                    stock_with_scores, regime=_booster_regime,
+                _booster_regime = getattr(self, '_ng21_regime', None) or 'bull'
+                _before_top10 = [s.get('stock_code') for s in pick_pipeline[:10]]
+                pick_pipeline = apply_post_rank_booster(
+                    pick_pipeline, regime=_booster_regime,
                     strategy_field='strategies',  # selector uses 'strategies' (zh names)
                     trust_field='',  # skip; post_filters already handled trust
                     score_field='rank_score',
                 )
-                _after_top10 = [s.get('stock_code') for s in stock_with_scores[:10]]
+                # booster 重排必须写回 composite (booster 返回副本, 按 code 合并回
+                # 完整列表), 否则会被下游 composite_sort_key 最终排序撤销
+                # (booster 上线以来实际是 no-op 的根因)
+                _boost_map = {
+                    s.get('stock_code'): s for s in pick_pipeline
+                    if 'rank_score_boosted' in s
+                }
+                for _s in stock_with_scores:
+                    _b = _boost_map.get(_s.get('stock_code'))
+                    if _b is not None:
+                        _s['_composite_pre_booster'] = _s.get('composite')
+                        _s['composite'] = _b['rank_score_boosted']
+                        _s['_booster_strategy_bonus'] = _b.get('_booster_strategy_bonus', 0)
+                _after_top10 = [s.get('stock_code') for s in pick_pipeline[:10]]
                 _swapped = len(set(_before_top10) - set(_after_top10))
-                _avg_bonus = sum(s.get('_booster_strategy_bonus', 0) for s in stock_with_scores[:10]) / 10
+                _avg_bonus = sum(s.get('_booster_strategy_bonus', 0) for s in pick_pipeline[:10]) / 10
                 logger.info(
                     f"[P2.8 booster] regime={_booster_regime}, "
                     f"top-10 swapped {_swapped}/10, avg bonus={_avg_bonus:.2f}pts"
                 )
             except Exception as e:
-                logger.warning(f"booster 失败, 保留原列表: {e}")
+                logger.error(f"booster 失败, 风控降级保留原列表: {e}")
+                self._risk_layer_errors = getattr(self, '_risk_layer_errors', [])
+                self._risk_layer_errors.append(f"booster: {e}")
 
         # ng2.1: L1-L5 risk overlay (regime-aware industry cap / SL / VT / crisis stop)
         # Triggered only when scoring_version=='ng2.1' (selector._ng21_mode set upstream).
         # Overlay attaches per-stock metadata (_ng21_pos_cap / _ng21_stop_loss_pct etc.)
         # AND overrides industry_cap by regime (bull=3 / bear=2) + crisis hard-stop.
-        if getattr(self, '_ng21_mode', False) and stock_with_scores:
+        if getattr(self, '_ng21_mode', False) and pick_pipeline:
             try:
                 from stock_selctor.ng21_risk_overlay import build_risk_decision, apply_overlay_to_picks
-                _td = target_date if target_date else (
-                    pd.Timestamp.now().strftime('%Y-%m-%d')
-                )
+                # sqlite3 不接受 pd.Timestamp 绑定 — 必须归一化为字符串
+                # (L4 熔断曾因此静默失效: 2026-04-28~07-11)
+                _td = target_date if target_date is not None else pd.Timestamp.now()
+                _td = _td.strftime('%Y-%m-%d') if hasattr(_td, 'strftime') else str(_td)[:10]
                 _decision = build_risk_decision(
                     regime=getattr(self, '_ng21_regime', 'bull'),
                     target_date=_td,
@@ -3900,7 +3945,7 @@ class TomorrowStockSelector:
                 logger.info(f"[ng2.1 risk overlay] {_decision.regime} regime decision:")
                 for n in _decision.notes:
                     logger.info(f"  {n}")
-                kept, dropped_by_overlay = apply_overlay_to_picks(stock_with_scores, _decision)
+                kept, dropped_by_overlay = apply_overlay_to_picks(pick_pipeline, _decision)
                 if dropped_by_overlay:
                     logger.info(
                         f"[ng2.1] L1+L2 dropped {len(dropped_by_overlay)} picks "
@@ -3928,12 +3973,28 @@ class TomorrowStockSelector:
                     f"avg_pos={_avg_pos:.2%}, total_invested={_total_pos:.2%}, "
                     f"cash={(1-_total_pos):.2%}"
                 )
-                # Replace stock_with_scores with overlaid kept list (top_n already capped)
+                # overlay 结果以元数据形式合并回全市场列表, 不再截断
+                # all_stocks_with_scores (旧行为把全市场 JSON/报告砍成 10 行,
+                # 下游 Signal Trust / forward tracker / OOS 校验全部失真)。
+                # 最终持仓清单单独存 self._ng21_overlay_picks → analysis['risk_overlay']
+                def _sw_key(s):
+                    return s.get('stock_code') or s.get('code')
+                _merged = {}
+                for _s in kept:
+                    _s['_ng21_overlay_pick'] = True
+                    _merged[_sw_key(_s)] = _s
+                for _d in dropped_by_overlay:
+                    _merged.setdefault(_sw_key(_d), _d)
+                stock_with_scores = [
+                    _merged.get(_sw_key(s), s) for s in stock_with_scores
+                ]
                 self._ng21_decision = _decision  # for report stamping
                 self._ng21_dropped_by_overlay = dropped_by_overlay
-                stock_with_scores = kept
+                self._ng21_overlay_picks = kept
             except Exception as e:
-                logger.warning(f"ng2.1 risk overlay 失败, 保留原列表: {e}")
+                logger.error(f"ng2.1 risk overlay 失败, 风控降级保留原列表: {e}")
+                self._risk_layer_errors = getattr(self, '_risk_layer_errors', [])
+                self._risk_layer_errors.append(f"ng21_overlay: {e}")
 
         # Multi-horizon execution alignment tag (annotates only, no filtering)
         # 🟢 ALIGN: all 4 horizons positive → T+1 buy ok
@@ -4023,6 +4084,17 @@ class TomorrowStockSelector:
         analysis["all_stock_details"] = stock_with_scores  # 保存所有股票的详细信息
         analysis["all_stocks_with_scores"] = stock_with_scores  # 新增：保存所有股票及其评分
         analysis["detailed_analysis_count"] = len(detailed_analysis_stocks)  # 新增：需要详细分析的股票数量
+
+        # ng2.1/ng1.0.6 风控 overlay 最终持仓 (含 position_size/stop_loss);
+        # 全市场列表保持完整, 下游交易执行应读这里而非 all_stocks_with_scores[:N]
+        if getattr(self, '_ng21_overlay_picks', None):
+            analysis["risk_overlay"] = {
+                "decision": self._ng21_decision.as_dict(),
+                "picks": self._ng21_overlay_picks,
+                "dropped_count": len(getattr(self, '_ng21_dropped_by_overlay', [])),
+            }
+        if getattr(self, '_risk_layer_errors', None):
+            analysis["risk_layer_degraded"] = list(self._risk_layer_errors)
                 
         return analysis
         
@@ -5310,7 +5382,46 @@ class TomorrowStockSelector:
 
 ## 🎯 各策略筛选结果
 """
-        
+
+        # 风控层降级警告 (post_filters/booster/overlay 任一层异常时高可见提示)
+        if analysis.get('risk_layer_degraded'):
+            report = report.replace(
+                "## 📊 分析概览",
+                "> 🚨 **风控降级警告**: 本次运行中以下风控层执行失败, 结果未经完整风控处理:\n"
+                + "".join(f"> - {e}\n" for e in analysis['risk_layer_degraded'])
+                + "\n## 📊 分析概览",
+                1,
+            )
+
+        # ng2.1/ng1.0.6 风控 overlay 最终持仓 (含仓位与止损, 交易执行以此为准),
+        # 插在 '各策略筛选结果' 之前
+        _ro = analysis.get('risk_overlay')
+        if _ro and _ro.get('picks'):
+            _dec = _ro.get('decision', {})
+            _ro_section = (
+                f"## 🛡️ 风控 Overlay 最终持仓 ({_dec.get('regime', '?')} regime"
+                f"{', ⚠️ L4 CRISIS' if _dec.get('crisis_active') else ''})\n\n"
+                f"| 排名 | 代码 | 名称 | 评分 | 仓位 | 止损 | 执行窗口 |\n"
+                f"|------|------|------|------|------|------|----------|\n"
+            )
+            for _i, _p in enumerate(_ro['picks'], 1):
+                _ro_section += (
+                    f"| {_i} | {_p.get('stock_code', '')} | {_p.get('stock_name', '')} "
+                    f"| {float(_p.get('composite', 0) or 0):+.4f} "
+                    f"| {float(_p.get('position_size', 0) or 0):.1%} "
+                    f"| {float(_p.get('stop_loss_pct', 0) or 0):.0%} "
+                    f"| {_p.get('exec_tag', '⚪')} |\n"
+                )
+            _ro_section += (
+                f"\n*现金下限 {float(_dec.get('cash_floor', 0) or 0):.0%}, "
+                f"单票上限 {float(_dec.get('pos_cap_per_stock', 0.1) or 0.1):.0%}, "
+                f"overlay 淘汰 {_ro.get('dropped_count', 0)} 只; "
+                f"全市场完整排名见下表*\n\n"
+            )
+            report = report.replace(
+                "## 🎯 各策略筛选结果", _ro_section + "## 🎯 各策略筛选结果", 1
+            )
+
         for strategy, count in analysis["strategy_results"].items():
             report += f"- **{strategy}**: {count}只股票\n"
         
@@ -5450,9 +5561,15 @@ class TomorrowStockSelector:
                     'cautious_buy': _rr.get('cautious_buy', 50),
                     'watch': _rr.get('watch', 200),
                 }
-            except Exception:
-                pass
-            for rank_i, s in enumerate(stocks_data):
+            except Exception as e:
+                logger.debug(f"production_config.json 推荐阈值读取失败, 用默认: {e}")
+            # 涨停/停牌股 (exec_warning) 保持 '观望'、🔴 trust 股保持 '回避',
+            # 不参与按排名覆盖, 也不占用 强烈买入/买入 名额
+            # (曾出现涨停股被覆盖成 '强烈买入')
+            rank_i = 0
+            for s in stocks_data:
+                if s.get('exec_warning') or s.get('_post_filter_drop') == 'trust_red':
+                    continue
                 if rank_i < rec_ranks['strong_buy']:
                     s['recommendation'] = '强烈买入'
                 elif rank_i < rec_ranks['buy']:
@@ -5463,6 +5580,7 @@ class TomorrowStockSelector:
                     s['recommendation'] = '观望'
                 else:
                     s['recommendation'] = '回避'
+                rank_i += 1
 
         prev_was_gap = False
         for i, stock in enumerate(stocks_data):
@@ -5937,7 +6055,13 @@ def main(target_date: str = None, scoring_version: str = "v3", stocks_only: bool
     ng21_regime = _route.ng21_regime
 
     # v3.6、v3.7、v3.8、v3.9、v3.94、v3.95版本应该只评价股票，因为ETF等因子无法与股票直接对比
-    if scoring_version in ["v3.6", "v3.7", "v3.8", "v3.81", "v3.9", "v3.94", "v3.95", "v3.96", "v4.0", "v4.2", "v4.3", "v4.4", "v4.4.2", "v4.5", "v4.6", "v4.7.1", "v4.7.2", "v4.7.3", "v4.7.5", "v4.7.6", "v4.7.7", "v4.7.8", "v4.7.9", "v4.8.0", "v4.8.1", "v4.8.2", "v4.8.4", "v4.9.0.2", "v5.0"] and not stocks_only:
+    # ML 版本 (v3.6+/v4.x/v5.x/ng*) 自动只做 A 股: ETF 无特征缓存, 因子无法与股票
+    # 直接对比 (旧清单漏了 ng 系列, 导致生产每天把 ~2500 只 ETF 灌进 ML 全链路)
+    _ml_auto_stocks_only = (
+        scoring_version.startswith(("ng", "v4.", "v5."))
+        or scoring_version in ["v3.6", "v3.7", "v3.8", "v3.81", "v3.9", "v3.94", "v3.95", "v3.96"]
+    )
+    if _ml_auto_stocks_only and not stocks_only:
         stocks_only = True
         logger.info(f"🔍 {scoring_version}机器学习版本自动开启仅股票模式（ETF预测信心不足）")
     

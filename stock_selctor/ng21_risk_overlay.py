@@ -26,6 +26,17 @@ from typing import Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
+def _norm_date(d) -> str:
+    """归一化日期为 'YYYY-MM-DD' 字符串.
+
+    sqlite3 不支持直接绑定 pd.Timestamp (Error binding parameter: type
+    'Timestamp' is not supported) — 2026-04-28~07-11 L4 熔断即因此静默失效.
+    """
+    if hasattr(d, 'strftime'):
+        return d.strftime('%Y-%m-%d')
+    return str(d)[:10]
+
+
 # ---------------------------------------------------------------------------
 # Default parameters (chosen pre Stage-4b sweep; sweep refines bear params)
 # ---------------------------------------------------------------------------
@@ -115,6 +126,7 @@ def _check_l4_crisis(
 ) -> tuple[bool, list[str]]:
     """Return (crisis_active, reasons)."""
     notes = []
+    target_date = _norm_date(target_date)
     conn = sqlite3.connect(db_path, timeout=30)
     conn.execute('PRAGMA busy_timeout=30000')
     try:
@@ -137,8 +149,9 @@ def _check_l4_crisis(
         ).fetchone()
         idx_chg = float(idx_row[0]) if idx_row and idx_row[0] is not None else 0.0
     except sqlite3.Error as e:
-        logger.warning(f"L4 crisis check skipped (DB error: {e})")
-        return False, [f"L4 check skipped: {e}"]
+        # 风控层失败必须高可见: L4 曾因 Timestamp 绑定错误在 warning 级静默失效 2.5 个月
+        logger.error(f"L4 crisis check FAILED — 风控降级为 fail-open (DB error: {e})")
+        return False, [f"⚠️ L4 check DEGRADED (fail-open): {e}"]
     finally:
         conn.close()
 
@@ -178,6 +191,7 @@ def build_risk_decision(
     if regime not in ('bull', 'bear'):
         raise ValueError(f"regime must be bull/bear, got {regime!r}")
 
+    target_date = _norm_date(target_date)
     params = BULL_PARAMS if regime == 'bull' else BEAR_PARAMS
     notes = [
         f"regime={regime}; date={target_date}; base_top_n={base_top_n}",
@@ -258,6 +272,12 @@ def apply_overlay_to_picks(
         floor_label = f'L1 score<{L1_SCORE_FLOOR}'
 
     for s in picks:
+        # 涨停/停牌股 T+1 不可买入, 不许占用 top_n 席位
+        if s.get('exec_warning'):
+            d = dict(s); d['_drop_reason'] = f"L1 exec_warning({s['exec_warning']}) 不可T+1买入"
+            dropped.append(d)
+            continue
+
         score = float(s.get('rank_score') or s.get('composite') or 0)
         if score < effective_floor:
             d = dict(s); d['_drop_reason'] = floor_label
@@ -333,11 +353,21 @@ def estimate_portfolio_vol(
     lookback_days: int = 60,
 ) -> float:
     """Avg of constituent 60d realized vol (annualized). Conservative under equal weights."""
+
+    def _fallback(reason: str) -> float:
+        # est_vol fallback 意味着 L3 vol-target 退化为常数, 仓位与真实波动脱钩
+        # (2026-04-28~07-11 曾因 'code'/'stock_code' 键错配恒走此分支) — 必须高可见
+        logger.error(f"[P0.1] est_vol fallback→0.25, L3 vol-target 降级 ({reason})")
+        return 0.25
+
     if not picks:
         return 0.25
-    codes = [s.get('code') for s in picks if s.get('code')]
+    target_date = _norm_date(target_date)
+    # selector 的 stock_info 用 'stock_code' 键; 兼容裸 'code'
+    codes = [s.get('stock_code') or s.get('code') for s in picks]
+    codes = [c for c in codes if c]
     if not codes:
-        return 0.25
+        return _fallback('picks 中无 stock_code/code 键')
     placeholders = ','.join('?' * len(codes))
     try:
         conn = sqlite3.connect(db_path, timeout=30)
@@ -357,10 +387,9 @@ def estimate_portfolio_vol(
         finally:
             conn.close()
     except sqlite3.Error as e:
-        logger.warning(f"estimate_portfolio_vol DB error: {e}")
-        return 0.25
+        return _fallback(f'DB error: {e}')
     if not rows:
-        return 0.25
+        return _fallback(f'{len(codes)} 只票在 {target_date} 前无行情数据')
     import collections
     import math
     series: dict[str, list[float]] = collections.defaultdict(list)
@@ -382,5 +411,5 @@ def estimate_portfolio_vol(
         if 0.05 < vol_annual < 2.0:
             vols.append(vol_annual)
     if not vols:
-        return 0.25
+        return _fallback('所有成分股波动率计算无效 (数据不足或超界)')
     return float(sum(vols) / len(vols))

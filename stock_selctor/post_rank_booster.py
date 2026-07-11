@@ -120,7 +120,13 @@ def apply_post_rank_booster(
         # Skip bonus when ML did not score this pick (avoids strategy-only
         # candidates outranking real ML picks).
         bonus = 0.0 if (skip_when_score_zero and base == 0.0) else bonus_raw * bonus_scale
-        boosted = (base + bonus) * mult
+        combined = base + bonus
+        # NG rank_score 可为负: 负值 ×mult(<1) 反而升排名, 按符号选方向保证 trust
+        # 惩罚永远降低排名 (与 post_filters.penalize_unreliable_by_trust_yellow 同款约定)
+        if combined >= 0 or mult <= 0:
+            boosted = combined * mult
+        else:
+            boosted = combined / mult
         s2 = dict(s)
         s2['rank_score_boosted'] = round(boosted, 6)
         s2['_booster_strategy_bonus'] = round(bonus, 6)
