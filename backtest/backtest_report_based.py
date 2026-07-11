@@ -453,7 +453,7 @@ def batch_get_all_future_returns(report_dates, holding_days_list=None):
     buy_dates_sorted = sorted(buy_dates_set)
     placeholders = ','.join(['?' for _ in buy_dates_sorted])
     buy_df = pd.read_sql_query(f"""
-        SELECT s.code, dq.trade_date, dq.open, dq.price_change_pct
+        SELECT s.code, dq.trade_date, dq.open, dq.price_change_pct, dq.adj_factor
         FROM daily_quotes dq
         JOIN securities s ON dq.security_id = s.id
         WHERE dq.trade_date IN ({placeholders})
@@ -470,14 +470,14 @@ def batch_get_all_future_returns(report_dates, holding_days_list=None):
     if sell_dates_sorted:
         placeholders_sell = ','.join(['?' for _ in sell_dates_sorted])
         sell_df = pd.read_sql_query(f"""
-            SELECT s.code, dq.trade_date, dq.close
+            SELECT s.code, dq.trade_date, dq.close, dq.adj_factor
             FROM daily_quotes dq
             JOIN securities s ON dq.security_id = s.id
             WHERE dq.trade_date IN ({placeholders_sell})
               AND dq.close IS NOT NULL AND dq.close > 0
         """, conn, params=sell_dates_sorted)
     else:
-        sell_df = pd.DataFrame(columns=['code', 'trade_date', 'close'])
+        sell_df = pd.DataFrame(columns=['code', 'trade_date', 'close', 'adj_factor'])
 
     conn.close()
 
@@ -485,34 +485,55 @@ def batch_get_all_future_returns(report_dates, holding_days_list=None):
     # buy_prices_by_date: {buy_date: {code: open_price}}
     # 涨停股直接不进 buy_prices (买不进) — 下游按 "不在 future_returns 且未退市"
     # 识别为现金槽 (2026-07-11 惩罚拆三; 原 limit_up_by_date 累加器无消费者已删)
-    buy_prices_by_date = {}
+    # 2026-07-11 复权修复: 收益改用后复权价 (price×adj_factor)。此前用原始价,
+    # 跨除权日出现 -30%~-50% 假亏损 (2023 主板实测 238 次), 分红被记为损失。
+    # adj_factor 任一侧缺失 (1.0 是占位符也视同缺失) → 回退原始价并计数。
+    def _valid_adj(a):
+        return a is not None and not (isinstance(a, float) and np.isnan(a)) and a != 1.0
+
+    buy_prices_by_date = {}  # {buy_date: {code: (open_price, adj or None)}}
     for row in buy_df.itertuples(index=False):
         code, trade_date, open_price, pct = row.code, row.trade_date, getattr(row, 'open'), row.price_change_pct
         if pct is not None and not (isinstance(pct, float) and np.isnan(pct)):
             if pct >= _get_limit_up_threshold(code):
                 continue
-        buy_prices_by_date.setdefault(trade_date, {})[code] = open_price
+        adj = row.adj_factor if _valid_adj(row.adj_factor) else None
+        buy_prices_by_date.setdefault(trade_date, {})[code] = (open_price, adj)
 
-    # sell_prices: {(sell_date, code): close_price}
+    # sell_prices: {(sell_date, code): (close_price, adj or None)}
     sell_prices = {}
     for row in sell_df.itertuples(index=False):
-        sell_prices[(row.trade_date, row.code)] = row.close
+        adj = row.adj_factor if _valid_adj(row.adj_factor) else None
+        sell_prices[(row.trade_date, row.code)] = (row.close, adj)
 
     # 6. 计算所有收益率
     all_results = {}
+    raw_fallback_count = 0
     for buy_date in buy_dates_sorted:
         date_results = {}
         codes_prices = buy_prices_by_date.get(buy_date, {})
         for days, sell_date in sell_dates_map.get(buy_date, {}).items():
             key = f'return_{days}d'
-            for code, open_price in codes_prices.items():
-                close = sell_prices.get((sell_date, code))
+            for code, (open_price, buy_adj) in codes_prices.items():
+                sell = sell_prices.get((sell_date, code))
+                if not sell:
+                    continue
+                close, sell_adj = sell
                 if close and open_price > 0:
-                    ret = (close - open_price) / open_price
+                    if buy_adj and sell_adj:
+                        ret = (close * sell_adj - open_price * buy_adj) / (open_price * buy_adj)
+                    else:
+                        ret = (close - open_price) / open_price
+                        raw_fallback_count += 1
                     if code not in date_results:
                         date_results[code] = {}
                     date_results[code][key] = ret
         all_results[buy_date] = date_results
+
+    if raw_fallback_count:
+        total_pairs = sum(len(v) for v in all_results.values()) or 1
+        print(f"  ⚠️ 复权因子缺失回退原始价: {raw_fallback_count} 对 "
+              f"(股票×周期, 全量的 ~{raw_fallback_count/max(total_pairs*len(holding_days_list),1):.1%})")
 
     return all_results
 
