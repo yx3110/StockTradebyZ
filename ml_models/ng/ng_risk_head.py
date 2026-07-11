@@ -25,6 +25,7 @@ import json
 import sqlite3
 import sys
 from pathlib import Path
+from typing import Optional
 
 import joblib
 import lightgbm as lgb
@@ -147,20 +148,33 @@ def evaluate_oos_ic(model: lgb.Booster, X_oos: np.ndarray, y_oos: np.ndarray,
     return float(arr.mean()), float(arr.mean() / (arr.std(ddof=1) + 1e-9))
 
 
+LABEL_HORIZON_TD = {"maxdd_60d": 60, "vol_10d": 10}  # 标签前瞻交易日数
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--target", choices=["maxdd_60d", "vol_10d"], required=True)
     ap.add_argument("--start", default="2020-01-01")
     ap.add_argument("--end", default="2024-12-31")
-    ap.add_argument("--purge-days", type=int, default=15,
-                    help="purge gap between train cutoff and OOS start")
-    ap.add_argument("--oos-window-days", type=int, default=180,
-                    help="number of trailing days reserved for OOS evaluation")
+    ap.add_argument("--oos-window-td", type=int, default=120,
+                    help="每折 OOS 窗口的交易日数")
+    ap.add_argument("--folds", type=int, default=3,
+                    help="滚动 WF 折数 (从数据尾部向前排)")
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--out", default=None)
     ap.add_argument("--smoke", action="store_true",
                     help="fast smoke run: subsample to 10%% rows for quick verification")
     args = ap.parse_args()
+
+    # ── 2026-07-11 协议修复 (原版两处泄漏使 gate 数字偏乐观) ──
+    # 1) 早停曾直接用 OOS 集选树数 (vol 头 177 树是在评估集上挑的) →
+    #    改为训练段尾部切内部验证片 (与内部训练之间同样留 purge)
+    # 2) purge 曾用 15 个«日历日», 而 maxdd_60d 标签前瞻 60 个«交易日»≈84 日历日,
+    #    训练尾部标签路径伸进 OOS 达 68 日历日 → 改为按交易日 purge = horizon + 5
+    # 3) 单一 trailing 窗口 → K 折滚动 WF, gate 看均值
+    horizon_td = LABEL_HORIZON_TD[args.target]
+    purge_td = horizon_td + 5
+    inner_val_td = 40  # 早停用内部验证片 (训练段尾部 40 个交易日)
 
     print(f"[1/5] loading ng101 feature cache {args.start}~{args.end}...")
     feats = load_feature_cache(args.start, args.end)
@@ -189,61 +203,80 @@ def main() -> int:
     y = j["y"].astype(float).values
     dates = pd.to_datetime(j["trade_date"]).values
 
-    cutoff = pd.Timestamp(args.end) - pd.Timedelta(days=args.oos_window_days)
-    purge_cutoff = cutoff - pd.Timedelta(days=args.purge_days)
-    valid_mask = dates >= np.datetime64(cutoff)
-    train_mask = dates < np.datetime64(purge_cutoff)
-    n_train = int(train_mask.sum())
-    n_valid = int(valid_mask.sum())
-    if n_train < 1000 or n_valid < 100:
-        print(f"ERROR: insufficient samples (train={n_train}, valid={n_valid})", file=sys.stderr)
-        return 3
-    print(f"[3/5] split: train={n_train:,}, oos_valid={n_valid:,} "
-          f"(purge {args.purge_days}d)")
-
-    print("[4/5] training LightGBM...")
-    np.random.seed(args.seed)
-    # Re-form valid_mask aligned with split sub-arrays for early-stop only
-    fit_mask = train_mask | valid_mask
-    X_fit = X[fit_mask]
-    y_fit = y[fit_mask]
-    valid_mask_in_fit = valid_mask[fit_mask]
-    # maxdd_60d label is noisy (mean-reverting cumulative drawdown);
-    # use lower lr + minimum iter guard to avoid degenerate 1-tree models.
+    # 交易日历: 用样本中实际出现的日期 (与 feature cache 对齐)
+    cal = np.sort(np.unique(dates))
+    W, P = args.oos_window_td, purge_td
     if args.target == "maxdd_60d":
         params_override = dict(learning_rate=0.02, num_leaves=31,
                                min_data_in_leaf=500)
         min_iter, patience = 50, 200
     else:
         params_override, min_iter, patience = None, 0, 100
-    model = train_lgb(X_fit, y_fit, valid_mask_in_fit, seed=args.seed,
-                      params_override=params_override,
-                      min_iter=min_iter, patience=patience)
-    print(f"  best_iter={model.best_iteration}, num_trees={model.num_trees()}")
 
-    print("[5/5] OOS IC evaluation...")
-    ic_mean, icir = evaluate_oos_ic(model, X[valid_mask], y[valid_mask], dates[valid_mask])
-    print(f"  OOS daily IC mean: {ic_mean:+.4f}")
-    print(f"  OOS daily ICIR:     {icir:+.4f}")
+    print(f"[3/5] {args.folds}-fold WF: oos={W}td/fold, purge={P}td "
+          f"(=horizon {horizon_td}+5), inner-val={inner_val_td}td")
+    np.random.seed(args.seed)
+    fold_results = []
+    last_model = None
+    for k in range(args.folds):
+        oos_end_i = len(cal) - k * W          # exclusive
+        oos_start_i = oos_end_i - W
+        train_end_i = oos_start_i - P          # exclusive; train dates < cal[train_end_i]
+        inner_val_start_i = train_end_i - inner_val_td
+        inner_train_end_i = inner_val_start_i - P
+        if inner_train_end_i < 200:
+            print(f"  fold {k}: 训练段不足 ({inner_train_end_i} 个交易日), 停止排折")
+            break
+        oos_mask = (dates >= cal[oos_start_i]) & (dates < cal[oos_end_i - 1] + np.timedelta64(1, 'D'))
+        inner_train_mask = dates < cal[inner_train_end_i]
+        inner_val_mask = (dates >= cal[inner_val_start_i]) & (dates < cal[train_end_i])
+        fit_mask = inner_train_mask | inner_val_mask
+        model = train_lgb(X[fit_mask], y[fit_mask], inner_val_mask[fit_mask],
+                          seed=args.seed, params_override=params_override,
+                          min_iter=min_iter, patience=patience)
+        ic_mean, icir = evaluate_oos_ic(model, X[oos_mask], y[oos_mask], dates[oos_mask])
+        oos_lo = pd.Timestamp(cal[oos_start_i]).date()
+        oos_hi = pd.Timestamp(cal[oos_end_i - 1]).date()
+        print(f"  fold {k}: OOS {oos_lo}~{oos_hi} | train={int(inner_train_mask.sum()):,} "
+              f"trees={model.num_trees()}(best {model.best_iteration}) | "
+              f"IC={ic_mean:+.4f} ICIR={icir:+.4f}")
+        fold_results.append(dict(fold=k, oos_start=str(oos_lo), oos_end=str(oos_hi),
+                                 ic=ic_mean, icir=icir,
+                                 trees=model.num_trees(), best_iter=model.best_iteration))
+        if k == 0:
+            last_model = model  # 最新折的模型 = 候选生产模型
 
+    if not fold_results:
+        print("ERROR: no valid folds", file=sys.stderr)
+        return 3
+
+    ics = np.array([f["ic"] for f in fold_results])
+    print(f"[4/5] 汇总: mean IC={ics.mean():+.4f} (±{ics.std(ddof=0):.4f}, "
+          f"{len(ics)} folds), min={ics.min():+.4f}")
+
+    print("[5/5] saving...")
     out_path = args.out or str(
         ROOT / "ml_models" / "trained_models" / "ng" / f"risk_head_{args.target}_seed{args.seed}.pkl"
     )
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     joblib.dump({
-        "model": model,
+        "model": last_model,
         "feat_cols": feat_cols,
         "target": args.target,
         "seed": args.seed,
         "train_window": (args.start, args.end),
-        "purge_days": args.purge_days,
-        "oos_ic_mean": ic_mean,
-        "oos_icir": icir,
+        "protocol": "2026-07-11-fixed",  # 内部验证早停 + 交易日 purge + K 折
+        "purge_td": P,
+        "oos_window_td": W,
+        "fold_results": fold_results,
+        "oos_ic_mean": float(ics.mean()),
+        "oos_ic_min": float(ics.min()),
+        "oos_icir": float(np.mean([f["icir"] for f in fold_results])),
     }, out_path)
     print(f"saved {out_path}")
 
-    accept = abs(ic_mean) >= 0.10
-    print(f"\nGate (|OOS IC| >= 0.10): {'PASS ✓' if accept else 'FAIL ✗'}")
+    accept = abs(ics.mean()) >= 0.10
+    print(f"\nGate (|mean OOS IC| >= 0.10): {'PASS ✓' if accept else 'FAIL ✗'}")
     return 0 if accept else 1
 
 

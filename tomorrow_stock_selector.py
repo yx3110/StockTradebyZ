@@ -1948,6 +1948,9 @@ class TomorrowStockSelector:
                 'confidence_score': detailed_info.get('confidence_score', 0.0),
                 'risk_level': detailed_info.get('risk_level', 'medium'),
                 'rank_score': detailed_info.get('rank_score'),
+                # 2026-07-11: 模型内风险信号进 JSON (downside head + Pareto 剔除)
+                'pred_downside_10d': detailed_info.get('pred_downside_10d'),
+                'risk_filtered': detailed_info.get('risk_filtered'),
                 'scoring_system': 'v2.0 - 基于3949只股票实际表现优化'
             }
             
@@ -2162,6 +2165,10 @@ class TomorrowStockSelector:
                         'exec_filter': result.get('exec_filter', ''),
                         'regime_info': result.get('regime_info', {}),
                         'rank_score': result.get('rank_score'),
+                        # 2026-07-11: 模型内风险信号透传 — bear/bull 生产 pkl 都带
+                        # downside head + Pareto 剔除, 此前算了但对 JSON/风控层不可见
+                        'pred_downside_10d': result.get('pred_downside_10d'),
+                        'risk_filtered': result.get('risk_filtered'),
                     }
                     return final_score, detailed_info
 

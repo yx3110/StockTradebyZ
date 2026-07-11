@@ -604,9 +604,15 @@ class NGProductionScorer:
                 continue
 
             avg = {}
-            for key in ['pred_3d', 'pred_5d', 'pred_10d', 'pred_15d', 'rank_score', 'score']:
+            for key in ['pred_3d', 'pred_5d', 'pred_10d', 'pred_15d', 'rank_score', 'score',
+                        'pred_downside_10d']:
                 vals = [float(p.get(key, 0) or 0) for p in preds]
                 avg[key] = float(np.mean(vals)) if vals else 0.0
+            # 2026-07-11: 模型内风险信号随平均传播 — downside 取均值,
+            # Pareto 剔除按多数票 (≥半数 seed 命中才算剔除, 与 per-seed 独立
+            # 阈值被稀释 1/3 的旧行为相比, 语义显式化)
+            n_filtered = sum(1 for p in preds if p.get('risk_filtered'))
+            avg['risk_filtered'] = bool(n_filtered * 2 >= len(preds))
             avg['recommendation'] = self._get_recommendation(avg['score'])
             merged[code] = avg
 
@@ -842,6 +848,9 @@ class NGProductionScorer:
                     'pred_10d': float(predictions['10d'][i]),
                     'pred_15d': float(predictions.get('15d', np.zeros(len(codes)))[i]),
                     'pred_downside_10d': float(pred_downside[i]),
+                    # 2026-07-11: 补 risk_filtered — 此前该路径不输出, 模型内 Pareto
+                    # 剔除决策对 ensemble merge 与下游 4 层风控不可见
+                    'risk_filtered': bool(risk_filtered[i]),
                     'rank_score': float(combined_pred[i]),
                     'score': float(scores[i]),
                     'recommendation': self._get_recommendation(float(scores[i])),
