@@ -183,14 +183,17 @@ def route_ng106(scoring_version: str, target_date: Optional[str], db_path: str) 
     if base_version not in ("ng1.0.6", "ng1.0.62"):
         base_version = "ng1.0.6"
 
-    # bull 子模型选择
-    if res.ng106_alt_mode:
-        res.bull_model = "ng1.7.0"
-    elif base_version == "ng1.0.62":
-        res.bull_model = "ng1.0.7"
-    else:
-        res.bull_model = "ng1.0.1"
-    res.bear_model = "ng1.0.4"
+    # 子专家映射 (2026-07-11: 收进 ng_schema.PRODUCTION_MOE_EXPERTS 注册表,
+    # "换生产模型必须改注册表" 原则从 pkl 层扩展到 MOE 专家层)
+    try:
+        from ml_models.ng.ng_schema import get_moe_experts
+        experts = get_moe_experts(base_version)
+    except ImportError:
+        experts = None
+    if experts is None:  # 注册表缺失时回退 v1 硬编码 (fail-safe)
+        experts = {'bull': 'ng1.0.1', 'bear': 'ng1.0.4'}
+    res.bull_model = "ng1.7.0" if res.ng106_alt_mode else experts['bull']
+    res.bear_model = experts['bear']
 
     regime, row_date, label, degraded = _resolve_regime(
         lambda: _read_amv_regime(db_path, target_date), scoring_version, target_date, db_path)

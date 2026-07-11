@@ -52,7 +52,26 @@ VERSION_TABLE_MAP = {
 
 DEFAULT_VERSION = 'ng1.0.3'
 
-PRODUCTION_VERSION = 'ng1.0.6'  # MOE v1: ng1.0.1 bull + ng1.0.4 bear; 4-25 真零泄漏 OOS Pre-2020 验证 v1 (Top10 +0.87%) > v2 ng1.0.62 (+0.49%) 78%, v1→v2 切换被回滚
+PRODUCTION_VERSION = 'ng1.0.6'  # 生产 tag (regime 风控框架名); 子专家映射见 PRODUCTION_MOE_EXPERTS
+
+# 生产 MOE 子专家映射 (2026-07-11 起为唯一事实源, route_ng106 从这里读, 不再硬编码)。
+# 历史: v1 = bull ng1.0.1 / bear ng1.0.4 (4-25 从 v2 回滚);
+#       v2 = bull ng1.0.7 / bear ng1.0.4 (ng1.0.62 tag 保留此配置);
+#       v3 (2026-07-11, 当前) = bull/bear 均 ng1.0.1 = **单模型 + regime 风控 overlay**。
+# v3 依据 (5 个独立证据全指向 ng1.0.1, 详见 reports/system_evaluation/新口径基线重跑_20260711.md):
+#   in-sample 牛熊拆解 / Pre-2020 真零泄漏 N=300 / 4-20 raw alpha / 7-11 forward OOS N=40
+#   (生产真实路径含 Pareto, ng101 超额 +4.49% vs MOE +2.09%) / 新口径对齐基线 (81.3% S vs 80.3%)。
+# regime 仍驱动风控层 (BULL/BEAR_PARAMS + L4 熔断), 只是不再切换模型。
+# 回滚 = 把 'ng1.0.6' 的 bear 改回 'ng1.0.4'。
+PRODUCTION_MOE_EXPERTS = {
+    'ng1.0.6': {'bull': 'ng1.0.1', 'bear': 'ng1.0.1'},   # v3: 单模 + regime 风控
+    'ng1.0.62': {'bull': 'ng1.0.7', 'bear': 'ng1.0.4'},  # v2 (历史配置, 保留可选)
+}
+
+
+def get_moe_experts(base_version: str):
+    """生产 MOE 子专家映射; 未注册版本返回 None (调用方自行回退)."""
+    return PRODUCTION_MOE_EXPERTS.get(base_version)
 
 # 生产模型 pkl 固定注册 (2026-07-11): scorer 加载生产版本时不再 mtime-glob 取最新。
 # 事故背景: 4-28 风控 session 的未验收重训 pkl 因 mtime 更新被生产静默加载 2.5 个月;

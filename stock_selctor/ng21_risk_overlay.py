@@ -466,10 +466,13 @@ def estimate_portfolio_vol_forward(
 ) -> Optional[float]:
     """前瞻组合波动率: P1.6 vol_10d 风险头对成分股的预测均值 (年化).
 
-    2026-07-11 影子模式: 与 estimate_portfolio_vol (60d 后视统计) 并排产出,
-    只记录不参与 sizing — VT 阈值 (0.25/0.15) 需先在该度量空间重 sweep
-    才能切换消费。协议修复后 3 折 WF 均值 IC=+0.60 (risk_head pkl 内有 fold 明细)。
-    任何失败返回 None (影子信号缺失不降级生产)。
+    2026-07-11 起为 P0.1 sizing 的«主» est_vol 源 (决策依据: production overlay
+    replay 161 期 sweep, 前瞻在全部 VT 档位 Sharpe +0.1~0.2, 同回撤 +0.22;
+    协议修复后 3 折 WF 均值 IC=+0.60, fold 明细在 risk_head pkl)。
+    estimate_portfolio_vol (60d 后视) 降级为 fallback + 反向影子。
+    任何失败返回 None → 调用方回退后视统计 (graceful degradation)。
+    ⚠️ vol 头训练窗止于 2024-12-31, 建议季度重训 (python3 ml_models/ng/ng_risk_head.py
+    --target vol_10d, 2min 级)。
     """
     try:
         import json as _json

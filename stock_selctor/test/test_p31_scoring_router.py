@@ -51,10 +51,13 @@ def db_with_regime():
 # ────────────────────────────────────────────────────────────
 
 def test_ng106_bull_regime(db_with_regime):
+    """v3 (2026-07-11): 子专家映射来自 ng_schema.PRODUCTION_MOE_EXPERTS。"""
+    from ml_models.ng.ng_schema import get_moe_experts
+    experts = get_moe_experts("ng1.0.6")
     res = route_ng106("ng1.0.6", "2026-04-20", db_with_regime)
-    assert res.scoring_version == "ng1.0.1"
-    assert res.bull_model == "ng1.0.1"
-    assert res.bear_model == "ng1.0.4"
+    assert res.scoring_version == experts["bull"]
+    assert res.bull_model == experts["bull"]
+    assert res.bear_model == experts["bear"]
     assert res.ng106_mode is True
     # P0.1 (2026-04-27): overlay default-on for ng1.0.6 base.
     assert res.ng106_overlay_mode is True
@@ -63,9 +66,19 @@ def test_ng106_bull_regime(db_with_regime):
 
 
 def test_ng106_bear_regime(db_with_regime):
+    """v3: bear 也路由到注册表 bear 专家 (当前 = ng1.0.1 单模), 但风控 regime 仍是 bear。"""
+    from ml_models.ng.ng_schema import get_moe_experts
     res = route_ng106("ng1.0.6", "2026-04-25", db_with_regime)
-    assert res.scoring_version == "ng1.0.4"
-    assert res.ng106_overlay_regime == "bear"
+    assert res.scoring_version == get_moe_experts("ng1.0.6")["bear"]
+    assert res.ng106_overlay_regime == "bear"  # 风控参数集仍按熊市
+
+
+def test_ng106_v3_single_model_with_regime_overlay(db_with_regime):
+    """v3 核心语义: 牛熊解析到同一模型 (单模), 但 overlay regime 跟随市场。"""
+    bull = route_ng106("ng1.0.6", "2026-04-20", db_with_regime)
+    bear = route_ng106("ng1.0.6", "2026-04-25", db_with_regime)
+    assert bull.scoring_version == bear.scoring_version == "ng1.0.1"
+    assert (bull.ng106_overlay_regime, bear.ng106_overlay_regime) == ("bull", "bear")
 
 
 def test_ng1062_bull(db_with_regime):

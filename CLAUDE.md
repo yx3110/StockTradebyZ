@@ -213,8 +213,12 @@ trainer / cache_updater 改动后, `/simplify scripts/xxx.py` 过一遍. N+1 / �
 # Individual components
 python3 fetch_data/quick_daily_update.py --date 20250930  # Complete data update (30-45 sec)
   # 🆕 Includes: Market quotes, market indices, daily basic, financial indicators, technical indicators
-python3 tomorrow_stock_selector.py 2025-09-30                             # Stock selection (默认 ng1.0.62 MOE)
-python3 tomorrow_stock_selector.py 2025-09-30 --scoring-version ng1.0.62  # 🏆 生产 MOE v2 AMV switch: bull→ng1.0.7, bear→ng1.0.4, V5.2=79% (2024-2026)
+python3 tomorrow_stock_selector.py 2025-09-30                             # Stock selection (默认 = 生产 ng1.0.6 v3)
+# 🏆 生产 (2026-07-11 起) = ng1.0.6 v3: ng1.0.1 单模 + regime 风控 overlay (牛熊都用 ng1.0.1,
+#    regime 只驱动 L1-L5 风控参数与 L4 熔断); 专家映射唯一事实源 ng_schema.PRODUCTION_MOE_EXPERTS;
+#    est_vol 主源 = 前瞻 vol 头 (风险头 IC=+0.60), 后视 60d 为 fallback。
+#    新口径基线 (2026-07-11-p0fix): ng101 单模 V5.2=81.3% S / Sharpe 2.550 / MaxDD -17.7%
+python3 tomorrow_stock_selector.py 2025-09-30 --scoring-version ng1.0.62  # MOE v2 (历史配置): bull→ng1.0.7, bear→ng1.0.4
 python3 tomorrow_stock_selector.py 2025-09-30 --scoring-version ng1.0.6   # MOE v1 (bull→ng1.0.1), V5.2=78%
 python3 tomorrow_stock_selector.py 2025-09-30 --scoring-version ng2.0a    # 🆕 灰度: multi-beta vote regime → ng1.0.1 bull/ng1.0.4 bear, WF-OOS V5.2=79.3% A+, MaxDD=-17.6% (vs 生产 -23.7%)
 python3 tomorrow_stock_selector.py 2025-09-30 --scoring-version ng1.0.1   # 单模型基线 66 feat V5.2=72.1% A+ Sharpe=2.753
