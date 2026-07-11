@@ -651,8 +651,11 @@ class NGCacheUpdater:
         if not future_dates:
             return {}
 
+        # 2026-07-11 复权修复: 标签用后复权价 — 原始价跨除权日会产生假负标签
+        # (分红 1-3% 被记为亏损, 10送10 = -50% 假暴跌; 2023 主板 >-11% 实测 238 次)。
+        # adj_factor=1.0 是历史占位符, 视同缺失; 任一侧缺失时回退原始价 (不混用)。
         rows = conn.execute(
-            f'''SELECT security_id, trade_date, open, close
+            f'''SELECT security_id, trade_date, open, close, adj_factor
                 FROM daily_quotes
                 WHERE trade_date IN ({','.join('?' * len(future_dates))})
                   AND security_id IN ({','.join('?' * len(security_ids))})''',
@@ -661,9 +664,13 @@ class NGCacheUpdater:
 
         result: Dict[int, Dict[str, dict]] = defaultdict(dict)
         for r in rows:
+            adj = _safe_float(r['adj_factor'])
+            if np.isnan(adj) or adj == 1.0:
+                adj = None
             result[r['security_id']][r['trade_date']] = {
                 'open': _safe_float(r['open']),
                 'close': _safe_float(r['close']),
+                'adj': adj,
             }
         return dict(result)
 
@@ -794,6 +801,15 @@ class NGCacheUpdater:
             base = fp[future_dates[0]].get('open', np.nan)
             if np.isnan(base) or base < 1e-8:
                 continue
+            base_adj = fp[future_dates[0]].get('adj')
+
+            def _adj_close(row: dict) -> float:
+                """复权到 base 口径: close × adj_n/adj_0 (任一侧无 adj 则回退原始价)."""
+                c = row.get('close', np.nan)
+                adj_n = row.get('adj')
+                if base_adj and adj_n and not np.isnan(c):
+                    return c * (adj_n / base_adj)
+                return c
 
             # ng1.2.1 需要 1..max_h 连续每日 close 走 Sharpe path;
             # 其他分支只需要 horizon 对应的 close.
@@ -801,12 +817,12 @@ class NGCacheUpdater:
                 future_closes = {}
                 for n in range(1, max_h + 1):
                     if n < len(future_dates) and future_dates[n] in fp:
-                        future_closes[n] = fp[future_dates[n]].get('close', np.nan)
+                        future_closes[n] = _adj_close(fp[future_dates[n]])
             else:
                 future_closes = {}
                 for n in LABEL_HORIZONS:
                     if n < len(future_dates) and future_dates[n] in fp:
-                        future_closes[n] = fp[future_dates[n]].get('close', np.nan)
+                        future_closes[n] = _adj_close(fp[future_dates[n]])
 
             # compute_labels_from_future_prices only reads keys in LABEL_HORIZONS;
             # passing the dense dict for vn case is fine (extra keys ignored).
