@@ -223,26 +223,23 @@ class EvalCache:
         total_bytes = sum(e['bytes'] for e in entries)
         now = time.time()
 
-        to_prune, prune_stems = [], set()
+        prune_map: Dict[str, dict] = {}  # stem → entry (dict 兼当去重集合)
         # 1) age 淘汰
         if max_age_days is not None:
             cutoff = now - max_age_days * 86400
-            for e in entries:
-                if e['mtime'] < cutoff:
-                    to_prune.append(e)
-                    prune_stems.add(e['stem'])
+            prune_map = {e['stem']: e for e in entries if e['mtime'] < cutoff}
         # 2) 容量预算 LRU 淘汰 (在 age 淘汰之后仍超预算时, 继续删最旧的)
         if max_total_gb is not None:
             budget = max_total_gb * 1024 ** 3
-            remaining = total_bytes - sum(e['bytes'] for e in to_prune)
+            remaining = total_bytes - sum(e['bytes'] for e in prune_map.values())
             for e in entries:
                 if remaining <= budget:
                     break
-                if e['stem'] in prune_stems:
+                if e['stem'] in prune_map:
                     continue
-                to_prune.append(e)
-                prune_stems.add(e['stem'])
+                prune_map[e['stem']] = e
                 remaining -= e['bytes']
+        to_prune = list(prune_map.values())
 
         free_bytes = sum(e['bytes'] for e in to_prune)
         mode = 'DRY-RUN (不删除)' if dry_run else 'APPLY (实际删除)'

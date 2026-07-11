@@ -14,6 +14,7 @@ import glob
 import json
 import logging
 import os
+import re
 import sqlite3
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -271,14 +272,13 @@ class NGProductionScorer:
             seed_files = []
 
         if not seed_files:
-            import re as _re
             raw_files = sorted(
                 self.model_dir.glob(f'{ver_tag}_seed*_multi_target_*.pkl'),
                 key=lambda f: f.stat().st_mtime
             )
             by_seed = {}
             for f in raw_files:  # mtime 升序, 后写覆盖 → 每 seed 留最新
-                m = _re.search(r'_seed(\d+)_', f.name)
+                m = re.search(r'_seed(\d+)_', f.name)
                 by_seed[m.group(1) if m else f.name] = f
             seed_files = sorted(by_seed.values(), key=lambda f: f.name)
             if len(raw_files) != len(seed_files):
@@ -306,15 +306,27 @@ class NGProductionScorer:
         for sf in seed_files:
             scorer = NGProductionScorer(db_path=self.db_path, model_path=str(sf))
             scorer._ensemble_scorers = None  # prevent recursion
+            # pkl 加载失败的成员没有 _loaded_model_file (models 为空), 不许静默进平均
+            if not getattr(scorer, '_loaded_model_file', None):
+                logger.error("ensemble 成员 %s 加载失败, 跳过", sf.name)
+                continue
             # 拒载伪装成本版本的 ng2.1 specialist (rename 失败滞留的 pkl)
             if getattr(scorer, '_loaded_ng21_variant', None) and not version.startswith('ng2.1'):
                 logger.error("ensemble 成员 %s 是 ng2.1 specialist, 跳过", sf.name)
                 continue
             self._ensemble_scorers.append(scorer)
+        if not self._ensemble_scorers:
+            # 全部成员被拒载/加载失败: 不 fallback 到任意 pkl (会重开固定清单堵住
+            # 的洞), 保持 scorer 无模型状态并高可见报错, 供上游显式失败
+            logger.error(
+                "NG ensemble (%s): %d 个候选 pkl 全部被拒载或加载失败, scorer 不可用",
+                version, len(seed_files),
+            )
+            self._ensemble_scorers = None
+            return
         logger.info(
             "NG ensemble (%s) 最终成员: %s",
-            version, [Path(s._loaded_model_file).name if getattr(s, '_loaded_model_file', None)
-                      else '?' for s in self._ensemble_scorers],
+            version, [Path(s._loaded_model_file).name for s in self._ensemble_scorers],
         )
 
         # Copy metadata from first scorer

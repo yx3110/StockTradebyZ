@@ -16,6 +16,7 @@ import pandas as pd
 import tushare as ts
 import time
 import logging
+import sqlite3
 from pathlib import Path
 from datetime import datetime
 import json
@@ -380,8 +381,7 @@ def update_financial_indicators(date_str: str):
         # catch-up 起点: DB 内最新 ann_date 次日 (格式 'YYYY-MM-DD', 2026-07-11 迁移后统一)
         catchup_start = today_dt - timedelta(days=1)
         try:
-            import sqlite3 as _sq
-            with _sq.connect(_db_path, timeout=30) as _c:
+            with sqlite3.connect(_db_path, timeout=30) as _c:
                 _max_ann = _c.execute(
                     'SELECT MAX(ann_date) FROM financial_indicator'
                 ).fetchone()[0]
@@ -422,7 +422,7 @@ def update_financial_indicators(date_str: str):
                 logger.warning(f"查询 ann_date={ann_date} 财务数据失败: {e}")
 
         if not all_results:
-            logger.info("未发现当天或前一天发布财务数据的公司")
+            logger.info(f"查询窗口 ({catchup_start.strftime('%Y-%m-%d')} ~ {date_str}) 内无新发布财务数据")
             return 0
 
         combined_df = pd.concat(all_results, ignore_index=True)
@@ -754,14 +754,15 @@ def _is_trading_day(date_str: str):
     Returns:
         True/False: 日历明确判定是/否交易日
         None: 日历查询失败 (网络/token故障), 无法判定
+
+    复用 core.trading_calendar 的 tri-state 查询 (不做 DB/星期几 fallback —
+    行情 0 条时 DB fallback 是循环论证)。
     """
-    try:
-        df = pro.trade_cal(exchange='SSE', start_date=date_str, end_date=date_str)
-        if df is not None and not df.empty:
-            return int(df.iloc[0]['is_open']) == 1
-    except Exception as e:
-        logger.warning(f"交易日历查询失败: {e}")
-    return None
+    from core.trading_calendar import check_trading_day_via_tushare
+    result = check_trading_day_via_tushare(date_str)
+    if result is None:
+        logger.warning("交易日历查询失败 (网络/token故障?), 无法判定是否交易日")
+    return result
 
 
 def quick_daily_update(date: str = None, skip_financial: bool = True):

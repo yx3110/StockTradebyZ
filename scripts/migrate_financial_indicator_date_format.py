@@ -119,16 +119,24 @@ def main() -> int:
             )
 
         print('3/4 归一化日期格式 → TEXT YYYY-MM-DD')
+        # 逐列判断是否需要归一 (含 '-' 即已是 YYYY-MM-DD): 同一行两列格式可能不同,
+        # 行级 WHERE + 无条件 substr 会把已归一的那列拆成 '2024--0-9-' 垃圾
         c.execute('''
             UPDATE financial_indicator
-            SET ann_date = CASE WHEN ann_date IS NULL THEN NULL ELSE
-                    substr(CAST(ann_date AS TEXT),1,4) || '-' ||
-                    substr(CAST(ann_date AS TEXT),5,2) || '-' ||
-                    substr(CAST(ann_date AS TEXT),7,2) END,
-                end_date = substr(CAST(end_date AS TEXT),1,4) || '-' ||
-                    substr(CAST(end_date AS TEXT),5,2) || '-' ||
-                    substr(CAST(end_date AS TEXT),7,2)
-            WHERE typeof(ann_date) = 'integer' OR typeof(end_date) = 'integer'
+            SET ann_date = CASE
+                    WHEN ann_date IS NOT NULL AND instr(CAST(ann_date AS TEXT), '-') = 0
+                    THEN substr(CAST(ann_date AS TEXT),1,4) || '-' ||
+                         substr(CAST(ann_date AS TEXT),5,2) || '-' ||
+                         substr(CAST(ann_date AS TEXT),7,2)
+                    ELSE ann_date END,
+                end_date = CASE
+                    WHEN end_date IS NOT NULL AND instr(CAST(end_date AS TEXT), '-') = 0
+                    THEN substr(CAST(end_date AS TEXT),1,4) || '-' ||
+                         substr(CAST(end_date AS TEXT),5,2) || '-' ||
+                         substr(CAST(end_date AS TEXT),7,2)
+                    ELSE end_date END
+            WHERE (ann_date IS NOT NULL AND instr(CAST(ann_date AS TEXT), '-') = 0)
+               OR (end_date IS NOT NULL AND instr(CAST(end_date AS TEXT), '-') = 0)
         ''')
 
         print('4/4 校验')
@@ -143,7 +151,10 @@ def main() -> int:
         ''').fetchone()[0]
         n_after = c.execute('SELECT COUNT(*) FROM financial_indicator').fetchone()[0]
         bad_fmt = c.execute(
-            "SELECT COUNT(*) FROM financial_indicator WHERE end_date NOT GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'"
+            "SELECT COUNT(*) FROM financial_indicator "
+            "WHERE end_date NOT GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]' "
+            "   OR (ann_date IS NOT NULL "
+            "       AND ann_date NOT GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]')"
         ).fetchone()[0]
         print(f'  格式分布: {fmt_after}, 剩余重复组: {remaining_dups}, '
               f'行数 {total}→{n_after} (-{total - n_after}), 非法格式: {bad_fmt}')

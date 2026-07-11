@@ -28,6 +28,18 @@ UNKNOWN_INDUSTRY = {"未知", "Unknown", "unknown", "", None}
 DEFAULT_TRUST_YELLOW_PENALTY = 0.7
 
 
+def sign_aware_scale(value: float, factor: float) -> float:
+    """按符号选方向缩放, 保证 factor<1 的惩罚永远降低排名.
+
+    NG rank_score 可为负 (预测收益): 负值 ×factor(<1) 反而升排名, 必须改除。
+    factor<=0 时直接相乘 (兜底, 同时避免除零)。
+    post_filters (trust 🟡 惩罚) 与 post_rank_booster (trust mult) 共用此约定。
+    """
+    if value >= 0 or factor <= 0:
+        return value * factor
+    return value / factor
+
+
 def _get_code(stock: dict) -> str:
     return stock.get("stock_code") or stock.get("code") or ""
 
@@ -144,12 +156,8 @@ def penalize_unreliable_by_trust_yellow(
                     try:
                         orig = float(s[fld])
                         s[f"_orig_{fld}"] = orig
-                        # NG rank_score 可为负 (预测收益): 负值 ×0.7 反而升排名,
-                        # 必须按符号选方向, 保证惩罚永远降低排名
-                        if orig >= 0:
-                            s[fld] = orig * penalty_factor
-                        else:
-                            s[fld] = orig / penalty_factor
+                        # 按符号选方向, 保证惩罚永远降低排名 (NG 分数可为负)
+                        s[fld] = sign_aware_scale(orig, penalty_factor)
                     except (TypeError, ValueError):
                         pass
             s["_trust_penalty_applied"] = True

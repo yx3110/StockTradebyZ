@@ -3422,6 +3422,12 @@ class TomorrowStockSelector:
         except Exception:
             return 50.0
         
+    def _record_risk_degradation(self, layer: str, exc: Exception) -> None:
+        """风控层执行失败的统一记录: ERROR 日志 + 降级戳 (报告头部盖章用), 不许静默."""
+        logger.error(f"{layer} 失败, 风控降级保留原列表: {exc}")
+        self._risk_layer_errors = getattr(self, '_risk_layer_errors', [])
+        self._risk_layer_errors.append(f"{layer}: {exc}")
+
     def analyze_results(self, results: Dict[str, List[str]], data: Dict[str, pd.DataFrame], target_date: pd.Timestamp = None) -> Dict[str, Any]:
         """分析选股结果"""
         # 区分真实策略和虚拟的"全市场ML评分"
@@ -3439,13 +3445,22 @@ class TomorrowStockSelector:
             "full_market_mode": has_full_market,
         }
 
+        # 每次分析重置风控层运行态 (实例跨日期复用时, 上一日的降级记录 /
+        # overlay 持仓不许泄漏进本次报告)
+        self._risk_layer_errors = []
+        self._ng21_overlay_picks = None
+        self._ng21_decision = None
+        self._ng21_dropped_by_overlay = []
+
         # 预计算环境评分供 v2 优化器 (filter_and_allocate / per-stock 定价) 使用。
         # 旧逻辑在 generate_report 里才赋值 _cached_env_score, 但消费点在
         # analyze_results 中先执行 → 环境自适应恒用中性 50.0 (上线以来 no-op)
-        if target_date is not None and not hasattr(self, '_cached_env_score'):
+        # 按日期缓存: 实例跨日期复用时不许沿用上一日的环境评分
+        if target_date is not None and getattr(self, '_cached_env_date', None) != target_date:
             try:
                 _env_pre = self.analyze_trading_environment(target_date)
                 self._cached_env_score = _env_pre.get('total_score', 50.0)
+                self._cached_env_date = target_date
                 logger.info(f"环境评分预计算: {self._cached_env_score:.1f}/100")
             except Exception as e:
                 logger.warning(f"环境评分预计算失败, 优化器用中性50: {e}")
@@ -3877,9 +3892,7 @@ class TomorrowStockSelector:
                     logger.info(format_drop_log(summary))
             except Exception as e:
                 # 风控层失败不许静默: 升 ERROR + 记录降级 (报告头部盖戳)
-                logger.error(f"post-filter 失败, 风控降级保留原列表: {e}")
-                self._risk_layer_errors = getattr(self, '_risk_layer_errors', [])
-                self._risk_layer_errors.append(f"post_filters: {e}")
+                self._record_risk_degradation("post_filters", e)
 
         # P2.8c (2026-04-28): post-rank booster — 8策略 regime-conditional bonus.
         # Trust filtering already done by post_filters (drop 🔴, penalize 🟡), so we
@@ -3890,25 +3903,31 @@ class TomorrowStockSelector:
                 from stock_selctor.post_rank_booster import apply_post_rank_booster
                 _booster_regime = getattr(self, '_ng21_regime', None) or 'bull'
                 _before_top10 = [s.get('stock_code') for s in pick_pipeline[:10]]
-                pick_pipeline = apply_post_rank_booster(
+                _boosted = apply_post_rank_booster(
                     pick_pipeline, regime=_booster_regime,
                     strategy_field='strategies',  # selector uses 'strategies' (zh names)
                     trust_field='',  # skip; post_filters already handled trust
                     score_field='rank_score',
                 )
-                # booster 重排必须写回 composite (booster 返回副本, 按 code 合并回
-                # 完整列表), 否则会被下游 composite_sort_key 最终排序撤销
-                # (booster 上线以来实际是 no-op 的根因)
-                _boost_map = {
-                    s.get('stock_code'): s for s in pick_pipeline
-                    if 'rank_score_boosted' in s
-                }
-                for _s in stock_with_scores:
-                    _b = _boost_map.get(_s.get('stock_code'))
-                    if _b is not None:
-                        _s['_composite_pre_booster'] = _s.get('composite')
-                        _s['composite'] = _b['rank_score_boosted']
-                        _s['_booster_strategy_bonus'] = _b.get('_booster_strategy_bonus', 0)
+                # booster 重排必须写回 composite, 否则会被下游 composite_sort_key
+                # 最终排序撤销 (booster 上线以来实际是 no-op 的根因)。
+                # booster 返回副本 — 把 boost 字段写回原 dict, pipeline 保留原 dict
+                # 引用 (按 boosted 顺序重排): pick_pipeline ⊂ stock_with_scores 同一批
+                # 引用, 写回自动反映到完整列表, 后续 overlay 的 dict(s) 副本也不会
+                # 再携带 pre-boost composite (旧实现里 overlay 命中的股票会回退)
+                _orig_by_code = {s.get('stock_code'): s for s in pick_pipeline}
+                pick_pipeline = []
+                for _b in _boosted:
+                    _o = _orig_by_code.get(_b.get('stock_code'))
+                    if _o is None:
+                        pick_pipeline.append(_b)
+                        continue
+                    if 'rank_score_boosted' in _b:
+                        _o['rank_score_boosted'] = _b['rank_score_boosted']
+                        _o['_booster_strategy_bonus'] = _b.get('_booster_strategy_bonus', 0)
+                        _o['_composite_pre_booster'] = _o.get('composite')
+                        _o['composite'] = _b['rank_score_boosted']
+                    pick_pipeline.append(_o)
                 _after_top10 = [s.get('stock_code') for s in pick_pipeline[:10]]
                 _swapped = len(set(_before_top10) - set(_after_top10))
                 _avg_bonus = sum(s.get('_booster_strategy_bonus', 0) for s in pick_pipeline[:10]) / 10
@@ -3917,9 +3936,7 @@ class TomorrowStockSelector:
                     f"top-10 swapped {_swapped}/10, avg bonus={_avg_bonus:.2f}pts"
                 )
             except Exception as e:
-                logger.error(f"booster 失败, 风控降级保留原列表: {e}")
-                self._risk_layer_errors = getattr(self, '_risk_layer_errors', [])
-                self._risk_layer_errors.append(f"booster: {e}")
+                self._record_risk_degradation("booster", e)
 
         # ng2.1: L1-L5 risk overlay (regime-aware industry cap / SL / VT / crisis stop)
         # Triggered only when scoring_version=='ng2.1' (selector._ng21_mode set upstream).
@@ -3928,10 +3945,9 @@ class TomorrowStockSelector:
         if getattr(self, '_ng21_mode', False) and pick_pipeline:
             try:
                 from stock_selctor.ng21_risk_overlay import build_risk_decision, apply_overlay_to_picks
-                # sqlite3 不接受 pd.Timestamp 绑定 — 必须归一化为字符串
-                # (L4 熔断曾因此静默失效: 2026-04-28~07-11)
+                # 日期归一化 ('YYYY-MM-DD', sqlite3 不接受 pd.Timestamp 绑定) 由
+                # build_risk_decision / estimate_portfolio_vol 内部 _norm_date 统一处理
                 _td = target_date if target_date is not None else pd.Timestamp.now()
-                _td = _td.strftime('%Y-%m-%d') if hasattr(_td, 'strftime') else str(_td)[:10]
                 _decision = build_risk_decision(
                     regime=getattr(self, '_ng21_regime', 'bull'),
                     target_date=_td,
@@ -3982,19 +3998,20 @@ class TomorrowStockSelector:
                 _merged = {}
                 for _s in kept:
                     _s['_ng21_overlay_pick'] = True
-                    _merged[_sw_key(_s)] = _s
+                    if _sw_key(_s) is not None:  # 无 code 的条目不入 map, 防 None 键碰撞
+                        _merged[_sw_key(_s)] = _s
                 for _d in dropped_by_overlay:
-                    _merged.setdefault(_sw_key(_d), _d)
+                    if _sw_key(_d) is not None:
+                        _merged.setdefault(_sw_key(_d), _d)
                 stock_with_scores = [
-                    _merged.get(_sw_key(s), s) for s in stock_with_scores
+                    _merged.get(_sw_key(s), s) if _sw_key(s) is not None else s
+                    for s in stock_with_scores
                 ]
                 self._ng21_decision = _decision  # for report stamping
                 self._ng21_dropped_by_overlay = dropped_by_overlay
                 self._ng21_overlay_picks = kept
             except Exception as e:
-                logger.error(f"ng2.1 risk overlay 失败, 风控降级保留原列表: {e}")
-                self._risk_layer_errors = getattr(self, '_risk_layer_errors', [])
-                self._risk_layer_errors.append(f"ng21_overlay: {e}")
+                self._record_risk_degradation("ng21_overlay", e)
 
         # Multi-horizon execution alignment tag (annotates only, no filtering)
         # 🟢 ALIGN: all 4 horizons positive → T+1 buy ok

@@ -21,6 +21,8 @@ from __future__ import annotations
 
 from typing import Dict, Iterable, List, Optional
 
+from stock_selctor.post_filters import sign_aware_scale
+
 # Bonus points added to rank_score when a pick is also flagged by a quant
 # strategy whose long-horizon backtest favors the current regime.
 # Source: 8-strategy long-horizon backtest 2018-2026 (alpha by regime).
@@ -121,12 +123,8 @@ def apply_post_rank_booster(
         # candidates outranking real ML picks).
         bonus = 0.0 if (skip_when_score_zero and base == 0.0) else bonus_raw * bonus_scale
         combined = base + bonus
-        # NG rank_score 可为负: 负值 ×mult(<1) 反而升排名, 按符号选方向保证 trust
-        # 惩罚永远降低排名 (与 post_filters.penalize_unreliable_by_trust_yellow 同款约定)
-        if combined >= 0 or mult <= 0:
-            boosted = combined * mult
-        else:
-            boosted = combined / mult
+        # NG rank_score 可为负: trust mult(<1) 的惩罚按符号选方向, 保证永远降低排名
+        boosted = sign_aware_scale(combined, mult)
         s2 = dict(s)
         s2['rank_score_boosted'] = round(boosted, 6)
         s2['_booster_strategy_bonus'] = round(bonus, 6)

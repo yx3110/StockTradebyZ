@@ -193,24 +193,9 @@ class NG21v2Trainer(NGTrainer):
         return result
 
     def _rename_saved_pkl(self):
-        """用父类记录的确切保存路径重命名, 不再 mtime-glob (避免劫持真 ng1.0.1;
-        失败必须 raise, 否则 specialist 永久伪装成生产 ng1.0.1)."""
-        from pathlib import Path
-        import shutil
-
-        src_path = getattr(self, '_last_saved_pkl', None)
-        if not src_path or not Path(src_path).exists():
-            raise RuntimeError(
-                f'NG21v2 rename failed: 找不到本次训练保存的 pkl '
-                f'(_last_saved_pkl={src_path!r}) — 检查父类保存流程'
-            )
-        src = Path(src_path)
-        tag = self._ng21v2_variant.replace('.', '')  # ng21v2-bull
-        new_name = src.name.replace('ng101', tag)
-        dst = src.parent / new_name
-        shutil.move(str(src), str(dst))
-        self._last_saved_pkl = str(dst)
-        logger.info(f'NG21v2 pkl renamed: {src.name} → {new_name}')
+        """用父类记录的确切保存路径重命名为 specialist 名 (共用 ng21_trainer 实现)."""
+        from ml_models.ng21.ng21_trainer import rename_specialist_pkl
+        rename_specialist_pkl(self, self._ng21v2_variant, 'NG21v2')
 
 
 # ---------------------------------------------------------------------------

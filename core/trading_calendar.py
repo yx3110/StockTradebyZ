@@ -47,6 +47,21 @@ def is_trading_day(date_str: str) -> bool:
         return True
 
 
+def check_trading_day_via_tushare(date_str: str):
+    """公开的 tri-state 交易日查询: True/False/None(API 查询失败).
+
+    与 is_trading_day 不同, 不做 DB/星期几 fallback — 调用方需要区分
+    「明确非交易日」和「日历也查不到 = API 全线故障」时用这个
+    (如 quick_daily_update 判定行情 0 条是节假日还是数据源故障)。
+    接受 'YYYY-MM-DD' 或 'YYYYMMDD'。
+    """
+    if '-' not in date_str and len(date_str) == 8:
+        date_str = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
+    res = _check_via_tushare(date_str)
+    # pandas 比较产出 np.bool_, 而调用方常用 `is False` 身份判断 — 必须转 Python bool
+    return None if res is None else bool(res)
+
+
 def _check_via_tushare(date_str: str):
     """通过 Tushare API 查询交易日历, 返回 True/False/None(查询失败)"""
     try:

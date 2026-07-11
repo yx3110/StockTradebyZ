@@ -37,6 +37,35 @@ from ml_models.ng.ng_trainer import NGTrainer
 logger = logging.getLogger(__name__)
 
 
+def rename_specialist_pkl(trainer, variant: str, label: str) -> None:
+    """把父类刚保存的 ng101_*.pkl 重命名为 specialist 名 (ng21<variant>_*.pkl).
+
+    用父类记录的确切保存路径 (trainer._last_saved_pkl), 不再 mtime-glob 抢最新
+    ng101 pkl — 旧实现在并发训练时可能劫持真 ng1.0.1 模型, 且 rename 失败被
+    吞掉后 specialist 会永久伪装成生产 ng1.0.1 (scorer 现已按 ng21_variant
+    字段拒载, 双保险)。NG21Trainer / NG21v2Trainer 共用。
+    """
+    from pathlib import Path
+    import shutil
+
+    src_path = getattr(trainer, '_last_saved_pkl', None)
+    if not src_path or not Path(src_path).exists():
+        raise RuntimeError(
+            f'{label} rename failed: 找不到本次训练保存的 pkl '
+            f'(_last_saved_pkl={src_path!r}) — 检查父类保存流程'
+        )
+    src = Path(src_path)
+    # New name: ng21-bull_seed42_multi_target_TIMESTAMP.pkl (etc.)
+    # Keep the dash so glob pattern from scorer (`ver.replace('.', '')`)
+    # matches: 'ng2.1-bull'.replace('.', '') == 'ng21-bull'.
+    tag = variant.replace('.', '')  # 'ng2.1-bull' → 'ng21-bull'
+    new_name = src.name.replace('ng101', tag)
+    dst = src.parent / new_name
+    shutil.move(str(src), str(dst))
+    trainer._last_saved_pkl = str(dst)
+    logger.info(f'{label} pkl renamed: {src.name} → {new_name}')
+
+
 def _load_regime_map(db_path: str) -> dict:
     """Read trade_date → regime_v2 (∈ {+1, -1, 0/None}) from market_regime_signals.
 
@@ -179,32 +208,8 @@ class NG21Trainer(NGTrainer):
         return result
 
     def _rename_saved_pkl(self):
-        """Rename the pkl this run just saved to ng21<variant>_*.pkl.
-
-        用父类记录的确切保存路径 (self._last_saved_pkl), 不再 mtime-glob 抢最新
-        ng101 pkl — 旧实现在并发训练时可能劫持真 ng1.0.1 模型, 且 rename 失败被
-        吞掉后 specialist 会永久伪装成生产 ng1.0.1 (scorer 现已按 ng21_variant
-        字段拒载, 双保险)。
-        """
-        from pathlib import Path
-        import shutil
-
-        src_path = getattr(self, '_last_saved_pkl', None)
-        if not src_path or not Path(src_path).exists():
-            raise RuntimeError(
-                f'NG21 rename failed: 找不到本次训练保存的 pkl '
-                f'(_last_saved_pkl={src_path!r}) — 检查父类保存流程'
-            )
-        src = Path(src_path)
-        # New name: ng21-bull_seed42_multi_target_TIMESTAMP.pkl (etc.)
-        # Keep the dash so glob pattern from scorer (`ver.replace('.', '')`)
-        # matches: 'ng2.1-bull'.replace('.', '') == 'ng21-bull'.
-        tag = self._ng21_variant.replace('.', '')  # 'ng2.1-bull' → 'ng21-bull'
-        new_name = src.name.replace('ng101', tag)
-        dst = src.parent / new_name
-        shutil.move(str(src), str(dst))
-        self._last_saved_pkl = str(dst)
-        logger.info(f'NG21 pkl renamed: {src.name} → {new_name}')
+        """Rename the pkl this run just saved to ng21<variant>_*.pkl."""
+        rename_specialist_pkl(self, self._ng21_variant, 'NG21')
 
     # ------------------------------------------------------------------
     # Data loading: filter by regime, then optionally rewrite label
