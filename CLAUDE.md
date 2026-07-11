@@ -573,6 +573,8 @@ AI analysis configuration and weights
 ### ML Scoring Systems (活跃版本)
 
 > **⚠️ 2026-04-20 全量复核后的重大结论**: ng1.0.6 (0AMV 牛熊切换) 综合指标实际**胜过** ng1.0.1 (WF-OOS V5.2: 78.9% vs 73.4%; 10d Sharpe: 2.81 vs 2.37; Pre-2020 年化: +0.7% vs -19.0%; β_UMD: +0.005 vs +0.38). ng1.0.1 唯一优势是 MaxDD (-11.7% vs -22.9%). 生产切换待 ng1.0.6+ng1.0.5 风控叠加测试完成后确认。
+>
+> **🆕 2026-07-11 真·零泄漏 forward OOS 反转证据**: 用训练时物理上不存在的新数据 (2026-04-28~06-26, N=40, ng101 pkl 训于 04-28/数据止 04-27) 做 forward 回测: 大盘中位 −5.06% (下跌市); **ng1.0.1 Top-10 超额 +4.49% (85%天赢) 全面胜过 ng1.0.6 生产 MOE +2.09% (78%天赢)** — 绝对/超额/胜率各维度 ng1.0.1 都赢, 期间 MOE regime 把 26/40 天误判牛市 (0AMV 反应慢). 信号泛化成立但熊市绝对收益仍亏. 是第 4 个独立证据 (in-sample+Pre-2020+牛熊拆解+forward) 指向"生产切 ng1.0.1 + 风控 overlay". 与 4-20 复核的 V5.2/Sharpe 优势并存: ng1.0.6 赢在 risk-adjusted 短窗口伪影已知. 详见 `docs/wiki/models/ng-series.md` + memory `oos_fresh_2mo_2026_07_10.md`。
 
 1. **🆕 NG v2.0a (multi-beta vote regime + ng106v1 sub-model)** (2026-04-26, 灰度评估中):
    - 核心: V11 (0AMV 位置+水上/上升+3日平滑) + B1 (% 股票 above MA20/MA60) + B2 (沪深300 60d RV percentile) hard vote (2-of-3) + 3d streak

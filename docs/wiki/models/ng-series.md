@@ -504,6 +504,29 @@ python3 backtest/run_north_star_eval.py --backtest \
 
 ---
 
+## 真·零泄漏 forward OOS — ng1.0.1 单模 vs ng1.0.6 生产 MOE (2026-07-11)
+
+迄今最干净的 OOS 检验。窗口 **2026-04-28 → 06-26 (N=40 交易日, 10d 前向)**，这段数据在模型训练时**物理上不存在**（production ng101 pkl 训于 2026-04-28 @ commit a19866b8，DB 数据当时止于 04-27），本次补齐 + 重建 0AMV/regime 后才可评估。属 forward paper-trade 口径，置信度最高。
+
+**大环境**：A股全市场 10d 前向中位收益 = **−5.06%**（40天均值），是个下跌市。
+
+| 指标 (Top-10, 统一A股中位基准, 覆盖100%) | ng1.0.1 裸信号 | ng1.0.6 生产MOE |
+|---|---|---|
+| Top-10 平均 10d 收益 | **−0.57%** | −2.97% |
+| 超额 vs 中位 | **+4.49%** (85%天赢) | +2.09% (78%天赢) |
+| 非重叠 10d 累计 | −8.96% | −16.13% |
+
+**三条结论**:
+1. **信号泛化成立**：两模型在未见数据上都大幅跑赢大盘（超额 +4.49% / +2.09%），未过拟合，alpha 真实。
+2. **绝对收益亏**：大盘跌 5%，模型只是跌得少。熊市不该满仓做多，模型价值在"选相对最强票"非"预测大盘方向"。
+3. **ng1.0.1 单模全面胜生产 MOE**：绝对/超额/胜率各维度都赢。用最新鲜 forward OOS 独立印证 in-sample（`memory/moe_failure_2026_04_25`）+ Pre-2020（`memory/pre2020_real_oos_2026_04_25`）+ 牛熊拆解（`memory/ng101_alpha_dominant_2026_04_25`）的既有结论，是第 4 个独立证据，支持"生产切 ng1.0.1 + 风控 overlay"。期间 MOE regime 探测器把 26/40 天判"牛市"（下跌市里），0AMV regime 反应偏慢。
+
+**Caveat**: 40天短样本、只一个下跌 regime，非全周期定论。V5.2 评分卡两个都给 D 是**短窗口伪影**（需≥200天，年化/Sharpe/regime 指标全 ⚠短 归零），不可采信。close[D]→close[D+10] 口径与 selector "D+1买入" 差1天，但两模型同口径对比公平。
+
+**复现**: `run_north_star_eval.py --backtest --report-dir <dir> --start-date 2026-04-28 --end-date 2026-06-26 --rank-field composite --top-n 10 --focus-days 10`；直接 A/B 脚本见 `memory/oos_fresh_2mo_2026_07_10.md`。
+
+---
+
 ## 回填命令参考
 
 ```bash
