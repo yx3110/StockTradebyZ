@@ -109,13 +109,16 @@ def load_stock_days(conn, start: str, end: str) -> pd.DataFrame:
     df['is_up'] = df['pct'] > 0
     df['is_down'] = df['pct'] < 0
 
-    # code_6 列近期未回填 (NULL), 从 code ('000001.SZ') 截取
+    # 主力净流入用东财个股口径 (moneyflow_dc_daily, 万元→亿):
+    # 按成分聚合可 99.5%+ 复现东财官方板块资金流, 数字可与东财 App 直接对照。
+    # (Tushare 自算口径的 moneyflow_daily 仅供 NG 因子, 勿混用)
     mf = pd.read_sql_query(
-        """SELECT substr(code, 1, 6) AS code6, trade_date,
-                  (COALESCE(buy_lg_amount,0) + COALESCE(buy_elg_amount,0)
-                   - COALESCE(sell_lg_amount,0) - COALESCE(sell_elg_amount,0)) / 10000.0 AS main_net
-           FROM moneyflow_daily WHERE trade_date BETWEEN ? AND ?""",
-        conn, params=(start, end))
+        """SELECT substr(ts_code, 1, 6) AS code6,
+                  substr(trade_date,1,4)||'-'||substr(trade_date,5,2)||'-'||substr(trade_date,7,2)
+                      AS trade_date,
+                  net_amount / 10000.0 AS main_net
+           FROM moneyflow_dc_daily WHERE trade_date BETWEEN ? AND ?""",
+        conn, params=(start.replace('-', ''), end.replace('-', '')))
     df = df.merge(mf, on=['code6', 'trade_date'], how='left')
     df['main_net'] = df['main_net'].fillna(0.0)
     return df[['code6', 'trade_date', 'pct', 'is_newhigh', 'main_net', 'is_up', 'is_down']]

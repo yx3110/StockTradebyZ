@@ -33,8 +33,11 @@ webapp/api/market.py  (蓝图 /api/market/rotation|fundflow|sentiment|status)
 
 - **板块涨幅口径**: 申万 L1/L2 用成分股等权平均 (点时成分, in_date/out_date 过滤);
   概念优先用 `dc_index_daily.pct_change` 官方值, 缺失回退等权平均。与东财官方排名验证高度一致。
-- **主力净流入 = buy_lg+buy_elg−sell_lg−sell_elg** (万元→亿)。不要用 `net_mf_amount` (含中小单)。
-- **`moneyflow_daily.code_6` 近期全 NULL** — 日更流程没填这列, 聚合时用 `substr(code,1,6)`。
+- **主力净流入口径 = 东财 `moneyflow_dc`** (表 `moneyflow_dc_daily.net_amount`, 万元→亿,
+  2023-09-11 起)。2026-07-11 实证: 按成分聚合可 99.5%+ 复现东财官方板块资金流
+  (`moneyflow_ind_dc`), 数字可与东财 App 直接对照。**曾用 Tushare 自算 `moneyflow_daily`
+  (lg+elg 口径), 因无处交叉验证已切换** — 该表仅供 NG 因子, 两口径同股票差 30-60%, 勿混用。
+- **`moneyflow_daily.code_6` 曾全 NULL** — ng_cache_updater 写入端漏填 (已修 + 回填 285k 行)。
 - **`daily_quotes.is_limit_up` 从未回填 (全为0)** — 涨停数改用 Tushare `limit_list_d`
   (U涨停/D跌停/Z炸板, 数据起点 2024-01-02), 存 `limit_list_daily`。
 - **`moneyflow_ind_dc` 历史只有行业无概念** (~86行/天), 不能做概念资金流历史 — 故全部走本地聚合。

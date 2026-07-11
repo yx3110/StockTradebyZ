@@ -36,6 +36,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger(__name__)
 
 DC_INDEX_EARLIEST = '20241220'      # dc_index 数据最早可用日期
+DC_MONEYFLOW_EARLIEST = '20240102'  # moneyflow_dc 回填起点 (接口最早 20230911)
 LIMIT_LIST_EARLIEST = '20240102'    # limit_list_d 回填起点
 INDEX_WEIGHT_EARLIEST = '202401'    # 指数成分快照回填起点 (月)
 TRACKED_INDICES = ['000300.SH', '932000.CSI']  # 沪深300 / 中证2000
@@ -55,7 +56,7 @@ class MarketBoardFetcher:
                 token = json.load(f)['tushare']['token']
         ts.set_token(token)
         self.pro = ts.pro_api()
-        self._ensure_tables()
+        write_retry(self._ensure_tables)
 
     def _conn(self):
         return sqlite_connect(self.db_path)
@@ -127,6 +128,16 @@ class MarketBoardFetcher:
                 trade_date TEXT NOT NULL,          -- YYYYMMDD (月末快照日)
                 weight REAL,
                 PRIMARY KEY (index_code, con_code, trade_date)
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS moneyflow_dc_daily (
+                trade_date TEXT NOT NULL,          -- YYYYMMDD
+                ts_code TEXT NOT NULL,             -- 000001.SZ
+                net_amount REAL,                   -- 主力净流入 万元 (超大单+大单)
+                buy_elg_amount REAL,               -- 超大单净流入 万元
+                buy_lg_amount REAL,                -- 大单净流入 万元
+                PRIMARY KEY (trade_date, ts_code)
             )
         """)
         conn.execute("""
@@ -299,7 +310,30 @@ class MarketBoardFetcher:
         logger.info("✅ index_weight_snapshot 完成")
 
     # ------------------------------------------------------------------
-    # 5. 涨跌停列表
+    # 5. 东财个股资金流 (webapp 板块资金流的口径源: 聚合可复现东财官方板块数)
+    # ------------------------------------------------------------------
+    def fetch_dc_moneyflow(self, dates: list):
+        conn = self._conn()
+        done = {r[0] for r in conn.execute("SELECT DISTINCT trade_date FROM moneyflow_dc_daily")}
+        todo = [d for d in dates if d not in done]
+        logger.info("moneyflow_dc: 需抓取 %d 天 (已有 %d 天)", len(todo), len(done))
+        for i, d in enumerate(todo):
+            df = self._call('moneyflow_dc', trade_date=d)
+            if df is None or df.empty:
+                continue
+            rows = list(df[['trade_date', 'ts_code', 'net_amount', 'buy_elg_amount',
+                            'buy_lg_amount']].itertuples(index=False, name=None))
+            self._write_retry(lambda: (conn.executemany(
+                "INSERT OR REPLACE INTO moneyflow_dc_daily "
+                "(trade_date, ts_code, net_amount, buy_elg_amount, buy_lg_amount) "
+                "VALUES (?,?,?,?,?)", rows), conn.commit()))
+            if (i + 1) % 50 == 0:
+                logger.info("  moneyflow_dc 进度 %d/%d", i + 1, len(todo))
+        conn.close()
+        logger.info("✅ moneyflow_dc_daily 完成")
+
+    # ------------------------------------------------------------------
+    # 6. 涨跌停列表
     # ------------------------------------------------------------------
     def fetch_limit_list(self, dates: list):
         conn = self._conn()
@@ -353,6 +387,8 @@ class MarketBoardFetcher:
                 self.local_trade_dates(DC_INDEX_EARLIEST, today))),
             ('dc_members', self.fetch_dc_members),
             ('index_weights', self.fetch_index_weights),
+            ('dc_moneyflow', lambda: self.fetch_dc_moneyflow(
+                self.local_trade_dates(DC_MONEYFLOW_EARLIEST, today))),
             ('limit_list', lambda: self.fetch_limit_list(
                 self.local_trade_dates(LIMIT_LIST_EARLIEST, today))),
         ])
@@ -362,11 +398,14 @@ class MarketBoardFetcher:
         # 增量: 从已有最大日期补到 d (漏跑几天也能补齐)
         conn = self._conn()
         last_dc = conn.execute("SELECT MAX(trade_date) FROM dc_index_daily").fetchone()[0]
+        last_mf = conn.execute("SELECT MAX(trade_date) FROM moneyflow_dc_daily").fetchone()[0]
         last_ll = conn.execute("SELECT MAX(trade_date) FROM limit_list_daily").fetchone()[0]
         conn.close()
         self._run_sections([
             ('dc_index', lambda: self.fetch_dc_index(
                 self.local_trade_dates(last_dc or DC_INDEX_EARLIEST, d))),
+            ('dc_moneyflow', lambda: self.fetch_dc_moneyflow(
+                self.local_trade_dates(last_mf or DC_MONEYFLOW_EARLIEST, d))),
             ('limit_list', lambda: self.fetch_limit_list(
                 self.local_trade_dates(last_ll or LIMIT_LIST_EARLIEST, d))),
             ('dc_members', self.fetch_dc_members),
