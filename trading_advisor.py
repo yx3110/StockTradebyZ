@@ -164,8 +164,28 @@ class TradingAdvisor:
         
         if current_stock:
             recommendations.append(current_stock)
-        
-        return pd.DataFrame(recommendations)
+
+        df = pd.DataFrame(recommendations)
+
+        # 2026-07-11: 风控剔除交叉过滤 — 本工具原按 score>=75 独立生成买入建议,
+        # 对 rank-override 的'风控剔除'与 _post_filter_drop/_drop_reason 标记完全
+        # 不可见, 被行业限流/overlay 淘汰的高分股仍会进买入建议
+        try:
+            import json as _json
+            json_path = report_path.replace('选股分析报告_', 'analysis_data_').replace('.md', '.json')
+            if os.path.exists(json_path) and not df.empty and 'stock_code' in df.columns:
+                with open(json_path, 'r', encoding='utf-8') as jf:
+                    data = _json.load(jf)
+                dropped = {s.get('stock_code') for s in data.get('all_stocks_with_scores', [])
+                           if s.get('_post_filter_drop') or s.get('_drop_reason')}
+                before = len(df)
+                df = df[~df['stock_code'].isin(dropped)]
+                if len(df) < before:
+                    print(f"⚠️ 风控交叉过滤: 移除 {before - len(df)} 只被风控层淘汰的股票")
+        except Exception as e:
+            print(f"⚠️ 风控交叉过滤失败 (继续用原列表, 建议人工核对): {e}")
+
+        return df
     
     def get_stock_price(self, stock_code: str) -> Tuple[float, str]:
         """从SQLite数据库获取股票最新价格和名称"""
