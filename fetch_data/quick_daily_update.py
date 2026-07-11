@@ -365,17 +365,43 @@ def update_daily_basic(date_str: str):
         return 0
 
 def update_financial_indicators(date_str: str):
-    """检查并更新当天或前一天发布财务数据的公司
+    """检查并更新新发布财务数据的公司 (自动 catch-up)
 
-    使用 ann_date 参数批量查询，仅需1-2次API调用（替代原来5000+次逐股查询）
+    使用 ann_date 参数批量查询 (每天 1 次 API 调用)。查询区间从 DB 内
+    MAX(ann_date) 到目标日, 而非固定当天/昨天 — 旧逻辑漏跑一天该批公告
+    就永久丢失 (曾停更 4.5 个月无人发现), 上限 60 天防首跑全量遍历。
     """
-    logger.info(f"检查 {date_str} 及前一天发布财务数据的公司...")
+    logger.info(f"检查截至 {date_str} 新发布财务数据的公司...")
 
     try:
         from datetime import datetime, timedelta
         today_dt = datetime.strptime(date_str, '%Y%m%d')
-        yesterday_dt = today_dt - timedelta(days=1)
-        target_dates = [date_str, yesterday_dt.strftime('%Y%m%d')]
+
+        # catch-up 起点: DB 内最新 ann_date 次日 (格式 'YYYY-MM-DD', 2026-07-11 迁移后统一)
+        catchup_start = today_dt - timedelta(days=1)
+        try:
+            import sqlite3 as _sq
+            with _sq.connect(_db_path, timeout=30) as _c:
+                _max_ann = _c.execute(
+                    'SELECT MAX(ann_date) FROM financial_indicator'
+                ).fetchone()[0]
+            if _max_ann:
+                _max_dt = datetime.strptime(str(_max_ann)[:10].replace('-', ''), '%Y%m%d')
+                catchup_start = min(
+                    max(_max_dt + timedelta(days=1), today_dt - timedelta(days=60)),
+                    today_dt - timedelta(days=1),
+                )
+        except Exception as e:
+            logger.warning(f"读取财报最新日期失败, 退回昨天起点: {e}")
+
+        target_dates = []
+        _d = today_dt
+        while _d >= catchup_start:
+            target_dates.append(_d.strftime('%Y%m%d'))
+            _d -= timedelta(days=1)
+        if len(target_dates) > 2:
+            logger.info(f"财报 catch-up: 补查 {len(target_dates)} 天 "
+                        f"({catchup_start.strftime('%Y-%m-%d')} ~ {date_str})")
 
         fields = ('ts_code,ann_date,end_date,eps,dt_eps,roe,roe_waa,roe_dt,roa,'
                   'grossprofit_margin,netprofit_margin,profit_to_gr,'
@@ -417,6 +443,22 @@ def update_financial_indicators(date_str: str):
         return 0
 
 
+def _fmt_fin_date(v):
+    """Tushare 原始日期 (20240816 / '20240816') → 'YYYY-MM-DD'。
+
+    2026-07-11 迁移后 financial_indicator 日期统一 TEXT 'YYYY-MM-DD';
+    此前直接写 Tushare 原始整数值, 与 backfill 的 TEXT 格式双轨共存,
+    导致 NG 特征查询对 81% 行不可见 + UNIQUE 约束被击穿。
+    """
+    if v is None:
+        return None
+    s = str(v)[:10]
+    if '-' in s:
+        return s
+    s = s[:8]
+    return f'{s[:4]}-{s[4:6]}-{s[6:8]}' if len(s) == 8 else s
+
+
 def save_financial_data_to_db(df):
     """保存财务数据到数据库"""
     try:
@@ -442,8 +484,8 @@ def save_financial_data_to_db(df):
                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         ''', (
                             security_map[code],
-                            row.get('ann_date'),
-                            row.get('end_date'),
+                            _fmt_fin_date(row.get('ann_date')),
+                            _fmt_fin_date(row.get('end_date')),
                             row.get('eps'),
                             row.get('dt_eps'),
                             row.get('roe'),

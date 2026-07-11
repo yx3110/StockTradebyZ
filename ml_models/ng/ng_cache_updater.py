@@ -326,8 +326,10 @@ class NGCacheUpdater:
         from datetime import datetime, timedelta
         dt = datetime.strptime(date, '%Y-%m-%d')
         lookback_start_dt = dt - timedelta(days=FIN_LOOKBACK_DAYS)
-        date_int = int(date.replace('-', ''))
-        lookback_start_int = int(lookback_start_dt.strftime('%Y%m%d'))
+        # 2026-07-11 迁移后 ann_date/end_date 统一为 TEXT 'YYYY-MM-DD'。
+        # 旧整数边界查询在混合格式下对 81% 的 TEXT 行不可见 (SQLite 类型排序
+        # INTEGER 恒 < TEXT), 导致 roe/or_yoy 等生产特征大面积静默缺失。
+        lookback_start_str = lookback_start_dt.strftime('%Y-%m-%d')
 
         rows = conn.execute(
             f'''SELECT security_id, ann_date, end_date, roe, profit_to_gr, or_yoy,
@@ -336,13 +338,13 @@ class NGCacheUpdater:
                 WHERE ann_date BETWEEN ? AND ?
                   AND security_id IN ({','.join('?' * len(security_ids))})
                 ORDER BY security_id, end_date DESC''',
-            [lookback_start_int, date_int] + security_ids
+            [lookback_start_str, date] + security_ids
         ).fetchall()
 
         grouped: Dict[int, List[dict]] = defaultdict(list)
         for r in rows:
             ann = r['ann_date']
-            if ann is not None and int(ann) <= date_int:
+            if ann is not None and str(ann)[:10] <= date:
                 grouped[r['security_id']].append(dict(r))
 
         result = {}

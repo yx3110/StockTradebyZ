@@ -125,7 +125,7 @@ run_main_program() {
         
         if [ "$MODE" = "update" ]; then
             # 仅数据更新（包含市场行情、基本面、财务和技术指标）
-            CMD="$PYTHON_CMD $SCRIPT_DIR/fetch_data/quick_daily_update.py"
+            CMD="$PYTHON_CMD $SCRIPT_DIR/fetch_data/quick_daily_update.py --include-financial"
         elif [ "$MODE" = "report" ]; then
             # 仅报告生成
             CMD="$PYTHON_CMD $SCRIPT_DIR/tomorrow_stock_selector.py"
@@ -137,8 +137,9 @@ run_main_program() {
             print_info "执行完整流程: 数据更新 → 选股报告 → AI增强分析"
             
             # 步骤1: 完整数据更新（市场行情、基本面、财务、技术指标）
+            # --include-financial: 财报数据带自动 catch-up (曾因默认跳过停更 4.5 个月)
             print_info "步骤1: 完整数据更新（市场行情、基本面、财务、技术指标）"
-            $PYTHON_CMD $SCRIPT_DIR/fetch_data/quick_daily_update.py
+            $PYTHON_CMD $SCRIPT_DIR/fetch_data/quick_daily_update.py --include-financial
             
             if [ $? -ne 0 ]; then
                 print_error "数据更新失败"
