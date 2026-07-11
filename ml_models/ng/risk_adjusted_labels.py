@@ -30,19 +30,28 @@ DB = ROOT / "data_adapter" / "stock_data.db"
 
 
 def load_close_panel(start: str, end: str, buffer_days: int = 60) -> pd.DataFrame:
+    """后复权 close 面板 (2026-07-12 修复: 原始价跨除权日会产生假 maxdd/假负收益标签).
+
+    adj_factor 是阶跃函数 (仅除权日变化), 按股票 ffill/bfill 补缺行是正确语义;
+    全程无 adj 的股票回退原始价 (整列一致, 不混用)。
+    """
     end_buf = (pd.Timestamp(end) + pd.Timedelta(days=buffer_days)).strftime("%Y-%m-%d")
     conn = sqlite3.connect(str(DB), timeout=30)
     conn.execute("PRAGMA busy_timeout=30000")
     try:
         df = pd.read_sql_query(
-            "SELECT s.code, dq.trade_date, dq.close FROM daily_quotes dq "
+            "SELECT s.code, dq.trade_date, dq.close, dq.adj_factor FROM daily_quotes dq "
             "JOIN securities s ON s.id = dq.security_id "
             "WHERE dq.trade_date BETWEEN ? AND ? AND s.type = 'A股'",
             conn, params=[start, end_buf],
         )
     finally:
         conn.close()
-    return df.pivot(index="trade_date", columns="code", values="close").sort_index()
+    close = df.pivot(index="trade_date", columns="code", values="close").sort_index()
+    adj = df.pivot(index="trade_date", columns="code", values="adj_factor").sort_index()
+    adj = adj.where(adj != 1.0)          # 1.0 是历史占位符, 视同缺失
+    adj = adj.ffill().bfill().fillna(1.0)  # 阶跃函数补缺; 全缺列 → 1.0 (原始价)
+    return close * adj
 
 
 def load_industry_lookup() -> pd.DataFrame:

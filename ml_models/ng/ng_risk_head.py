@@ -57,13 +57,16 @@ def load_feature_cache(start: str, end: str, table: str = "ng101_feature_cache")
 
 
 def load_close_panel(start: str, end: str, buffer_days: int = 80) -> pd.DataFrame:
-    """Pivot daily_quotes close → date × code, padded by buffer_days for forward labels."""
+    """后复权 close 面板 (2026-07-12 修复: 原始价的除权跳空会污染 vol/maxdd 标签).
+
+    adj_factor 是阶跃函数, 按股票 ffill/bfill 补缺; 全程无 adj 的股票回退原始价。
+    """
     end_buf = (pd.Timestamp(end) + pd.Timedelta(days=buffer_days)).strftime("%Y-%m-%d")
     conn = sqlite3.connect(str(DB), timeout=30)
     conn.execute("PRAGMA busy_timeout=30000")
     try:
         df = pd.read_sql_query(
-            "SELECT s.code, dq.trade_date, dq.close FROM daily_quotes dq "
+            "SELECT s.code, dq.trade_date, dq.close, dq.adj_factor FROM daily_quotes dq "
             "JOIN securities s ON s.id = dq.security_id "
             "WHERE dq.trade_date BETWEEN ? AND ? AND s.type = 'A股'",
             conn,
@@ -71,7 +74,11 @@ def load_close_panel(start: str, end: str, buffer_days: int = 80) -> pd.DataFram
         )
     finally:
         conn.close()
-    return df.pivot(index="trade_date", columns="code", values="close").sort_index()
+    close = df.pivot(index="trade_date", columns="code", values="close").sort_index()
+    adj = df.pivot(index="trade_date", columns="code", values="adj_factor").sort_index()
+    adj = adj.where(adj != 1.0)
+    adj = adj.ffill().bfill().fillna(1.0)
+    return close * adj
 
 
 def compute_label_maxdd_60d(close_panel: pd.DataFrame, n: int = 60) -> pd.DataFrame:
