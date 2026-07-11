@@ -1,6 +1,29 @@
-pandas==2.3.0
-tqdm==4.66.4
-tushare==1.4.21
-scipy==1.14.1
-torch>=2.0.0
-optuna>=3.0.0
+# StockTradebyZ 生产依赖 (2026-07-11 按当前环境实际版本重建)
+# 扫描范围: tomorrow_stock_selector.py / ml_models/ng/ / fetch_data/quick_daily_update.py
+#           stock_selctor/ / backtest/run_north_star_eval.py / data_adapter/
+# webapp 有独立 requirements: webapp/requirements.txt
+# 测试依赖见: stock_selctor/test/requirements-test.txt (pytest 等)
+
+# --- 数据 / 数值核心 ---
+numpy>=2.3.2
+pandas>=2.3.2
+scipy>=1.16.1
+tqdm>=4.67.1
+
+# --- 数据源 API ---
+tushare>=1.4.24
+
+# --- ML (ng 生产评分 + v3.9x 旧版 scorer 均需) ---
+joblib>=1.5.2
+scikit-learn>=1.7.2
+lightgbm>=4.6.0
+xgboost>=3.0.5
+catboost>=1.2.8
+
+# --- 训练 / 实验 (少量脚本使用) ---
+torch>=2.11.0
+optuna>=4.5.0
+
+# --- 可选加速 / 可选集成 (代码有 try/except 守卫, 缺失不影响生产) ---
+# orjson          # ml_models/ng/ng_production_scorer.py:54 可选 JSON 加速, 缺失回退 stdlib json
+# backtrader      # data_adapter/backtrader_integration.py 可选集成, 当前环境未安装

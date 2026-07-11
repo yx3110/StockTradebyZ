@@ -114,7 +114,7 @@ def bbi_deriv_uptrend(
         允许一阶差分为负的比例 (0 <= q_threshold <= 1)。
     """
     if not 0.0 <= q_threshold <= 1.0:
-        raise ValueError("q_threshold must be in [0, 1]")
+        raise ValueError("q_threshold 必须位于 [0, 1] 区间内")
 
     vals = bbi.dropna().values
     n = len(vals)
@@ -134,7 +134,7 @@ def bbi_deriv_uptrend(
             return True  # 所有差分非负，最长窗口直接通过
         last_neg_pos = np.where(neg_mask)[0][-1]
         suffix_window = len(all_diffs) - last_neg_pos  # 非负后缀对应的窗口大小
-        return suffix_window >= min_window
+        return bool(suffix_window >= min_window)  # np.int64 比较返回 np.bool_, 需转 Python bool
     else:
         # 一般情况：使用纯 numpy 数组操作，避免 pandas 开销
         for w in range(longest, min_window - 1, -1):
@@ -889,7 +889,8 @@ class MA60CrossVolumeWaveSelector(BaseSelector):
         y = ma60_recent.values
         slope = np.polyfit(x, y, 1)[0]
 
-        if slope <= 0:
+        # 加容差: polyfit 对平坦序列的斜率是 ~1e-17 级浮点噪声, 不应判为正
+        if slope <= 1e-12:
             return False
 
         # 5. 知行当日约束：收盘 > 长期线 且 短期线 > 长期线

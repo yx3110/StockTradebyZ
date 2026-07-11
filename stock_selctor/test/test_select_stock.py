@@ -250,8 +250,9 @@ class TestInstantiateSelector:
         mock_module = Mock()
         # 模拟AttributeError
         mock_import_module.return_value = mock_module
-        # 直接设置属性为None，这样getattr会抛出AttributeError
-        mock_module.BBIKDJSelector = None
+        # 删除该属性，使 getattr 抛出 AttributeError
+        # (注: 给 Mock 属性赋 None 不会让 getattr 抛错, 只会返回 None)
+        del mock_module.BBIKDJSelector
         
         config = {
             "class": "BBIKDJSelector",

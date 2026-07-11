@@ -740,7 +740,8 @@ class MA60CrossVolumeWaveSelector:
         x = np.arange(len(seg), dtype=float)
         # 线性回归（最小二乘）：斜率 k
         k, _ = np.polyfit(x, seg.values.astype(float), 1)
-        return bool(k > 0)
+        # 加容差: polyfit 对平坦序列的斜率是 ~1e-17 级浮点噪声, 不应判为正
+        return bool(k > 1e-12)
 
     def _passes_filters(self, hist: pd.DataFrame) -> bool:
         """
