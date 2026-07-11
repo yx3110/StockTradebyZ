@@ -223,3 +223,15 @@
 - **根因**: 两个写入方约定不同 — backfill 写 TEXT 带杠, quick_daily 写 Tushare 原始整数; SQLite 动态类型允许同列混存, 比较时按类型排序 (INTEGER < TEXT), 不做隐式转换
 - **解决** (commit `0f1d09d6`): `scripts/migrate_financial_indicator_date_format.py` 一次性迁移 (备份→去重→统一 TEXT); 读写两侧统一 'YYYY-MM-DD'
 - **教训**: SQLite 日期列必须全仓约定单一格式 ('YYYY-MM-DD' TEXT); 新写入方上线前 `SELECT typeof(col), COUNT(*) GROUP BY 1` 验证与存量一致
+
+### adj_factor 全库占位符 1.0 — "有值"≠"有真实值" (2026-07-11)
+- **现象**: daily_quotes.adj_factor 覆盖率统计看似 2018/2025-26 接近 100%, 实际全库无一行真实复权因子 — 全是 schema `DEFAULT 1.0` 占位符; 回测用原始价, 2023 主板除权假暴跌 238 次 (10送10 = -50% 假亏损)
+- **根因**: 日常管道从不抓取 adj_factor, `INSERT OR REPLACE` 列清单不含该列 → 每次重写行落回 DEFAULT 1.0; `IS NOT NULL` 类覆盖率检查对占位符失明
+- **解决**: `fetch_data/backfill_adj_factor.py` 全量回填 909 万行 (缺口判定用"当日 ≠1.0 占比<50%"); quick_daily_update 每日抓取; `insert_daily_quotes` 改 UPSERT + `COALESCE(excluded.adj_factor, 旧值)`; 回测收益接入复权价
+- **教训**: 列有 DEFAULT 时, "非 NULL" 不等于 "有数据" — 覆盖率检查必须针对占位符值; INSERT OR REPLACE 会静默抹掉未入列的列 (含技术指标列), 核心表写入优先 UPSERT
+
+### 基准指数 price_change_pct 三年 NULL → 超额层测空气 (2026-07-11)
+- **现象**: 000300/000905/000001 的 price_change_pct 在 2022-2024 全 NULL; `(1+NaN).prod()-1=0` 把熊市基准洗成 0% → 超额层 2022-23 低估 7-22pp/年、2024 高估 5-15pp/年; 长度门用 `len()` 连 NaN 一起计数拦不住
+- **根因**: 数据管道该段未写 pct 列; loader 无 close 回退; pandas prod 默认 skipna 使全 NaN 窗口静默输出 0 而非 NaN
+- **解决**: 指数 pct 回填 + `load_benchmark_returns` 加 `close.pct_change()` 回退 + 聚合改 `dropna()` 后按非 NaN 计数; EvalCache 键加数据/引擎指纹 (纯 UPDATE 类修订也能失效缓存)
+- **教训**: 时序聚合里 NaN 会被 pandas 静默"洗白"成中性值 — 任何 `.prod()/.sum()` 前必须显式处理缺失; 缓存键必须能感知 UPDATE 类数据修订 (行数+最大日期不够)
