@@ -34,6 +34,13 @@ def db_with_regime():
             "INSERT INTO market_regime_signals VALUES (?, ?, ?)",
             [("2026-04-20", 1, 0.5), ("2026-04-25", -1, 0.95), ("2026-04-26", -1, 0.92)],
         )
+        # 交易日历 (staleness 按交易日计数): 4-26 后到 6-30 再排若干交易日
+        conn.execute("CREATE TABLE daily_quotes (trade_date TEXT)")
+        conn.executemany(
+            "INSERT INTO daily_quotes VALUES (?)",
+            [("2026-04-20",), ("2026-04-25",), ("2026-04-26",),
+             ("2026-04-27",), ("2026-04-28",), ("2026-04-29",), ("2026-06-30",)],
+        )
         conn.commit()
         conn.close()
         yield str(db)

@@ -50,21 +50,31 @@ class RouteResult:
 # DB regime 读取
 # ────────────────────────────────────────────────────────────
 
-#: regime 信号允许的最大陈旧天数 (日历日)。超过 → 视为断更, fail-defensive 按熊市处理。
+#: regime 信号允许的最大陈旧交易日数。超过 → 视为断更, fail-defensive 按熊市处理。
 #: 2026-07-11: 此前无任何 staleness 校验, market_amv 停更 30 天生产仍静默用旧 regime。
-REGIME_MAX_STALE_DAYS = 7
+#: 按交易日计数 (查 daily_quotes 日历) — 日历日计数会在春节/国庆长假 (8-10 日历日
+#: 无交易) 后第一天误报 stale。
+REGIME_MAX_STALE_DAYS = 3
 
 
-def _staleness_days(row_date: Optional[str], target_date: Optional[str]) -> int:
-    """regime 信号日期与目标日期的日历天差 (无法计算时返回 0 = 不触发)."""
-    if not row_date or not target_date:
+def _staleness_days(row_date: Optional[str], target_date: Optional[str],
+                    db_path: Optional[str] = None) -> int:
+    """regime 信号日期与目标日期之间的交易日数 (无法计算时返回 0 = 不触发)."""
+    if not row_date or not target_date or not db_path:
         return 0
     try:
-        from datetime import date
-        d1 = date.fromisoformat(str(row_date)[:10])
-        d2 = date.fromisoformat(str(target_date)[:10])
-        return (d2 - d1).days
-    except ValueError:
+        conn = sqlite3.connect(db_path, timeout=30)
+        conn.execute('PRAGMA busy_timeout=30000')
+        try:
+            n = conn.execute(
+                'SELECT COUNT(DISTINCT trade_date) FROM daily_quotes '
+                'WHERE trade_date > ? AND trade_date <= ?',
+                (str(row_date)[:10], str(target_date)[:10])
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        return int(n)
+    except Exception:
         return 0
 
 
@@ -112,11 +122,16 @@ def _read_v2_regime(db_path: str, regime_table: str, target_date: Optional[str])
     return (row[0] if row else None), (row[1] if row else ''), label
 
 
-def _resolve_regime(reader, scoring_version: str, target_date: Optional[str]) -> tuple[int, str, str, str]:
+def _resolve_regime(reader, scoring_version: str, target_date: Optional[str],
+                    db_path: Optional[str] = None) -> tuple[int, str, str, str]:
     """统一的 regime 解析 + fail-defensive.
 
     返回 (regime, row_date, label, degraded_reason)。任何异常/无数据/信号陈旧
-    (> REGIME_MAX_STALE_DAYS 日历日) → regime=-1 (熊市 = 防御姿态) + 降级原因。
+    (> REGIME_MAX_STALE_DAYS 个交易日, 按 daily_quotes 日历计数) → regime=-1
+    (熊市 = 防御姿态) + 降级原因。
+
+    盲区: staleness 以 daily_quotes 为交易日历 — 若行情与 regime 管道同时停更,
+    交易日计数≈0 不会触发; 全链路断供需靠行情侧新鲜度告警兜底。
 
     2026-07-11 修复: 此前 DB 异常 fail-open 到 bull (最激进配置), 而表空却判 bear
     — 同一种"不知道"状态两个相反方向; 且降级只 print 不进报告盖戳系统。
@@ -130,11 +145,11 @@ def _resolve_regime(reader, scoring_version: str, target_date: Optional[str]) ->
     if regime is None:
         logger.error(f"{scoring_version}: regime 表无 {target_date or '任何'} 前记录 → 按熊市处理")
         return -1, row_date, label, "regime 表无记录, 已按熊市防御路由"
-    stale = _staleness_days(row_date, target_date)
+    stale = _staleness_days(row_date, target_date, db_path)
     if stale > REGIME_MAX_STALE_DAYS:
         logger.error(f"{scoring_version}: regime 信号陈旧 (最近 {row_date}, 距 {target_date} "
-                     f"{stale} 天 > {REGIME_MAX_STALE_DAYS}) → fail-defensive 按熊市处理")
-        return -1, row_date, label, f"regime 信号陈旧 {stale} 天 (最近 {row_date}), 已按熊市防御路由"
+                     f"{stale} 个交易日 > {REGIME_MAX_STALE_DAYS}) → fail-defensive 按熊市处理")
+        return -1, row_date, label, f"regime 信号陈旧 {stale} 个交易日 (最近 {row_date}), 已按熊市防御路由"
     return int(regime), row_date, label, ''
 
 
@@ -178,7 +193,7 @@ def route_ng106(scoring_version: str, target_date: Optional[str], db_path: str) 
     res.bear_model = "ng1.0.4"
 
     regime, row_date, label, degraded = _resolve_regime(
-        lambda: _read_amv_regime(db_path, target_date), scoring_version, target_date)
+        lambda: _read_amv_regime(db_path, target_date), scoring_version, target_date, db_path)
     res.regime_degraded = degraded
     res.regime_source_date = row_date
 
@@ -206,7 +221,7 @@ def route_ng200a(scoring_version: str, target_date: Optional[str], db_path: str)
 
     regime, row_date, label, degraded = _resolve_regime(
         lambda: _read_v2_regime(db_path, res.ng200a_regime_table, target_date),
-        'ng2.0a', target_date)
+        'ng2.0a', target_date, db_path)
     res.regime_degraded = degraded
     res.regime_source_date = row_date
 
@@ -230,7 +245,7 @@ def route_ng21(scoring_version: str, target_date: Optional[str], db_path: str) -
 
     regime, row_date, label, degraded = _resolve_regime(
         lambda: _read_v2_regime(db_path, res.ng21_regime_table, target_date),
-        'ng2.1', target_date)
+        'ng2.1', target_date, db_path)
     res.regime_degraded = degraded
     res.regime_source_date = row_date
 

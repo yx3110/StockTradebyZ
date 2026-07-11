@@ -1343,16 +1343,21 @@ def get_today_selections():
     held_codes = set(p['code'] for p in positions)
 
     # 过滤: 排除已持仓 + 最低评分 + 推荐为买入
+    # 2026-07-11: 排除清单改白名单 — 旧逻辑只排'卖出/观望', 放行了'回避'与
+    # 新增的'风控剔除(原因)' (industry_cap/overlay 淘汰的高分股会泄漏进买入候选)
+    BUY_LEVEL_RECS = ('强烈买入', '买入', '谨慎买入')
     selections = []
     for s in all_stocks:
         code = s.get('stock_code', '')
         if code in held_codes:
             continue
+        if s.get('_post_filter_drop') or s.get('_drop_reason'):
+            continue  # 风控层淘汰股, 无论 recommendation 字符串如何都不进候选
         score = s.get('score', 0) or 0
         if score < min_score:
             continue
         rec = s.get('recommendation', '')
-        if '卖出' in rec or '观望' in rec:
+        if not any(rec.startswith(b) for b in BUY_LEVEL_RECS):
             continue
 
         selections.append({

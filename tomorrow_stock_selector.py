@@ -28,6 +28,7 @@ except ImportError:
 
 # 确保logs目录存在
 import os
+import functools
 os.makedirs("logs", exist_ok=True)
 
 # 设置日志 - 只输出到文件，不输出到stdout避免污染报告
@@ -157,6 +158,20 @@ ACTIVE_VERSIONS = set(SCORER_REGISTRY.keys())
 DEPRECATED_VERSIONS = {'v2', 'v3', 'v3.1', 'v3.2', 'v3.3', 'v3.4', 'v3.41',
                        'v3.5', 'v3.51', 'v3.52', 'v3.53', 'v3.6', 'v3.7',
                        'v3.8', 'v3.81', 'v3.94', 'v4'}
+
+
+@functools.lru_cache(maxsize=1)
+def _get_runtime_git_hash():
+    """当前运行代码的 git short hash (provenance 用, 进程内只取一次)."""
+    try:
+        import subprocess
+        return subprocess.run(
+            ['git', 'rev-parse', '--short', 'HEAD'],
+            capture_output=True, text=True, timeout=5,
+            cwd=os.path.dirname(os.path.abspath(__file__))).stdout.strip() or None
+    except Exception:
+        return None
+
 
 class TomorrowStockSelector:
     """明日股票选择器"""
@@ -4145,14 +4160,7 @@ class TomorrowStockSelector:
         # 由不同子模型生成, 事后归因/forward 追踪只能靠 md 标题反推 (对齐 Check 9)
         _route = getattr(self, '_route_result', None)
         _engine = getattr(self, 'scoring_engine_v44', None)
-        try:
-            import subprocess
-            _git_hash = subprocess.run(
-                ['git', 'rev-parse', '--short', 'HEAD'],
-                capture_output=True, text=True, timeout=5,
-                cwd=os.path.dirname(os.path.abspath(__file__))).stdout.strip() or None
-        except Exception:
-            _git_hash = None
+        _git_hash = _get_runtime_git_hash()
         analysis["provenance"] = {
             "version_tag": getattr(_route, 'version_tag', None) or self.scoring_version,
             "resolved_scoring_version": self.scoring_version,
