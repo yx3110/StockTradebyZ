@@ -33,8 +33,11 @@ import sqlite3
 import argparse
 import json
 import functools
+import logging
 import numpy as np
 import pandas as pd
+
+logger = logging.getLogger(__name__)  # 2026-07-11: 修 :2231/:2287 except 分支 NameError
 from datetime import datetime
 from pathlib import Path
 from scipy.stats import spearmanr
@@ -480,14 +483,13 @@ def batch_get_all_future_returns(report_dates, holding_days_list=None):
 
     # 5. 构建查找字典 (用itertuples替代iterrows，快3-5x)
     # buy_prices_by_date: {buy_date: {code: open_price}}
+    # 涨停股直接不进 buy_prices (买不进) — 下游按 "不在 future_returns 且未退市"
+    # 识别为现金槽 (2026-07-11 惩罚拆三; 原 limit_up_by_date 累加器无消费者已删)
     buy_prices_by_date = {}
-    limit_up_by_date = {}  # {buy_date: set(codes)}
     for row in buy_df.itertuples(index=False):
         code, trade_date, open_price, pct = row.code, row.trade_date, getattr(row, 'open'), row.price_change_pct
-        # 涨停检测
         if pct is not None and not (isinstance(pct, float) and np.isnan(pct)):
             if pct >= _get_limit_up_threshold(code):
-                limit_up_by_date.setdefault(trade_date, set()).add(code)
                 continue
         buy_prices_by_date.setdefault(trade_date, {})[code] = open_price
 
@@ -779,7 +781,9 @@ def _aggregate_benchmark_to_periods(benchmark_daily: pd.Series,
         dt = pd.Timestamp(date_str)
         # 取该日起的N个交易日的基准收益
         mask = bm.index >= dt
-        period_bm = bm[mask].iloc[:holding_days]
+        # 2026-07-11: dropna + 非 NaN 计数门 — 此前 NaN 窗口 (1+NaN).prod()-1=0
+        # 把 2022-2024 熊市基准洗成 0, len() 门也拦不住 (NaN 被计入长度)
+        period_bm = bm[mask].iloc[:holding_days].dropna()
         if len(period_bm) >= max(1, holding_days // 2):
             # N日累计收益
             period_return = (1 + period_bm).prod() - 1
@@ -850,6 +854,28 @@ def _load_industry_map_bulk():
 # ═══════════════════════════════════════════════════
 
 _market_daily_ret_cache = {}  # (min_date, max_date, index_code) → pd.Series
+
+_last_trade_date_cache = None  # code → 该股在库中最后一个交易日 (退市判定用)
+
+
+def _get_last_trade_date_map() -> dict:
+    """code → max(trade_date)。用于区分'退市'(此后无行情)与'涨停/停牌买不进'(之后仍有行情)。
+
+    2026-07-11 惩罚拆三配套: 此前涨停/停牌/退市统一按每周期 -10% 惩罚,
+    且涨停剔除因 price_change_pct 2021-2024 全 NULL 在该段完全失效, 跨期口径不对称。
+    """
+    global _last_trade_date_cache
+    if _last_trade_date_cache is None:
+        conn = sqlite3.connect(DB_PATH)
+        conn.execute("PRAGMA busy_timeout=30000")
+        _last_trade_date_cache = dict(conn.execute("""
+            SELECT s.code, MAX(dq.trade_date)
+            FROM daily_quotes dq JOIN securities s ON dq.security_id = s.id
+            WHERE s.type = 'A股'
+            GROUP BY s.code
+        """).fetchall())
+        conn.close()
+    return _last_trade_date_cache
 
 
 def _load_market_daily_returns_bulk(dates, index_code='000001.SH'):
@@ -1141,6 +1167,8 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
 
     # NG1.0.5: 止损统计
     stop_loss_trigger_count = 0
+    unbuyable_slot_count = 0   # 涨停/停牌买不进 → 现金槽 (0.0)
+    delist_penalty_count = 0   # 确认退市 → -10%/周期
 
     # 预加载风控数据
     market_ret_20d = {}
@@ -1563,7 +1591,8 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
 
         for days in HOLDING_DAYS:
             key = f'return_{days}d'
-            # 退市/缺数据股默认-10%惩罚 (减少存活偏差)
+            # 2026-07-11 惩罚拆三: 涨停/停牌买不进→现金槽(0.0), 仅确认退市→-10%
+            # (此前三种情况统一 -10%×每周期, 现实语义应为"买不进钱留在现金")
             top_returns = []
             for c in top_codes:
                 if c in future_returns and key in future_returns[c]:
@@ -1575,7 +1604,12 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
                             ret = -stop_loss_pct
                     top_returns.append(ret)
                 elif c not in future_returns:
-                    top_returns.append(-0.10)  # 退市惩罚
+                    if _get_last_trade_date_map().get(c, '') < buy_date:
+                        top_returns.append(-0.10)  # 确认退市: 买入日起再无任何行情
+                        delist_penalty_count += (days == HOLDING_DAYS[0])
+                    else:
+                        top_returns.append(0.0)    # 涨停/停牌买不进 → 该槽持现金
+                        unbuyable_slot_count += (days == HOLDING_DAYS[0])
                 # else: 股票有部分数据但缺该周期(买入日接近数据尾部), 跳过不计入
             bottom_returns = [future_returns.get(c, {}).get(key, 0) for c in bottom_codes
                              if key in future_returns.get(c, {})]
@@ -1667,6 +1701,12 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
         print(f"  NG1.0.5 止损诊断: {stop_loss_trigger_count}次触发 "
               f"(共{len(dates)}天×{top_n}只, "
               f"触发率{stop_loss_trigger_count/max(len(dates)*top_n,1):.1%})")
+
+    # 2026-07-11 惩罚拆三诊断 (每槽计一次, 不按周期重复计)
+    if unbuyable_slot_count > 0 or delist_penalty_count > 0:
+        print(f"  🚧 买不进槽位(涨停/停牌→现金): {unbuyable_slot_count} | "
+              f"退市惩罚(-10%): {delist_penalty_count} "
+              f"(共{len(dates)}天×{top_n}只)")
 
     # V4.5: Overlay诊断
     if overlay_active and exposure_history:
@@ -1939,6 +1979,10 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
         benchmark_info = {}
         buy_dates = non_overlap['buy_date'].tolist()
         periods_per_year = 252 / days
+        # buy_date 口径的 N 日聚合基准, 算一次供 L5 与 V4 两处复用 (2026-07-11 去重)
+        bm_aligned = (_aggregate_benchmark_to_periods(benchmark_daily_ret, buy_dates, days)
+                      if (days > 1 and not benchmark_daily_ret.empty)
+                      else pd.Series(dtype=float))
         if not benchmark_daily_ret.empty and days == 1:
             # 1日持仓：用buy_date索引portfolio收益，与日度基准对齐
             buy_ret = non_overlap.set_index('buy_date')['avg_top_return'].sort_index()
@@ -1948,9 +1992,6 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
             )
         elif not benchmark_daily_ret.empty and days > 1:
             # N日持仓：聚合基准到N日收益，按buy_date匹配
-            bm_aligned = _aggregate_benchmark_to_periods(
-                benchmark_daily_ret, buy_dates, days
-            )
             if len(bm_aligned) >= 3:
                 buy_ret = non_overlap.set_index('buy_date')['avg_top_return'].sort_index()
                 buy_ret.index = pd.to_datetime(buy_ret.index)
@@ -2026,12 +2067,10 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
                     buy_ret_v4, benchmark_daily_ret, periods_per_year=252
                 )
             elif days > 1:
-                bm_aligned_v4 = _aggregate_benchmark_to_periods(
-                    benchmark_daily_ret, buy_dates, days
-                )
-                if len(bm_aligned_v4) >= 3:
+                # 复用上方 buy_date 口径聚合结果 (2026-07-11 去重, 此前完全相同参数算两遍)
+                if len(bm_aligned) >= 3:
                     v4_benchmark_metrics = compute_v4_benchmark_metrics(
-                        buy_ret_v4, bm_aligned_v4, periods_per_year=ppy
+                        buy_ret_v4, bm_aligned, periods_per_year=ppy
                     )
 
                 # 修复: 如果bear_excess为None (period数据不够lookback=60),
@@ -2136,18 +2175,35 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
                 else pd.Series(dtype=float)),
         })
 
-        # ── V5.1 新增指标 (用完整日级收益, 非period采样) ──
+        # ── V5.1 新增指标 ──
+        # 2026-07-11 修复: 此前把逐日记录的重叠 N 日前瞻收益 (_daily_ret=sub)
+        # 当日频收益喂给 hurst/regime_transition_dd/cscv_pbo, 数量级失真。
+        # 改用非重叠净 period 序列 (net_period_ret) + 按 horizon 缩放的窗口参数。
         _daily_ret = sub.set_index('date')['avg_top_return'].sort_index()
-        _n_daily = len(_daily_ret)
-        if _n_daily >= 200:
-            _hurst = compute_hurst_exponent(_daily_ret)
+        _n_daily = len(_daily_ret)  # 日历覆盖门 (交易日数)
+        _n_periods = len(net_period_ret)
+        _ppy = 252.0 / days
+        _lb_periods = max(6, round(60 / days))   # ≈60 交易日的 regime 窗口
+        # 基准聚合到同 horizon 非重叠日期 (复用调仓日期)
+        _bm_daily_dt = benchmark_daily_ret.copy()
+        if not _bm_daily_dt.empty:
+            _bm_daily_dt.index = pd.to_datetime(_bm_daily_dt.index)
+        _bm_period = (_aggregate_benchmark_to_periods(_bm_daily_dt, rebal_dates, days)
+                      if not _bm_daily_dt.empty else pd.Series(dtype=float))
+        if _n_daily >= 200 and _n_periods >= 40:
+            _hurst = compute_hurst_exponent(net_period_ret)
             summary[days]['hurst_deviation'] = abs(_hurst - 0.60)
-        if _n_daily >= 200 and not benchmark_daily_ret.empty:
-            _rtdd = compute_regime_transition_dd(_daily_ret, benchmark_daily_ret)
+        if _n_daily >= 200 and not _bm_period.empty:
+            _rtdd = compute_regime_transition_dd(
+                net_period_ret, _bm_period,
+                lookback=_lb_periods,
+                pre_window=max(2, round(10 / days)),
+                post_window=max(3, round(20 / days)),
+                min_obs=max(60, round(200 / days)))
             if _rtdd is not None:
                 summary[days]['regime_transition_dd'] = _rtdd
-        if _n_daily >= 320:
-            _pbo = compute_cscv_pbo(_daily_ret, max_combinations=500)
+        if _n_periods >= 100:
+            _pbo = compute_cscv_pbo(net_period_ret, max_combinations=500)
             if _pbo is not None:
                 summary[days]['cscv_pbo'] = _pbo
         summary[days].setdefault('effective_n_corr', float(top_n))
@@ -2251,8 +2307,11 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
         _s.setdefault('micro_cap_ratio', 0.2)
 
         # L8 执行质量 (5项): 从已有回测数据推算
-        _gross_ret = _s.get('annual_return', 0)
-        _net_ret = _s.get('net_annual_return', _gross_ret * 0.85)
+        # 2026-07-11 修复: 7-11 成本修复后 annual_return 已是净口径, 此处曾把
+        # 净收益当毛收益 → realized_vs_theoretical≈1.0 / shortfall≈0 恒满分。
+        # 改用真毛收益 (gross_annual_return) 与主净口径 (annual_return)。
+        _gross_ret = _s.get('gross_annual_return', 0)
+        _net_ret = _s.get('annual_return', 0)
         _turnover_l8 = _s.get('annual_turnover', 30)
         _limit_fail = _s.get('limit_up_fail_rate', 0.05)
 
@@ -2299,27 +2358,31 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
                 _ic_series.index = pd.to_datetime(_ic_series.index)
 
             if _ic_series is not None and len(_ic_series) >= 60:
-                _bm_aligned = benchmark_daily_ret.copy()
-                _bm_aligned.index = pd.to_datetime(_bm_aligned.index)
-                _ric = compute_regime_ic_consistency(_ic_series, _bm_aligned)
+                # IC 是日频序列, regime 分类用日频基准 (_bm_daily_dt 已在 V5.1 块转好)
+                _ric = compute_regime_ic_consistency(_ic_series, _bm_daily_dt)
                 if _ric is not None:
                     _s['regime_ic_consistency'] = _ric
 
-            _daily_ret_dt = _daily_ret.copy()
-            _daily_ret_dt.index = pd.to_datetime(_daily_ret_dt.index)
-            _bm_dt = benchmark_daily_ret.copy()
-            _bm_dt.index = pd.to_datetime(_bm_dt.index)
-
-            _rsf = compute_regime_sharpe_floor(_daily_ret_dt, _bm_dt)
+            # 2026-07-11 修复: L9 改用非重叠净 period 序列 + 同 horizon 聚合基准
+            # (此前 10 日重叠收益按日频公式算, Sharpe 虚高 ~√10, 超额虚高 ~10x)
+            _rsf = compute_regime_sharpe_floor(
+                net_period_ret, _bm_period,
+                lookback=_lb_periods, periods_per_year=_ppy,
+                min_per_regime=max(10, round(30 / days) * 3))
             if _rsf is not None:
                 _s['regime_sharpe_floor'] = _rsf
 
             # multi_benchmark_excess: 使用同一基准(单基准时primary=secondary)
-            _mbe = compute_multi_benchmark_excess(_daily_ret_dt, _bm_dt, _bm_dt)
+            _mbe = compute_multi_benchmark_excess(
+                net_period_ret, _bm_period, _bm_period,
+                periods_per_year=_ppy, min_obs=max(20, round(60 / days) * 2))
             if _mbe is not None:
                 _s['multi_benchmark_excess'] = _mbe
 
-            _rdr = compute_regime_drawdown_ratio(_daily_ret_dt, _bm_dt)
+            _rdr = compute_regime_drawdown_ratio(
+                net_period_ret, _bm_period, lookback=_lb_periods,
+                min_obs=max(20, round(60 / days) * 2),
+                min_per_regime=max(6, round(20 / days) * 2))
             if _rdr is not None:
                 _s['regime_drawdown_ratio'] = _rdr
 

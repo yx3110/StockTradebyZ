@@ -89,6 +89,16 @@ def batch_update_stocks(date_str: str, batch_size: int = 500):
 
         logger.info(f"获取到 {len(df)} 只A股的数据")
 
+        # 复权因子 (2026-07-11 修复: 此前从不抓取, adj_factor 全库为占位符 1.0,
+        # 导致回测无法复权。历史段用 fetch_data/backfill_adj_factor.py 回填)
+        adj_map = {}
+        try:
+            adj_df = pro.adj_factor(trade_date=date_str)
+            if adj_df is not None and not adj_df.empty:
+                adj_map = dict(zip(adj_df['ts_code'], adj_df['adj_factor']))
+        except Exception as e:
+            logger.warning(f"adj_factor 获取失败 ({e}), 当日复权因子将为 NULL, 可用 backfill_adj_factor.py 补")
+
         # 一次加载 security_map
         security_map = _get_security_map_cached()
 
@@ -134,6 +144,7 @@ def batch_update_stocks(date_str: str, batch_size: int = 500):
                         'low': row['low'],
                         'volume': vol,
                         'amount': row.get('amount'),
+                        'adj_factor': adj_map.get(row['ts_code']),
                         'price_change_pct': None if is_suspended else (pct_val / 100 if pd.notna(pct_val) else 0),
                         'is_limit_up': row.get('limit') == 'U' if row.get('limit') else False,
                         'is_limit_down': row.get('limit') == 'D' if row.get('limit') else False,
@@ -975,6 +986,23 @@ def quick_daily_update(date: str = None, skip_financial: bool = True):
         logger.info(f"  更新 {changed} 只股票名称 (共 {len(latest)} 条 namechange)")
     except Exception as e:
         logger.warning(f"  名称刷新失败(非关键): {e}")
+
+    # 18. 板块行情数据 (webapp 市场行情三页面) — 依赖 moneyflow (步骤12内更新)
+    logger.info("【步骤18】更新板块行情数据 + 市场脉搏预计算...")
+    try:
+        from fetch_data.market_board_fetcher import MarketBoardFetcher
+        MarketBoardFetcher().run_daily(date)
+        import subprocess
+        result = subprocess.run(
+            ['python3', 'scripts/build_market_pulse.py'],
+            capture_output=True, text=True,
+            cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        if result.returncode == 0:
+            logger.info("  市场脉搏预计算完成")
+        else:
+            logger.warning(f"  市场脉搏预计算失败: {result.stderr[:200]}")
+    except Exception as e:
+        logger.warning(f"  板块行情更新失败(非关键): {e}")
 
     logger.info("="*60)
 

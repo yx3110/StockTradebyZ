@@ -166,11 +166,22 @@ class DatabaseManager:
     
     def insert_daily_quotes(self, data: List[Dict[str, Any]]) -> int:
         """批量插入日线行情数据"""
+        # 2026-07-11: INSERT OR REPLACE → UPSERT。
+        # 1) REPLACE 是删旧行重插, 会把未入列的列 (ma5-60 技术指标、真实 adj_factor)
+        #    冲回默认值 — 归档补数脚本重跑一次就会静默清掉 adj_factor 回填成果;
+        # 2) UPSERT 只更新列出的列; adj_factor 用 COALESCE 保旧值 (新值 NULL 时不覆盖)。
         query = """
-        INSERT OR REPLACE INTO daily_quotes (
+        INSERT INTO daily_quotes (
             security_id, trade_date, open, high, low, close, volume, amount,
-            price_change_pct, is_limit_up, is_limit_down, is_suspend
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            adj_factor, price_change_pct, is_limit_up, is_limit_down, is_suspend
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(security_id, trade_date) DO UPDATE SET
+            open=excluded.open, high=excluded.high, low=excluded.low,
+            close=excluded.close, volume=excluded.volume, amount=excluded.amount,
+            adj_factor=COALESCE(excluded.adj_factor, daily_quotes.adj_factor),
+            price_change_pct=excluded.price_change_pct,
+            is_limit_up=excluded.is_limit_up, is_limit_down=excluded.is_limit_down,
+            is_suspend=excluded.is_suspend
         """
 
         rows_data = []
@@ -184,6 +195,7 @@ class DatabaseManager:
                 item['close'],
                 item['volume'],
                 item.get('amount'),
+                item.get('adj_factor'),
                 item.get('price_change_pct', 0),
                 item.get('is_limit_up', False),
                 item.get('is_limit_down', False),

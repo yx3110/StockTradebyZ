@@ -23,6 +23,13 @@ DEFAULT_DB_PATH = str(PROJECT_ROOT / 'data_adapter' / 'stock_data.db')
 DEFAULT_CACHE_DIR = PROJECT_ROOT / 'backtest' / '.eval_cache'
 
 
+# 数据/引擎语义版本 — max_date+行数对 UPDATE 类数据修订不敏感 (2026-07-11 的
+# price_change_pct/adj_factor 回填就是纯 UPDATE), 引擎口径变更也不在参数键里。
+# 凡数据语义修订或回测口径变更, 必须手动 bump 此常量使全部旧缓存失效。
+# 历史: v1(隐式) → 2026-07-11-p0fix (基准回填/惩罚拆三/PSR/L8/L9 修复)
+CACHE_SCHEMA_VERSION = "2026-07-11-p0fix"
+
+
 class EvalCache:
     """Persistent cache manager for North Star evaluation data."""
 
@@ -35,16 +42,28 @@ class EvalCache:
     # -- Version Keys -------------------------------------------
 
     def _get_db_version(self) -> str:
-        """DB version = max_trade_date + row_count from daily_quotes."""
+        """DB version = schema_version + engine_hash + max_trade_date + row_count.
+
+        engine_hash 对回测口径文件 (backtest_report_based/north_star_metrics) 的
+        源码取指纹 — 引擎口径改动自动失效缓存, 不再依赖人记得 bump 常量
+        (CACHE_SCHEMA_VERSION 仍保留, 用于纯数据 UPDATE 类修订)。
+        """
         if self._db_version is not None:
             return self._db_version
+        engine_dir = Path(__file__).parent
+        h = hashlib.md5()
+        for fname in ("backtest_report_based.py", "north_star_metrics.py"):
+            fp = engine_dir / fname
+            if fp.exists():
+                h.update(fp.read_bytes())
+        engine_hash = h.hexdigest()[:10]
         conn = sqlite3.connect(self.db_path)
         conn.execute("PRAGMA busy_timeout = 30000")
         try:
             row = conn.execute(
                 "SELECT MAX(trade_date), COUNT(*) FROM daily_quotes"
             ).fetchone()
-            self._db_version = f"{row[0]}_{row[1]}"
+            self._db_version = f"{CACHE_SCHEMA_VERSION}_{engine_hash}_{row[0]}_{row[1]}"
         finally:
             conn.close()
         return self._db_version

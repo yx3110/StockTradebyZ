@@ -988,7 +988,16 @@ def load_benchmark_returns(index_code: str = '000905.SH',
         return pd.Series(dtype=float)
 
     # price_change_pct 已经是小数形式的日涨跌幅 (e.g., 0.0117 = 1.17%)
-    returns = df.set_index('trade_date')['price_change_pct']
+    # 2026-07-11: 该列曾在 2022-2024 三年全 NULL 致熊市基准被当 0 (超额层失真),
+    # 加 close.pct_change() 回退兜底; NULL 占比过高时告警
+    df = df.set_index('trade_date')
+    returns = df['price_change_pct'].astype(float)
+    null_ratio = returns.isna().mean()
+    fallback = df['close'].astype(float).pct_change()
+    returns = returns.fillna(fallback)
+    if null_ratio > 0.05:
+        print(f"⚠️ 基准 {index_code} price_change_pct NULL 率 {null_ratio:.1%}, "
+              f"已用 close.pct_change() 回退 (首日无前收仍为 NaN)")
     returns.index = pd.to_datetime(returns.index)
     returns.name = index_code
 
@@ -1589,36 +1598,33 @@ def compute_probabilistic_sharpe(returns: pd.Series,
     if n < 10:
         return 0.0
 
-    # Observed Sharpe (annualized)
+    # 2026-07-11 修复: Bailey-LdP 公式要求 per-period Sharpe 进 z 值。
+    # 旧实现把年化 SR 直接乘 √(n-1), z 被放大 √ppy≈5 倍 → PSR 饱和为
+    # sign(Sharpe) 符号函数 (正 Sharpe 恒 1.0, 负恒 0.0), 丧失区分度。
+    # 另: (γ₄-1)/4 项需要 raw kurtosis (正态=3), 旧实现误用 excess kurtosis。
     mean_ret = returns.mean()
     std_ret = returns.std(ddof=1)
     if std_ret < 1e-10:
         return 0.0
 
-    sr_hat = (mean_ret / std_ret) * np.sqrt(periods_per_year)
+    sr_pp = mean_ret / std_ret                              # per-period SR
+    sr_star_pp = benchmark_sharpe / np.sqrt(periods_per_year)  # 入参按年化语义, 内部去年化
 
-    # De-annualize benchmark to per-period scale for comparison
-    # SR̂ and SR* must be on same scale; keep annualized
-    sr_star = benchmark_sharpe
-
-    # Skewness and excess kurtosis of returns
     gamma3 = skew(returns, bias=False)
-    gamma4 = kurtosis(returns, bias=False, fisher=True)  # excess kurtosis
+    gamma4_raw = kurtosis(returns, bias=False, fisher=True) + 3.0  # raw kurtosis
 
-    # PSR denominator: adjust for non-normality
-    denom_sq = 1.0 - gamma3 * sr_hat / np.sqrt(periods_per_year) + \
-               (gamma4 - 1) / 4.0 * (sr_hat / np.sqrt(periods_per_year)) ** 2
+    denom_sq = 1.0 - gamma3 * sr_pp + (gamma4_raw - 1) / 4.0 * sr_pp ** 2
     if denom_sq <= 0:
         denom_sq = 1.0  # fallback to normal assumption
 
-    z = (sr_hat - sr_star) * np.sqrt(n - 1) / np.sqrt(denom_sq)
+    z = (sr_pp - sr_star_pp) * np.sqrt(n - 1) / np.sqrt(denom_sq)
     psr = float(norm.cdf(z))
 
     return max(0.0, min(1.0, psr))
 
 
 def compute_deflated_sharpe(returns: pd.Series,
-                             n_trials: int = 10,
+                             n_trials: int = 30,
                              benchmark_sharpe: float = 0.0,
                              periods_per_year: float = 25.2) -> float:
     """
@@ -1631,6 +1637,8 @@ def compute_deflated_sharpe(returns: pd.Series,
     Args:
         returns: per-period return series
         n_trials: number of strategy variants tested (model iterations)
+            2026-07-11: 默认 10→30 — 本项目实际迭代过 ng1.0.x~ng2.1 + v3~v5
+            数十个变体, 10 严重低估多重测试次数
         benchmark_sharpe: base benchmark Sharpe (before deflation)
         periods_per_year: annualization factor
     """
@@ -3118,7 +3126,8 @@ def compute_regime_transition_dd(daily_returns: pd.Series,
                                   benchmark_returns: pd.Series,
                                   lookback: int = 60,
                                   pre_window: int = 10,
-                                  post_window: int = 20) -> Optional[float]:
+                                  post_window: int = 20,
+                                  min_obs: int = 200) -> Optional[float]:
     """Regime转换期间的DD放大倍数 (benchmark-relative).
 
     V5.2改进: 使用benchmark的正常DD中位数作为分母下限, 避免CPPI策略因
@@ -3129,7 +3138,7 @@ def compute_regime_transition_dd(daily_returns: pd.Series,
     if daily_returns is None or benchmark_returns is None:
         return None
     n = min(len(daily_returns), len(benchmark_returns))
-    if n < 200:
+    if n < min_obs:
         return None
     dr = daily_returns.values[:n]
     br = benchmark_returns.values[:n]
@@ -3624,25 +3633,31 @@ def compute_regime_ic_consistency(ic_series: pd.Series,
 
 def compute_regime_sharpe_floor(daily_returns: pd.Series,
                                  benchmark_returns: pd.Series,
-                                 lookback: int = 60) -> Optional[float]:
-    """最差regime Sharpe: min(各regime的Sharpe). 需每个regime至少30个观测."""
+                                 lookback: int = 60,
+                                 periods_per_year: float = 252.0,
+                                 min_per_regime: int = 30) -> Optional[float]:
+    """最差regime Sharpe: min(各regime的Sharpe).
+
+    2026-07-11: 加 periods_per_year — 此前对重叠 N 日收益按 √252 年化,
+    Sharpe 虚高 ~√N 倍。输入应为非重叠 period 收益 + 对应 ppy=252/N。
+    """
     if daily_returns is None or benchmark_returns is None:
         return None
     regimes = _classify_regimes(benchmark_returns, lookback)
     common = daily_returns.index.intersection(regimes.index)
-    if len(common) < 60:
+    if len(common) < 2 * min_per_regime:
         return None
     ret_aligned = daily_returns.loc[common]
     reg_aligned = regimes.loc[common]
     regime_sharpes = []
     for regime in ['bull', 'bear', 'neutral']:
         mask = reg_aligned == regime
-        if mask.sum() < 30:
+        if mask.sum() < min_per_regime:
             continue
         ret_r = ret_aligned[mask]
         std = ret_r.std()
         if std > 0:
-            regime_sharpes.append(float(ret_r.mean() / std * np.sqrt(252)))
+            regime_sharpes.append(float(ret_r.mean() / std * np.sqrt(periods_per_year)))
         else:
             regime_sharpes.append(0.0)
     if not regime_sharpes:
@@ -3652,9 +3667,15 @@ def compute_regime_sharpe_floor(daily_returns: pd.Series,
 
 def compute_multi_benchmark_excess(daily_returns: pd.Series,
                                     primary_bm_returns: pd.Series,
-                                    secondary_bm_returns: pd.Series) -> Optional[float]:
+                                    secondary_bm_returns: pd.Series,
+                                    periods_per_year: float = 252.0,
+                                    min_obs: int = 60) -> Optional[float]:
     """多基准超额: min(vs primary, vs secondary) 年化.
-    primary=自动选择基准, secondary=CSI500(万能基准)."""
+    primary=自动选择基准, secondary=CSI500(万能基准).
+
+    2026-07-11: 加 periods_per_year — 此前用 10 日组合收益减 1 日基准收益
+    再 ×252, 超额年化虚高约一个数量级。输入应为同 horizon 的非重叠序列。
+    """
     if daily_returns is None:
         return None
     excesses = []
@@ -3662,10 +3683,10 @@ def compute_multi_benchmark_excess(daily_returns: pd.Series,
         if bm is None:
             continue
         common = daily_returns.index.intersection(bm.index)
-        if len(common) < 60:
+        if len(common) < min_obs:
             continue
         excess = daily_returns.loc[common] - bm.loc[common]
-        excesses.append(float(excess.mean() * 252))
+        excesses.append(float(excess.mean() * periods_per_year))
     if not excesses:
         return None
     return float(min(excesses))
@@ -3673,13 +3694,19 @@ def compute_multi_benchmark_excess(daily_returns: pd.Series,
 
 def compute_regime_drawdown_ratio(daily_returns: pd.Series,
                                    benchmark_returns: pd.Series,
-                                   lookback: int = 60) -> Optional[float]:
-    """Regime DD比: 最差regime MaxDD / 全期MaxDD. <1.0表示全期DD不比单regime差."""
+                                   lookback: int = 60,
+                                   min_obs: int = 60,
+                                   min_per_regime: int = 20) -> Optional[float]:
+    """Regime DD比: 最差regime MaxDD / 全期MaxDD. <1.0表示全期DD不比单regime差.
+
+    2026-07-11: 观测门参数化 (与 L9 兄弟函数对齐) — 输入非重叠 period 序列时
+    调用方需按 horizon 缩放 min_obs/min_per_regime。
+    """
     if daily_returns is None or benchmark_returns is None:
         return None
     regimes = _classify_regimes(benchmark_returns, lookback)
     common = daily_returns.index.intersection(regimes.index)
-    if len(common) < 60:
+    if len(common) < min_obs:
         return None
     ret_aligned = daily_returns.loc[common]
     reg_aligned = regimes.loc[common]
@@ -3692,7 +3719,7 @@ def compute_regime_drawdown_ratio(daily_returns: pd.Series,
     worst_regime_dd = 0.0
     for regime in ['bull', 'bear', 'neutral']:
         mask = reg_aligned == regime
-        if mask.sum() < 20:
+        if mask.sum() < min_per_regime:
             continue
         ret_r = ret_aligned[mask]
         cum_r = (1 + ret_r).cumprod()
