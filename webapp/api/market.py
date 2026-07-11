@@ -13,6 +13,28 @@ market_bp = Blueprint('market', __name__)
 
 VALID_TAXONOMIES = {'sw_l1', 'sw_l2', 'concept'}
 
+# 机制/指数样本/市值风格类伪概念 — 成分动辄上千只, 涨幅/资金流/新高榜单会被
+# 其霸榜且无信息量 (如 融资融券+343亿), 概念榜单中排除。真主题概念 (华为概念
+# 750只/人工智能706只) 不受影响。
+CONCEPT_EXCLUDES = {
+    '融资融券', '转融券标的', '深股通', '沪股通',
+    '富时罗素', '标准普尔', 'MSCI中国', '创业板综', '深成500', '中证500',
+    '深证100R', '上证380', '上证180', '上证50_', 'HS300_', '茅指数', '宁组合',
+    '机构重仓', 'QFII重仓', '基金重仓', '社保重仓', '险资重仓', '证金持股', '汇金概念',
+    '小盘股', '中盘股', '大盘股', '微盘股', '百元股', '低价股', '高价股',
+    '小盘成长', '小盘价值', '中盘成长', '中盘价值', '大盘成长', '大盘价值',
+    '破净股', '破发股', '破增发价股', '次新股', 'IPO受益', '东方财富热股', '趋势股',
+    '含可转债', '转债标的', 'AB股', 'AH股', 'B股概念', 'GDR', '含H股', '含B股',
+}
+CONCEPT_EXCLUDE_PREFIXES = ('昨日',)          # 昨日涨停/昨日触板/昨日高振幅...
+CONCEPT_EXCLUDE_SUFFIXES = ('风格',)          # 科技风格/消费风格...
+
+
+def _concept_excluded(name: str) -> bool:
+    return (name in CONCEPT_EXCLUDES
+            or name.startswith(CONCEPT_EXCLUDE_PREFIXES)
+            or name.endswith(CONCEPT_EXCLUDE_SUFFIXES))
+
 
 def _recent_dates(conn, table: str, days: int, where: str = '', params: tuple = ()):
     """表内最近 N 个交易日 (升序)"""
@@ -30,9 +52,11 @@ def _parse_args():
     return taxonomy, days
 
 
-def _group_by_date(rows):
+def _group_by_date(rows, taxonomy):
     by_date = {}
     for row in rows:
+        if taxonomy == 'concept' and _concept_excluded(row[1]):
+            continue
         by_date.setdefault(row[0], []).append(row[1:])
     return by_date
 
@@ -58,7 +82,7 @@ def rotation():
             (taxonomy, dates[0], dates[-1])).fetchall()
 
     calendar, newhighs = {}, {}
-    for d, items in _group_by_date(rows).items():
+    for d, items in _group_by_date(rows, taxonomy).items():
         ranked = sorted((it for it in items if it[1] is not None),
                         key=lambda x: x[1], reverse=True)[:top]
         calendar[d] = [{'name': n, 'pct': round(p, 2)} for n, p, _ in ranked]
@@ -92,7 +116,7 @@ def fundflow():
             (taxonomy, dates[0], dates[-1])).fetchall()
 
     inflow, outflow = {}, {}
-    for d, items in _group_by_date(rows).items():
+    for d, items in _group_by_date(rows, taxonomy).items():
         ranked = sorted(items, key=lambda x: x[1], reverse=True)
         inflow[d] = [{'name': n, 'amount': round(a, 1)} for n, a in ranked[:top] if a > 0]
         outflow[d] = [{'name': n, 'amount': round(a, 1)} for n, a in ranked[::-1][:top] if a < 0]
