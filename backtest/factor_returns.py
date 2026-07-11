@@ -208,16 +208,28 @@ def load_or_build_factors(start_date: str, end_date: str,
     ed = _to_db_date(end_date)
     conn = sqlite3.connect(db_path, timeout=30)
     try:
+        # 存量表 trade_date 可能是 'YYYY-MM-DD 00:00:00' 时间戳格式, BETWEEN 上界需放宽一天
+        ed_upper = (pd.Timestamp(ed) + pd.Timedelta(days=1)).strftime('%Y-%m-%d')
         cached = pd.read_sql(
             f"SELECT * FROM {cache_table} WHERE trade_date BETWEEN ? AND ? ORDER BY trade_date",
-            conn, params=[sd, ed]
+            conn, params=[sd, ed_upper]
         )
         if len(cached) > 0:
             cached = cached.set_index('trade_date')
             cached.index = pd.to_datetime(cached.index)
-            conn.close()
-            logger.info(f"Loaded {len(cached)} factor returns from cache")
-            return cached[['MKT', 'SMB', 'HML', 'UMD']]
+            cached = cached[cached.index <= pd.Timestamp(ed)]
+        if len(cached) > 0:
+            # 覆盖度校验: 缓存必须覆盖请求的完整日期范围 (首尾各容忍7个日历日的非交易日),
+            # 否则重算合并 — 不许静默用截断窗口 (β_UMD 泄露门禁依赖完整窗口)
+            covers_start = (cached.index.min() - pd.Timestamp(sd)).days <= 7
+            covers_end = (pd.Timestamp(ed) - cached.index.max()).days <= 7
+            if covers_start and covers_end:
+                conn.close()
+                logger.info(f"Loaded {len(cached)} factor returns from cache")
+                return cached[['MKT', 'SMB', 'HML', 'UMD']]
+            logger.info(
+                f"Factor cache incomplete: cached {cached.index.min().date()}→{cached.index.max().date()} "
+                f"vs requested {sd}→{ed}, rebuilding full range")
     except Exception:
         pass
     conn.close()
@@ -232,11 +244,21 @@ def load_or_build_factors(start_date: str, end_date: str,
         conn = sqlite3.connect(db_path, timeout=30)
         cache_df = df.reset_index()
         cache_df.columns = ['trade_date', 'MKT', 'SMB', 'HML', 'UMD']
-        cache_df.to_sql(cache_table, conn, if_exists='replace', index=False)
+        cache_df['trade_date'] = pd.to_datetime(cache_df['trade_date']).dt.strftime('%Y-%m-%d')
+        # 与既有缓存合并去重 (原 if_exists='replace' 会清空其他区间, 加剧部分命中风险)
+        try:
+            existing = pd.read_sql(f"SELECT * FROM {cache_table}", conn)
+            existing['trade_date'] = pd.to_datetime(existing['trade_date']).dt.strftime('%Y-%m-%d')
+        except Exception:
+            existing = pd.DataFrame(columns=cache_df.columns)
+        merged = pd.concat([existing, cache_df], ignore_index=True)
+        merged = (merged.drop_duplicates(subset='trade_date', keep='last')
+                        .sort_values('trade_date'))
+        merged.to_sql(cache_table, conn, if_exists='replace', index=False)
         conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{cache_table}_date ON {cache_table}(trade_date)")
         conn.commit()
         conn.close()
-        logger.info(f"Cached {len(df)} factor returns to {cache_table}")
+        logger.info(f"Cached {len(df)} factor returns to {cache_table} (merged total {len(merged)})")
     except Exception as e:
         logger.warning(f"Failed to cache factor returns: {e}")
     return df

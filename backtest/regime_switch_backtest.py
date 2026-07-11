@@ -195,8 +195,10 @@ def run_comparison(
     print('-' * 80)
 
     metrics = [
-        ('年化收益(毛)', 'annual_return'),
-        ('Sharpe', 'sharpe'),
+        # annual_return 是扣完交易成本的净口径 (backtest_report_based 已按真实换手扣费)
+        ('年化收益(净)', 'annual_return'),
+        # 修复: summary 键名是 'sharpe_ratio', 原 'sharpe' 取不到值恒打印 0.000
+        ('Sharpe', 'sharpe_ratio'),
         ('最大回撤', 'max_drawdown'),
         ('月度胜率', 'monthly_win_rate'),
     ]

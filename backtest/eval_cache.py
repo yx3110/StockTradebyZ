@@ -186,6 +186,86 @@ class EvalCache:
             self.cache_dir.mkdir(parents=True, exist_ok=True)
             print(f"  Cache cleared: {self.cache_dir}")
 
+    def _list_entries(self) -> list:
+        """按缓存条目 (stem) 分组列出文件: [{'stem', 'paths', 'bytes', 'mtime'}], 旧的在前."""
+        if not self.cache_dir.exists():
+            return []
+        groups: Dict[str, dict] = {}
+        for f in self.cache_dir.iterdir():
+            if not f.is_file():
+                continue
+            stem = f.name
+            for suffix in ('.pkl', '.npz', '.meta'):
+                if stem.endswith(suffix):
+                    stem = stem[: -len(suffix)]
+                    break
+            st = f.stat()
+            g = groups.setdefault(stem, {'stem': stem, 'paths': [], 'bytes': 0, 'mtime': 0.0})
+            g['paths'].append(f)
+            g['bytes'] += st.st_size
+            g['mtime'] = max(g['mtime'], st.st_mtime)
+        return sorted(groups.values(), key=lambda g: g['mtime'])
+
+    def prune(self, max_age_days: float = None, max_total_gb: float = None,
+              dry_run: bool = True) -> dict:
+        """LRU/age 淘汰机制: DB 每日更新后 db_version 变化, 旧版本 pkl 永不再命中,
+        无淘汰会无限膨胀 (实测 88GB)。
+
+        Args:
+            max_age_days: 淘汰 mtime 距今超过 N 天的条目
+            max_total_gb: 总大小预算 (GB), 超出部分从最旧条目 (LRU) 开始淘汰
+            dry_run: True (默认) 只打印将删除的文件与释放空间, 不实际删除
+
+        Returns:
+            {'n_entries', 'n_prune', 'free_mb', 'total_mb', 'dry_run'}
+        """
+        entries = self._list_entries()  # 已按 mtime 从旧到新排序
+        total_bytes = sum(e['bytes'] for e in entries)
+        now = time.time()
+
+        to_prune, prune_stems = [], set()
+        # 1) age 淘汰
+        if max_age_days is not None:
+            cutoff = now - max_age_days * 86400
+            for e in entries:
+                if e['mtime'] < cutoff:
+                    to_prune.append(e)
+                    prune_stems.add(e['stem'])
+        # 2) 容量预算 LRU 淘汰 (在 age 淘汰之后仍超预算时, 继续删最旧的)
+        if max_total_gb is not None:
+            budget = max_total_gb * 1024 ** 3
+            remaining = total_bytes - sum(e['bytes'] for e in to_prune)
+            for e in entries:
+                if remaining <= budget:
+                    break
+                if e['stem'] in prune_stems:
+                    continue
+                to_prune.append(e)
+                prune_stems.add(e['stem'])
+                remaining -= e['bytes']
+
+        free_bytes = sum(e['bytes'] for e in to_prune)
+        mode = 'DRY-RUN (不删除)' if dry_run else 'APPLY (实际删除)'
+        print(f"  [{mode}] 缓存 {len(entries)} 条目 / {total_bytes / 1024**2:.0f} MB, "
+              f"计划淘汰 {len(to_prune)} 条目 / 释放 {free_bytes / 1024**2:.0f} MB")
+        for e in sorted(to_prune, key=lambda x: -x['bytes']):
+            age_days = (now - e['mtime']) / 86400
+            print(f"    - {e['stem']:<50} {e['bytes'] / 1024**2:>9.1f} MB  {age_days:>6.1f} 天前")
+            if not dry_run:
+                for p in e['paths']:
+                    try:
+                        p.unlink()
+                    except OSError as err:
+                        print(f"      ⚠️ 删除失败 {p.name}: {err}")
+
+        return {
+            'n_entries': len(entries),
+            'n_prune': len(to_prune),
+            'free_mb': round(free_bytes / 1024 / 1024, 1),
+            'total_mb': round(total_bytes / 1024 / 1024, 1),
+            'dry_run': dry_run,
+        }
+
     def stats(self) -> dict:
         """Return cache statistics."""
         if not self.cache_dir.exists():
@@ -196,3 +276,28 @@ class EvalCache:
             'n_files': len(files),
             'total_size_mb': round(total_bytes / 1024 / 1024, 1),
         }
+
+
+if __name__ == '__main__':
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description='EvalCache 维护工具 — 默认 dry-run, 必须显式加 --apply 才实际删除')
+    parser.add_argument('--cache-dir', default=None, help='缓存目录 (默认 backtest/.eval_cache)')
+    parser.add_argument('--stats', action='store_true', help='打印缓存统计')
+    parser.add_argument('--prune-days', type=float, default=None,
+                        help='淘汰 N 天前的缓存条目 (mtime)')
+    parser.add_argument('--max-gb', type=float, default=None,
+                        help='总大小预算 GB, 超出部分按 LRU (最旧优先) 淘汰')
+    parser.add_argument('--apply', action='store_true',
+                        help='实际执行删除 (默认 dry-run 只打印)')
+    cli_args = parser.parse_args()
+
+    ec = EvalCache(cache_dir=cli_args.cache_dir)
+    if cli_args.stats or (cli_args.prune_days is None and cli_args.max_gb is None):
+        s = ec.stats()
+        print(f"  缓存目录: {ec.cache_dir}")
+        print(f"  文件数: {s['n_files']}, 总大小: {s['total_size_mb']} MB")
+    if cli_args.prune_days is not None or cli_args.max_gb is not None:
+        ec.prune(max_age_days=cli_args.prune_days, max_total_gb=cli_args.max_gb,
+                 dry_run=not cli_args.apply)

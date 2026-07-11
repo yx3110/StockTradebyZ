@@ -199,7 +199,8 @@ def run_backtest(report_dir, label, top_n=20, benchmark='000905.SH', focus_days=
                  min_market_cap=0.0,
                  stop_loss_pct=0.0, regime_gate_aggressive=False,
                  buy_threshold=0, sell_threshold=0, n_groups=1,
-                 min_hold_days=0, cost_penalty=0.0):
+                 min_hold_days=0, cost_penalty=0.0,
+                 start_date=None, end_date=None):
     """运行单个模型的回测
 
     Args:
@@ -207,6 +208,8 @@ def run_backtest(report_dir, label, top_n=20, benchmark='000905.SH', focus_days=
                     阶段1: 从 report_dir 选 rerank_pool 只候选
                     阶段2: 用 rerank_dir 的排名在候选中精选 top_n
         rerank_pool: 阶段1候选池大小 (默认100)
+        start_date/end_date: 评估窗口过滤 (YYYY-MM-DD, 含边界);
+                    原先 --start-date/--end-date 只打进 banner 不生效
     """
     from backtest import backtest_report_based as brb
     from backtest import north_star_metrics as nsm
@@ -216,6 +219,19 @@ def run_backtest(report_dir, label, top_n=20, benchmark='000905.SH', focus_days=
     brb.DB_PATH = DB_PATH
 
     reports = brb.load_reports(report_dir, rank_field=rank_field, cache=cache)
+    # 按评估窗口真正过滤报告 (report key 为 YYYY-MM-DD 字符串)
+    if start_date or end_date:
+        def _norm_date(d):
+            return f"{d[:4]}-{d[4:6]}-{d[6:]}" if d and len(d) == 8 and d.isdigit() else d
+        start_date = _norm_date(start_date)
+        end_date = _norm_date(end_date)
+        n_before = len(reports)
+        reports = {d: r for d, r in reports.items()
+                   if (not start_date or d >= start_date)
+                   and (not end_date or d <= end_date)}
+        if len(reports) < n_before:
+            print(f"  评估窗口过滤: {n_before} → {len(reports)} 个报告 "
+                  f"({start_date or '起始'} → {end_date or '末尾'})")
     if not reports:
         print(f"  ⚠️ 无报告: {report_dir}")
         return None
@@ -808,6 +824,9 @@ def main():
             n_groups=args.n_groups,
             min_hold_days=args.min_hold_days,
             cost_penalty=args.cost_penalty,
+            # 把 --start-date/--end-date 真正传入回测过滤 (原先只打进 banner)
+            start_date=None if resolved_start == 'auto' else resolved_start,
+            end_date=None if resolved_end == 'auto' else resolved_end,
         )
         if args.report_dir:
             result = run_backtest(args.report_dir, args.label, args.top_n, args.benchmark,

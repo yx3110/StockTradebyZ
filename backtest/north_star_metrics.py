@@ -1034,17 +1034,31 @@ def compute_benchmark_comparison(portfolio_returns: pd.Series,
 
     excess = p_ret - b_ret
     alpha_per_period = excess.mean()
-    alpha_annual = alpha_per_period * periods_per_year
 
-    # Tracking Error
-    tracking_error = excess.std() * np.sqrt(periods_per_year)
+    # ── calendar-time 年化 (P0.2 同款修复): 稀疏交易时 active-days 口径会把
+    #    excess_annual/alpha 放大 3-5x (cash 50%+ 陷阱), 改用实际日历跨度 ──
+    n_active = len(p_ret)
+    holding_days = 252.0 / periods_per_year
+    active_equiv_days = n_active * holding_days
+    if isinstance(p_ret.index, pd.DatetimeIndex) and n_active > 1:
+        calendar_days = (p_ret.index.max() - p_ret.index.min()).days + holding_days
+        total_equivalent_days = max(active_equiv_days, calendar_days * 252.0 / 365.25)
+    else:
+        # 回退: 无 DatetimeIndex 时用 legacy active-days 口径
+        total_equivalent_days = active_equiv_days
+    # 有效年化因子 (稀疏时 < periods_per_year, 密集时二者相等)
+    effective_ppy = 252.0 * n_active / total_equivalent_days
+
+    alpha_annual = alpha_per_period * effective_ppy
+
+    # Tracking Error (与 alpha 同口径年化, 保持 IR 一致性)
+    tracking_error = excess.std() * np.sqrt(effective_ppy)
 
     # Information Ratio
     information_ratio = alpha_annual / tracking_error if tracking_error > 1e-8 else 0
 
     # 超额年化收益
     n_periods = len(common_dates)
-    total_equivalent_days = n_periods * (252 / periods_per_year)
     p_annual = (1 + p_ret).prod() ** (252 / total_equivalent_days) - 1
     b_annual = (1 + b_ret).prod() ** (252 / total_equivalent_days) - 1
     excess_annual = p_annual - b_annual

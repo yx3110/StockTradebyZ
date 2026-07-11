@@ -1879,15 +1879,30 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
         period_ret_series = non_overlap.set_index('date')['avg_top_return'].sort_index()
         period_ret_series.index = pd.to_datetime(period_ret_series.index)
 
-        # 扣除交易成本 (双边佣金0.025% + 卖出印花税0.05% + 双边过户费0.001% + 双边滑点0.1% = ~0.30%)
+        # --- 换手率（仅在调仓日之间计算, 提前到扣费之前以便按真实换手扣减）---
+        rebal_dates = non_overlap['date'].tolist()
+        rebal_holdings = {d: holdings_by_date.get(d, []) for d in rebal_dates
+                          if d in holdings_by_date}
+        turnover_info = compute_turnover(rebal_holdings)
+        avg_turnover = turnover_info.get('avg_turnover', 0.5)
+        # 年化换手 = 单次换手(双边) × 年调仓次数
+        rebal_freq_annual = 252 / days
+        annual_turnover_val = avg_turnover * 2 * rebal_freq_annual
+
+        # 扣除交易成本 (双边佣金0.025% + 卖出印花税0.05% + 双边过户费0.001% + 双边滑点0.1% ≈ 0.30% 满换手)
+        # 修复双重扣费 (2026-07-11): 原先此处按 100% 换手平坦扣一次, 下方 compute_transaction_costs
+        # 又把已扣费的 annual_return 当毛收益再扣一次换手成本 → 双扣。现改为: 此处按真实换手率
+        # 扣一次 (净口径), compute_transaction_costs 只接收真毛收益做 gross/net 对照。
         round_trip_cost = (0.00025 * 2   # 佣金双边
                          + 0.0005         # 印花税(卖出)
                          + 0.00001 * 2    # 过户费双边
                          + 0.001 * 2)     # 滑点双边  = 0.00302
-        net_period_ret = period_ret_series - round_trip_cost
+        net_period_ret = period_ret_series - round_trip_cost * avg_turnover
 
-        # --- 风险指标（非重叠period收益，正确年化，扣除交易成本）---
+        # --- 风险指标（非重叠period收益，正确年化，已按真实换手扣除交易成本 → 净口径）---
         risk = _compute_period_risk_metrics(net_period_ret, days)
+        # 真毛年化收益 (未扣费, 与 risk 同款 calendar-time 年化) — 供成本拖累与净/毛比使用
+        gross_annual = _compute_period_risk_metrics(period_ret_series, days)['annual_return']
 
         # --- 多偏移量鲁棒月度胜率（消除起始偏移artifact）---
         # 单一偏移量的月度胜率受起始点影响大，改为平均所有可能的偏移量
@@ -1914,20 +1929,10 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
                 risk['worst_month'] = avg_monthly.min()
                 risk['best_month'] = avg_monthly.max()
 
-        # --- 换手率（仅在调仓日之间计算）---
-        rebal_dates = non_overlap['date'].tolist()
-        rebal_holdings = {d: holdings_by_date.get(d, []) for d in rebal_dates
-                          if d in holdings_by_date}
-        turnover_info = compute_turnover(rebal_holdings)
-        avg_turnover = turnover_info.get('avg_turnover', 0.5)
-        # 年化换手 = 单次换手(双边) × 年调仓次数
-        rebal_freq_annual = 252 / days
-        annual_turnover_val = avg_turnover * 2 * rebal_freq_annual
-
-        # --- 交易成本（基于已计算的毛年化收益）---
+        # --- 交易成本（基于真毛年化收益, 单次扣减: net = gross − 换手成本拖累）---
         cost_info = compute_transaction_costs(
             avg_turnover, days,
-            gross_annual_return=risk['annual_return']
+            gross_annual_return=gross_annual
         )
 
         # --- 基准对比（用buy_date对齐，避免日期偏移）---
@@ -1974,8 +1979,9 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
         # 前后半段一致性
         half_consistency = compute_half_period_consistency(period_ret_series, days)
 
-        # 净/毛收益比
-        ngr = compute_net_gross_ratio(risk['annual_return'], cost_info['net_annual_return'])
+        # 净/毛收益比 (真毛 vs 扣换手成本后的净, 原先比较的是"单净/双净")
+        ngr = compute_net_gross_ratio(cost_info['gross_annual_return'],
+                                      cost_info['net_annual_return'])
 
         # 可执行性指标 (使用非重叠调仓期的持仓)
         rebal_holdings_for_exec = {d: holdings_by_date.get(d, []) for d in rebal_dates
@@ -2328,8 +2334,8 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
         # 打印增强指标
         n_rebal = len(non_overlap)
         print(f"\n  🎯 {days}日持仓 北极星指标 ({n_rebal}个非重叠调仓期):")
-        print(f"    年化收益(毛):  {risk['annual_return']:.1%}")
-        print(f"    年化收益(净):  {cost_info['net_annual_return']:.1%}  (扣成本{cost_info['annual_cost_drag']:.1%}/年)")
+        print(f"    年化收益(净):  {risk['annual_return']:.1%}  (已按真实换手扣费)")
+        print(f"    年化收益(毛):  {cost_info['gross_annual_return']:.1%}  (成本拖累{cost_info['annual_cost_drag']:.1%}/年 → 净{cost_info['net_annual_return']:.1%})")
         print(f"    年化波动率:    {risk['annual_volatility']:.1%}")
         print(f"    Sharpe:        {risk['sharpe_ratio']:.3f}")
         print(f"    Sortino:       {risk['sortino_ratio']:.3f}")
@@ -3848,8 +3854,8 @@ def compare_results(result_a, result_b, focus_days=10):
             ('IC>0占比',     'ic_positive_pct',  '%',  True,  '.1f'),
             ('IC单调性',     'ic_monotonicity',  '',   True,  '.2f'),
             ('累计收益',     'cumulative',       '%',  True,  '+.2f'),
-            ('年化收益(毛)', 'annual_return',    '',   True,  '.1%'),
-            ('年化收益(净)', 'net_annual_return', '',  True,  '.1%'),
+            ('年化收益(净)', 'annual_return',    '',   True,  '.1%'),
+            ('年化(毛−成本)', 'net_annual_return', '',  True,  '.1%'),
             ('净/毛收益比',  'net_gross_ratio',  '',   True,  '.2f'),
             ('Sharpe',       'sharpe_ratio',     '',   True,  '.3f'),
             ('Sortino',      'sortino_ratio',    '',   True,  '.3f'),
@@ -3936,8 +3942,8 @@ def generate_report(results, output_dir='reports/backtest', benchmark_code='0009
         ('IC单调性',       'ic_monotonicity',   '.2f',  ''),
         ('IC稳定性(CV)',   'ic_time_stability', '.2f',  ''),
         ('信号半衰期',     'signal_half_life',  '.1f',  '天'),
-        ('年化收益(毛)',    'annual_return',     '.1%',  ''),
-        ('年化收益(净)',    'net_annual_return', '.1%',  ''),
+        ('年化收益(净)',    'annual_return',     '.1%',  ''),
+        ('年化(毛−成本)',   'net_annual_return', '.1%',  ''),
         ('净/毛收益比',    'net_gross_ratio',   '.2f',  ''),
         ('Sharpe',         'sharpe_ratio',      '.3f',  ''),
         ('Sortino',        'sortino_ratio',     '.3f',  ''),
