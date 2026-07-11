@@ -40,12 +40,16 @@ class SWDailyFetcher:
             db_path = str(PROJECT_ROOT / 'data_adapter' / 'stock_data.db')
         self.db_path = db_path
 
-        if config_path is None:
-            config_path = str(PROJECT_ROOT / 'config.json')
-
-        with open(config_path, 'r') as f:
-            config = json.load(f)
-        token = config['tushare']['token']
+        # token 优先从 core.config/.env 获取
+        try:
+            from core.config import get_tushare_token
+            token = get_tushare_token()
+        except ImportError:
+            if config_path is None:
+                config_path = str(PROJECT_ROOT / 'config.json')
+            with open(config_path, 'r') as f:
+                config = json.load(f)
+            token = config['tushare']['token']
         ts.set_token(token)
         self.pro = ts.pro_api()
 

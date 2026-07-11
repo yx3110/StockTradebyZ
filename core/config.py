@@ -17,6 +17,17 @@ logger = logging.getLogger(__name__)
 # ============================================================
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
+# ============================================================
+# .env 加载 (密钥已迁移至 .env, 2026-07-11)
+# 模块加载时执行, 使 get_tushare_token / get_anthropic_api_key
+# 的环境变量优先级路径直接受益; 不覆盖已存在的环境变量。
+# ============================================================
+try:
+    from dotenv import load_dotenv
+    load_dotenv(PROJECT_ROOT / '.env')
+except ImportError:  # python-dotenv 未安装时静默降级 (仍可用真实环境变量/config.json)
+    logger.debug("python-dotenv 未安装, 跳过 .env 加载")
+
 DB_PATH = PROJECT_ROOT / 'data_adapter' / 'stock_data.db'
 
 # 模型目录

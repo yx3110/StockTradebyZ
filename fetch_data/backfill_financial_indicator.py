@@ -26,6 +26,8 @@ from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 DB_PATH = PROJECT_ROOT / 'data_adapter' / 'stock_data.db'
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
@@ -77,8 +79,13 @@ def load_config():
 
 
 def get_pro():
-    config = load_config()
-    token = config.get('tushare', {}).get('token', '')
+    # token 优先从 core.config/.env 获取
+    try:
+        from core.config import get_tushare_token
+        token = get_tushare_token()
+    except ImportError:
+        config = load_config()
+        token = config.get('tushare', {}).get('token', '')
     ts.set_token(token)
     return ts.pro_api()
 

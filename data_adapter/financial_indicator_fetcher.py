@@ -5,6 +5,7 @@
 """
 
 import sqlite3
+import sys
 import tushare as ts
 import pandas as pd
 import json
@@ -14,6 +15,10 @@ from datetime import datetime, timedelta
 from typing import List, Optional, Dict
 from pathlib import Path
 import argparse
+
+_PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
 
 # 设置日志
 logger = logging.getLogger(__name__)
@@ -33,12 +38,15 @@ class FinancialIndicatorFetcher:
         self.api_delay = 0.5
         
     def _init_tushare(self):
-        """初始化Tushare"""
+        """初始化Tushare (token 优先从 core.config/.env 获取)"""
         try:
-            with open(self.config_path, 'r', encoding='utf-8') as f:
-                config = json.load(f)
-            
-            token = config['tushare']['token']
+            try:
+                from core.config import get_tushare_token
+                token = get_tushare_token()
+            except ImportError:
+                with open(self.config_path, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+                token = config['tushare']['token']
             if not token:
                 raise ValueError("未配置Tushare token")
             

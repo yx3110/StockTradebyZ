@@ -8,7 +8,9 @@ Checkpoint-able: skip stocks already fully populated.
 import sqlite3, json, logging, sys, time
 from pathlib import Path
 
-PROJECT_ROOT = Path("/Users/yangxu/StockTradebyZ")
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 DB_PATH = PROJECT_ROOT / "data_adapter" / "stock_data.db"
 CONFIG_PATH = PROJECT_ROOT / "config.json"
 CHECKPOINT = PROJECT_ROOT / "scripts" / "backfill" / "bj_amount_checkpoint.txt"
@@ -76,7 +78,12 @@ def main():
     args = ap.parse_args()
 
     import tushare as ts
-    token = json.loads(CONFIG_PATH.read_text())["tushare"]["token"]
+    # token 优先从 core.config/.env 获取
+    try:
+        from core.config import get_tushare_token
+        token = get_tushare_token()
+    except ImportError:
+        token = json.loads(CONFIG_PATH.read_text())["tushare"]["token"]
     ts.set_token(token)
     pro = ts.pro_api()
 

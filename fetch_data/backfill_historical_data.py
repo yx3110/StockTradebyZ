@@ -24,6 +24,8 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s')
 logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 DEFAULT_DB = os.path.join(PROJECT_ROOT, 'data_adapter', 'stock_data.db')
 DEFAULT_CONFIG = os.path.join(PROJECT_ROOT, 'config.json')
 
@@ -43,13 +45,17 @@ INDICES = {
 
 
 def _init_tushare(config_path: str = None):
-    """初始化Tushare API"""
-    config_path = config_path or DEFAULT_CONFIG
-    with open(config_path, 'r') as f:
-        config = json.load(f)
-
+    """初始化Tushare API (token 优先从 core.config/.env 获取)"""
     import tushare as ts
-    ts.set_token(config['tushare']['token'])
+    try:
+        from core.config import get_tushare_token
+        token = get_tushare_token()
+    except ImportError:
+        config_path = config_path or DEFAULT_CONFIG
+        with open(config_path, 'r') as f:
+            config = json.load(f)
+        token = config['tushare']['token']
+    ts.set_token(token)
     return ts.pro_api()
 
 

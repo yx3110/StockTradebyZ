@@ -77,10 +77,14 @@ class V39DataBackfill:
         self.max_workers = max_workers
         self.config = self._load_config()
 
-        # 初始化Tushare
-        token = self.config.get('tushare', {}).get('token')
+        # 初始化Tushare (token 优先从 core.config/.env 获取)
+        try:
+            from core.config import get_tushare_token
+            token = get_tushare_token()
+        except ImportError:
+            token = self.config.get('tushare', {}).get('token')
         if not token:
-            raise ValueError("请在config.json中配置Tushare token")
+            raise ValueError("请在 .env 中配置 TUSHARE_TOKEN 或在config.json中配置Tushare token")
 
         ts.set_token(token)
         self.pro = ts.pro_api()

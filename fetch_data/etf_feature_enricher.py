@@ -35,6 +35,19 @@ logger = logging.getLogger(__name__)
 
 DB_PATH = PROJECT_ROOT / 'data_adapter' / 'stock_data.db'
 
+
+def _get_pro_api():
+    """初始化 Tushare pro_api (token 优先从 core.config/.env 获取)"""
+    import tushare as ts
+    try:
+        from core.config import get_tushare_token
+        token = get_tushare_token()
+    except ImportError:
+        with open(PROJECT_ROOT / 'config.json') as f:
+            token = json.load(f)['tushare']['token']
+    return ts.pro_api(token)
+
+
 # ============================================================
 # Step 1: ETF → 申万一级行业映射
 # ============================================================
@@ -110,10 +123,7 @@ BENCHMARK_TO_SW_L1 = {
 
 def build_etf_industry_mapping() -> Dict[str, str]:
     """构建 ETF code(无后缀) → 申万一级行业名称 映射"""
-    import tushare as ts
-    with open(PROJECT_ROOT / 'config.json') as f:
-        cfg = json.load(f)
-    pro = ts.pro_api(cfg['tushare']['token'])
+    pro = _get_pro_api()
 
     df = pro.fund_basic(market='E', status='L')
     logger.info(f"  fund_basic 获取 {len(df)} 只ETF")
@@ -165,10 +175,7 @@ def get_sw_l1_encoding(conn: sqlite3.Connection) -> Dict[str, int]:
 
 def fetch_etf_fundamentals(etf_codes: list, start_date: str, end_date: str) -> pd.DataFrame:
     """从 Tushare 抓取 ETF 份额 + 日线数据，计算 turnover_rate 和 market_cap"""
-    import tushare as ts
-    with open(PROJECT_ROOT / 'config.json') as f:
-        cfg = json.load(f)
-    pro = ts.pro_api(cfg['tushare']['token'])
+    pro = _get_pro_api()
 
     start_fmt = start_date.replace('-', '')
     end_fmt = end_date.replace('-', '')
@@ -231,10 +238,7 @@ def fetch_etf_fundamentals(etf_codes: list, start_date: str, end_date: str) -> p
 
 def fetch_index_valuation(start_date: str, end_date: str) -> pd.DataFrame:
     """从 Tushare 抓取主要指数的 PE/PB 数据"""
-    import tushare as ts
-    with open(PROJECT_ROOT / 'config.json') as f:
-        cfg = json.load(f)
-    pro = ts.pro_api(cfg['tushare']['token'])
+    pro = _get_pro_api()
 
     # 申万行业指数代码 (用于估值)
     # 但更实际的是用主要宽基指数

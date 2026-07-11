@@ -544,14 +544,18 @@ class NGCacheUpdater:
         if existing and existing['cnt'] > 0:
             return 0
 
-        # Lazy-init Tushare API (cached across calls)
+        # Lazy-init Tushare API (cached across calls; token 优先从 core.config/.env 获取)
         try:
             if self._pro is None:
-                config_path = os.path.join(_PROJECT_ROOT, 'config.json')
-                with open(config_path) as f:
-                    cfg = json.load(f)
                 import tushare as ts
-                self._pro = ts.pro_api(cfg['tushare']['token'])
+                try:
+                    from core.config import get_tushare_token
+                    token = get_tushare_token()
+                except ImportError:
+                    config_path = os.path.join(_PROJECT_ROOT, 'config.json')
+                    with open(config_path) as f:
+                        token = json.load(f)['tushare']['token']
+                self._pro = ts.pro_api(token)
             df_mf = self._pro.moneyflow(trade_date=date_str)
         except Exception as e:
             print(f"    WARN: moneyflow fetch failed: {e}")

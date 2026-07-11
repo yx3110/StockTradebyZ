@@ -11,9 +11,14 @@ import time
 
 
 def backfill_index_amount(start_date='20180101', end_date=None):
-    with open('config.json') as f:
-        config = json.load(f)
-    pro = ts.pro_api(config['tushare']['token'])
+    # token 优先从 core.config/.env 获取
+    try:
+        from core.config import get_tushare_token
+        token = get_tushare_token()
+    except ImportError:
+        with open('config.json') as f:
+            token = json.load(f)['tushare']['token']
+    pro = ts.pro_api(token)
 
     if end_date is None:
         end_date = pd.Timestamp.now().strftime('%Y%m%d')

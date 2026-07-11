@@ -39,9 +39,13 @@ class PureTushareNewsFetcher:
             raise
     
     def _init_tushare(self):
-        """初始化Tushare Pro API"""
+        """初始化Tushare Pro API (token 优先从 core.config/.env 获取)"""
         try:
-            token = self.config['tushare']['token']
+            try:
+                from core.config import get_tushare_token
+                token = get_tushare_token()
+            except ImportError:
+                token = self.config['tushare']['token']
             ts.set_token(token)
             self.pro = ts.pro_api()
             logger.info("Tushare Pro API初始化成功")

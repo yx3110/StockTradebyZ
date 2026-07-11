@@ -409,17 +409,21 @@ class TomorrowStockSelector:
         try:
             import tushare as ts
             
-            # 获取配置中的token
+            # 获取token (优先从 core.config/.env 获取)
             try:
-                with open('config.json', 'r', encoding='utf-8') as f:
-                    config = json.load(f)
-                    token = config.get('tushare', {}).get('token')
-                    if not token or token == "YOUR_TUSHARE_TOKEN_HERE":
-                        logger.warning("未配置Tushare Token，无法更新详细基本面信息")
-                        return False
-                        
-                    ts.set_token(token)
-                    pro = ts.pro_api()
+                try:
+                    from core.config import get_tushare_token
+                    token = get_tushare_token()
+                except ImportError:
+                    with open('config.json', 'r', encoding='utf-8') as f:
+                        config = json.load(f)
+                        token = config.get('tushare', {}).get('token')
+                if not token or token == "YOUR_TUSHARE_TOKEN_HERE":
+                    logger.warning("未配置Tushare Token，无法更新详细基本面信息")
+                    return False
+
+                ts.set_token(token)
+                pro = ts.pro_api()
             except Exception as e:
                 logger.error(f"配置Tushare失败: {e}")
                 return False

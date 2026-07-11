@@ -41,10 +41,17 @@ def _connect(db_path: str) -> sqlite3.Connection:
 
 
 def _load_pro_api(config_path: Optional[str] = None):
+    # token 优先从 core.config/.env 获取 (显式传入 config_path 时仍尊重旧路径)
+    token = None
     if config_path is None:
-        config_path = str(PROJECT_ROOT / "config.json")
-    with open(config_path) as f:
-        token = json.load(f)["tushare"]["token"]
+        try:
+            from core.config import get_tushare_token
+            token = get_tushare_token()
+        except ImportError:
+            config_path = str(PROJECT_ROOT / "config.json")
+    if token is None:
+        with open(config_path) as f:
+            token = json.load(f)["tushare"]["token"]
     ts.set_token(token)
     return ts.pro_api()
 

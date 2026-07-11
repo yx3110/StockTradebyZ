@@ -15,20 +15,28 @@ from __future__ import annotations
 import argparse
 import json
 import sqlite3
+import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
 import tushare as ts
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 DB_PATH = PROJECT_ROOT / 'data_adapter' / 'stock_data.db'
 CONFIG_PATH = PROJECT_ROOT / 'config.json'
 
 
 def fetch_latest_names(lookback_days: int) -> dict[str, str]:
     """Query Tushare namechange, return {code_no_suffix: latest_name}."""
-    cfg = json.load(open(CONFIG_PATH))
-    ts.set_token(cfg['tushare']['token'])
+    # token 优先从 core.config/.env 获取
+    try:
+        from core.config import get_tushare_token
+        token = get_tushare_token()
+    except ImportError:
+        token = json.load(open(CONFIG_PATH))['tushare']['token']
+    ts.set_token(token)
     pro = ts.pro_api()
 
     end = datetime.today()

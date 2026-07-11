@@ -32,9 +32,14 @@ logger = logging.getLogger(__name__)
 
 # 配置
 DB_PATH = str(PROJECT_ROOT / 'data_adapter' / 'stock_data.db')
-with open('config.json', 'r') as f:
-    config = json.load(f)
-ts.set_token(config['tushare']['token'])
+# token 优先从 core.config/.env 获取
+try:
+    from core.config import get_tushare_token
+    _token = get_tushare_token()
+except ImportError:
+    with open(PROJECT_ROOT / 'config.json', 'r') as f:
+        _token = json.load(f)['tushare']['token']
+ts.set_token(_token)
 pro = ts.pro_api()
 
 
