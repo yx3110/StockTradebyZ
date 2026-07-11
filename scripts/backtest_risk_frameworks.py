@@ -349,7 +349,7 @@ class WebappStyle(Strategy):
             if vol is None:
                 try:
                     vol = vol_20d.loc[date, code] if date in vol_20d.index and code in vol_20d.columns else 0.05
-                except:
+                except Exception:
                     vol = 0.05
             if pd.isna(vol) or vol < 0.001:
                 vol = 0.05
@@ -419,7 +419,7 @@ class HybridV2(Strategy):
         for code in codes:
             try:
                 vol = vol_20d.loc[date, code] if date in vol_20d.index and code in vol_20d.columns else 0.05
-            except:
+            except Exception:
                 vol = 0.05
             if pd.isna(vol) or vol < 0.001:
                 vol = 0.05

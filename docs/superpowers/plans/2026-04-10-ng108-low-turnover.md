@@ -319,12 +319,12 @@ python3 backtest/run_north_star_eval.py --backtest \
     2>&1 | grep -E "🎯 10日|年化|Sharpe|换手|加权评分|等级"
 ```
 
-Expected: V5.2 should remain A+ (>= 70%).
+Expected (2026-04-20 订正): Pre-2020 同向 alpha — 净年化 ≥ 0% + 超额胜率 ≥ 60%. (原 "V5.2 ≥ 70% A+" 基于 ng1.0.1 73.7% ghost number, 实测 ng1.0.1 4-12 bugfix Pre-2020 V5.2=45.5% B)
 
 - [ ] **Step 2: Compare with ng1.0.1 baseline Pre-2020**
 
-ng1.0.1 baseline Pre-2020: V5.2=73.7% A+, Sharpe=2.37.
-ng1.0.8 should have similar or better Sharpe (lower turnover = lower cost drag).
+ng1.0.1 baseline Pre-2020 (2026-04-20 实测, 4-12 bugfix pkl): V5.2=45.5% B, 净年化=-19% (10d), Sharpe=-0.33.
+ng1.0.8 should have similar or better **净年化** and **Sharpe** (lower turnover = lower cost drag). 不应期望 V5.2 达到 70% A+, 那是基于错误的 baseline 数字。
 
 - [ ] **Step 3: Commit evaluation results to wiki**
 

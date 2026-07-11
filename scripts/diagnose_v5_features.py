@@ -80,7 +80,7 @@ def residualize_labels(df):
         try:
             betas = np.linalg.lstsq(X_c, y, rcond=None)[0]
             code_betas[code] = betas[1:]
-        except:
+        except Exception:
             continue
 
     print(f"  {len(code_betas)} 只股票有beta")

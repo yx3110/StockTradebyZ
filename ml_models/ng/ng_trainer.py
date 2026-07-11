@@ -327,6 +327,17 @@ NG161_FACTOR_PROXIES = [
     'industry_return_20d',    # MKT proxy (within-industry systematic)
 ]
 
+# P1.3 Step B: ng1.6.2 — risk-adjusted label override (Calmar / Sortino).
+# Same 66 features as ng1.0.1/ng1.6.1; differs only in label_3d/5d/10d/15d
+# values which are looked up from a pre-computed CSV
+# (ml_models/ng/risk_adjusted_labels.py output).
+# Mutually exclusive with ng1.6.1 cross-sectional residualization.
+NG162_STOCK_FEATURES: List[str] = list(STOCK_FEATURE_NAMES)
+NG162_MARKET_FEATURES: List[str] = list(MARKET_FEATURE_NAMES)
+NG162_ALL_FEATURES: List[str] = NG162_STOCK_FEATURES + NG162_MARKET_FEATURES
+NG162_VERSION = 'ng1.6.2'
+NG162_LABEL_CSV_DEFAULT = 'reports/labels/ng162_labels.csv'
+
 # ---------------------------------------------------------------------------
 # ng1.7.0: ng1.0.1 底座 (66) + 4 alt-alpha 因子 (70 total)
 # 设计: memory/ng17_candidate_factors.md
@@ -394,9 +405,14 @@ class NGTrainer(V485Trainer):
         self.target_weights = dict(self.TARGET_WEIGHTS)
         self._turbo_skip_etf = True
         self._head = head  # 'excess' (default) or 'downside' (ng1.3.x dual-head training)
+        # P1.3 Step B: label override mode for ng1.6.2 (industry_excess|calmar|sortino).
+        # 'industry_excess' is no-op (uses cache labels as-is); 'calmar'/'sortino' read CSV.
+        self._label_mode = 'industry_excess'
+        self._label_csv = None
         self.cache_table = get_table_name(self._ng_version)
         version_feature_table = [
             ('ng1.7.0', NG170_ALL_FEATURES, NG170_STOCK_FEATURES, NG170_MARKET_FEATURES, []),
+            ('ng1.6.2', NG162_ALL_FEATURES, NG162_STOCK_FEATURES, NG162_MARKET_FEATURES, []),
             ('ng1.6.1', NG161_ALL_FEATURES, NG161_STOCK_FEATURES, NG161_MARKET_FEATURES, []),
             ('ng1.5.0', NG150_ALL_FEATURES, NG150_STOCK_FEATURES, NG150_MARKET_FEATURES, []),
             ('ng1.4.2', NG142_ALL_FEATURES, NG142_STOCK_FEATURES, NG142_MARKET_FEATURES, []),
@@ -445,11 +461,17 @@ class NGTrainer(V485Trainer):
         # head suffix when training with non-default head (current: ng1.3.x downside).
         # Future versions using --head downside get the same cache invalidation automatically.
         head_suffix = f"_{self._head}" if self._head != 'excess' else ''
+        # P1.3 Step B: label_mode suffix invalidates cache when switching between
+        # industry_excess / calmar / sortino on the same version.
+        label_suffix = (
+            f"_{self._label_mode}" if getattr(self, '_label_mode', 'industry_excess') != 'industry_excess'
+            else ''
+        )
         feat_hash = hashlib.md5(
             ('|'.join(self.stock_feature_cols) + '#' + '|'.join(self.macro_feature_cols)).encode()
         ).hexdigest()[:8]
         key_str = (f"{self.__class__.__name__}_{self._ng_version}_{start_date}_{end_date}"
-                   f"_{db_mtime:.0f}{lam_suffix}{head_suffix}_{feat_hash}")
+                   f"_{db_mtime:.0f}{lam_suffix}{head_suffix}{label_suffix}_{feat_hash}")
         return hashlib.md5(key_str.encode()).hexdigest()[:12]
 
     def _residualize_labels_cross_section(
@@ -500,6 +522,102 @@ class NGTrainer(V485Trainer):
                     logger.debug(f'residualize failed {date}/{lab}: {e}')
             n_residualized += 1
         logger.info(f"  ng1.6.x F2: residualized {n_residualized} trade dates")
+
+    def _apply_risk_adjusted_label_override(
+        self, df: pd.DataFrame, mode: str
+    ) -> bool:
+        """P1.3 Step B: in-place override of label_3d/5d/10d/15d using
+        a precomputed CSV with per-(trade_date, code) calmar/sortino labels
+        for all 4 horizons.
+
+        CSV is produced by ml_models/ng/risk_adjusted_labels.py and expected
+        to contain columns: trade_date, code, label_calmar_{H}d,
+        label_sortino_{H}d for H ∈ {3,5,10,15}.
+
+        Returns True if override succeeded for at least one horizon (so the
+        caller can skip ng1.6.1 residualization). Returns False if the CSV
+        is missing or yields no overlap — in that case labels remain as-is
+        and we fall back to the cache labels.
+        """
+        if mode not in ('calmar', 'sortino'):
+            logger.warning(f"  unsupported label_mode={mode}; falling back to industry_excess")
+            return False
+
+        csv_path_str = self._label_csv or NG162_LABEL_CSV_DEFAULT
+        csv_path = Path(csv_path_str)
+        if not csv_path.is_absolute():
+            # Resolve relative to project root (parent of ml_models/)
+            project_root = Path(__file__).resolve().parent.parent.parent
+            csv_path = (project_root / csv_path).resolve()
+        if not csv_path.exists():
+            logger.error(
+                f"  ng1.6.2 label CSV not found at {csv_path} — "
+                "run `python3 ml_models/ng/risk_adjusted_labels.py` first. "
+                "Falling back to industry_excess (cache labels)."
+            )
+            return False
+
+        logger.info(f"  ng1.6.2: loading {mode} labels from {csv_path}...")
+        t0 = time.time()
+        # Only load needed columns to keep memory bounded.
+        usecols = ['trade_date', 'code'] + [
+            f'label_{mode}_{h}d' for h in ('3', '5', '10', '15')
+        ]
+        try:
+            csv_df = pd.read_csv(csv_path, usecols=usecols, dtype={'code': str})
+        except Exception as e:
+            logger.error(f"  ng1.6.2 CSV read failed: {e}; falling back to industry_excess")
+            return False
+        logger.info(
+            f"  ng1.6.2 CSV: {len(csv_df):,} rows in {time.time()-t0:.1f}s "
+            f"(cols={list(csv_df.columns)})"
+        )
+
+        df['trade_date'] = df['trade_date'].astype(str)
+        df['code'] = df['code'].astype(str)
+        csv_df['trade_date'] = csv_df['trade_date'].astype(str)
+        csv_df['code'] = csv_df['code'].astype(str)
+
+        merged = df[['trade_date', 'code']].merge(
+            csv_df, on=['trade_date', 'code'], how='left'
+        )
+
+        n_total = len(df)
+        overridden_horizons = []
+        for h in ('3d', '5d', '10d', '15d'):
+            src_col = f'label_{mode}_{h}'
+            tgt_col = f'label_{h}'
+            if src_col not in merged.columns or tgt_col not in df.columns:
+                continue
+            new_vals = pd.to_numeric(merged[src_col], errors='coerce').values
+            mask = ~np.isnan(new_vals)
+            n_match = int(mask.sum())
+            if n_match == 0:
+                logger.warning(f"  ng1.6.2: 0 matches for {tgt_col}; keeping cache label")
+                continue
+            old_describe = _describe_series(df[tgt_col])
+            df.loc[mask, tgt_col] = new_vals[mask]
+            new_describe = _describe_series(df[tgt_col])
+            coverage = n_match / n_total if n_total else 0.0
+            logger.info(
+                f"  ng1.6.2 {tgt_col} ← {mode}_{h}: "
+                f"{n_match:,}/{n_total:,} ({coverage:.1%}) overridden"
+            )
+            logger.info(f"    pre  : {old_describe}")
+            logger.info(f"    post : {new_describe}")
+            overridden_horizons.append(h)
+
+        if not overridden_horizons:
+            logger.error(
+                "  ng1.6.2: 0 horizons were overridden — CSV/cache key mismatch. "
+                "Falling back to industry_excess."
+            )
+            return False
+        logger.info(
+            f"  ng1.6.2 risk-adjusted label override (mode={mode}) applied to "
+            f"horizons {overridden_horizons}"
+        )
+        return True
 
     def _warn_on_feature_count_mismatch(self, model_data: dict) -> None:
         """Probe first probeable booster; warn if its n_features != len(self.feature_names)."""
@@ -1374,10 +1492,24 @@ class NGTrainer(V485Trainer):
         result = result.dropna(subset=['label_3d', 'label_5d', 'label_10d'])
         result = result.sort_values(['trade_date', 'code']).reset_index(drop=True)
 
+        # P1.3 Step B: ng1.6.2 risk-adjusted label override.
+        # If --label-mode is calmar or sortino, look up labels from the
+        # pre-computed CSV (4 horizons × 3 modes), override label_3d/5d/10d/15d
+        # in-place. Mode 'industry_excess' is no-op (cache labels are already IE).
+        # When this branch fires, ng1.6.1 cross-sectional residualization is
+        # skipped (mutually exclusive: calmar IS the alternative to F2 residual).
+        label_mode = getattr(self, '_label_mode', 'industry_excess')
+        label_override_applied = False
+        if label_mode in ('calmar', 'sortino'):
+            label_override_applied = self._apply_risk_adjusted_label_override(
+                result, label_mode
+            )
+
         # ng1.6.1 F2: cross-sectional factor residualization on labels.
         # For each trade_date, regress label_Nd across stocks on factor exposure
         # proxies (size/value/momentum/industry), use residual as "pure alpha".
-        if _is_1_6_branch(self._ng_version):
+        # Skip if ng1.6.2 risk-adjusted override already replaced labels.
+        if _is_1_6_branch(self._ng_version) and not label_override_applied:
             self._residualize_labels_cross_section(result, NG161_FACTOR_PROXIES)
 
         # Stub market_calculator for V475 serialization
@@ -1899,6 +2031,26 @@ class NGTrainer(V485Trainer):
             model_data['wf_mode'] = getattr(self, '_wf_mode', 'expanding')
             model_data['purge_days'] = getattr(self, '_purge_days', None)
             model_data['regime_weight_mode'] = getattr(self, '_regime_weight_mode', None)
+            # P1.3 Step B: ng1.6.2 label-mode metadata for downstream eval.
+            model_data['label_mode'] = getattr(self, '_label_mode', 'industry_excess')
+            label_csv = getattr(self, '_label_csv', None) or NG162_LABEL_CSV_DEFAULT
+            model_data['label_csv'] = str(label_csv)
+            try:
+                from pathlib import Path as _Path
+                csv_p = _Path(label_csv)
+                if not csv_p.is_absolute():
+                    csv_p = (_Path(__file__).resolve().parent.parent.parent / csv_p).resolve()
+                if csv_p.exists() and model_data['label_mode'] != 'industry_excess':
+                    import hashlib as _hashlib
+                    h = _hashlib.sha256()
+                    with csv_p.open('rb') as f:
+                        for chunk in iter(lambda: f.read(8 * 1024 * 1024), b''):
+                            h.update(chunk)
+                    model_data['label_csv_sha'] = h.hexdigest()[:16]
+                else:
+                    model_data['label_csv_sha'] = None
+            except Exception as _e:
+                model_data['label_csv_sha'] = None
 
             joblib.dump(model_data, new_path)
             logger.info(f"\nNG {self._ng_version} model saved: {new_path}")
@@ -2014,6 +2166,21 @@ if __name__ == '__main__':
     parser.add_argument('--head', choices=['excess', 'downside'], default='excess',
                         help='ng1.3.x multi-task head selector. "excess" = industry excess labels (default). '
                              '"downside" = min-cumret downside labels (requires ng1.3.x cache with downside_Nd cols).')
+    parser.add_argument('--label-mode',
+                        choices=['industry_excess', 'calmar', 'sortino'],
+                        default='industry_excess',
+                        help='P1.3 Step B (ng1.6.2): override label_3d/5d/10d/15d from a '
+                             'precomputed CSV. "industry_excess" (default) = no-op (cache labels). '
+                             '"calmar" = label / max(|future_maxdd|, 0.05). '
+                             '"sortino" = label / max(future_dnvol, 0.10). '
+                             'Mutually exclusive with ng1.6.1 cross-sectional residualization.')
+    parser.add_argument('--label-csv', default=None,
+                        help='Path to risk-adjusted labels CSV (default: '
+                             'reports/labels/ng162_labels.csv, generated by '
+                             'ml_models/ng/risk_adjusted_labels.py).')
+    parser.add_argument('--wf-report-dir', default=None,
+                        help='Output dir for per-fold WF test predictions as analysis_data_*.json. '
+                             'Required for system-level WF-OOS V5.2 evaluation (avoids IS-inflation).')
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -2038,6 +2205,9 @@ if __name__ == '__main__':
         trainer._min_autocorr = args.min_autocorr
         trainer._margin = args.margin
         trainer._lambda_downside = args.lambda_downside
+        # P1.3 Step B: label override mode (industry_excess|calmar|sortino) + CSV path.
+        trainer._label_mode = args.label_mode
+        trainer._label_csv = args.label_csv
         if args.fast_check:
             trainer._fast_check = True
             trainer._fast_check_max_windows = 2
@@ -2049,6 +2219,13 @@ if __name__ == '__main__':
             trainer._parallel_wf_workers = args.parallel
         if args.target_parallel > 1:
             trainer._target_parallel = args.target_parallel
+        if args.wf_report_dir:
+            # Per-seed subdir so each seed's WF predictions are preserved.
+            # The trainer's "清空旧WF报告" step would otherwise wipe previous
+            # seed's fold predictions when the next seed starts (verified bug).
+            from pathlib import Path as _Path
+            seed_for_subdir = locals().get('seed_val', args.seed if args.seed is not None else 42)
+            trainer._wf_report_dir = str(_Path(args.wf_report_dir) / f'seed{seed_for_subdir}')
 
     if args.wf_windows > 3:
         args.step_days = 90

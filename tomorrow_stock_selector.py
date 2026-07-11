@@ -5783,6 +5783,55 @@ class TomorrowStockSelector:
         
         report += "\n"
         
+        # ================= 策略选中股票排名 (规则战法子表) =================
+        # 需求 (2026-06-28): 在全市场 ML 排名表下方, 补一张"被 8 大规则战法选中"
+        # 的子表 (少负/暴力K/SuperB1/补票 等)。把策略命中的股票从全市场表里抽出
+        # 来单独成表, 按策略命中数 (conviction) 排序。
+        # 注意: 全市场跑里多数策略股没进 ML 评分头部 (composite=0 / score=50 占位),
+        # 故此表以"策略信号"为主, ML 分仅作参考列; 价位/投资建议来自风控层, 真实可用。
+        # 仅在全市场模式渲染 (非全市场模式下, 上方主表本身就是策略选中表, 无需重复)。
+        if is_full_market:
+            def _ml_scored(_s):
+                return (_s.get('composite') or 0) != 0 or (_s.get('pred_10d') or 0) != 0
+
+            # (全市场名次, 策略命中数, 股票) — 命中数预存一次, 供排序/计数/渲染复用
+            _strat_rows = [
+                (_rank, (_st.get('selected_by_strategies', 0) or 0) or len(_st.get('strategies') or []), _st)
+                for _rank, _st in enumerate(stocks_data, start=1)
+                if (_st.get('selected_by_strategies', 0) or 0) > 0 or _st.get('strategies')
+            ]
+            # 排序: 策略命中数↓ → 已进 ML 评分头部的优先 → ML 分↓ → 全市场名次↑
+            _strat_rows.sort(key=lambda t: (-t[1], 0 if _ml_scored(t[2]) else 1, -(t[2].get('score') or 0), t[0]))
+
+            report += "## 📌 策略选中股票排名（规则战法）\n\n"
+            if not _strat_rows:
+                report += "*今日 8 大规则战法无选股（或全市场数据不完整）。*\n\n"
+            else:
+                _multi = sum(1 for _, _cnt, _ in _strat_rows if _cnt > 1)
+                report += (
+                    f"*共 {len(_strat_rows)} 只股票被规则战法选中（含 {_multi} 只多策略交集），"
+                    f"按策略命中数排序。「ML分」为全市场评分（“—”=未进评分头部），"
+                    f"「全市场名次」为其在上方 ML 排名表中的位置；买入/止损/目标来自风控层：*\n\n"
+                )
+                report += "| 排名 | 股票代码 | 股票名称 | 选中策略 | 策略数 | ML分 | 投资建议 | 收盘价 | 买入价 | 止损价 | 目标价 | 全市场名次 |\n"
+                report += "|------|----------|----------|----------|--------|------|----------|--------|--------|--------|--------|------------|\n"
+                for _new_rank, (_mkt_rank, _scnt, _st) in enumerate(_strat_rows, start=1):
+                    _code = _st.get('stock_code', _st.get('code', ''))
+                    _name = _st.get('stock_name', _st.get('name', '未知'))
+                    _slist = _st.get('strategies', []) or []
+                    _sstr = '+'.join(x.replace('战法', '') for x in _slist) if _slist else '-'
+                    _mlcell = f"{(_st.get('score') or 0):.0f}" if _ml_scored(_st) else "—"
+                    _rec = _st.get('recommendation', '观望')
+                    _close = _st.get('close_price', 0) or 0
+                    _buy = _st.get('suggested_buy_price', 0) or 0
+                    _stop = _st.get('stop_loss_price', 0) or 0
+                    _tgt = _st.get('take_profit_price', 0) or 0
+                    report += (
+                        f"| {_new_rank} | {_code} | {_name} | {_sstr} | {_scnt} | {_mlcell} | "
+                        f"{_rec} | {_close:.2f} | {_buy:.2f} | {_stop:.2f} | {_tgt:.2f} | #{_mkt_rank} |\n"
+                    )
+            report += "\n"
+
         report += "## 🏆 明日买入推荐股票详细分析\n\n"
         
         # 分别显示多策略和单策略股票

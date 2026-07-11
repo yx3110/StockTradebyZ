@@ -1,0 +1,508 @@
+{
+  "has_data": true,
+  "total_score": 49,
+  "max_score": 105,
+  "pct": 46.7,
+  "grade": "B",
+  "report_days": 112,
+  "focus_days": 10,
+  "top_n": 10,
+  "layers": {
+    "1": {
+      "name": "信号质量",
+      "score": 25,
+      "max_score": 30,
+      "pct": 83.3,
+      "items": [
+        {
+          "key": "daily_ic",
+          "display": "Daily IC",
+          "current": 0.06883857491346117,
+          "formatted": "0.069",
+          "score": 4,
+          "max_score": 5,
+          "grade": "★★★★☆",
+          "pass_val": 0.03,
+          "target_val": 0.08
+        },
+        {
+          "key": "icir",
+          "display": "ICIR",
+          "current": 1.0066541766972048,
+          "formatted": "1.007",
+          "score": 5,
+          "max_score": 5,
+          "grade": "★★★★★",
+          "pass_val": 0.25,
+          "target_val": 0.7
+        },
+        {
+          "key": "ic_positive_pct",
+          "display": "IC>0%",
+          "current": 83.33333333333334,
+          "formatted": "83.3",
+          "score": 5,
+          "max_score": 5,
+          "grade": "★★★★★",
+          "pass_val": 55,
+          "target_val": 68
+        },
+        {
+          "key": "ic_monotonicity",
+          "display": "IC单调性",
+          "current": 2.9799107142857144,
+          "formatted": "2.980",
+          "score": 1,
+          "max_score": 5,
+          "grade": "★☆☆☆☆",
+          "pass_val": 2.5,
+          "target_val": 4.5
+        },
+        {
+          "key": "ic_time_stability",
+          "display": "IC稳定性(CV)",
+          "current": 0.24238532822072748,
+          "formatted": "0.242",
+          "score": 5,
+          "max_score": 5,
+          "grade": "★★★★★",
+          "pass_val": 2.0,
+          "target_val": 0.6
+        },
+        {
+          "key": "signal_half_life",
+          "display": "信号半衰期(天)",
+          "current": 20.0,
+          "formatted": "20.0",
+          "score": 5,
+          "max_score": 5,
+          "grade": "★★★★★",
+          "pass_val": 3,
+          "target_val": 20
+        }
+      ]
+    },
+    "2": {
+      "name": "组合效率",
+      "score": 6,
+      "max_score": 25,
+      "pct": 24.0,
+      "items": [
+        {
+          "key": "annual_turnover",
+          "display": "年化换手",
+          "current": 46.276363636363634,
+          "formatted": "46.3",
+          "score": 0,
+          "max_score": 5,
+          "grade": "☆☆☆☆☆",
+          "pass_val": 45,
+          "target_val": 20
+        },
+        {
+          "key": "annual_cost_drag",
+          "display": "年化成本",
+          "current": 0.06987730909090908,
+          "formatted": "7.0%",
+          "score": 4,
+          "max_score": 5,
+          "grade": "★★★★☆",
+          "pass_val": 0.13,
+          "target_val": 0.05
+        },
+        {
+          "key": "net_gross_ratio",
+          "display": "净/毛收益比",
+          "current": 0.0,
+          "formatted": "0.0%",
+          "score": 0,
+          "max_score": 5,
+          "grade": "☆☆☆☆☆",
+          "pass_val": 0.6,
+          "target_val": 0.85
+        },
+        {
+          "key": "limit_up_fail_rate",
+          "display": "涨停失败率",
+          "current": 0.11666666666666667,
+          "formatted": "11.7%",
+          "score": 1,
+          "max_score": 5,
+          "grade": "★☆☆☆☆",
+          "pass_val": 0.15,
+          "target_val": 0.02
+        },
+        {
+          "key": "liquidity_coverage",
+          "display": "流动性覆盖",
+          "current": 0.775,
+          "formatted": "77.5%",
+          "score": 1,
+          "max_score": 5,
+          "grade": "★☆☆☆☆",
+          "pass_val": 0.7,
+          "target_val": 0.95
+        }
+      ]
+    },
+    "3": {
+      "name": "风险控制",
+      "score": 8,
+      "max_score": 25,
+      "pct": 32.0,
+      "items": [
+        {
+          "key": "max_drawdown",
+          "display": "最大回撤",
+          "current": -0.1029348437794917,
+          "formatted": "-10.3%",
+          "score": 3,
+          "max_score": 5,
+          "grade": "★★★☆☆",
+          "pass_val": -0.25,
+          "target_val": -0.08
+        },
+        {
+          "key": "sharpe_ratio",
+          "display": "Sharpe",
+          "current": -0.08743326029019823,
+          "formatted": "-0.087",
+          "score": 0,
+          "max_score": 5,
+          "grade": "☆☆☆☆☆",
+          "pass_val": 1.0,
+          "target_val": 3.0
+        },
+        {
+          "key": "sortino_ratio",
+          "display": "Sortino",
+          "current": -0.11289696151533661,
+          "formatted": "-0.113",
+          "score": 0,
+          "max_score": 5,
+          "grade": "☆☆☆☆☆",
+          "pass_val": 1.5,
+          "target_val": 4.0
+        },
+        {
+          "key": "calmar_ratio",
+          "display": "Calmar",
+          "current": -0.01816076063423363,
+          "formatted": "-0.018",
+          "score": 0,
+          "max_score": 5,
+          "grade": "☆☆☆☆☆",
+          "pass_val": 1.0,
+          "target_val": 4.0
+        },
+        {
+          "key": "worst_rolling_60d_icir",
+          "display": "最差60日ICIR",
+          "current": 0.717138131288896,
+          "formatted": "0.717",
+          "score": 5,
+          "max_score": 5,
+          "grade": "★★★★★",
+          "pass_val": -0.1,
+          "target_val": 0.3
+        }
+      ]
+    },
+    "4": {
+      "name": "盈利与鲁棒性",
+      "score": 10,
+      "max_score": 25,
+      "pct": 40.0,
+      "items": [
+        {
+          "key": "annual_return",
+          "display": "年化收益",
+          "current": -0.0018693750588015812,
+          "formatted": "-0.2%",
+          "score": 0,
+          "max_score": 5,
+          "grade": "☆☆☆☆☆",
+          "pass_val": 0.15,
+          "target_val": 0.5
+        },
+        {
+          "key": "monthly_win_rate",
+          "display": "月度胜率%",
+          "current": 33.33333333333333,
+          "formatted": "33.3",
+          "score": 0,
+          "max_score": 5,
+          "grade": "☆☆☆☆☆",
+          "pass_val": 55,
+          "target_val": 83
+        },
+        {
+          "key": "half_period_consistency",
+          "display": "前后半段一致性",
+          "current": 0.0,
+          "formatted": "0.0%",
+          "score": 0,
+          "max_score": 5,
+          "grade": "☆☆☆☆☆",
+          "pass_val": 0.35,
+          "target_val": 0.8
+        },
+        {
+          "key": "cap_balance_ratio",
+          "display": "市值均衡度",
+          "current": 0.8666666666666667,
+          "formatted": "86.7%",
+          "score": 5,
+          "max_score": 5,
+          "grade": "★★★★★",
+          "pass_val": 0.3,
+          "target_val": 0.8
+        },
+        {
+          "key": "median_market_cap_bn",
+          "display": "中位市值(亿)",
+          "current": 42.916715155,
+          "formatted": "42.9",
+          "score": 5,
+          "max_score": 5,
+          "grade": "★★★★★",
+          "pass_val": 2.0,
+          "target_val": 10.0
+        }
+      ]
+    }
+  },
+  "metrics": {
+    "daily_ic": {
+      "key": "daily_ic",
+      "display": "Daily IC",
+      "current": 0.06883857491346117,
+      "formatted": "0.069",
+      "score": 4,
+      "max_score": 5,
+      "grade": "★★★★☆",
+      "pass_val": 0.03,
+      "target_val": 0.08
+    },
+    "icir": {
+      "key": "icir",
+      "display": "ICIR",
+      "current": 1.0066541766972048,
+      "formatted": "1.007",
+      "score": 5,
+      "max_score": 5,
+      "grade": "★★★★★",
+      "pass_val": 0.25,
+      "target_val": 0.7
+    },
+    "ic_positive_pct": {
+      "key": "ic_positive_pct",
+      "display": "IC>0%",
+      "current": 83.33333333333334,
+      "formatted": "83.3",
+      "score": 5,
+      "max_score": 5,
+      "grade": "★★★★★",
+      "pass_val": 55,
+      "target_val": 68
+    },
+    "ic_monotonicity": {
+      "key": "ic_monotonicity",
+      "display": "IC单调性",
+      "current": 2.9799107142857144,
+      "formatted": "2.980",
+      "score": 1,
+      "max_score": 5,
+      "grade": "★☆☆☆☆",
+      "pass_val": 2.5,
+      "target_val": 4.5
+    },
+    "ic_time_stability": {
+      "key": "ic_time_stability",
+      "display": "IC稳定性(CV)",
+      "current": 0.24238532822072748,
+      "formatted": "0.242",
+      "score": 5,
+      "max_score": 5,
+      "grade": "★★★★★",
+      "pass_val": 2.0,
+      "target_val": 0.6
+    },
+    "signal_half_life": {
+      "key": "signal_half_life",
+      "display": "信号半衰期(天)",
+      "current": 20.0,
+      "formatted": "20.0",
+      "score": 5,
+      "max_score": 5,
+      "grade": "★★★★★",
+      "pass_val": 3,
+      "target_val": 20
+    },
+    "annual_turnover": {
+      "key": "annual_turnover",
+      "display": "年化换手",
+      "current": 46.276363636363634,
+      "formatted": "46.3",
+      "score": 0,
+      "max_score": 5,
+      "grade": "☆☆☆☆☆",
+      "pass_val": 45,
+      "target_val": 20
+    },
+    "annual_cost_drag": {
+      "key": "annual_cost_drag",
+      "display": "年化成本",
+      "current": 0.06987730909090908,
+      "formatted": "7.0%",
+      "score": 4,
+      "max_score": 5,
+      "grade": "★★★★☆",
+      "pass_val": 0.13,
+      "target_val": 0.05
+    },
+    "net_gross_ratio": {
+      "key": "net_gross_ratio",
+      "display": "净/毛收益比",
+      "current": 0.0,
+      "formatted": "0.0%",
+      "score": 0,
+      "max_score": 5,
+      "grade": "☆☆☆☆☆",
+      "pass_val": 0.6,
+      "target_val": 0.85
+    },
+    "limit_up_fail_rate": {
+      "key": "limit_up_fail_rate",
+      "display": "涨停失败率",
+      "current": 0.11666666666666667,
+      "formatted": "11.7%",
+      "score": 1,
+      "max_score": 5,
+      "grade": "★☆☆☆☆",
+      "pass_val": 0.15,
+      "target_val": 0.02
+    },
+    "liquidity_coverage": {
+      "key": "liquidity_coverage",
+      "display": "流动性覆盖",
+      "current": 0.775,
+      "formatted": "77.5%",
+      "score": 1,
+      "max_score": 5,
+      "grade": "★☆☆☆☆",
+      "pass_val": 0.7,
+      "target_val": 0.95
+    },
+    "max_drawdown": {
+      "key": "max_drawdown",
+      "display": "最大回撤",
+      "current": -0.1029348437794917,
+      "formatted": "-10.3%",
+      "score": 3,
+      "max_score": 5,
+      "grade": "★★★☆☆",
+      "pass_val": -0.25,
+      "target_val": -0.08
+    },
+    "sharpe_ratio": {
+      "key": "sharpe_ratio",
+      "display": "Sharpe",
+      "current": -0.08743326029019823,
+      "formatted": "-0.087",
+      "score": 0,
+      "max_score": 5,
+      "grade": "☆☆☆☆☆",
+      "pass_val": 1.0,
+      "target_val": 3.0
+    },
+    "sortino_ratio": {
+      "key": "sortino_ratio",
+      "display": "Sortino",
+      "current": -0.11289696151533661,
+      "formatted": "-0.113",
+      "score": 0,
+      "max_score": 5,
+      "grade": "☆☆☆☆☆",
+      "pass_val": 1.5,
+      "target_val": 4.0
+    },
+    "calmar_ratio": {
+      "key": "calmar_ratio",
+      "display": "Calmar",
+      "current": -0.01816076063423363,
+      "formatted": "-0.018",
+      "score": 0,
+      "max_score": 5,
+      "grade": "☆☆☆☆☆",
+      "pass_val": 1.0,
+      "target_val": 4.0
+    },
+    "worst_rolling_60d_icir": {
+      "key": "worst_rolling_60d_icir",
+      "display": "最差60日ICIR",
+      "current": 0.717138131288896,
+      "formatted": "0.717",
+      "score": 5,
+      "max_score": 5,
+      "grade": "★★★★★",
+      "pass_val": -0.1,
+      "target_val": 0.3
+    },
+    "annual_return": {
+      "key": "annual_return",
+      "display": "年化收益",
+      "current": -0.0018693750588015812,
+      "formatted": "-0.2%",
+      "score": 0,
+      "max_score": 5,
+      "grade": "☆☆☆☆☆",
+      "pass_val": 0.15,
+      "target_val": 0.5
+    },
+    "monthly_win_rate": {
+      "key": "monthly_win_rate",
+      "display": "月度胜率%",
+      "current": 33.33333333333333,
+      "formatted": "33.3",
+      "score": 0,
+      "max_score": 5,
+      "grade": "☆☆☆☆☆",
+      "pass_val": 55,
+      "target_val": 83
+    },
+    "half_period_consistency": {
+      "key": "half_period_consistency",
+      "display": "前后半段一致性",
+      "current": 0.0,
+      "formatted": "0.0%",
+      "score": 0,
+      "max_score": 5,
+      "grade": "☆☆☆☆☆",
+      "pass_val": 0.35,
+      "target_val": 0.8
+    },
+    "cap_balance_ratio": {
+      "key": "cap_balance_ratio",
+      "display": "市值均衡度",
+      "current": 0.8666666666666667,
+      "formatted": "86.7%",
+      "score": 5,
+      "max_score": 5,
+      "grade": "★★★★★",
+      "pass_val": 0.3,
+      "target_val": 0.8
+    },
+    "median_market_cap_bn": {
+      "key": "median_market_cap_bn",
+      "display": "中位市值(亿)",
+      "current": 42.916715155,
+      "formatted": "42.9",
+      "score": 5,
+      "max_score": 5,
+      "grade": "★★★★★",
+      "pass_val": 2.0,
+      "target_val": 10.0
+    }
+  }
+}

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Yixin OpenAPI"
+  short_description: "Use Yixin OpenAPI fin_db and search APIs"
+  default_prompt: "Use $yixin-api to help me subscribe to the public API product, get my API key, and call the search or fin_db API."

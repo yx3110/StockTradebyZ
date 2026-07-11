@@ -1055,6 +1055,7 @@ class V395MultiTargetTrainer:
             'bagging_freq': 5,
             'reg_alpha': 0.1,
             'reg_lambda': 0.1,
+            'seed': _GLOBAL_RANDOM_SEED,
             'verbose': -1
         }
         # CLI overrides (--num-leaves, --min-data-in-leaf)
@@ -1089,6 +1090,7 @@ class V395MultiTargetTrainer:
             'colsample_bytree': 0.8,
             'reg_alpha': 0.1,
             'reg_lambda': 0.1,
+            'seed': _GLOBAL_RANDOM_SEED,
             'verbosity': 0
         }
 
@@ -6004,6 +6006,7 @@ class V473Trainer(V472Trainer):
             'min_data_in_leaf': 200,    # 500→200
             'min_gain_to_split': 0.01,
             'path_smooth': 5.0,         # 10.0→5.0
+            'seed': _GLOBAL_RANDOM_SEED,
             'verbose': -1,
         }
         # CLI overrides (--num-leaves, --min-data-in-leaf)
@@ -6041,6 +6044,7 @@ class V473Trainer(V472Trainer):
             'reg_lambda': 3.0,          # 5.0→3.0
             'min_child_weight': 50,     # 100→50
             'gamma': 0.1,
+            'seed': _GLOBAL_RANDOM_SEED,
             'verbosity': 0,
         }
 

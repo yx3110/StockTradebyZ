@@ -44,7 +44,10 @@ VERSION_TABLE_MAP = {
     'ng1.4.2': 'ng130_feature_cache',  # ng1.4.0 - 3 AMV (ablation)
     'ng1.5.0': 'ng150_feature_cache',  # ng1.4.0 底座 + 5 Tier B regime-refined features (78 total)
     'ng1.6.1': 'ng101_feature_cache',  # F2: ng1.0.1 特征 + cross-sectional factor-residual labels (动态)
+    'ng1.6.2': 'ng101_feature_cache',  # P1.3 Step B: ng1.0.1 特征 + risk-adjusted label override (Calmar/Sortino) from CSV
     'ng1.7.0': 'ng101_feature_cache',  # ng1.0.1 基座 (66) + 4 altdata 因子 (JOIN altdata_factor_cache 在 trainer/scorer 侧)
+    'ng2.1-bull': 'ng101_feature_cache',  # ng2.1 specialist: bull-only training subset, same 66 features
+    'ng2.1-bear': 'ng101_feature_cache',  # ng2.1 specialist: bear-only training subset + DD-penalty label
 }
 
 DEFAULT_VERSION = 'ng1.0.3'
@@ -68,7 +71,10 @@ SCHEMA_VERSION_MAP = {
     'ng1.4.2': 'ng1.3.0',  # ablation variant, same schema as ng140
     'ng1.5.0': 'ng1.5.0',  # own schema (ng1.4.0 base + 5 Tier B regime-refined features in features_json)
     'ng1.6.1': 'ng1.0.1',  # reuses ng101 cache; only label transform differs (factor residualization)
+    'ng1.6.2': 'ng1.0.1',  # reuses ng101 cache; labels overridden by Calmar/Sortino CSV (P1.3 Step B)
     'ng1.7.0': 'ng1.0.1',  # reuses ng101 cache; 4 altdata factors joined at trainer/scorer layer
+    'ng2.1-bull': 'ng1.0.1',  # ng2.1 specialist; identical feature schema to ng1.0.1
+    'ng2.1-bear': 'ng1.0.1',  # ng2.1 specialist; identical feature schema to ng1.0.1
 }
 
 

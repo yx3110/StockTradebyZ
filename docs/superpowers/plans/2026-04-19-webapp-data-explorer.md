@@ -87,7 +87,6 @@ Create `webapp/tests/test_data_explorer/conftest.py`:
 """Shared fixtures for data_explorer tests."""
 import json
 import sqlite3
-import tempfile
 from pathlib import Path
 
 import pandas as pd
@@ -156,7 +155,7 @@ Create `webapp/tests/test_data_explorer/test_query_store.py`:
 import sqlite3
 from pathlib import Path
 
-from webapp.core.data_explorer.query_store import apply_migration
+from core.data_explorer.query_store import apply_migration
 
 
 def test_migration_creates_table(tmp_webapp_db: Path) -> None:
@@ -219,8 +218,9 @@ def apply_migration(webapp_db_path: str | Path) -> None:
     """Idempotent: create saved_queries table if missing."""
     webapp_db_path = Path(webapp_db_path)
     webapp_db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(webapp_db_path)
+    conn = sqlite3.connect(webapp_db_path, timeout=30.0)
     try:
+        conn.execute("PRAGMA busy_timeout=30000")
         conn.executescript(MIGRATION_SQL)
         conn.commit()
     finally:
@@ -261,7 +261,7 @@ Create `webapp/tests/test_data_explorer/test_feature_expander.py`:
 import pandas as pd
 import pytest
 
-from webapp.core.data_explorer.feature_expander import expand
+from core.data_explorer.feature_expander import expand
 
 
 def test_expands_features_json_into_columns(sample_df_with_json: pd.DataFrame) -> None:
@@ -380,7 +380,7 @@ Create `webapp/tests/test_data_explorer/test_chart_suggester.py`:
 """Tests for chart_suggester.suggest() — rule table per spec §5.4."""
 import pandas as pd
 
-from webapp.core.data_explorer.chart_suggester import suggest
+from core.data_explorer.chart_suggester import suggest
 
 
 def test_r1_time_series_single_code() -> None:
@@ -553,7 +553,7 @@ Create `webapp/tests/test_data_explorer/test_schema_discovery.py`:
 """Tests for schema_discovery.discover() + classify_table()."""
 from pathlib import Path
 
-from webapp.core.data_explorer.schema_discovery import (
+from core.data_explorer.schema_discovery import (
     classify_table,
     discover,
 )
@@ -774,7 +774,7 @@ Create `webapp/tests/test_data_explorer/test_query_runner.py`:
 """Tests for query_runner — Task 5 covers validation + LIMIT; Task 6 covers exec."""
 import pytest
 
-from webapp.core.data_explorer.query_runner import (
+from core.data_explorer.query_runner import (
     InvalidQueryError,
     ensure_select_only,
     inject_limit,
@@ -924,7 +924,7 @@ Append to `webapp/tests/test_data_explorer/test_query_runner.py`:
 
 import pytest
 
-from webapp.core.data_explorer.query_runner import QueryResult, run_query
+from core.data_explorer.query_runner import QueryResult, run_query
 
 
 def test_run_query_returns_rows(tmp_stock_db) -> None:
@@ -978,7 +978,7 @@ def test_run_query_limit_injection_warning(tmp_stock_db) -> None:
 
 
 def test_run_query_rejects_write(tmp_stock_db) -> None:
-    from webapp.core.data_explorer.query_runner import InvalidQueryError
+    from core.data_explorer.query_runner import InvalidQueryError
     with pytest.raises(InvalidQueryError):
         run_query(tmp_stock_db, "DELETE FROM daily_quotes")
 
@@ -1013,8 +1013,8 @@ from pathlib import Path
 
 import pandas as pd
 
-from webapp.core.data_explorer.chart_suggester import suggest as suggest_chart
-from webapp.core.data_explorer.feature_expander import expand as expand_features
+from core.data_explorer.chart_suggester import suggest as suggest_chart
+from core.data_explorer.feature_expander import expand as expand_features
 
 
 @dataclass
@@ -1154,7 +1154,7 @@ Append to `webapp/tests/test_data_explorer/test_query_store.py`:
 
 import pytest
 
-from webapp.core.data_explorer.query_store import (
+from core.data_explorer.query_store import (
     create_query, delete_query, get_query, list_queries,
     seed_default_queries, touch_query, update_query,
 )
