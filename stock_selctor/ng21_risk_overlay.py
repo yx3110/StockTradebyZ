@@ -119,35 +119,43 @@ class RiskDecision:
 # L4 crisis detector
 # ---------------------------------------------------------------------------
 
+#: 2026-07-11 L4 加固三件套 (机制修复, 非阈值调参 — 遵守 panic-overlay 教训不 grid search):
+#: 1) hysteresis: 回看窗口内任一交易日触发即维持 crisis (旧: 次日指数持平即自动解除)
+#: 2) 5d 累计跌幅备用通道 (旧: 仅单日 -3%, 连续 -2.9% 阴跌永不触发)
+#: 3) 输入 staleness/缺失硬校验 (旧: rv_pct/idx_chg 缺失静默 fail-open 0.0)
+L4_HYSTERESIS_TD = 5     # crisis 维持的交易日数
+L4_CUM5D_DROP = -0.06    # 5 日累计跌幅通道阈值 (配合 RV≥P90 双条件)
+
+
 def _check_l4_crisis(
     db_path: str,
     target_date: str,
     regime_table: str = 'market_regime_signals',
 ) -> tuple[bool, list[str]]:
-    """Return (crisis_active, reasons)."""
+    """Return (crisis_active, reasons).
+
+    触发条件 (任一日满足即在其后 L4_HYSTERESIS_TD 个交易日内维持 crisis):
+      single: RV_pct ≥ crisis_rv_pct AND 沪深300 当日 ≤ crisis_index_drop
+      cum5d:  RV_pct ≥ crisis_rv_pct AND 沪深300 5日累计 ≤ L4_CUM5D_DROP
+    """
     notes = []
     target_date = _norm_date(target_date)
     conn = sqlite3.connect(db_path, timeout=30)
     conn.execute('PRAGMA busy_timeout=30000')
     try:
-        # B2 RV percentile from regime table
-        row = conn.execute(
-            f'SELECT b2_rv_percentile_252 FROM {regime_table} '
-            f'WHERE trade_date <= ? ORDER BY trade_date DESC LIMIT 1',
-            (target_date,),
-        ).fetchone()
-        rv_pct = float(row[0]) if row and row[0] is not None else 0.0
-
-        # 沪深300 当日 returns (proxy via daily_quotes if available)
-        idx_row = conn.execute(
-            "SELECT (close - prev_close) / prev_close FROM ("
-            "  SELECT close, LAG(close) OVER (ORDER BY trade_date) AS prev_close, trade_date "
-            "  FROM daily_quotes dq JOIN securities s ON s.id = dq.security_id "
-            "  WHERE s.code = '000300.SH'"
-            ") WHERE trade_date = ?",
-            (target_date,),
-        ).fetchone()
-        idx_chg = float(idx_row[0]) if idx_row and idx_row[0] is not None else 0.0
+        rv_rows = conn.execute(
+            f'SELECT trade_date, b2_rv_percentile_252 FROM {regime_table} '
+            f'WHERE trade_date <= ? ORDER BY trade_date DESC LIMIT ?',
+            (target_date, L4_HYSTERESIS_TD),
+        ).fetchall()
+        # 近 hysteresis+6 根沪深300收盘: 覆盖窗口内每日的单日 chg 与 5d 累计
+        px_rows = conn.execute(
+            "SELECT dq.trade_date, dq.close FROM daily_quotes dq "
+            "JOIN securities s ON s.id = dq.security_id "
+            "WHERE s.code = '000300.SH' AND dq.close IS NOT NULL "
+            "AND dq.trade_date <= ? ORDER BY dq.trade_date DESC LIMIT ?",
+            (target_date, L4_HYSTERESIS_TD + 6),
+        ).fetchall()
     except sqlite3.Error as e:
         # 风控层失败必须高可见: L4 曾因 Timestamp 绑定错误在 warning 级静默失效 2.5 个月
         logger.error(f"L4 crisis check FAILED — 风控降级为 fail-open (DB error: {e})")
@@ -155,16 +163,52 @@ def _check_l4_crisis(
     finally:
         conn.close()
 
-    rv_trigger = rv_pct >= BEAR_PARAMS['crisis_rv_pct']
-    drop_trigger = idx_chg <= BEAR_PARAMS['crisis_index_drop']
-    crisis = rv_trigger and drop_trigger
+    # 三件套之三: 输入 staleness/缺失硬校验 (不再静默用 0.0 顶替)
+    latest_px_date = px_rows[0][0] if px_rows else None
+    latest_rv_date = rv_rows[0][0] if rv_rows else None
+    degraded = []
+    if latest_px_date != target_date:
+        degraded.append(f"hs300 {target_date} 无行情 (最近 {latest_px_date})")
+    if latest_rv_date is None or (latest_px_date and latest_rv_date < latest_px_date):
+        degraded.append(f"RV 信号陈旧 (最近 {latest_rv_date} vs 行情 {latest_px_date})")
+    if degraded:
+        logger.error(f"L4 crisis 输入降级: {'; '.join(degraded)} — 判定可能失真")
+        notes.append(f"⚠️ L4 输入降级: {'; '.join(degraded)}")
 
+    px_asc = list(reversed(px_rows))                    # [(date, close)] 升序
+    dates_asc = [d for d, _ in px_asc]
+    closes = [float(c) for _, c in px_asc]
+    day_chg = {dates_asc[i]: closes[i] / closes[i - 1] - 1.0
+               for i in range(1, len(closes)) if closes[i - 1] > 0}
+    cum5 = {dates_asc[i]: closes[i] / closes[i - 5] - 1.0
+            for i in range(5, len(closes)) if closes[i - 5] > 0}
+    rv_map = {d: float(v) for d, v in rv_rows if v is not None}
+
+    triggered = []  # (date, channel)
+    for d in sorted(rv_map):
+        if rv_map[d] < BEAR_PARAMS['crisis_rv_pct']:
+            continue
+        if d in day_chg and day_chg[d] <= BEAR_PARAMS['crisis_index_drop']:
+            triggered.append((d, 'single'))
+        elif d in cum5 and cum5[d] <= L4_CUM5D_DROP:
+            triggered.append((d, 'cum5d'))
+    crisis = bool(triggered)
+
+    rv_today = rv_map.get(latest_rv_date, 0.0) if latest_rv_date else 0.0
+    chg_today = day_chg.get(target_date, 0.0)
+    cum5_today = cum5.get(target_date)
     notes.append(
-        f"B2_RV_pct={rv_pct:.2f} ({'≥0.90 ✓' if rv_trigger else '<0.90 ✗'}); "
-        f"hs300_chg={idx_chg:+.2%} ({'≤-3% ✓' if drop_trigger else '>-3% ✗'})"
+        f"B2_RV_pct={rv_today:.2f} "
+        f"({'≥' if rv_today >= BEAR_PARAMS['crisis_rv_pct'] else '<'}{BEAR_PARAMS['crisis_rv_pct']:.2f}); "
+        f"hs300_chg={chg_today:+.2%}"
+        + (f"; hs300_5d={cum5_today:+.2%}" if cum5_today is not None else "")
     )
     if crisis:
-        notes.append("L4 CRISIS ACTIVE: top_n→×0.5, pos_cap=5%, cash_floor=70%")
+        trig_desc = ", ".join(f"{d}({ch})" for d, ch in triggered)
+        notes.append(
+            f"L4 CRISIS ACTIVE (触发日: {trig_desc}, 维持 {L4_HYSTERESIS_TD}td): "
+            f"top_n→×0.5, pos_cap=5%, cash_floor=70%"
+        )
     return crisis, notes
 
 
