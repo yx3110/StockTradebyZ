@@ -585,15 +585,19 @@ python3 backtest/batch_generate_v395_reports.py --version ng1.0.1
 这是第 5 个 (首个新口径) 证据支持生产切 ng1.0.1 单模; 切换前置: 评估-生产同构化复核
 + PINNED 注册表 + paper trade ≥20 日。
 
-## 超参数 Sweep — 现行参数已近似最优 (2026-07-13) ❌ 无免费收益
+## 超参数 Sweep — 现行参数确认近似最优 (2026-07-13) ❌ 无免费收益
 
-6 成员 ensemble 超参数 (V4.7.3 一套, v3.95 沿用至今) 首次系统性扫描:
-7 个 profile (tight/loose/lr005/lr001/ff085/mdil500/leaves63) × fast-check
-(seed42, 与 7-12 基线 paired), **全部未过预注册胜出线 (10d ICIR ≥ 基线+0.05)**。
-基线在 10d 上 IC/ICIR 双第一; 放松容量/加速学习率一致加重过拟合 (IS IC 0.21→0.28-0.41)。
-结论: **同 schema 下不要再扫超参数**; 复扫时机 = 特征数 ±30% / 标签口径变更 /
-训练数据翻倍。机制保留: `ng_trainer --hp-profile X --fast-check`
-(~20-40min/配置, `ml_models/training/hp_profiles.py`)。
+6 成员 ensemble 超参数 (V4.7.3 一套, v3.95 沿用至今) 首次系统性扫描, 三层验证:
+1. 7 profile × fast-check (与 7-12 基线严格 paired): 仅 `lr001` (lr0.01+2000轮) 压线过
+   预注册线 (10d ICIR +0.0503), 其余 6 个全灭; leaves63 near-miss (+0.044)
+2. seed 123 配对复检: lr001 优势精确复现 (+0.0509) — 通过
+3. **全量 4 窗口双 gate: lr001 与基线完全打平 (10d IC +0.0002/ICIR -0.0005) — FAIL, 不切换**
+
+**方法论教训 (重要)**: fast-check 小窗口优势 (+0.05 ICIR, 跨 seed 复现!) 仍会在全量上
+归零 — fast-check 只能杀方向, 不能定胜负 (与 ng1.2.3 教训同源)。
+**同 schema 下不要再扫超参数**; 复扫时机 = 特征数 ±30% / 标签口径变更 / 训练数据翻倍。
+机制保留: `ng_trainer --hp-profile X --fast-check` (~20-40min/配置,
+`ml_models/training/hp_profiles.py`, pkl 元数据含 hp_profile)。
 详见 `reports/system_evaluation/超参数sweep_20260713.md`。
 
 ## 相关页面
