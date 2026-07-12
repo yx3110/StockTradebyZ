@@ -1,176 +1,81 @@
 # 下 Session 入口 (Handoff Doc)
 
-> ⚠️ **2026-07-11 更新**: 本文档的"已 LIVE 4 层风控"描述已过时 — 当天全仓审计发现
-> L4 熔断/vol-target/全市场截断/模型 mtime 劫持等多个层实际带伤运行, 已集中修复
-> (8 commits, 977ff401..0f1d09d6)。最新状态与遗留 roadmap 见
-> `docs/code_review_and_refactor_plan.md` 第六节; 教训见 wiki known-pitfalls 新增 4 条。
-> 本文档 P1.3 Step B / P2.7 等待办仍有效, 但 sanity check 期望值需按新行为更新
-> (全市场 JSON 恢复 ~5400 只, overlay 持仓在 `analysis['risk_overlay']`)。
-
-> 状态: 2026-04-28 EOS. 3 sessions 完成 P0/P1/P2 16 子任务 + 2 regression 修复.
-> 下 session 直接从这里开始, 不需重读全部历史.
+> 状态: 2026-07-11/12 EOS — 全仓审计 (12 agent, 25 旧项 + 93 新发现) + 集中重构, 14 commits。
+> 上一版 handoff (4-28 风控路线图) 已被本次取代; 历史见 git。
 
 ---
 
-## 🎯 项目目标 (用户原话)
+## 🎯 本次 session 做了什么 (一句话版)
 
-> "把风控系统糅合进模型里 — 这能做到么?做出可行性研究 + 提改进方案"
+修复 20+ 潜伏 2.5 个月的生产实弹 bug, 财报数据修复 + ng101 缓存全量重建, 模型加载改固定注册表, 磁盘净释放 ~211GB, 全部测试转绿。
 
-3-session 已交付:
-1. 系统性评估 (选股 + 北极星框架)
-2. 改进方案 P0/P1/P2 16 子任务
-3. **可行性研究结论**: path B (auxiliary head + meta-learner) 可行, 但简单线性 utility 不提升 alpha;
-   真 value-add 在 L1-L5 hard rules (生产已 active)
+## ✅ 已落地的关键变化 (影响你接下来怎么干活)
 
-## 📁 关键产物索引 (依此查阅)
+1. **生产模型固定加载**: `ng_schema.PINNED_PRODUCTION_MODELS` 是唯一入口, scorer 不再 mtime-glob。
+   **切生产模型 = 训完验收 → 把新 pkl 文件名写进注册表 → commit**。别的方式都不生效。
+2. **生产 MOE v3** (并行 session 落地): `PRODUCTION_MOE_EXPERTS['ng1.0.6'] = bull/bear 均 ng1.0.1` = 单模 + regime 风控 overlay。回滚 = bear 改回 'ng1.0.4'。
+3. **评估口径变更 (⚠️ 最重要 gotcha)**: 成本双扣 + 稀疏年化已修, **7-11 之前的北极星数字与新跑数字不可混比**。新基线: ng101 单模 81.3% S (见 `reports/system_evaluation/新口径基线重跑_20260711.md`)。
+4. **财报数据修复**: financial_indicator 日期统一 TEXT (81% 不可见→100%), 补数到 2026-06-18, 每日自动 catch-up (`--include-financial` 已进 run_daily_update.sh)。备份表 `financial_indicator_backup_20260711` 确认无误后可 DROP。
+5. **ng101_feature_cache 已全量重建** (2068 天 / 386 万行, 基于完整财报): roe_ttm/revenue_growth 等 99-100% 非空。**当前生产 pkl (4-12 训) 是在残缺财报缓存上训的 — 重训评估是最高优先级**。
+6. **选股产物结构变化**: 全市场 JSON 恢复 ~5400 只 (曾被截到 10); overlay 最终持仓在 `analysis['risk_overlay']` (含 position_size/stop_loss); 淘汰股带 `_post_filter_drop`/`_drop_reason` 标记; 报告新增 "风控 Overlay 最终持仓" 表。下游消费按此对接。
+7. **风控层失败高可见**: 任何层异常 → ERROR + 报告头 "风控降级" 戳 + `analysis['risk_layer_degraded']`。看到即排查, 不许无视。
+8. **密钥**: 已迁 `.env`, config.json 无明文。**待用户: Tushare/Anthropic 控制台轮换旧 key 后更新 .env**。
+9. **测试基线**: `pytest tests/` = 316 绿; `pytest stock_selctor/test/` = 115 绿; ng tests = 223 绿。
+   ⚠️ 两套**不能合跑** (双 Selector 副本 conftest 冲突, 见下面裁决项)。
+10. **磁盘**: DB 241→172GB (5 张 REJECT 缓存表已 DROP + VACUUM); eval_cache 91.8→1.8GB (prune CLI: `python3 backtest/eval_cache.py --prune-days N --max-gb N --apply`)。
+
+## 🚀 下一步优先级
+
+### P0: ng1.0.1 重训评估 (新缓存就绪, 3-5h)
+- 按 CLAUDE.md 十项 pre-flight 走; 先 `--fast-check` 2min 判方向
+- 命令基座: `python3 ml_models/ng/ng_trainer.py --start-date 2020-01-01 --purge-days 15 --seed 42`
+- **接受准则 (写死)**: 新口径 V5.2 ≥ 81.3% AND Pre-2020 净年化 ≥ 0% (完整财报最可能改善 Pre-2020 泛化 — 旧模型 Pre-2020 = 45.5% B / 年化 -19%)
+- ABORT 线: 第 1 个 WF 窗口 10d ICIR < 0.6
+- 通过 → 新 pkl 写进 `PINNED_PRODUCTION_MODELS['ng1.0.1']`; 不过 → 保持 4-12 pkl, 结论留档
+
+### P1: Selector.py 双副本合并裁决 (调查已完成, 见 refactor plan 附录)
+- 两副本是**语义不同的活策略变体** (根副本带知行闸门被 tests+configs.json 锁定; stock_selctor 版被生产锁定), 机械合并会改一方行为 — shim 模拟实测 296 passed / 20 failed
+- **推荐选项 1**: 根副本类改名 Strict 版并入 stock_selctor, 根变 shim 保留旧名映射 — 零行为变化, 两套测试可合跑
+- compute_kdj 无论如何以 ss 版 (ewm, 与 DB 口径一致) 为准
+
+### P2: 剩余结构重构 (各需专门 session)
+- tomorrow_stock_selector.py 拆分 (6400 行, ~1200 行死分支可先删)
+- 三套 DB 管理器统一; v39/v40/ng 三代 cache updater 去重
+- webapp 安全 (debug=True/0.0.0.0/CORS 全开/无鉴权) + 功能腐化
+- 完整清单: `docs/code_review_and_refactor_plan.md` 第六节
+
+## 🛠️ Sanity checks (session 开场跑)
+
+```bash
+# 1. 生产选股 (期望: 全市场 ~5400 只 + risk_overlay 10 只 + 无 风控降级 戳)
+python3 tomorrow_stock_selector.py <最近交易日> --scoring-version ng1.0.6
+# 2. 模型加载 (期望: "使用固定生产模型 ng101_seed42_multi_target_20260412_233749.pkl")
+python3 -c "from ml_models.ng.ng_production_scorer import NGProductionScorer; NGProductionScorer(version='ng1.0.1')"
+# 3. 测试 (分开跑, 期望 316 + 115 全绿)
+python3 -m pytest tests/ -q; python3 -m pytest stock_selctor/test/ -q
+# 4. 财报新鲜度 (期望 max ann_date 随中报季推进)
+python3 -c "import sqlite3; c=sqlite3.connect('data_adapter/stock_data.db'); print(c.execute('SELECT MAX(ann_date), COUNT(*) FROM financial_indicator').fetchone())"
+```
+
+## 📁 产物索引
 
 | 文件 | 内容 |
 |---|---|
-| `docs/superpowers/plans/2026-04-27-risk-control-roadmap.md` | 总 plan, P0/P1/P2 详细步骤 |
-| `docs/wiki/architecture/risk-control-pipeline.md` | 4 层风控数据流 + score-scale 协议 |
-| `docs/wiki/lessons/known-pitfalls.md` (#score-scale 量纲混淆) | 2 个 regression 教训 |
-| `~/.claude/projects/-Users-yangxu-StockTradebyZ/memory/risk_control_roadmap_2026_04_28.md` | 完整 commit 表 + 实测 |
-| `reports/forward_test/dashboard.md` | 90d 滚动 forward IC ALERT (Δ=-0.0307 触发) |
-| `reports/diagnostics/{pre2020_factor_decay,booster_ab,soft_moe_smoke,hard_vs_soft_moe}.md` | 四个诊断报告 |
-| `reports/capacity/ng106_capacity_curve.md` | 容量曲线 (1亿/3亿/10亿) |
-| `reports/ng22/layer2_oos.csv` | Meta-learner grid search 输出 |
-
-## 🚀 19 个 commits (按时间倒序)
-
-```
-d11671ec feat(P2.7c): soft-MOE production batch — dual scorer + EMA P_bull blend
-62d8c271 docs(P2.9): wiki — score-scale bug 教训 + 风控管线文档
-6a8ec051 fix(P2.8c regression): booster bonus 量纲 + 跳过 rank_score=0 picks
-f87a7671 fix(P0.1 regression): apply_overlay_to_picks 自适应 score scale
-eb9f569c feat(P2.8c): wire post-rank booster into selector behind --enable-booster
-fbddd911 fix(P1.6c): maxdd_60d head 强制 min_iter=50 防早停退化为 1 棵树
-42a77ca3 feat(P2.8b): booster A/B 验证 — trust filter +33 bps alpha 提升
-6760bb2d feat(P2.7b): soft-MOE EMA 平滑 + 真数据 smoke
-d032964e feat(P1.6b): ng2.2 Layer 2 meta-learner — utility-aware grid search
-f0830865 feat(P1.3 Step A): risk-adjusted label generator (Calmar / Sortino)
-3dc33bf0 feat(P1.5): 容量诊断 — ADV 5% cap × 1/3/10亿资金规模
-925089bd feat(P2.8): post-rank booster — 8策略 regime-conditional + signal trust
-3c316037 feat(P2.7): soft-MOE — compute_bull_proba + blend_scores
-252eabdc feat(P1.6): ng2.2 Layer 1 — risk auxiliary heads (maxdd_60d / vol_10d)
-8f5f2024 feat(P1.4): Pre-2020 因子风格衰减诊断脚本
-37295fce feat(P0.2): forward OOS 90 日滚动 dashboard + daily wire
-b337934a feat(P0.1): 生产化 L3 vol-target + L5 SL — ng1.0.6 默认启用 overlay
-```
-
-## ✅ 已 LIVE 的 4 层 production 风控管线
-
-```
-[ML 评分 7376 票]
-   ↓
-[post_filters]  ── trust 🔴 drop / 🟡 penalize / industry cap (默认 ON)
-   ↓
-[P2.8 booster]  ── strategy bonus (regime-conditional)  (--enable-booster opt-in, default OFF)
-   ↓
-[ng21 overlay]  ── L1 percentile floor + L2 industry cap → top_n 截断 (默认 ON)
-   ↓
-[P0.1 sizing]   ── L3 vol target + L5 stop-loss → position_size 字段 (默认 ON)
-   ↓
-[JSON: position_size + stop_loss + regime + crisis_active]
-```
-
-**用 `--scoring-version ng1.0.6` 默认启用 overlay+sizing**;
-**加 `--enable-booster` 启用 P2.8 灰度**.
-
-## ⚠️ 关键 GOTCHA — score-scale 量纲
-
-NG 模型 `rank_score` ∈ [-0.05, +0.02] (预测收益), V3 时代 `composite` ∈ [0, 100].
-任何"阈值 / 加权"代码必须 auto-detect, **绝不假设量纲**. 详见 wiki/lessons.
-
-## 🚧 待办 (下 session 优先级排序)
-
-### P0 (本周该做)
-
-1. **P1.3 Step B** — trainer Calmar label 接入 + ng1.6.2 重训 (3-5h, 单 session 跑得完)
-   - 入口: `ml_models/ng/risk_adjusted_labels.py` 已生成 csv (P1.3 A)
-   - 改 `ml_models/ng/ng_trainer.py` 加 `--label-mode {industry_excess,calmar,sortino}` 选项
-   - 训完用 `backtest/run_north_star_eval.py` 北极星对比 ng1.0.6
-   - **接受准则** (写死, 不要事后改): WF-OOS V5.2 ≥ 70% AND MaxDD 比 ng1.0.6 (-21.4%) 改善 ≥ 3pp
-   - **ABORT 线**: 第 1 个 WF 窗口 10d ICIR < 0.6 立即 kill
-
-2. **forward IC 真闭环 alpha 验证** — 等几天 forward returns 累积后:
-   - 跑 `forward_test_tracker scan` 拉新数据
-   - 跑 `forward_test_dashboard` 看 ALERT 是否回稳
-   - 跑 `booster_ab_compare` + `compare_hard_vs_soft_moe` 看 +33bp 在新数据是否复现
-
-### P1 (本月该做)
-
-3. **P2.7 真生产接入 selector** — 现 batch 已验证 6.3s/day, 把它搬进 selector:
-   - 加 `+soft` scoring_version suffix 到 `stock_selctor/scoring_router.py`
-   - 改 `tomorrow_stock_selector.py` ng106 分支同时载 bull+bear scorer
-   - 注意接 post_filters / overlay / sizing 全栈 (batch 没接, 输出含 ST 票)
-   - 内存预算 +60%
-
-4. **P0.2 ALERT 自动化** — Forward IC Δ<-0.02 触发邮件:
-   - dashboard.md 写出后 grep 是否含 "🚨 ALERT", `if grep -q triggered; then mail ...`
-   - 接 daily_update.sh 末尾
-
-5. **P1.6b Layer 2 重设计** — 简单线性 utility 不 work, 试:
-   - non-linear interaction (跨 alpha 和 risk 头的乘法/分箱)
-   - 或换成"position size" 决策而非 "ranking score" 决策 (更 native to risk control)
-   - 或等 P1.3 Step B 完成后用 Calmar 标签的主模型 + risk heads 联合再试
-
-### P2 (长期, 多 session)
-
-6. **ng2.2 端到端联合训练** — 主 alpha 模型 + maxdd / vol heads 同 epoch 联合:
-   - shared backbone + multi-head GBDT 不可行, 需要 NN 重构
-   - Differentiable Sharpe loss (path C) — 6-10 周, ng3.x 长期实验
-
-7. **真实容量回测** — P1.5 是诊断, 真生产 backtest engine 改造接 ADV cap 没做.
-
-## 🔥 上一 session 最深刻的两个发现
-
-1. **生产 pipeline 自 2026-04-09 起静默 0 picks** — P0.1 default-on 带来的 score_floor=30 vs NG 0.003 量纲冲突.
-   两 session 后才被启用 booster 的诊断流程意外发现. 教训: production smoke 必须每次 production 改动都跑.
-
-2. **简单线性 utility meta-learner 无 alpha 提升** — 风控糅合进模型最直观的做法
-   (final = alpha - λ_dd × pred_dd - λ_vol × pred_vol) OOS 不 PASS gate. 真正 value-add
-   在 hard rules (overlay/sizing), 不在 ranking-time penalty. 这印证 P0.1 推 overlay
-   到生产是正确选择, 不要执着于 ML-内化路径.
-
-## 🛠️ 立即可跑的 sanity checks
-
-```bash
-# 1. 生产 selector 还工作? (4-09 之后曾 0 picks)
-python3 tomorrow_stock_selector.py 2026-04-24 --scoring-version ng1.0.6
-# 期望: "全市场总股票: 10只", JSON 含 position_size 字段
-
-# 2. Booster wiring 工作?
-python3 tomorrow_stock_selector.py 2026-04-24 --scoring-version ng1.0.6 --enable-booster
-# 期望: log 含 "[P2.8 booster] regime=bear, top-10 swapped X/10, avg bonus=Ypts"
-
-# 3. Soft-MOE batch 工作?
-python3 scripts/batch_generate_ng_soft.py --start-date 2026-04-24 --end-date 2026-04-24
-# 期望: 5496 stocks/day, P_bull 输出, ~6s
-
-# 4. 全测试 (3 fails 是 pre-existing, 不管)
-python3 -m pytest stock_selctor/test/
-# 期望: 112 passed, 3 failed (pre-existing BBI / select_stock)
-
-# 5. Forward dashboard
-python3 scripts/forward_test_dashboard.py --scoring-version ng1.0.6 --window-days 90
-# 期望: 输出 reports/forward_test/dashboard.md, ALERT 是否仍触发
-```
+| `docs/code_review_and_refactor_plan.md` 第六节 | 审计结论 + 8 commit 记录 + 遗留 roadmap + Selector 裁决选项 |
+| `docs/wiki/lessons/known-pitfalls.md` (末尾 4 条) | Timestamp 绑定 / 截断类 bug / mtime-glob / SQLite 类型排序 |
+| `reports/system_evaluation/新口径基线重跑_20260711.md` | 新口径基线 (ng101 81.3% S) + 生产切 v3 依据 |
+| `scripts/migrate_financial_indicator_date_format.py` | 日期迁移脚本 (已执行, 留作参考) |
+| `logs/ng101_cache_rebuild_20260711.log` | 缓存重建全日志 (2068 天) |
+| memory `refactor_audit_2026_07_11.md` | 本次 session 沉淀 |
 
 ## 💬 给下 session 的开场提示词
 
-复制这一段给下 session:
-
 ```
-项目: StockTradebyZ. 上 session 完成了 3-session 风控糅合进模型路线图
-(P0/P1/P2 16 子任务 + 2 regression 修复, 19 commits). 状态详见
-docs/HANDOFF_NEXT_SESSION.md.
+项目: StockTradebyZ。上 session (7-11) 完成全仓审计+重构 (14 commits): 修 20+ 生产 bug、
+财报数据修复、ng101 缓存已基于完整财报全量重建、模型改 PINNED 注册表加载、生产已切
+ng1.0.1 单模 v3。状态详见 docs/HANDOFF_NEXT_SESSION.md。
 
-下一步优先级 (按 ROI):
-1. P1.3 Step B: trainer 接入 Calmar label + ng1.6.2 重训 (3-5h, 此 session 完成)
-2. forward IC 闭环 alpha 验证 (等数据)
-3. P2.7 真生产接入 selector (架构改动)
-
-请先读 docs/HANDOFF_NEXT_SESSION.md, 跑一下 sanity checks 确认 pipeline 没回归,
-然后告诉我你想先做哪个. 我倾向先做 P1.3 Step B — Calmar label 验证是否能改善
-ng1.0.6 v1 的 MaxDD (-21.4%) 短板.
+请先跑 sanity checks, 然后做 P0: ng1.0.1 重训评估 (fast-check → 全量, 接受准则
+V5.2 ≥ 81.3% + Pre-2020 净年化 ≥ 0%, ABORT 线首窗 ICIR < 0.6)。通过就把新 pkl
+写进 PINNED_PRODUCTION_MODELS 完成切换。
 ```
