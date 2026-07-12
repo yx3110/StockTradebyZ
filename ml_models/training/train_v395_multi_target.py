@@ -5990,6 +5990,11 @@ class V473Trainer(V472Trainer):
         predictions_train = {}
         predictions_val = {}
 
+        # hp sweep: per-member 超参数覆盖 (ng_trainer --hp-profile, hp_profiles.PROFILES)
+        # 覆盖顺序在 _cli_num_leaves/_cli_min_data_in_leaf 之后 — profile 优先于旧 CLI 通道
+        _hp = getattr(self, '_hp_overrides', None) or {}
+        _hp_rounds = _hp.get('num_boost_round', 1000)  # 统一轮数上限 (含 cb/hgb)
+
         # 1. LightGBM — 放宽正则化
         logger.info(f"  训练 LightGBM ({target_name}, V4.7.3 放宽正则化)...")
         lgb_params = {
@@ -6014,6 +6019,7 @@ class V473Trainer(V472Trainer):
             lgb_params['num_leaves'] = self._cli_num_leaves
         if hasattr(self, '_cli_min_data_in_leaf'):
             lgb_params['min_data_in_leaf'] = self._cli_min_data_in_leaf
+        lgb_params.update(_hp.get('lgb', {}))
 
         lgb_train = lgb.Dataset(X_train, label=y_train,
                                 weight=sample_weights_train, free_raw_data=True)
@@ -6021,7 +6027,7 @@ class V473Trainer(V472Trainer):
 
         lgb_model = lgb.train(
             lgb_params, lgb_train,
-            num_boost_round=1000,
+            num_boost_round=_hp_rounds,
             valid_sets=[lgb_train, lgb_val],
             callbacks=[lgb.early_stopping(30), lgb.log_evaluation(0)]
         )
@@ -6047,13 +6053,14 @@ class V473Trainer(V472Trainer):
             'seed': _GLOBAL_RANDOM_SEED,
             'verbosity': 0,
         }
+        xgb_params.update(_hp.get('xgb', {}))
 
         dtrain = xgb.DMatrix(X_train, label=y_train, weight=sample_weights_train)
         dval = xgb.DMatrix(X_val, label=y_val)
 
         xgb_model = xgb.train(
             xgb_params, dtrain,
-            num_boost_round=1000,
+            num_boost_round=_hp_rounds,
             evals=[(dtrain, 'train'), (dval, 'val')],
             early_stopping_rounds=30,
             verbose_eval=False
@@ -6067,8 +6074,8 @@ class V473Trainer(V472Trainer):
         # 3. CatBoost — 放宽正则化
         if HAS_CATBOOST:
             logger.info(f"  训练 CatBoost ({target_name}, V4.7.3)...")
-            cb_model = cb.CatBoostRegressor(
-                iterations=1000,
+            cb_kwargs = dict(
+                iterations=_hp_rounds,
                 learning_rate=0.02,
                 depth=6,                    # 5→6
                 l2_leaf_reg=10,
@@ -6077,6 +6084,8 @@ class V473Trainer(V472Trainer):
                 early_stopping_rounds=30,
                 min_data_in_leaf=200,       # 500→200
             )
+            cb_kwargs.update(_hp.get('cb', {}))
+            cb_model = cb.CatBoostRegressor(**cb_kwargs)
             cb_pool_train = cb.Pool(X_train, label=y_train, weight=sample_weights_train)
             cb_pool_val = cb.Pool(X_val, label=y_val)
             cb_model.fit(cb_pool_train, eval_set=cb_pool_val, verbose=False)
@@ -6090,7 +6099,7 @@ class V473Trainer(V472Trainer):
         logger.info(f"  训练 RandomForest ({target_name}, V4.7.3)...")
         n_samples = X_train.shape[0]
         rf_max_samples = min(200_000, n_samples)
-        rf_model = RandomForestRegressor(
+        rf_kwargs = dict(
             n_estimators=100,
             max_depth=15,               # 10→15 (原V4.3是12)
             max_samples=rf_max_samples,
@@ -6100,6 +6109,8 @@ class V473Trainer(V472Trainer):
             random_state=_GLOBAL_RANDOM_SEED,
             verbose=0,
         )
+        rf_kwargs.update(_hp.get('rf', {}))
+        rf_model = RandomForestRegressor(**rf_kwargs)
         rf_model.fit(X_train, y_train, sample_weight=sample_weights_train)
         models['rf'] = rf_model
         predictions_train['rf'] = rf_model.predict(X_train)
@@ -6107,8 +6118,8 @@ class V473Trainer(V472Trainer):
 
         # 5. HistGradientBoosting — 放宽正则化
         logger.info(f"  训练 HistGradientBoosting ({target_name}, V4.7.3)...")
-        hgb_model = HistGradientBoostingRegressor(
-            max_iter=1000,
+        hgb_kwargs = dict(
+            max_iter=_hp_rounds,
             learning_rate=0.02,
             max_depth=6,                # 5→6
             max_leaf_nodes=47,          # 20→47 (约31的1.5倍)
@@ -6118,6 +6129,8 @@ class V473Trainer(V472Trainer):
             random_state=_GLOBAL_RANDOM_SEED,
             verbose=0,
         )
+        hgb_kwargs.update(_hp.get('hgb', {}))
+        hgb_model = HistGradientBoostingRegressor(**hgb_kwargs)
         hgb_model.fit(X_train, y_train, sample_weight=sample_weights_train)
         models['hgb'] = hgb_model
         predictions_train['hgb'] = hgb_model.predict(X_train)
@@ -6184,6 +6197,7 @@ class V473Trainer(V472Trainer):
                         lgb_rank_params['num_leaves'] = self._cli_num_leaves
                     if hasattr(self, '_cli_min_data_in_leaf'):
                         lgb_rank_params['min_data_in_leaf'] = self._cli_min_data_in_leaf
+                    lgb_rank_params.update(_hp.get('lgb_rank', {}))
 
                     lgb_rank_train = lgb.Dataset(
                         X_train, label=relevance_train, group=group_train,
@@ -6196,7 +6210,7 @@ class V473Trainer(V472Trainer):
 
                     lgb_rank_model = lgb.train(
                         lgb_rank_params, lgb_rank_train,
-                        num_boost_round=1000,
+                        num_boost_round=_hp_rounds,
                         valid_sets=[lgb_rank_train, lgb_rank_val],
                         callbacks=[lgb.early_stopping(30), lgb.log_evaluation(0)]
                     )
