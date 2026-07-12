@@ -44,6 +44,30 @@ Next Generation（NG）系列是从 V4.x 代码中独立重构的新一代模型
 
 **分表规则**: 每版本独立表，不共用 `ng_feature_cache`。原因：features_json 内容不同（62 vs 69 因子），label 语义不同。详见 [已知陷阱](../lessons/known-pitfalls.md)。
 
+### 🆕 2026-07-12 完整财报缓存重训 (当前生产 pkl)
+
+7-11 财报数据修复 (81% 不可见→100%) + `ng101_feature_cache` 全量重建 (label 改后复权) 后按 handoff P0 重训。
+**双 gate 通过并已切生产** (`PINNED_PRODUCTION_MODELS['ng1.0.1']`):
+
+| Gate (新口径 2026-07-11-p0fix) | 4-12 pkl | 7-12 重训 pkl |
+|---|---|---|
+| 对齐窗口 V5.2 (2018-11~2026-04) | 81.3% S | **83.8% S** |
+| 对齐窗口 Sharpe / MaxDD | 2.550 / -17.7% | 3.530 / -23.0% |
+| Pre-2020 净年化 / V5.2 | +17.2% / 49.7% B | **+19.4% / 55.4% B** |
+| WF 10d ICIR 均值 | 0.854 (3窗) | 0.851 (4窗) |
+
+- 完整财报最大兑现在 Pre-2020 后向泛化 (全维度提升); MaxDD 退化 5.3pp 是主要代价
+- 前向 WF-OOS 匹配窗 (2024-05~2025-11, vs 4-28 旧缓存 fold preds): 全持仓期矩阵 mixed-parity
+  (1d/3d/7d-Sharpe 重训胜, 5d/10d 基线胜); **10d 非重叠口径重训明显偏弱 (9.4% vs 27.1% 净年化, 36 期相位敏感)
+  — paper trade ≥20 交易日重点盯这一格**
+- 首窗 ABORT 线插曲: w1 ICIR 0.464 < 0.6 (门槛源自 4-12 基线 w1=0.613), 但 label 口径已变不可直比,
+  经用户确认跑完; w2/w3 反超 (1.072/1.137 vs 0.933/1.016), 事后证明 w1 是 924 行情 regime 噪声
+- 重建缓存不含 3 个重复特征 (volume_contraction/sw_index_return_5d/industry_relative_strength),
+  训练全 NaN → 树不使用, canonical 孪生在场, 信息零损失
+- 详见 `reports/system_evaluation/ng101重训评估_20260712.md`
+
+**模型**: `ng101_seed42_multi_target_20260712_213343.pkl` (77MB, 含 Check 9 元数据: git `73a36ce4`, seed 42, expanding, purge 15)
+
 ---
 
 ## NG 1.0.2 — 下行风险模型 (2026-04-05)

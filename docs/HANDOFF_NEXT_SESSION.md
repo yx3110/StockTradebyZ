@@ -26,7 +26,13 @@
 
 ## 🚀 下一步优先级
 
-### P0: ng1.0.1 重训评估 (新缓存就绪, 3-5h)
+### ~~P0: ng1.0.1 重训评估~~ ✅ 完成 (2026-07-12)
+
+双 gate 通过 (V5.2 83.8% S ≥ 81.3% / Pre-2020 +19.4% ≥ 0%), 新 pkl `ng101_seed42_multi_target_20260712_213343.pkl`
+已写入 PINNED_PRODUCTION_MODELS。遗留: paper trade ≥20 交易日盯 10d 持仓口径 (前向 OOS 唯一弱格)。
+详见 `reports/system_evaluation/ng101重训评估_20260712.md`。原任务描述如下 (存档):
+
+### P0 (已完成): ng1.0.1 重训评估 (新缓存就绪, 3-5h)
 - 按 CLAUDE.md 十项 pre-flight 走; 先 `--fast-check` 2min 判方向
 - 命令基座: `python3 ml_models/ng/ng_trainer.py --start-date 2020-01-01 --purge-days 15 --seed 42`
 - **接受准则 (写死)**: 新口径 V5.2 ≥ 81.3% AND Pre-2020 净年化 ≥ 0% (完整财报最可能改善 Pre-2020 泛化 — 旧模型 Pre-2020 = 45.5% B / 年化 -19%)
