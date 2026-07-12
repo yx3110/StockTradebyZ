@@ -585,6 +585,17 @@ python3 backtest/batch_generate_v395_reports.py --version ng1.0.1
 这是第 5 个 (首个新口径) 证据支持生产切 ng1.0.1 单模; 切换前置: 评估-生产同构化复核
 + PINNED 注册表 + paper trade ≥20 日。
 
+## 超参数 Sweep — 现行参数已近似最优 (2026-07-13) ❌ 无免费收益
+
+6 成员 ensemble 超参数 (V4.7.3 一套, v3.95 沿用至今) 首次系统性扫描:
+7 个 profile (tight/loose/lr005/lr001/ff085/mdil500/leaves63) × fast-check
+(seed42, 与 7-12 基线 paired), **全部未过预注册胜出线 (10d ICIR ≥ 基线+0.05)**。
+基线在 10d 上 IC/ICIR 双第一; 放松容量/加速学习率一致加重过拟合 (IS IC 0.21→0.28-0.41)。
+结论: **同 schema 下不要再扫超参数**; 复扫时机 = 特征数 ±30% / 标签口径变更 /
+训练数据翻倍。机制保留: `ng_trainer --hp-profile X --fast-check`
+(~20-40min/配置, `ml_models/training/hp_profiles.py`)。
+详见 `reports/system_evaluation/超参数sweep_20260713.md`。
+
 ## 相关页面
 
 - [模型世代总览](evolution.md)
