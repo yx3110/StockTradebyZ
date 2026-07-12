@@ -61,6 +61,52 @@ try:
 except ImportError:
     _json_loads = json.loads
 
+
+def _group_indices_by_date(dates):
+    """按日期分组, 返回 (排序后的唯一日期, [每组索引数组])
+
+    与 `[np.flatnonzero(dates == d) for d in np.unique(dates)]` 逐元素等价
+    (组序 = np.unique 排序序; 组内索引升序 = 布尔掩码提取顺序), 但对 object
+    字符串日期数组只做一遍 hash 分组, 避免 O(唯一日期数 × 样本数) 的逐日全量
+    字符串比较 — 这是 WF 训练热路径 (Sharpe-Blend / LambdaRank 分组 / 日度 IC)
+    的主要 Python 级开销来源。
+    """
+    dates = np.asarray(dates)
+    if dates.size == 0:
+        return dates, []
+    sorted_codes, uniques = pd.factorize(dates, sort=True)  # codes 已按排序 unique 编号
+    if (sorted_codes < 0).any():
+        # factorize 对 NaN/NaT/None 返回 -1, 若不拦截会被静默并入末组;
+        # 原掩码语义是排除 (NaN==d 恒 False) 或响亮 TypeError — 这里选择响亮失败
+        raise ValueError("_group_indices_by_date: dates 含缺失值 (NaN/NaT/None)")
+    sort_idx = np.argsort(sorted_codes, kind='stable')  # 稳定排序 → 组内保持原序
+    boundaries = np.flatnonzero(np.diff(sorted_codes[sort_idx])) + 1
+    groups = np.split(sort_idx, boundaries)
+    return np.asarray(uniques), groups
+
+
+def _is_ic_subsample_idx(dates, day_cap, seed=42):
+    """--is-ic-day-cap: IS 诊断用的每日截面子采样索引 (保留全部交易日, 每日最多 day_cap 行)
+
+    固定 seed + 仅依赖 dates → 同一窗口内 4 个 target 线程算出的索引完全一致
+    (target-parallel 下写入共享属性是良性竞争)。返回升序索引。
+    """
+    _, groups = _group_indices_by_date(dates)
+    rng = np.random.default_rng(seed)
+    keep = [idx if len(idx) <= day_cap
+            else np.sort(rng.choice(idx, day_cap, replace=False))
+            for idx in groups]
+    return np.sort(np.concatenate(keep))
+
+
+def _calc_is_ic_aligned(trainer, ensemble_pred_train, y_tr, train_dates):
+    """计算 IS 日度 IC/ICIR — --is-ic-day-cap 开启时 pred_train 已按
+    trainer._last_is_ic_idx 每日子采样, y/dates 用同一索引对齐切片"""
+    idx = getattr(trainer, '_last_is_ic_idx', None)
+    if idx is not None:
+        return trainer._calculate_daily_ic(ensemble_pred_train, y_tr[idx], train_dates[idx])
+    return trainer._calculate_daily_ic(ensemble_pred_train, y_tr, train_dates)
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(message)s'
@@ -236,7 +282,7 @@ def _wf_window_worker(wi):
 
         # IS IC/ICIR + OOS月度IC (V475+需要)
         ensemble_pred_train = trainer.ensemble_predict(pred_train, weights)
-        is_ic, is_icir = trainer._calculate_daily_ic(ensemble_pred_train, y_tr, train_dates_w)
+        is_ic, is_icir = _calc_is_ic_aligned(trainer, ensemble_pred_train, y_tr, train_dates_w)
         oos_monthly_ic = []
         if hasattr(trainer, '_calculate_monthly_ic'):
             oos_monthly_ic = trainer._calculate_monthly_ic(ensemble_pred, y_te, test_dates_w)
@@ -430,6 +476,29 @@ class V395MultiTargetTrainer:
         np.clip(X, lo_arr, hi_arr, out=X)
         return X
 
+    def _compute_ensemble_predictions_all(self, X: np.ndarray, all_results: dict) -> dict:
+        """对全量 X 跑一遍所有 target 的 ensemble 预测
+
+        供 _compute_global_quantiles / _compute_recommendation_thresholds 共用,
+        调用点预计算一次传入 precomputed_predictions, 避免同样的 24 次 predict 跑两遍。
+        """
+        predictions = {}
+        for target_key, result in all_results.items():
+            preds = {}
+            for name, model in result['models'].items():
+                try:
+                    if name == 'xgb':
+                        import xgboost as xgb
+                        preds[name] = model.predict(xgb.DMatrix(X))
+                    else:
+                        preds[name] = model.predict(X)
+                except Exception as e:
+                    logger.warning(f"  全量ensemble预测: {target_key}/{name} 预测失败: {e}")
+                    continue
+            # 与ensemble_predict对齐: rescale rank模型, 排除Q95
+            predictions[target_key] = self.ensemble_predict(preds, result['weights'])
+        return predictions
+
     def _compute_global_quantiles(self, X: np.ndarray, all_results: dict,
                                     target_weights: dict, n_quantiles: int = 1001,
                                     precomputed_predictions: dict = None) -> np.ndarray:
@@ -455,24 +524,7 @@ class V395MultiTargetTrainer:
             predictions = precomputed_predictions
             logger.info(f"  使用预计算的ensemble预测 ({len(predictions)} targets)")
         else:
-            predictions = {}
-            for target_key, result in all_results.items():
-                # 收集所有子模型预测
-                preds = {}
-                for name, model in result['models'].items():
-                    try:
-                        if name == 'xgb':
-                            import xgboost as xgb
-                            preds[name] = model.predict(xgb.DMatrix(X))
-                        else:
-                            preds[name] = model.predict(X)
-                    except Exception as e:
-                        logger.warning(f"  全局分位数: {target_key}/{name} 预测失败: {e}")
-                        continue
-
-                # 与ensemble_predict对齐: rescale rank模型, 排除Q95
-                predictions[target_key] = self.ensemble_predict(
-                    preds, result['weights'])
+            predictions = self._compute_ensemble_predictions_all(X, all_results)
 
         # 计算 combined_pred (加权融合)
         combined_pred = np.zeros(X.shape[0])
@@ -520,21 +572,7 @@ class V395MultiTargetTrainer:
             predictions = precomputed_predictions
             logger.info(f"  使用预计算的ensemble预测 ({len(predictions)} targets)")
         else:
-            predictions = {}
-            for target_key, result in all_results.items():
-                preds = {}
-                for name, model in result['models'].items():
-                    try:
-                        if name == 'xgb':
-                            import xgboost as xgb
-                            preds[name] = model.predict(xgb.DMatrix(X))
-                        else:
-                            preds[name] = model.predict(X)
-                    except Exception:
-                        continue
-                # 与ensemble_predict对齐: rescale rank模型, 排除Q95
-                predictions[target_key] = self.ensemble_predict(
-                    preds, result['weights'])
+            predictions = self._compute_ensemble_predictions_all(X, all_results)
 
         # Composite score
         composite = np.zeros(X.shape[0])
@@ -2245,14 +2283,12 @@ class V43Trainer(V395MultiTargetTrainer):
 
     def _calculate_daily_ic(self, pred, y, dates):
         """计算每日截面 IC 和 ICIR"""
-        unique_dates = np.unique(dates)
+        _, date_groups = _group_indices_by_date(dates)
         daily_ics = []
-        for d in unique_dates:
-            mask = dates == d
-            n = mask.sum()
-            if n < 10:
+        for idx in date_groups:
+            if len(idx) < 10:
                 continue
-            ic, _ = spearmanr(pred[mask], y[mask])
+            ic, _ = spearmanr(pred[idx], y[idx])
             if not np.isnan(ic):
                 daily_ics.append(ic)
         if not daily_ics:
@@ -2264,13 +2300,12 @@ class V43Trainer(V395MultiTargetTrainer):
 
     def _calculate_monthly_ic(self, pred, y, dates):
         """计算按月分组的平均IC (用于OOS IC半衰期估算)"""
-        unique_dates = np.unique(dates)
+        unique_dates, date_groups = _group_indices_by_date(dates)
         month_ics = {}  # {YYYY-MM: [daily_ic_values]}
-        for d in unique_dates:
-            mask = dates == d
-            if mask.sum() < 10:
+        for d, idx in zip(unique_dates, date_groups):
+            if len(idx) < 10:
                 continue
-            ic, _ = spearmanr(pred[mask], y[mask])
+            ic, _ = spearmanr(pred[idx], y[idx])
             if np.isnan(ic):
                 continue
             ds = str(d)
@@ -4878,12 +4913,15 @@ class V471Trainer(V44Trainer):
         if blend <= 0:
             return
 
-        unique_train_dates = np.unique(train_dates)
+        _, date_groups = _group_indices_by_date(train_dates)
         daily_vol_tr = np.zeros_like(y_tr)
-        for d in unique_train_dates:
-            mask_d = train_dates == d
-            std_d = np.std(y_tr[mask_d])
-            daily_vol_tr[mask_d] = std_d if std_d > 0 else 0
+        # 单遍分组同时收集 raw std, 供 mean_daily_vol 复用 (原实现对同一掩码扫 3 遍)
+        raw_stds_multi = []  # 仅样本数>1 的日期, 保持排序日期序
+        for idx in date_groups:
+            std_d = np.std(y_tr[idx])
+            daily_vol_tr[idx] = std_d if std_d > 0 else 0
+            if len(idx) > 1:
+                raw_stds_multi.append(std_d)
 
         # Sharpe-adjusted: 收益/波动
         sharpe_tr = y_tr / (daily_vol_tr + 1e-6)
@@ -4895,8 +4933,7 @@ class V471Trainer(V44Trainer):
 
         # 对val/test用训练集的mean daily_vol (防止数据泄漏)
         # 注意: 必须在修改y_tr之前计算,否则用的是blended后的vol
-        mean_daily_vol_train = np.mean([np.std(y_tr[train_dates == d])
-            for d in unique_train_dates if (train_dates == d).sum() > 1])
+        mean_daily_vol_train = np.mean(raw_stds_multi)
 
         # 对训练集应用融合
         y_tr[:] = (1 - blend) * y_tr + blend * sharpe_tr * scale
@@ -5995,6 +6032,22 @@ class V473Trainer(V472Trainer):
         _hp = getattr(self, '_hp_overrides', None) or {}
         _hp_rounds = _hp.get('num_boost_round', 1000)  # 统一轮数上限 (含 cb/hgb)
 
+        # --is-ic-day-cap (默认关): predictions_train 唯一下游是 IS IC/ICIR 诊断 (进 WFER),
+        # 开启后 6 模型的全训练集 predict 改为每日截面子采样 (保留全部交易日, IS ICIR 近似无偏)。
+        # 启用前需按审计报告做一次新旧 WFER 档位对照。
+        _is_ic_idx = None
+        _X_train_is = X_train
+        _cap = getattr(self, '_is_ic_day_cap', 0)
+        _td_for_is = getattr(self, 'train_dates', None)
+        if _cap and _td_for_is is not None and len(_td_for_is) == len(y_train):
+            _is_ic_idx = _is_ic_subsample_idx(_td_for_is, _cap)
+            if len(_is_ic_idx) < len(y_train):
+                _X_train_is = X_train[_is_ic_idx]
+            else:
+                _is_ic_idx = None  # cap 未生效 (每日样本都少于 cap), 走原路径
+        # 供调用方对齐 y_tr/train_dates 切片 (同窗口各 target 线程算出的索引相同, 写入良性)
+        self._last_is_ic_idx = _is_ic_idx
+
         # 1. LightGBM — 放宽正则化
         logger.info(f"  训练 LightGBM ({target_name}, V4.7.3 放宽正则化)...")
         lgb_params = {
@@ -6028,11 +6081,12 @@ class V473Trainer(V472Trainer):
         lgb_model = lgb.train(
             lgb_params, lgb_train,
             num_boost_round=_hp_rounds,
-            valid_sets=[lgb_train, lgb_val],
+            # 仅 val 参与 eval: 训练集 eval 每轮多扫一遍全训练集且不影响早停 (parity 已验证 bit-exact)
+            valid_sets=[lgb_val],
             callbacks=[lgb.early_stopping(30), lgb.log_evaluation(0)]
         )
         models['lgb'] = lgb_model
-        predictions_train['lgb'] = lgb_model.predict(X_train)
+        predictions_train['lgb'] = lgb_model.predict(_X_train_is)
         predictions_val['lgb'] = lgb_model.predict(X_val)
         del lgb_train, lgb_val
         gc.collect()
@@ -6061,12 +6115,16 @@ class V473Trainer(V472Trainer):
         xgb_model = xgb.train(
             xgb_params, dtrain,
             num_boost_round=_hp_rounds,
-            evals=[(dtrain, 'train'), (dval, 'val')],
+            # 仅 val 参与 eval: XGB 早停本就只看 evals 最后一项 (parity 已验证 bit-exact)
+            evals=[(dval, 'val')],
             early_stopping_rounds=30,
             verbose_eval=False
         )
         models['xgb'] = xgb_model
-        predictions_train['xgb'] = xgb_model.predict(dtrain)
+        if _is_ic_idx is None:
+            predictions_train['xgb'] = xgb_model.predict(dtrain)
+        else:
+            predictions_train['xgb'] = xgb_model.predict(xgb.DMatrix(_X_train_is))
         predictions_val['xgb'] = xgb_model.predict(dval)
         del dtrain, dval
         gc.collect()
@@ -6090,7 +6148,7 @@ class V473Trainer(V472Trainer):
             cb_pool_val = cb.Pool(X_val, label=y_val)
             cb_model.fit(cb_pool_train, eval_set=cb_pool_val, verbose=False)
             models['cb'] = cb_model
-            predictions_train['cb'] = cb_model.predict(X_train)
+            predictions_train['cb'] = cb_model.predict(_X_train_is)
             predictions_val['cb'] = cb_model.predict(X_val)
             del cb_pool_train, cb_pool_val
             gc.collect()
@@ -6113,7 +6171,7 @@ class V473Trainer(V472Trainer):
         rf_model = RandomForestRegressor(**rf_kwargs)
         rf_model.fit(X_train, y_train, sample_weight=sample_weights_train)
         models['rf'] = rf_model
-        predictions_train['rf'] = rf_model.predict(X_train)
+        predictions_train['rf'] = rf_model.predict(_X_train_is)
         predictions_val['rf'] = rf_model.predict(X_val)
 
         # 5. HistGradientBoosting — 放宽正则化
@@ -6129,11 +6187,18 @@ class V473Trainer(V472Trainer):
             random_state=_GLOBAL_RANDOM_SEED,
             verbose=0,
         )
+        # --hgb-early-stop (默认关): boosting 成员里 LGB/XGB/CB/LambdaRank 均 30 轮早停,
+        # 唯 HGB 硬跑满 1000 轮 (占窗口周期 ~1/3; RF 非 boosting 无轮数概念)。
+        # 改变模型数值 → 启用必须走完整验收 gate。
+        # 注意 sklearn HGB 早停用内部随机 validation split (非按日期), 仅用于停轮。
+        if getattr(self, '_hgb_early_stop', False):
+            hgb_kwargs.update(early_stopping=True, n_iter_no_change=30,
+                              validation_fraction=0.1)
         hgb_kwargs.update(_hp.get('hgb', {}))
         hgb_model = HistGradientBoostingRegressor(**hgb_kwargs)
         hgb_model.fit(X_train, y_train, sample_weight=sample_weights_train)
         models['hgb'] = hgb_model
-        predictions_train['hgb'] = hgb_model.predict(X_train)
+        predictions_train['hgb'] = hgb_model.predict(_X_train_is)
         predictions_val['hgb'] = hgb_model.predict(X_val)
 
         # 6. LambdaRank LGB (5d/10d/15d only, 3d skipped — 继承V4.7.2)
@@ -6146,34 +6211,32 @@ class V473Trainer(V472Trainer):
                 try:
                     from scipy.stats import rankdata
 
-                    unique_train_dates = np.unique(train_dates)
+                    _, train_date_groups = _group_indices_by_date(train_dates)
                     relevance_train = np.zeros(len(y_train), dtype=np.int32)
                     group_train = []
-                    for d in unique_train_dates:
-                        mask = train_dates == d
-                        n = mask.sum()
+                    for idx in train_date_groups:
+                        n = len(idx)
                         group_train.append(n)
                         if n >= 10:
-                            ranks = rankdata(y_train[mask])
+                            ranks = rankdata(y_train[idx])
                             pct = (ranks - 1) / (n - 1)
-                            relevance_train[mask] = np.clip((pct * 5).astype(int), 0, 4)
+                            relevance_train[idx] = np.clip((pct * 5).astype(int), 0, 4)
                         else:
-                            relevance_train[mask] = 2
+                            relevance_train[idx] = 2
 
                     relevance_val = np.zeros(len(y_val), dtype=np.int32)
                     group_val = []
                     if val_dates is not None and len(val_dates) == len(y_val):
-                        unique_val_dates = np.unique(val_dates)
-                        for d in unique_val_dates:
-                            mask = val_dates == d
-                            n = mask.sum()
+                        _, val_date_groups = _group_indices_by_date(val_dates)
+                        for idx in val_date_groups:
+                            n = len(idx)
                             group_val.append(n)
                             if n >= 10:
-                                ranks = rankdata(y_val[mask])
+                                ranks = rankdata(y_val[idx])
                                 pct = (ranks - 1) / (n - 1)
-                                relevance_val[mask] = np.clip((pct * 5).astype(int), 0, 4)
+                                relevance_val[idx] = np.clip((pct * 5).astype(int), 0, 4)
                             else:
-                                relevance_val[mask] = 2
+                                relevance_val[idx] = 2
 
                     lgb_rank_params = {
                         'objective': 'lambdarank',
@@ -6211,12 +6274,13 @@ class V473Trainer(V472Trainer):
                     lgb_rank_model = lgb.train(
                         lgb_rank_params, lgb_rank_train,
                         num_boost_round=_hp_rounds,
-                        valid_sets=[lgb_rank_train, lgb_rank_val],
+                        # 仅 val 参与 eval: 训练集 NDCG 每轮全量重排序是热点且不影响早停 (parity 已验证)
+                        valid_sets=[lgb_rank_val],
                         callbacks=[lgb.early_stopping(30), lgb.log_evaluation(0)]
                     )
 
                     models['lgb_rank'] = lgb_rank_model
-                    predictions_train['lgb_rank'] = lgb_rank_model.predict(X_train)
+                    predictions_train['lgb_rank'] = lgb_rank_model.predict(_X_train_is)
                     predictions_val['lgb_rank'] = lgb_rank_model.predict(X_val)
                     logger.info(f"    LGB-LambdaRank ({target_name}): 完成")
 
@@ -7337,6 +7401,13 @@ class V475Trainer(V473Trainer):
         # 2. 定义滚动窗口
         # 滑动窗口模式: _max_train_days 限制训练集为最近N个交易日 (诊断信号半衰期)
         _max_train_days = getattr(self, '_max_train_days', None)
+        # fast-check 只判方向: 复用滑窗机制把 train 窗限为最近 N 个交易日
+        # (expanding 下截取的末尾窗口 train 集≈全量, 实测 fast-check 跑 36min 而非标称 2min)
+        if getattr(self, '_fast_check_max_windows', None):
+            _fc_train_days = getattr(self, '_fast_check_train_days', None)
+            if _fc_train_days and (not _max_train_days or _fc_train_days < _max_train_days):
+                _max_train_days = _fc_train_days
+                logger.info(f"  [FAST-CHECK] train 窗限为最近 {_fc_train_days} 个交易日")
         _wf_mode = f'sliding({_max_train_days}d)' if _max_train_days else 'expanding'
         logger.info(f"  WF模式: {_wf_mode}")
 
@@ -7502,7 +7573,7 @@ class V475Trainer(V473Trainer):
                     ensemble_pred = self.ensemble_predict(pred_test, weights)
                     ic, icir = self._calculate_daily_ic(ensemble_pred, y_te, test_dates_w)
                     ensemble_pred_train = self.ensemble_predict(pred_train, weights)
-                    is_ic, is_icir = self._calculate_daily_ic(ensemble_pred_train, y_tr, train_dates_w)
+                    is_ic, is_icir = _calc_is_ic_aligned(self, ensemble_pred_train, y_tr, train_dates_w)
                     oos_monthly_ic = self._calculate_monthly_ic(ensemble_pred, y_te, test_dates_w)
                     return target_key, {
                         'ic': ic, 'icir': icir,
@@ -7727,8 +7798,13 @@ class V475Trainer(V473Trainer):
         # 10. Global quantiles
         X_all = X.copy()
         self._apply_bounds(X_all, self.winsorize_bounds)
-        global_quantiles = self._compute_global_quantiles(X_all, all_results, self.target_weights)
-        recommendation_thresholds = self._compute_recommendation_thresholds(X_all, all_results)
+        # 全量 ensemble 预测只算一遍, 分位数与推荐阈值共享 (省一遍 24 次全量 predict)
+        _shared_predictions = self._compute_ensemble_predictions_all(X_all, all_results)
+        global_quantiles = self._compute_global_quantiles(
+            X_all, all_results, self.target_weights,
+            precomputed_predictions=_shared_predictions)
+        recommendation_thresholds = self._compute_recommendation_thresholds(
+            X_all, all_results, precomputed_predictions=_shared_predictions)
 
         # 11. Save model
         end_time = datetime.now()
@@ -8195,8 +8271,13 @@ class V476Trainer(V475Trainer):
         # 10. Global quantiles
         X_all = X.copy()
         self._apply_bounds(X_all, self.winsorize_bounds)
-        global_quantiles = self._compute_global_quantiles(X_all, all_results, self.target_weights)
-        recommendation_thresholds = self._compute_recommendation_thresholds(X_all, all_results)
+        # 全量 ensemble 预测只算一遍, 分位数与推荐阈值共享 (省一遍 24 次全量 predict)
+        _shared_predictions = self._compute_ensemble_predictions_all(X_all, all_results)
+        global_quantiles = self._compute_global_quantiles(
+            X_all, all_results, self.target_weights,
+            precomputed_predictions=_shared_predictions)
+        recommendation_thresholds = self._compute_recommendation_thresholds(
+            X_all, all_results, precomputed_predictions=_shared_predictions)
 
         # 11. Save model
         end_time = datetime.now()

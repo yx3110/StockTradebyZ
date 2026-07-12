@@ -900,6 +900,11 @@ def main():
                         help='同时生成 Markdown 概要报告')
     parser.add_argument('--suffix', default='',
                         help='报告目录后缀 (e.g. "robust_zscore")')
+    parser.add_argument('--shards', type=int, default=1,
+                        help='按日期分片并行的子进程数 (1=串行; 实测 1875 天串行 ~28min, '
+                             '分片后每片独立加载模型+预加载自己的日期段, 输出互不冲突)。'
+                             '注意: 非 PINNED 版本各片独立 mtime-glob 解析模型, '
+                             '若有并发训练在落盘 pkl 请显式传 --model-path')
     args = parser.parse_args()
 
     # 确定输出目录
@@ -968,6 +973,52 @@ def main():
         return
 
     print(f"      待生成: {len(dates_to_generate)} 天")
+
+    # ========== 1.5. 日期分片并行模式 ==========
+    # 子进程 = 同脚本 + 显式日期段 (只传日期字符串, 输出为独立 JSON 文件 → 无写冲突,
+    # 不经 multiprocessing pipe 传大对象, 规避已知 Pool 死锁)
+    if args.shards > 1 and len(dates_to_generate) > 1:
+        import subprocess
+        n_shards = min(args.shards, len(dates_to_generate))
+        chunk_size = (len(dates_to_generate) + n_shards - 1) // n_shards
+        chunks = [dates_to_generate[i:i + chunk_size]
+                  for i in range(0, len(dates_to_generate), chunk_size)]
+        print(f"\n[SHARD] 按日期分片 {len(chunks)} 个子进程并行 (每片 ~{chunk_size} 天)")
+        t_shard = time.time()
+        procs = []
+        for si, chunk in enumerate(chunks):
+            cmd = [sys.executable, str(Path(__file__).resolve()),
+                   '--start-date', chunk[0], '--end-date', chunk[-1],
+                   '--version', args.version,
+                   '--output-dir', str(output_dir)]
+            if args.model_path:
+                cmd += ['--model-path', args.model_path]
+            if args.force:
+                cmd += ['--force']
+            if args.with_markdown:
+                cmd += ['--with-markdown']
+            log_path = output_dir / f'_shard_{si}.log'
+            lf = open(log_path, 'w')
+            procs.append((si, subprocess.Popen(cmd, stdout=lf, stderr=subprocess.STDOUT), lf, log_path))
+            print(f"  shard {si}: {chunk[0]} ~ {chunk[-1]} ({len(chunk)} 天) → {log_path.name}")
+        failed_shards = []
+        for si, p, lf, log_path in procs:
+            rc = p.wait()
+            lf.close()
+            print(f"  shard {si} 退出: {'OK' if rc == 0 else f'FAIL rc={rc}'} "
+                  f"(累计 {time.time() - t_shard:.0f}s)")
+            if rc != 0:
+                failed_shards.append((si, log_path))
+        n_json = len(list(output_dir.glob('analysis_data_*.json')))
+        print(f"\n[SHARD] 完成: {len(chunks) - len(failed_shards)}/{len(chunks)} 片成功, "
+              f"总耗时 {(time.time() - t_shard) / 60:.1f} 分钟, 报告总数 {n_json}")
+        for si, log_path in failed_shards:
+            print(f"  ⚠️ shard {si} 失败, 查看日志: {log_path}")
+        if failed_shards:
+            # 部分成功必须非零退出: 上游 (北极星评估等) 以 rc==0 判完整,
+            # 残缺日期集会静默算出错误的 V5.2/Sharpe
+            sys.exit(1)
+        return
 
     # ========== 2. 加载模型 ==========
     t_model = time.time()

@@ -1727,7 +1727,11 @@ class NGTrainer(V485Trainer):
                 callbacks=callbacks,
             )
             models['margin_rank'] = margin_model
-            pred_train['margin_rank'] = margin_model.predict(X_train)
+            # --is-ic-day-cap: 基础成员的 pred_train 已按 _last_is_ic_idx 子采样,
+            # 追加成员必须同长对齐, 否则 ensemble_predict 广播报错
+            _is_idx = getattr(self, '_last_is_ic_idx', None)
+            _X_tr_is = X_train if _is_idx is None else X_train[_is_idx]
+            pred_train['margin_rank'] = margin_model.predict(_X_tr_is)
             pred_val['margin_rank'] = margin_model.predict(X_val)
             logger.info(f"    margin_rank done: groups={len(group_train)}, margin={margin}")
         except Exception as e:
@@ -1804,11 +1808,13 @@ class NGTrainer(V485Trainer):
                 valid_sets=valid_sets,
                 callbacks=callbacks,
             )
-            # Predict on full X_train/X_val so pred_train stays row-aligned
-            # with y_train — downstream IS IC expects full-length predictions.
+            # pred_train 须与基础成员同长对齐 (默认全量; --is-ic-day-cap 开启时
+            # 基础成员已按 _last_is_ic_idx 子采样, 追加成员跟随)
             wrapper = QuintileStrongBuyModel(booster)
             models[QUINTILE_MODEL_KEY] = wrapper
-            pred_train[QUINTILE_MODEL_KEY] = wrapper.predict(X_train)
+            _is_idx = getattr(self, '_last_is_ic_idx', None)
+            _X_tr_is = X_train if _is_idx is None else X_train[_is_idx]
+            pred_train[QUINTILE_MODEL_KEY] = wrapper.predict(_X_tr_is)
             pred_val[QUINTILE_MODEL_KEY] = wrapper.predict(X_val)
             logger.info(
                 f"    lgb_quintile done: rounds={booster.num_trees() // N_CLASSES}, "
@@ -1896,10 +1902,15 @@ class NGTrainer(V485Trainer):
             logger.info("Training downside_10d model (separate LightGBM pass)...")
         if not skip_legacy_downside:
             try:
-                df_full = self.load_data(start_date=start_date, end_date=end_date)
-                _result = self.prepare_features(df_full)
-                X, y_3d, y_5d, y_10d, y_15d, df_full = _result
-                y_downside = self._y_downside
+                # 复用主流程的 joblib 数据缓存 (同一运行内刚写入), 避免二次全量 SQL+JSON 解析。
+                # 缓存命中路径不经过 prepare_features → 不依赖 self._y_downside (缓存 miss 时
+                # 若走 getattr 会拿到 stale 值或 AttributeError 被下方 except 吞掉),
+                # 直接从 df 取 downside 标签
+                X, y_3d, y_5d, y_10d, y_15d, df_full = self._load_with_cache(
+                    start_date=start_date, end_date=end_date)
+                y_downside = (df_full['downside_10d'].values.copy()
+                              if 'downside_10d' in df_full.columns
+                              else np.zeros(len(df_full)))
 
                 # Use last portion as val (matching WF logic)
                 unique_dates = sorted(df_full['trade_date'].unique())
@@ -2123,6 +2134,14 @@ if __name__ == '__main__':
     parser.add_argument('--step-days', type=int, default=120)
     parser.add_argument('--fast-check', action='store_true',
                         help='Fast check mode: 2 WF windows, no model save')
+    parser.add_argument('--fast-check-train-days', type=int, default=500,
+                        help='fast-check 时把每个窗口 train 集截为最近 N 个交易日 '
+                             '(expanding 末尾窗口≈全量, 实测 36min; 截断后回到分钟级; 0=不截断)')
+    parser.add_argument('--is-ic-day-cap', type=int, default=0,
+                        help='IS 诊断 IC 的每日截面子采样上限 (0=关闭走全量; IS ICIR 进 WFER/'
+                             '北极星 V5 L4, 启用前需做一次新旧 WFER 档位对照, 见训练提速审计报告)')
+    parser.add_argument('--hgb-early-stop', action='store_true',
+                        help='HGB 启用 early stopping (默认关; 改变模型数值, 启用必须走完整验收 gate)')
     parser.add_argument('--parallel', type=int, default=1,
                         help='Number of parallel WF workers')
     parser.add_argument('--target-parallel', type=int, default=1,
@@ -2223,6 +2242,11 @@ if __name__ == '__main__':
         trainer._label_csv = args.label_csv
         # Check 9 复现元数据: _purge_days 此前从未赋值, pkl 里恒为 None
         trainer._purge_days = args.purge_days
+        # 提速开关 (默认关, 启用需按训练提速审计报告走验收 gate)
+        if args.is_ic_day_cap > 0:
+            trainer._is_ic_day_cap = args.is_ic_day_cap
+        if args.hgb_early_stop:
+            trainer._hgb_early_stop = True
         if args.hp_profile:
             trainer._hp_overrides = _HP_PROFILES[args.hp_profile]
             trainer._hp_profile_name = args.hp_profile
@@ -2234,6 +2258,7 @@ if __name__ == '__main__':
             trainer._fast_check_val_days = 60
             trainer._fast_check_test_days = 60
             trainer._fast_check_step_days = 60
+            trainer._fast_check_train_days = args.fast_check_train_days
         if args.parallel > 1:
             trainer._parallel_wf_workers = args.parallel
         if args.target_parallel > 1:
