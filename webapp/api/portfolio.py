@@ -139,6 +139,15 @@ def add_position():
         if field not in data:
             return jsonify({'success': False, 'error': f'缺少必填字段: {field}'}), 400
 
+    # 仅校验 key 是否存在不够: null / 字符串型数字会在下游 quantity*price 计算处崩溃, 这里显式转型并返回 400
+    try:
+        data['quantity'] = int(data['quantity'])
+        data['avg_cost'] = float(data['avg_cost'])
+    except (TypeError, ValueError):
+        return jsonify({'success': False, 'error': 'quantity 必须为整数, avg_cost 必须为数字'}), 400
+    if data['quantity'] <= 0 or data['avg_cost'] <= 0:
+        return jsonify({'success': False, 'error': 'quantity 与 avg_cost 必须大于 0'}), 400
+
     db = get_db_manager()
 
     # 检查是否已有该持仓

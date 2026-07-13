@@ -58,7 +58,9 @@ class TaskInfo:
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'started_at': self.started_at.isoformat() if self.started_at else None,
             'completed_at': self.completed_at.isoformat() if self.completed_at else None,
-            'metadata': self.metadata,
+            # 过滤 '_' 前缀的内部键 (_train_script/_base_dir/_python_exec 等),
+            # 否则 /api/tasks 响应会泄露服务器绝对路径。
+            'metadata': {k: v for k, v in self.metadata.items() if not k.startswith('_')},
             'duration': self._calculate_duration(),
         }
 

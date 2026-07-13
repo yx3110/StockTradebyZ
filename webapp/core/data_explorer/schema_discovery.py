@@ -71,7 +71,8 @@ def discover(db_path: str | Path, refresh: bool = False) -> dict[str, list[dict]
         if now - ts < _TTL_S:
             return val
 
-    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=30.0)
+    conn.execute("PRAGMA busy_timeout=30000")
     try:
         tables = [
             r[0] for r in conn.execute(

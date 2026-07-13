@@ -128,12 +128,16 @@ def update_query(
     params = list(changes.values()) + [query_id]
     conn = _connect(db)
     try:
-        conn.execute(
-            f"UPDATE saved_queries SET {set_clause}, "
-            "updated_at=CURRENT_TIMESTAMP WHERE id=?",
-            params,
-        )
-        conn.commit()
+        try:
+            conn.execute(
+                f"UPDATE saved_queries SET {set_clause}, "
+                "updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                params,
+            )
+            conn.commit()
+        except sqlite3.IntegrityError as e:
+            # name 有 UNIQUE 约束: 改名撞车时给出可读错误而非 500 (与 create_query 一致)
+            raise ValueError(f"saved query name already exists: {changes.get('name')}") from e
         return get_query(db, query_id, _conn=conn)
     finally:
         conn.close()

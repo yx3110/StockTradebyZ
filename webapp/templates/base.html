@@ -196,9 +196,9 @@
                         .then(data => {
                             if (data.success && data.results.length > 0) {
                                 dropdown.innerHTML = data.results.map(s =>
-                                    `<a class="dropdown-item py-1" href="/stock/${s.code}">
-                                        <code>${s.code}</code> <span>${s.name}</span>
-                                        <small class="text-muted float-end">${s.type || ''}</small>
+                                    `<a class="dropdown-item py-1" href="/stock/${encodeURIComponent(s.code)}">
+                                        <code>${escapeHtml(s.code)}</code> <span>${escapeHtml(s.name)}</span>
+                                        <small class="text-muted float-end">${escapeHtml(s.type || '')}</small>
                                     </a>`
                                 ).join('');
                                 dropdown.style.display = 'block';
@@ -206,6 +206,10 @@
                                 dropdown.innerHTML = '<span class="dropdown-item text-muted">无结果</span>';
                                 dropdown.style.display = 'block';
                             }
+                        })
+                        .catch(() => {
+                            // 网络/非 JSON 错误: 静默收起下拉, 不抛未捕获 Promise
+                            dropdown.style.display = 'none';
                         });
                 }, 250);
             });

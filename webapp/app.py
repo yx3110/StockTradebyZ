@@ -181,6 +181,13 @@ def register_error_handlers(app):
 
     @app.errorhandler(Exception)
     def handle_exception(error):
+        # HTTPException (abort(400/403/405/...) 及路由 404) 必须原样透传, 否则会被
+        # 统一改写成 500, 丢失正确状态码, 前端也拿不到该有的错误语义。
+        from werkzeug.exceptions import HTTPException
+        if isinstance(error, HTTPException):
+            if request.path.startswith('/api/'):
+                return jsonify({'error': error.name, 'message': error.description}), error.code
+            return error
         app.logger.error(f'Unhandled Exception: {error}', exc_info=True)
         if request.path.startswith('/api/'):
             return jsonify({'error': 'Internal Server Error', 'message': str(error)}), 500

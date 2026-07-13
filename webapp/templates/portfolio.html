@@ -1141,7 +1141,10 @@ function initTableSorting() {
             renderEvaluations(evaluationsData);
         } else if (tableId === 'recommendations-table') {
             sortData(recommendationsData, sortKey, newDir, sortType);
-            renderRecommendations(recommendationsData);
+            // 复用上次渲染的上下文, 否则 summary/mlVersion/portfolioRisk 丢失,
+            // 会隐藏组合健康卡片并清空汇总条 (排序不应改变这些)。
+            const a = window._recRenderArgs || {};
+            renderRecommendations(recommendationsData, a.summary, a.mlVersion, a.mlInfo, a.portfolioRisk);
         }
     });
 }
@@ -1268,12 +1271,12 @@ function renderPositions(positions) {
         let groupOptions = '<option value="">未分组</option>';
         groupsData.forEach(g => {
             const selected = pos.group_id === g.id ? 'selected' : '';
-            groupOptions += `<option value="${g.id}" ${selected}>${g.name}</option>`;
+            groupOptions += `<option value="${g.id}" ${selected}>${escapeHtml(g.name)}</option>`;
         });
 
         // 分组显示
         const groupBadge = pos.group_name
-            ? `<span class="badge" style="background-color: ${pos.group_color || '#6c757d'}">${pos.group_name}</span>`
+            ? `<span class="badge" style="background-color: ${pos.group_color || '#6c757d'}">${escapeHtml(pos.group_name)}</span>`
             : '<span class="text-muted">-</span>';
 
         tbody.append(`
@@ -1292,7 +1295,7 @@ function renderPositions(positions) {
                                 <li><a class="dropdown-item ${pos.group_id === g.id ? 'active' : ''}" href="#"
                                        onclick="setPositionGroup(${pos.id}, ${g.id}); return false;">
                                     <span class="badge me-2" style="background-color: ${g.color}">&nbsp;</span>
-                                    ${g.name}
+                                    ${escapeHtml(g.name)}
                                 </a></li>
                             `).join('')}
                         </ul>
@@ -1590,7 +1593,7 @@ function renderGroupFilter() {
         container.append(`
             <button type="button" class="btn btn-outline-secondary ${isActive}" data-group-id="${g.id}"
                     style="border-color: ${g.color}; ${isActive ? 'background-color: ' + g.color + '; color: white;' : ''}">
-                ${g.name}
+                ${escapeHtml(g.name)}
             </button>
         `);
     });
@@ -1611,8 +1614,8 @@ function renderGroupsList() {
                 <td>
                     <span class="badge" style="background-color: ${g.color}; width: 24px; height: 24px;">&nbsp;</span>
                 </td>
-                <td>${g.name}</td>
-                <td>${g.description || '-'}</td>
+                <td>${escapeHtml(g.name)}</td>
+                <td>${escapeHtml(g.description || '-')}</td>
                 <td>${g.sort_order || 0}</td>
                 <td>${g.position_count || 0}</td>
                 <td>
@@ -1977,7 +1980,7 @@ function renderRecTable(recommendations) {
 
         // 原因
         const reason = rec.action_reason || rec.reason || '-';
-        actionHtml += `<div style="font-size:10px;color:#999;margin-top:2px">${reason}</div>`;
+        actionHtml += `<div style="font-size:10px;color:#999;margin-top:2px">${escapeHtml(reason)}</div>`;
 
         // 盈亏%
         let plHtml = '-';
@@ -2202,8 +2205,8 @@ function renderImportPreview(positions, warnings) {
         tbody.append(`
             <tr class="${needsData ? 'table-warning' : ''}">
                 <td><input type="checkbox" class="import-row-check" data-idx="${idx}" checked></td>
-                <td><code>${p.code}</code></td>
-                <td>${p.name || '-'}</td>
+                <td><code>${escapeHtml(p.code)}</code></td>
+                <td>${escapeHtml(p.name || '-')}</td>
                 <td>${p.quantity}</td>
                 <td>${p.avg_cost?.toFixed(3) || '<span class="text-danger">缺失</span>'}</td>
                 <td>${p.current_price?.toFixed(3) || '<span class="text-danger">需补录</span>'}</td>
@@ -2663,13 +2666,8 @@ let ppsData = null;
 
 $('#btn-calc-score').click(calculatePPS);
 
-// Tab切换加载评分历史
-$('button[data-bs-toggle="tab"]').on('shown.bs.tab', function(e) {
-    const target = $(e.target).attr('data-bs-target');
-    if (target === '#score' && !ppsData) {
-        calculatePPS();
-    }
-});
+// 注意: '#score' tab 的懒加载已由文件顶部 ready() 内的 shown.bs.tab 处理器统一负责,
+// 这里不再重复绑定, 否则切到评分页会触发两次 calculatePPS (评分接口被重复调用)。
 
 function calculatePPSQuiet() {
     // 静默计算PPS (不显示loading, 只更新快览卡片)
@@ -3143,7 +3141,7 @@ function renderRebalanceSuggestions(suggestions) {
             <div class="alert alert-${color} py-2 px-3 mb-2 d-flex align-items-center">
                 <span class="badge bg-${color} me-2">${label}</span>
                 <small class="flex-grow-1">
-                    ${s.code ? '<code>' + (s.stock_name || '') + '(' + s.code + ')</code> ' : ''}${s.reason}
+                    ${s.code ? '<code>' + escapeHtml(s.stock_name || '') + '(' + escapeHtml(s.code) + ')</code> ' : ''}${escapeHtml(s.reason || '')}
                 </small>
                 <div class="btn-group btn-group-sm ms-2">
                     <button class="btn btn-outline-success btn-sm" onclick="updateSuggestion(${s.id}, 'executed')" title="已执行">
@@ -3188,7 +3186,7 @@ function renderImprovements(improvements) {
         container.append(`
             <div class="alert alert-${priColor} py-1 px-2 mb-1 small">
                 <span class="badge bg-${priColor} me-1">${priLabel}</span>
-                <strong>${imp.name}</strong> (${imp.current_score}/5):
+                <strong>${escapeHtml(imp.name)}</strong> (${imp.current_score}/5):
                 ${imp.suggestion}
             </div>
         `);

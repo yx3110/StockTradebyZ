@@ -253,13 +253,15 @@ function renderChart(body, typeOverride) {
   const xIdx = body.columns.indexOf(xCol);
   const yIdx = body.columns.indexOf(yCol);
   if (yIdx < 0) { label.textContent = "指定列不存在"; return; }
+  // xIdx 未校验时 r[xIdx] 会变成 r[-1]=undefined; 找不到 x 列则用行序号占位
+  const getX = (r, i) => (xIdx >= 0 ? r[xIdx] : i + 1);
 
   let options;
   if (type === "line") {
     options = {
       chart: { type: "line", height: 280, animations: { enabled: false } },
       series: [{ name: yCol, data: body.rows.map((r) => r[yIdx]) }],
-      xaxis: { categories: body.rows.map((r) => r[xIdx]), title: { text: xCol } },
+      xaxis: { categories: body.rows.map(getX), title: { text: xCol } },
       yaxis: { title: { text: yCol } },
       stroke: { width: 2 },
     };
@@ -268,7 +270,7 @@ function renderChart(body, typeOverride) {
       chart: { type: "scatter", height: 280, animations: { enabled: false } },
       series: [{
         name: `${xCol} vs ${yCol}`,
-        data: body.rows.map((r) => [r[xIdx], r[yIdx]]).filter((p) => p[0] !== null && p[1] !== null),
+        data: body.rows.map((r, i) => [getX(r, i), r[yIdx]]).filter((p) => p[0] !== null && p[1] !== null),
       }],
       xaxis: { title: { text: xCol } },
       yaxis: { title: { text: yCol } },
@@ -280,7 +282,7 @@ function renderChart(body, typeOverride) {
     options = {
       chart: { type: "bar", height: 280, animations: { enabled: false } },
       series: [{ name: yCol, data: sorted.map((r) => r[yIdx]) }],
-      xaxis: { categories: sorted.map((r) => r[xIdx]), title: { text: xCol } },
+      xaxis: { categories: sorted.map(getX), title: { text: xCol } },
       yaxis: { title: { text: yCol } },
     };
   } else if (type === "histogram") {
@@ -584,13 +586,15 @@ function downloadCsv() {
     return;
   }
   const { columns, rows } = state.lastResult;
-  const lines = [columns.join(",")];
+  const csvCell = (v) => {
+    if (v === null || v === undefined) return "";
+    const s = String(v);
+    return s.includes(",") || s.includes('"') || s.includes("\n") ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  // 表头也要走同样的转义, 否则含逗号/引号的列名会破坏 CSV 结构
+  const lines = [columns.map(csvCell).join(",")];
   for (const r of rows) {
-    lines.push(r.map((v) => {
-      if (v === null) return "";
-      const s = String(v);
-      return s.includes(",") || s.includes('"') ? `"${s.replace(/"/g, '""')}"` : s;
-    }).join(","));
+    lines.push(r.map(csvCell).join(","));
   }
   const blob = new Blob([lines.join("\n")], { type: "text/csv" });
   const a = document.createElement("a");

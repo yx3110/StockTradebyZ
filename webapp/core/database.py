@@ -818,6 +818,7 @@ class DatabaseManager:
 
     def get_position_by_code(self, code: str, status: str = 'holding') -> Optional[Dict]:
         """根据代码获取持仓"""
+        code = self._normalize_code(code)  # 与 add_position 存储口径一致, 防 000001 / 000001.SZ 漏配
         with self.get_webapp_db_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('''
@@ -837,7 +838,7 @@ class DatabaseManager:
                  profit_loss, profit_loss_pct, first_buy_date, last_update, status, notes)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
-                data['code'],
+                self._normalize_code(data['code']),  # 统一存 6 位裸码, 与 securities/其它模块口径一致
                 data.get('name', ''),
                 data['quantity'],
                 data['avg_cost'],

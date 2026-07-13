@@ -15,7 +15,7 @@ from datetime import datetime
 from typing import Dict, List, Any, Optional
 
 from core.task_manager import task_manager, TaskType
-from api._helpers import api_error_handler, task_progress_sse, get_db_manager
+from api._helpers import api_error_handler, task_progress_sse, get_db_manager, parse_int_arg
 
 
 logger = logging.getLogger(__name__)
@@ -84,6 +84,10 @@ def train_model():
     """启动模型训练任务"""
     data = request.get_json() or {}
     version = data.get('version', 'v3.9')
+    # 前端表单不发送 auto 字段, 但会带上用户填写的 start_date/end_date。
+    # 若两者都提供则默认走手动日期范围 (auto=False), 否则回退 --auto --months。
+    # 修复前: auto 恒为 True, 用户选择的日期范围被静默忽略。
+    has_explicit_range = bool(data.get('start_date') and data.get('end_date'))
     task_id = task_manager.submit_task(
         task_type=TaskType.MODEL_TRAINING,
         func=_run_model_training,
@@ -92,7 +96,7 @@ def train_model():
             'start_date': data.get('start_date'),
             'end_date': data.get('end_date'),
             'months': data.get('months', 6),
-            'auto': data.get('auto', True),
+            'auto': data.get('auto', not has_explicit_range),
             '_train_script': str(current_app.config['TRAIN_SCRIPT']),
             '_python_exec': current_app.config['PYTHON_EXECUTABLE'],
             '_base_dir': str(current_app.config['BASE_DIR']),
@@ -116,7 +120,7 @@ def train_stream():
 def get_training_history():
     """获取训练历史记录 (DB 持久化层)"""
     version = request.args.get('version')
-    limit = int(request.args.get('limit', 50))
+    limit = parse_int_arg('limit', 50)
     return jsonify({'success': True,
                     'history': get_db_manager().get_training_history(version, limit)})
 
@@ -312,14 +316,20 @@ def _load_feature_importance(version: str) -> List[Dict[str, Any]]:
     # 尝试从CSV文件加载 (v3.6格式)
     csv_file = version_dir / 'feature_importance_target_1d.csv' if version_dir else None
     if csv_file and csv_file.exists():
+        def _safe_float(v):
+            # 空单元格 row.get(k,0) 返回 ''(键存在), float('') 会抛异常整个加载失败
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                return 0.0
         with open(csv_file, 'r') as f:
             reader = csv.DictReader(f)
             for row in reader:
                 features.append({
                     'name': row.get('feature', ''),
-                    'lgb_importance': float(row.get('lgb_importance', 0)),
-                    'xgb_importance': float(row.get('xgb_importance', 0)),
-                    'avg_importance': float(row.get('avg_importance', 0))
+                    'lgb_importance': _safe_float(row.get('lgb_importance', 0)),
+                    'xgb_importance': _safe_float(row.get('xgb_importance', 0)),
+                    'avg_importance': _safe_float(row.get('avg_importance', 0))
                 })
         features.sort(key=lambda x: x['avg_importance'], reverse=True)
         return features
@@ -1177,10 +1187,13 @@ def _compute_north_star_v2(version: str) -> Dict[str, Any]:
     # 计算评分
     result = _run_north_star_evaluation(str(report_dir), version)
 
-    # 写入缓存
+    # 写入缓存 (原子写: 先写临时文件再 os.replace, 防止 threaded Flask 下并发写产生半截 JSON,
+    # 导致后续 json.load 读到损坏内容)
     try:
-        with open(cache_file, 'w', encoding='utf-8') as f:
+        tmp_file = cache_file.with_suffix(cache_file.suffix + f'.tmp.{os.getpid()}')
+        with open(tmp_file, 'w', encoding='utf-8') as f:
             json.dump(result, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_file, cache_file)
     except Exception as e:
         logger.error(f'写入北极星缓存失败: {e}')
 

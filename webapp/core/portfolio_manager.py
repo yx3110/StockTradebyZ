@@ -37,6 +37,14 @@ class PortfolioManager:
     def __init__(self, stock_db_path: Path, webapp_db_path: Path):
         self.stock_db_path = stock_db_path
         self.webapp_db_path = webapp_db_path
+        self._analyzer = None  # 惰性缓存 PositionAnalyzer, 避免每个持仓都重载 ML pickle
+
+    def _get_analyzer(self):
+        """惰性构造并复用单个 PositionAnalyzer (其 __init__ 会加载全部 ML 模型 pickle)。"""
+        if self._analyzer is None:
+            from core.position_analyzer import PositionAnalyzer
+            self._analyzer = PositionAnalyzer(self.stock_db_path)
+        return self._analyzer
 
     # ==================== 2a. 建仓质量门控 ====================
 
@@ -118,10 +126,13 @@ class PortfolioManager:
         atr = self._get_atr(code)
         if atr is None or atr <= 0:
             # Fallback: 8% stop loss, 15% take profit
+            # 深套持仓 (current_price << avg_cost) 时 avg_cost*0.92 可能高于现价,
+            # 与 ATR 分支一致地封顶在 current_price*0.98, 否则止损价会设在现价之上。
+            fallback_sl = round(min(avg_cost * 0.92, current_price * 0.98), 2)
             return {
-                'stop_loss': round(avg_cost * 0.92, 2),
+                'stop_loss': fallback_sl,
                 'take_profit': round(current_price * 1.15, 2),
-                'trailing_stop': round(avg_cost * 0.92, 2),
+                'trailing_stop': fallback_sl,
                 'atr': None,
             }
 
@@ -488,8 +499,7 @@ class PortfolioManager:
     def _get_ml_score(self, code: str) -> Optional[float]:
         """获取最新ML评分 (from position_analyzer)"""
         try:
-            from core.position_analyzer import PositionAnalyzer
-            analyzer = PositionAnalyzer(self.stock_db_path)
+            analyzer = self._get_analyzer()
             result = analyzer._get_ml_score(code)
             if result and isinstance(result, dict):
                 return result.get('ml_score')
@@ -504,7 +514,8 @@ class PortfolioManager:
         try:
             if '.' in code:
                 code = code.split('.')[0]
-            with closing(sqlite3.connect(self.stock_db_path)) as conn:
+            with closing(sqlite3.connect(self.stock_db_path, timeout=30.0)) as conn:
+                conn.execute("PRAGMA busy_timeout=30000")
                 cursor = conn.cursor()
                 cursor.execute(
                     "SELECT id FROM securities WHERE code = ? LIMIT 1", (code,))
@@ -539,7 +550,8 @@ class PortfolioManager:
         try:
             if '.' in code:
                 code = code.split('.')[0]
-            with closing(sqlite3.connect(self.stock_db_path)) as conn:
+            with closing(sqlite3.connect(self.stock_db_path, timeout=30.0)) as conn:
+                conn.execute("PRAGMA busy_timeout=30000")
                 cursor = conn.cursor()
                 cursor.execute("""
                     SELECT close FROM daily_quotes
@@ -557,7 +569,8 @@ class PortfolioManager:
         try:
             if '.' in code:
                 code = code.split('.')[0]
-            with closing(sqlite3.connect(self.stock_db_path)) as conn:
+            with closing(sqlite3.connect(self.stock_db_path, timeout=30.0)) as conn:
+                conn.execute("PRAGMA busy_timeout=30000")
                 cursor = conn.cursor()
                 cursor.execute(
                     "SELECT id FROM securities WHERE code = ? LIMIT 1", (code,))
@@ -588,7 +601,8 @@ class PortfolioManager:
         try:
             if '.' in code:
                 code = code.split('.')[0]
-            with closing(sqlite3.connect(self.stock_db_path)) as conn:
+            with closing(sqlite3.connect(self.stock_db_path, timeout=30.0)) as conn:
+                conn.execute("PRAGMA busy_timeout=30000")
                 cursor = conn.cursor()
                 cursor.execute(
                     "SELECT industry FROM securities WHERE code = ? LIMIT 1",
@@ -605,7 +619,8 @@ class PortfolioManager:
     def _update_position_field(self, position_id: int, field: str, value):
         """更新单个持仓字段"""
         try:
-            with closing(sqlite3.connect(self.webapp_db_path)) as conn:
+            with closing(sqlite3.connect(self.webapp_db_path, timeout=30.0)) as conn:
+                conn.execute("PRAGMA busy_timeout=30000")
                 cursor = conn.cursor()
                 cursor.execute(
                     f'UPDATE positions SET {field} = ? WHERE id = ?',

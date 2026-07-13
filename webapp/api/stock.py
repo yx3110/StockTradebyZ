@@ -4,7 +4,7 @@
 import logging
 from flask import Blueprint, jsonify, request
 
-from api._helpers import api_error_handler, get_db_manager
+from api._helpers import api_error_handler, get_db_manager, parse_int_arg
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +22,7 @@ def search():
         limit: 返回数量限制 (默认20)
     """
     query = request.args.get('q', '').strip()
-    limit = int(request.args.get('limit', 20))
+    limit = parse_int_arg('limit', 20)
     if not query:
         return jsonify({'success': True, 'results': []})
     results = get_db_manager().search_stocks(query, limit=limit)
@@ -33,7 +33,7 @@ def search():
 @api_error_handler
 def kline(code: str):
     """获取K线数据（OHLCV + MA）"""
-    days = int(request.args.get('days', 120))
+    days = parse_int_arg('days', 120)
     data = get_db_manager().get_stock_kline(code, days=days)
     return jsonify({'success': True, 'data': data})
 
@@ -42,7 +42,7 @@ def kline(code: str):
 @api_error_handler
 def technical(code: str):
     """获取技术指标（KDJ/MACD/RSI/BOLL）"""
-    days = int(request.args.get('days', 120))
+    days = parse_int_arg('days', 120)
     data = get_db_manager().get_stock_technical(code, days=days)
     return jsonify({'success': True, 'data': data})
 

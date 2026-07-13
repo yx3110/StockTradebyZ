@@ -90,8 +90,10 @@ class ReportParser:
             code = match.group(1)
             name = match.group(2).strip()
 
-            # 尝试提取整行数据
-            line = content[match.start():content.find('\n', match.start())]
+            # 尝试提取整行数据 (末行无换行符时 find 返回 -1, 需退化为行尾, 否则丢最后一个字符/单元格)
+            nl = content.find('\n', match.start())
+            end = nl if nl != -1 else len(content)
+            line = content[match.start():end]
             cells = [cell.strip() for cell in line.split('|')[1:-1]]
 
             stock_info = {

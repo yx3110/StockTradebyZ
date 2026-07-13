@@ -245,19 +245,23 @@ def _check_data_completeness(db_path: str, start_date: str, end_date: str) -> Di
 
 def _get_daily_stats(db_path: str, table: str, start_date: str, end_date: str, limit: int) -> List[Dict]:
     """获取每日数据统计"""
-    conn = sqlite3.connect(db_path)
-
-    # 确定日期列和计数列
+    # 确定日期列和计数列 (table 白名单 — table 来自 request.args, 必须校验以防 SQL 注入 / 任意表读取)
     table_config = {
         'v39_feature_cache': {'date_col': 'trade_date', 'count_col': 'code', 'expected': 5400},
         'daily_quotes': {'date_col': 'trade_date', 'count_col': 'security_id', 'expected': 7300},
         'daily_basic': {'date_col': 'trade_date', 'count_col': 'security_id', 'expected': 5600},
         'technical_indicators': {'date_col': 'trade_date', 'count_col': 'security_id', 'expected': 7300},
     }
-    config = table_config.get(table, {'date_col': 'trade_date', 'count_col': 'security_id', 'expected': 7300})
+    config = table_config.get(table)
+    if config is None:
+        logger.warning('_get_daily_stats: 非法 table 参数被拒绝: %r', table)
+        return []
     date_col = config['date_col']
     count_col = config['count_col']
     expected = config['expected']
+
+    conn = sqlite3.connect(db_path, timeout=30.0)
+    conn.execute("PRAGMA busy_timeout=30000")
 
     try:
         query = f"""
@@ -294,15 +298,31 @@ def _get_daily_stats(db_path: str, table: str, start_date: str, end_date: str, l
 
 
 def _get_missing_dates(db_path: str, table: str, start_date: str, end_date: str, threshold: float) -> List[str]:
-    """获取缺失或不完整的日期"""
-    daily_stats = _get_daily_stats(db_path, table, start_date, end_date, 1000)
+    """获取缺失或不完整的日期。
 
-    # 找出低于阈值的日期
-    missing = [
-        stat['date'] for stat in daily_stats
-        if stat['completeness'] < threshold
-    ]
+    以 daily_quotes 的交易日为期望全集: 目标表中某交易日
+    (a) 完整度低于阈值, 或 (b) 完全没有数据, 都算缺失。
+    修复前只看 _get_daily_stats 返回的日期 (GROUP BY 只含有数据的日期),
+    完全缺失的交易日被静默漏掉, 且 LIMIT 1000 会截断长区间。
+    """
+    with closing(sqlite3.connect(db_path, timeout=30.0)) as conn:
+        conn.execute("PRAGMA busy_timeout=30000")
+        trading_dates = [
+            r[0] for r in conn.execute(
+                "SELECT DISTINCT trade_date FROM daily_quotes "
+                "WHERE trade_date >= ? AND trade_date <= ? ORDER BY trade_date",
+                (start_date, end_date)
+            ).fetchall()
+        ]
 
+    if not trading_dates:
+        return []
+
+    # limit 按交易日数量给足, 避免硬编码 1000 截断
+    daily_stats = _get_daily_stats(db_path, table, start_date, end_date, len(trading_dates) + 10)
+    ok_dates = {s['date'] for s in daily_stats if s['completeness'] >= threshold}
+
+    missing = [d for d in trading_dates if d not in ok_dates]
     return sorted(missing)
 
 

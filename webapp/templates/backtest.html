@@ -705,16 +705,17 @@ function monitorBacktestProgress(taskId, mlVersion) {
         // 如果收到过消息，说明任务可能已完成，查询最终状态
         if (messageCount > 0) {
             $.ajax({
-                url: '/api/tasks/',
+                // 查询本次回测的具体 task, 而不是全局最新任务 (tasks[0] 可能是别的任务)
+                url: '/api/tasks/' + taskId,
                 success: function(response) {
-                    if (response.success && response.tasks.length > 0) {
-                        const latestTask = response.tasks[0];
+                    if (response.success && response.task) {
+                        const latestTask = response.task;
                         if (latestTask.status === 'completed') {
                             const output = latestTask.result?.output || '';
                             if (output.includes('❌') || output.includes('失败')) {
                                 $('#progress-bar').css('width', '100%').text('100%');
                                 $('#progress-status').removeClass('alert-info').addClass('alert-warning')
-                                    .html('<strong>回测完成但有错误:</strong><br><pre style="white-space:pre-wrap;font-size:12px;max-height:200px;overflow:auto;">' + output + '</pre>');
+                                    .html('<strong>回测完成但有错误:</strong><br><pre style="white-space:pre-wrap;font-size:12px;max-height:200px;overflow:auto;">' + escapeHtml(output) + '</pre>');
                             } else {
                                 $('#progress-bar').css('width', '100%').text('100%');
                                 $('#progress-status').removeClass('alert-info').addClass('alert-success')

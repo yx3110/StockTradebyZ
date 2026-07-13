@@ -1642,6 +1642,8 @@ def main():
     # 回测参数
     parser.add_argument('--capital', type=float, default=5000000,
                        help='初始资金 (默认: 5000000)')
+    parser.add_argument('--commission', type=float, default=0.0003,
+                       help='佣金费率 (默认: 0.0003)')
     parser.add_argument('--workers', type=int, default=6,
                        help='并行工作进程数 (默认: 6)')
     parser.add_argument('--min-score', type=float, default=80.0,
@@ -1665,7 +1667,8 @@ def main():
     engine = ExtensibleBacktestEngine(
         initial_capital=args.capital,
         max_workers=args.workers,
-        min_score_threshold=args.min_score
+        min_score_threshold=args.min_score,
+        commission_rate=args.commission
     )
 
     # 列出模型

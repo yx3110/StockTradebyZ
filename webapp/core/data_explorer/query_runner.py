@@ -96,7 +96,8 @@ def _df_to_jsonable_rows(df: pd.DataFrame) -> list[list]:
     for _, row in df.iterrows():
         converted: list = []
         for v in row.tolist():
-            if isinstance(v, float) and math.isnan(v):
+            if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+                # NaN 与 ±Inf 都会被 jsonify(allow_nan) 序列化成非法 JSON token, 统一转 None
                 converted.append(None)
             elif isinstance(v, pd.Timestamp):
                 converted.append(v.isoformat())

@@ -155,7 +155,7 @@ let volumeChart = null;
 let kdjChart = null;
 let macdChart = null;
 let rsiChart = null;
-let currentDays = 120;
+let currentDays = 60;  // 与默认高亮的 60日 按钮一致 (原为 120 与 UI 不符)
 
 $(document).ready(function() {
     loadStockData(currentDays);
@@ -198,7 +198,7 @@ function loadStockData(days) {
 
 function updateHeaderInfo(data) {
     const latest = data[data.length - 1];
-    const pct = latest.price_change_pct || 0;
+    const pct = (latest.price_change_pct || 0) * 100;  // DB 存小数(0.05=5%), 显示需转百分数
     const isUp = pct >= 0;
     const colorClass = isUp ? 'price-up' : 'price-down';
     const arrow = isUp ? '▲' : '▼';

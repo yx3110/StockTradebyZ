@@ -448,9 +448,15 @@ function loadSystemStatus() {
 
                 // 数据新鲜度
                 if (stats.latest_date) {
-                    const today = new Date();
-                    const latestDate = new Date(stats.latest_date);
-                    const diffDays = Math.floor((today - latestDate) / (1000 * 60 * 60 * 24));
+                    // 'YYYY-MM-DD' 会被 new Date() 当 UTC 午夜解析, 与本地 today 相减在非 UTC 时区产生 off-by-one。
+                    // 统一按本地午夜计算天数差。
+                    const p = String(stats.latest_date).split('-');
+                    const t = new Date();
+                    const todayLocal = new Date(t.getFullYear(), t.getMonth(), t.getDate());
+                    const latestDate = (p.length === 3)
+                        ? new Date(+p[0], +p[1] - 1, +p[2])
+                        : new Date(stats.latest_date);
+                    const diffDays = Math.round((todayLocal - latestDate) / (1000 * 60 * 60 * 24));
                     if (diffDays === 0) {
                         $('#data-freshness').text('数据已是最新');
                     } else if (diffDays === 1) {
@@ -488,9 +494,9 @@ function loadModelSummary() {
             if (response.success) {
                 const summary = response.summary;
 
-                $('#total-models').text(summary.total_versions);
-                $('#trained-models').text(summary.trained_versions + ' 个已训练');
-                $('#model-size').text(summary.total_size_mb.toFixed(1) + ' MB');
+                $('#total-models').text(summary.total_models);
+                $('#trained-models').text(summary.trained_models + ' 个已训练');
+                $('#model-size').text((summary.total_size_mb || 0).toFixed(1) + ' MB');
 
                 if (summary.latest_training) {
                     $('#latest-training').text(summary.latest_training.substring(0, 10));
@@ -500,8 +506,9 @@ function loadModelSummary() {
                 let versionsHtml = '';
                 const versions = summary.versions || [];
                 versions.slice(0, 4).forEach(function(v) {
-                    const statusClass = v.has_model ? 'success' : 'secondary';
-                    const statusText = v.has_model ? '已训练' : '未训练';
+                    const isTrained = (v.status === 'trained');
+                    const statusClass = isTrained ? 'success' : 'secondary';
+                    const statusText = isTrained ? '已训练' : '未训练';
                     versionsHtml += `
                         <div class="d-flex justify-content-between align-items-center mb-2">
                             <span><strong>${v.version}</strong> <small class="text-muted">${v.name}</small></span>
@@ -785,7 +792,7 @@ function loadMarketIndices() {
                 });
 
                 sorted.forEach(function(idx) {
-                    const pct = idx.price_change_pct || 0;
+                    const pct = (idx.price_change_pct || 0) * 100;  // DB 存小数(0.05=5%), 显示需转百分数
                     const isUp = pct >= 0;
                     const colorClass = isUp ? 'text-danger' : 'text-success';
                     const bgClass = isUp ? 'border-danger' : 'border-success';

@@ -848,9 +848,9 @@ function fillMissingDates() {
         },
         success: function(response) {
             if (response.success && response.missing_dates.length > 0) {
-                const dates = response.missing_dates;
-                const firstMissing = dates[dates.length - 1];  // 最早的缺失日期
-                const lastMissing = dates[0];  // 最晚的缺失日期
+                const dates = response.missing_dates;  // 后端返回已按日期升序排列
+                const firstMissing = dates[0];  // 最早的缺失日期
+                const lastMissing = dates[dates.length - 1];  // 最晚的缺失日期
 
                 $('#backfill-start').val(firstMissing);
                 $('#backfill-end').val(lastMissing);

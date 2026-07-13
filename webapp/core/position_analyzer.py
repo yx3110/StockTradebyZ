@@ -117,7 +117,8 @@ class PositionAnalyzer:
         # 如果两个都是None/0，尝试从数据库获取价格
         if (current_price is None or current_price == 0) and (avg_cost is None or avg_cost == 0):
             try:
-                conn = sqlite3.connect(self.stock_db_path)
+                conn = sqlite3.connect(self.stock_db_path, timeout=30.0)
+                conn.execute("PRAGMA busy_timeout=30000")
                 cursor = conn.execute("""
                     SELECT q.close FROM daily_quotes q
                     JOIN securities s ON q.security_id = s.id
@@ -291,7 +292,8 @@ class PositionAnalyzer:
     def _get_latest_trade_date(self) -> str:
         """获取最新交易日期"""
         try:
-            conn = sqlite3.connect(self.stock_db_path)
+            conn = sqlite3.connect(self.stock_db_path, timeout=30.0)
+            conn.execute("PRAGMA busy_timeout=30000")
             cursor = conn.execute("""
                 SELECT MAX(trade_date) FROM daily_quotes
             """)
@@ -401,7 +403,8 @@ class PositionAnalyzer:
         Returns: 0~100 分, 或 None
         """
         try:
-            conn = sqlite3.connect(self.stock_db_path)
+            conn = sqlite3.connect(self.stock_db_path, timeout=30.0)
+            conn.execute("PRAGMA busy_timeout=30000")
             cursor = conn.execute("SELECT id FROM securities WHERE code = ?", (code,))
             row = cursor.fetchone()
             if not row:
@@ -716,7 +719,8 @@ class PositionAnalyzer:
     def _get_technical_analysis(self, code: str, trade_date: str) -> Dict:
         """获取技术分析数据"""
         try:
-            conn = sqlite3.connect(self.stock_db_path)
+            conn = sqlite3.connect(self.stock_db_path, timeout=30.0)
+            conn.execute("PRAGMA busy_timeout=30000")
 
             # 获取security_id
             cursor = conn.execute("SELECT id FROM securities WHERE code = ?", (code,))
@@ -728,7 +732,7 @@ class PositionAnalyzer:
 
             # 获取最近的技术指标
             df = pd.read_sql_query("""
-                SELECT t.*, q.close, q.high, q.low
+                SELECT t.*, q.close, q.high, q.low, q.ma5, q.ma20, q.ma60
                 FROM technical_indicators t
                 JOIN daily_quotes q ON t.security_id = q.security_id AND t.trade_date = q.trade_date
                 WHERE t.security_id = ? AND t.trade_date <= ?
@@ -743,41 +747,64 @@ class PositionAnalyzer:
 
             latest = df.iloc[0]
 
+            def _num(key):
+                """Return the scalar value or None (NaN/missing collapse to None)."""
+                v = latest.get(key)
+                if v is None:
+                    return None
+                try:
+                    if pd.isna(v):
+                        return None
+                except (TypeError, ValueError):
+                    pass
+                return v
+
             # 趋势判断
             trend = self._judge_trend(df)
 
-            # RSI分析
-            rsi = latest.get('rsi_14', 50)
+            # RSI分析 (technical_indicators 列为 rsi6/rsi12/rsi24, 无 rsi_14)
+            rsi = _num('rsi12')
 
-            # MACD信号
-            macd = latest.get('macd', 0)
-            macd_signal = latest.get('macd_signal', 0)
-            macd_sig = 'bullish' if macd > macd_signal else 'bearish'
+            # MACD信号 (技术表列为 macd_dif / macd_dea, 无 macd/macd_signal)
+            macd = _num('macd_dif')
+            macd_signal = _num('macd_dea')
+            if macd is None or macd_signal is None:
+                macd_sig = 'neutral'
+            else:
+                macd_sig = 'bullish' if macd > macd_signal else 'bearish'
 
             # KDJ信号
-            kdj_k = latest.get('kdj_k', 50)
-            kdj_d = latest.get('kdj_d', 50)
-            kdj_sig = 'overbought' if kdj_k > 80 else ('oversold' if kdj_k < 20 else 'neutral')
+            kdj_k = _num('kdj_k')
+            kdj_d = _num('kdj_d')
+            if kdj_k is None:
+                kdj_sig = 'unknown'
+            else:
+                kdj_sig = 'overbought' if kdj_k > 80 else ('oversold' if kdj_k < 20 else 'neutral')
 
-            # 支撑阻力
-            support = df['low'].tail(10).min()
-            resistance = df['high'].tail(10).max()
+            # 支撑阻力: df 按 trade_date DESC 排序, head(10) 才是最近 10 天
+            support = df['low'].head(10).min()
+            resistance = df['high'].head(10).max()
+
+            if rsi is None:
+                rsi_signal = 'unknown'
+            else:
+                rsi_signal = 'overbought' if rsi > 70 else ('oversold' if rsi < 30 else 'neutral')
 
             return {
                 'trend': trend['direction'],
                 'trend_strength': trend['strength'],
                 'rsi': rsi,
-                'rsi_signal': 'overbought' if rsi > 70 else ('oversold' if rsi < 30 else 'neutral'),
+                'rsi_signal': rsi_signal,
                 'macd_signal': macd_sig,
                 'kdj_k': kdj_k,
                 'kdj_d': kdj_d,
                 'kdj_signal': kdj_sig,
                 'support': support,
                 'resistance': resistance,
-                'ma5': latest.get('ma_5'),
-                'ma20': latest.get('ma_20'),
-                'ma60': latest.get('ma_60'),
-                'bbi': latest.get('bbi')
+                'ma5': _num('ma5'),
+                'ma20': _num('ma20'),
+                'ma60': _num('ma60'),
+                'bbi': _num('bbi')
             }
 
         except Exception as e:
@@ -818,7 +845,8 @@ class PositionAnalyzer:
                                  avg_cost: float, current_price: float) -> Dict:
         """计算风险指标"""
         try:
-            conn = sqlite3.connect(self.stock_db_path)
+            conn = sqlite3.connect(self.stock_db_path, timeout=30.0)
+            conn.execute("PRAGMA busy_timeout=30000")
 
             # 获取security_id
             cursor = conn.execute("SELECT id FROM securities WHERE code = ?", (code,))
@@ -861,9 +889,9 @@ class PositionAnalyzer:
                 atr = current_price * 0.02  # 默认2%的ATR
             atr_pct = atr / current_price * 100 if current_price and current_price > 0 else 2
 
-            # 20日波动率
+            # 20日波动率: df 按 trade_date DESC 排序, head(20) 才是最近 20 天的收益
             returns = df['close'].pct_change().dropna()
-            volatility_20d = returns.tail(20).std() * np.sqrt(252) * 100 if len(returns) >= 20 else 30
+            volatility_20d = returns.head(20).std() * np.sqrt(252) * 100 if len(returns) >= 20 else 30
 
             # 动态止损 (基于ATR)
             atr_multiplier = 2.5  # 2.5倍ATR作为止损距离
@@ -998,7 +1026,8 @@ class PositionAnalyzer:
     def _get_fundamental_data(self, code: str, trade_date: str) -> Dict:
         """获取基本面数据 + 行业信息"""
         try:
-            conn = sqlite3.connect(self.stock_db_path)
+            conn = sqlite3.connect(self.stock_db_path, timeout=30.0)
+            conn.execute("PRAGMA busy_timeout=30000")
 
             cursor = conn.execute("SELECT id FROM securities WHERE code = ?", (code,))
             row = cursor.fetchone()
@@ -1282,7 +1311,8 @@ class PositionAnalyzer:
                 if avg_cost is None or current_price is None:
                     code_clean = pos['code'].split('.')[0] if '.' in str(pos.get('code', '')) else pos.get('code', '')
                     try:
-                        conn = sqlite3.connect(self.stock_db_path)
+                        conn = sqlite3.connect(self.stock_db_path, timeout=30.0)
+                        conn.execute("PRAGMA busy_timeout=30000")
                         cursor = conn.execute("""
                             SELECT q.close FROM daily_quotes q
                             JOIN securities s ON q.security_id = s.id

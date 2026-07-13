@@ -12,6 +12,19 @@ const APP_CONFIG = {
 // 工具函数
 const Utils = {
     /**
+     * HTML 转义 (防止 XSS): 用于把用户输入拼进 innerHTML/.html()/.append() 之前
+     */
+    escapeHtml(value) {
+        if (value === null || value === undefined) return '';
+        return String(value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    },
+
+    /**
      * 格式化日期
      */
     formatDate(dateStr) {
@@ -85,7 +98,7 @@ const Utils = {
         const toast = $(`
             <div class="toast align-items-center text-white ${bgClass} border-0" role="alert">
                 <div class="d-flex">
-                    <div class="toast-body">${message}</div>
+                    <div class="toast-body">${Utils.escapeHtml(message)}</div>
                     <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button>
                 </div>
             </div>
@@ -264,5 +277,6 @@ $(document).ready(function() {
 // 暴露到全局
 window.APP_CONFIG = APP_CONFIG;
 window.Utils = Utils;
+window.escapeHtml = Utils.escapeHtml;  // 便捷全局引用, 供模板内联脚本转义用户输入
 window.API = API;
 window.SSEConnection = SSEConnection;

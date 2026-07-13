@@ -555,7 +555,8 @@ class PortfolioScorer:
         returns_matrix = []  # each row = daily returns for one stock
 
         try:
-            with closing(sqlite3.connect(self.stock_db_path)) as conn:
+            with closing(sqlite3.connect(self.stock_db_path, timeout=30.0)) as conn:
+                conn.execute("PRAGMA busy_timeout=30000")
                 cursor = conn.cursor()
                 for p in positions:
                     code = p.get('code', '')
@@ -748,7 +749,8 @@ class PortfolioScorer:
     def _calc_rebalance_follow_rate(self) -> Optional[float]:
         """再平衡建议执行率 (from management engine)"""
         try:
-            with closing(sqlite3.connect(self.webapp_db_path)) as conn:
+            with closing(sqlite3.connect(self.webapp_db_path, timeout=30.0)) as conn:
+                conn.execute("PRAGMA busy_timeout=30000")
                 cursor = conn.cursor()
                 cursor.execute(
                     "SELECT status, COUNT(*) FROM rebalance_suggestions GROUP BY status")
@@ -882,7 +884,8 @@ class PortfolioScorer:
         # Bonus for active risk management (management engine running)
         bonus = 0
         try:
-            with closing(sqlite3.connect(self.webapp_db_path)) as conn:
+            with closing(sqlite3.connect(self.webapp_db_path, timeout=30.0)) as conn:
+                conn.execute("PRAGMA busy_timeout=30000")
                 cursor = conn.cursor()
                 cursor.execute(
                     "SELECT market_regime, target_exposure_pct FROM portfolio_risk_state "
@@ -1053,7 +1056,8 @@ class PortfolioScorer:
         if not rec_id:
             return
         try:
-            with closing(sqlite3.connect(self.webapp_db_path)) as conn:
+            with closing(sqlite3.connect(self.webapp_db_path, timeout=30.0)) as conn:
+                conn.execute("PRAGMA busy_timeout=30000")
                 conn.execute(
                     "UPDATE recommendations SET is_executed = 1, executed_at = CURRENT_TIMESTAMP WHERE id = ?",
                     (rec_id,))

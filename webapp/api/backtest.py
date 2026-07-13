@@ -4,6 +4,7 @@
 import os
 import re
 import time
+import select
 import subprocess
 import logging
 import json
@@ -246,6 +247,8 @@ def _run_backtest_task(progress_callback, **params):
         ]
         if params.get('initial_capital'):
             cmd.extend(['--capital', str(params['initial_capital'])])
+        if params.get('commission') is not None:
+            cmd.extend(['--commission', str(params['commission'])])
 
         progress_callback(1, f'启动回测: {ml_version} ({start_date} ~ {end_date})')
 
@@ -261,9 +264,21 @@ def _run_backtest_task(progress_callback, **params):
         output_lines = []
         current_progress = 1.0
         start_time = time.time()
+        task_timeout = params.get('_task_timeout', 3600)
+        deadline = start_time + task_timeout
 
         try:
             while True:
+                # 有界等待可读, 防止子进程挂起(存活但无输出且 stdout 未关闭)时
+                # readline() 永久阻塞、泄漏 ThreadPoolExecutor worker。
+                if time.time() > deadline:
+                    process.kill()
+                    raise Exception(f'回测超时（超过 {task_timeout/3600:.1f} 小时）')
+                rlist, _, _ = select.select([process.stdout], [], [], 1.0)
+                if not rlist:
+                    if process.poll() is not None:
+                        break
+                    continue
                 line = process.stdout.readline()
                 if not line and process.poll() is not None:
                     break

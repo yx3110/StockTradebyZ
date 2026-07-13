@@ -32,13 +32,15 @@ def detect_market_regime(stock_db_path) -> str:
     try:
         with closing(sqlite3.connect(stock_db_path, timeout=30.0)) as conn:
             conn.execute("PRAGMA busy_timeout=30000")
+            # 沪深300 指数在 securities 中带交易所后缀存储 (A股为6位裸码, 指数为 000300.SH)
             rows = conn.execute("""
                 SELECT dq.close FROM daily_quotes dq
                 JOIN securities s ON dq.security_id = s.id
-                WHERE s.code IN ('000300', '399300')
+                WHERE s.code = '000300.SH'
                 ORDER BY dq.trade_date DESC LIMIT 60
             """).fetchall()
         if len(rows) < 20:
+            logger.warning("detect_market_regime: 沪深300(000300.SH) 仅取到 %d 行, 退化为 neutral", len(rows))
             return 'neutral'
         prices = [r[0] for r in reversed(rows)]
         ret_20d = (prices[-1] - prices[-20]) / prices[-20]

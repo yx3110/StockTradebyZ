@@ -20,11 +20,15 @@ def get_all_tasks():
     task_type = request.args.get('type')
     status_filter = request.args.get('status')
 
-    all_tasks = task_manager.get_all_tasks(limit=limit)
+    # 先取足够大的集合, 过滤后再截断 —— 否则 type/status 过滤发生在 limit 截断之后,
+    # 会把命中项挡在窗口外 (例如新任务刷屏时按 type 过滤可能返回空)。
+    fetch_limit = max(limit, 1000) if (task_type or status_filter) else limit
+    all_tasks = task_manager.get_all_tasks(limit=fetch_limit)
     if task_type:
         all_tasks = [t for t in all_tasks if t.get('type') == task_type]
     if status_filter:
         all_tasks = [t for t in all_tasks if t.get('status') == status_filter]
+    all_tasks = all_tasks[:limit]
 
     return jsonify({'success': True, 'tasks': all_tasks, 'total': len(all_tasks)})
 
@@ -92,6 +96,6 @@ def cancel_task(task_id: str):
 @api_error_handler
 def cleanup_tasks():
     """清理旧任务 (默认 24h)"""
-    max_age_hours = (request.get_json() or {}).get('max_age_hours', 24)
+    max_age_hours = (request.get_json(silent=True) or {}).get('max_age_hours', 24)
     task_manager.cleanup_old_tasks(max_age_hours=max_age_hours)
     return jsonify({'success': True, 'message': f'已清理 {max_age_hours} 小时前的任务'})
