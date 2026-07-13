@@ -2220,6 +2220,11 @@ def main():
     parser.add_argument('--version', required=True, help='NG version (必须显式指定, 如 ng1.0.1)')
     parser.add_argument('--penalty-power', type=float, default=1.5,
                         help='Risk-adjusted label penalty power (default: 1.5, ng1.0.4)')
+    parser.add_argument('--shards', type=int, default=1,
+                        help='按日期分片并行的子进程数 (1=串行, 实测全量回填 ~78min)。'
+                             '每日计算本就独立 (自开连接 + INSERT OR REPLACE 当日行, WAL+busy_timeout 排队写), '
+                             '逐日计算代码不变。注意: 若 moneyflow_daily 缺数据会调 Tushare, '
+                             '多分片共享 500 次/分钟限额')
     args = parser.parse_args()
 
     updater = NGCacheUpdater(db_path=args.db_path, version=args.version)
@@ -2229,9 +2234,59 @@ def main():
         count = updater.update_single_date(args.date)
         print(f"\nProcessed {count} stocks for {args.date}")
     elif args.start_date and args.end_date:
-        updater.backfill(args.start_date, args.end_date)
+        if args.shards > 1:
+            _run_sharded_backfill(updater, args)
+        else:
+            updater.backfill(args.start_date, args.end_date)
     else:
         parser.print_help()
+        sys.exit(1)
+
+
+def _run_sharded_backfill(updater: 'NGCacheUpdater', args) -> None:
+    """日期分片并行回填: 子进程 = 同脚本 + 日期段 (只传日期字符串, 复用现有串行逐日代码)"""
+    import subprocess
+    from pathlib import Path
+
+    dates = updater.get_trading_dates(args.start_date, args.end_date)
+    if len(dates) <= 1:
+        updater.backfill(args.start_date, args.end_date)
+        return
+
+    n_shards = min(args.shards, len(dates))
+    chunk_size = (len(dates) + n_shards - 1) // n_shards
+    chunks = [dates[i:i + chunk_size] for i in range(0, len(dates), chunk_size)]
+    log_dir = Path('logs') / f"ng_backfill_shards_{args.version.replace('.', '')}"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    print(f"[SHARD] {len(dates)} 个交易日按日期分片 {len(chunks)} 个子进程并行 (每片 ~{chunk_size} 天)")
+
+    t0 = time.time()
+    procs = []
+    for si, chunk in enumerate(chunks):
+        cmd = [sys.executable, os.path.abspath(__file__),
+               '--start-date', chunk[0], '--end-date', chunk[-1],
+               '--version', args.version,
+               '--penalty-power', str(args.penalty_power)]
+        if args.db_path:
+            cmd += ['--db-path', args.db_path]
+        log_path = log_dir / f'shard_{si}.log'
+        lf = open(log_path, 'w')
+        procs.append((si, subprocess.Popen(cmd, stdout=lf, stderr=subprocess.STDOUT), lf, log_path))
+        print(f"  shard {si}: {chunk[0]} ~ {chunk[-1]} ({len(chunk)} 天) → {log_path}")
+
+    failed = []
+    for si, p, lf, log_path in procs:
+        rc = p.wait()
+        lf.close()
+        print(f"  shard {si} 退出: {'OK' if rc == 0 else f'FAIL rc={rc}'} (累计 {time.time() - t0:.0f}s)")
+        if rc != 0:
+            failed.append((si, log_path))
+    print(f"[SHARD] 完成: {len(chunks) - len(failed)}/{len(chunks)} 片成功, "
+          f"总耗时 {(time.time() - t0) / 60:.1f} 分钟")
+    for si, log_path in failed:
+        print(f"  ⚠️ shard {si} 失败, 查看日志: {log_path}")
+    if failed:
+        # 部分成功必须非零退出: 残缺的特征缓存段会让下游训练/评估静默用不完整数据
         sys.exit(1)
 
 
