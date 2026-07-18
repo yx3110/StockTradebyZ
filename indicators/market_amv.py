@@ -174,6 +174,87 @@ def compute_regime(var1: np.ndarray, ma60: np.ndarray, macd: np.ndarray,
     return regime
 
 
+# === 官方0AMV (指南针活跃市值) 锚定外推 ===
+# 模型: Y_t = A * Y_{t-1} * (1 + BETA * r_中证全指) + K * 当日成交额(元)
+# 参数由 scripts/fit_amv_official.py 对官方真值最小二乘拟合 (2018-01~2026-07):
+# 一步MAPE=0.60%, 锚定外推 20天 MAPE~5% / 60天 ~7% (成交额注入项使误差有界不发散)
+AMV_OFF_A = 0.93437      # 留存率 (日衰减 6.56%)
+AMV_OFF_BETA = 1.25      # 活跃筹码对中证全指的beta
+AMV_OFF_K = 5.802e-9     # 成交额(元)→官方指数单位 注入系数
+
+OFFICIAL_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS market_amv_official (
+    trade_date DATE PRIMARY KEY,
+    open REAL, high REAL, low REAL, close REAL,
+    volume REAL, amount REAL,
+    is_simulated INTEGER DEFAULT 0
+)
+"""
+
+
+def ensure_official_table(conn: sqlite3.Connection):
+    """建 market_amv_official 表 (含旧表补 is_simulated 列迁移), 唯一 schema 所有者"""
+    conn.execute(OFFICIAL_TABLE_SQL)
+    cols = [r[1] for r in conn.execute('PRAGMA table_info(market_amv_official)')]
+    if 'is_simulated' not in cols:
+        conn.execute('ALTER TABLE market_amv_official ADD COLUMN is_simulated INTEGER DEFAULT 0')
+
+
+def extend_amv_official(conn: sqlite3.Connection):
+    """将 market_amv_official 从最后一个真实(官方CSV)值锚定外推到最新交易日
+
+    真实行 is_simulated=0 (由 scripts/import_amv_official.py 导入),
+    外推行 is_simulated=1, 每次运行基于最新锚点重算全部外推段。
+    """
+    ensure_official_table(conn)
+
+    anchor = conn.execute(
+        'SELECT trade_date, close FROM market_amv_official '
+        'WHERE is_simulated = 0 ORDER BY trade_date DESC LIMIT 1'
+    ).fetchone()
+    if anchor is None:
+        logger.warning('market_amv_official 无官方数据, 跳过外推 (先跑 scripts/import_amv_official.py)')
+        return
+    anchor_date, anchor_close = anchor
+
+    df = pd.read_sql(
+        """
+        SELECT ma.trade_date, ma.market_amount, dq.close AS idx_close
+        FROM market_amv ma
+        JOIN securities s ON s.code = '000985.SH'
+        JOIN daily_quotes dq ON dq.security_id = s.id AND dq.trade_date = ma.trade_date
+        WHERE ma.trade_date >= ?
+        ORDER BY ma.trade_date
+        """,
+        conn, params=(anchor_date,)
+    )
+    conn.execute(
+        'DELETE FROM market_amv_official WHERE is_simulated = 1 AND trade_date > ?',
+        (anchor_date,)
+    )
+
+    rows = []
+    if len(df) >= 2:
+        idx_close = df['idx_close'].to_numpy()
+        amt = df['market_amount'].to_numpy()
+        dates = df['trade_date'].tolist()
+        y = anchor_close
+        for i in range(1, len(df)):
+            r_idx = idx_close[i] / idx_close[i - 1] - 1
+            y = AMV_OFF_A * y * (1 + AMV_OFF_BETA * r_idx) + AMV_OFF_K * amt[i] * 1000.0
+            rows.append((dates[i], y))
+        conn.executemany(
+            'INSERT OR REPLACE INTO market_amv_official '
+            '(trade_date, open, high, low, close, volume, amount, is_simulated) '
+            'VALUES (?, NULL, NULL, NULL, ?, NULL, NULL, 1)',
+            rows
+        )
+    conn.commit()
+    if rows:
+        logger.info(f'0AMV官方外推: 锚点 {anchor_date}={anchor_close:.0f}, '
+                    f'外推 {len(rows)} 天至 {rows[-1][0]}={rows[-1][1]:.0f}')
+
+
 # === DB读写 ===
 
 CREATE_TABLE_SQL = """
@@ -254,6 +335,7 @@ def compute_and_save(db_path: str = None):
     df['amv_regime'] = RegimeClassifier().fit_predict(df)
 
     save_to_db(conn, df)
+    extend_amv_official(conn)
     conn.close()
 
     bull_days = (df['amv_regime'] == 1).sum()

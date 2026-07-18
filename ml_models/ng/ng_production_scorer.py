@@ -113,7 +113,13 @@ class NGProductionScorer:
         self.risk_filter_quantile = 0.20  # ng1.0.7: Pareto filter threshold
         self._ensemble_scorers = None  # NEW: multi-seed ensemble list
 
-        if version and version_ge(version, 'ng1.0.4') and model_path is None:
+        # ensemble 入口: PINNED 注册表是唯一权威 — 清单 >1 个 pkl 即 ensemble,
+        # 1 个即单模; 未注册版本退回 version_ge 启发式 (ng1.0.4+ 走 glob ensemble)
+        _pinned = get_pinned_models(version)
+        if version and model_path is None and (
+            (_pinned and len(_pinned) > 1)
+            or (not _pinned and version_ge(version, 'ng1.0.4'))
+        ):
             self._load_ensemble_models(version)
         else:
             self._load_model(model_path, version)

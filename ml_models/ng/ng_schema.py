@@ -81,7 +81,11 @@ def get_moe_experts(base_version: str):
 PINNED_PRODUCTION_MODELS = {
     # 7-12 完整财报缓存重训版 (对齐窗口 V5.2=83.8% S / Pre-2020 净年化 +19.4%, 双 gate 通过;
     # 评估: reports/system_evaluation/ng101重训评估_20260712.md; 前任 4-12 pkl 文件保留可回滚)
-    'ng1.0.1': ['ng101_seed42_multi_target_20260712_213343.pkl'],
+    'ng1.0.1': [
+        'ng101_seed42_multi_target_20260712_213343.pkl',
+        'ng101_seed123_multi_target_20260713_103149.pkl',
+        'ng101_seed456_multi_target_20260713_183333.pkl',
+    ],
     # ng104-3s: 已验证的 3-seed ensemble (WF-OOS V5.2=78.1% 评估所用配置)
     'ng1.0.4': [
         'ng104_seed42_multi_target_20260408_041932.pkl',
