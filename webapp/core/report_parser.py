@@ -185,8 +185,10 @@ class ReportParser:
             date = match.group(1)
             code = match.group(2)
 
-            # 提取整行
-            line = content[match.start():content.find('\n', match.start())]
+            # 提取整行 (末行无换行符时 find 返回 -1, 需退化为行尾, 否则丢最后一个字符/单元格)
+            nl = content.find('\n', match.start())
+            end = nl if nl != -1 else len(content)
+            line = content[match.start():end]
             cells = [cell.strip() for cell in line.split('|')[1:-1]]
 
             trade_info = {
@@ -357,7 +359,9 @@ def _uncached_parse_selection_report(filepath: Path) -> Dict[str, Any]:
         }
     except Exception as e:
         logger.error(f'解析选股报告失败: {filepath}, 错误: {e}')
-        return {'error': str(e), 'file_path': str(filepath)}
+        # 保留 error 键的同时补齐期望字段的空默认值, 避免调用方把它当成功后 KeyError / 展示脏数据
+        return {'error': str(e), 'file_path': str(filepath),
+                'date': None, 'stocks': [], 'summary': {}, 'raw_content': ''}
 
 
 def _uncached_parse_backtest_report(filepath: Path) -> Dict[str, Any]:
@@ -373,7 +377,8 @@ def _uncached_parse_backtest_report(filepath: Path) -> Dict[str, Any]:
         }
     except Exception as e:
         logger.error(f'解析回测报告失败: {filepath}, 错误: {e}')
-        return {'error': str(e), 'file_path': str(filepath)}
+        return {'error': str(e), 'file_path': str(filepath),
+                'config': {}, 'metrics': {}, 'trades': [], 'raw_content': ''}
 
 
 def _uncached_parse_ai_analysis_report(filepath: Path) -> Dict[str, Any]:
@@ -390,7 +395,8 @@ def _uncached_parse_ai_analysis_report(filepath: Path) -> Dict[str, Any]:
         }
     except Exception as e:
         logger.error(f'解析AI分析报告失败: {filepath}, 错误: {e}')
-        return {'error': str(e), 'file_path': str(filepath)}
+        return {'error': str(e), 'file_path': str(filepath), 'date': None,
+                'market_analysis': '', 'stock_analysis': '', 'risk_assessment': '', 'raw_content': ''}
 
 
 def _uncached_parse_selection_json(filepath: Path) -> Dict[str, Any]:

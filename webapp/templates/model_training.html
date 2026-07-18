@@ -1455,7 +1455,7 @@ function loadModelRanking() {
 
     $.ajax({
         url: '/api/models/ranking',
-        timeout: 300000,  // 5min timeout (首次需要计算所有模型)
+        timeout: 60000,  // 后端只读缓存立即返回, 冷项后台预热
         success: function(response) {
             $('#ranking-loading').hide();
             $('#btn-refresh-ranking').prop('disabled', false);
@@ -1463,6 +1463,15 @@ function loadModelRanking() {
                 displayModelRanking(response.ranking);
             } else {
                 $('#ranking-empty').show();
+            }
+            // 仍有版本在后台计算评分 → 稍后自动刷新, 让新算好的排名补进来
+            const computing = (response && response.computing) || [];
+            if (computing.length > 0) {
+                $('#btn-refresh-ranking').prop('disabled', true);
+                setTimeout(function() {
+                    $('#btn-refresh-ranking').prop('disabled', false);
+                    loadModelRanking();
+                }, 20000);
             }
         },
         error: function() {

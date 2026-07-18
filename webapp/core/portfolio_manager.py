@@ -500,9 +500,12 @@ class PortfolioManager:
         """获取最新ML评分 (from position_analyzer)"""
         try:
             analyzer = self._get_analyzer()
-            result = analyzer._get_ml_score(code)
+            # 必须传 trade_date (analyzer._get_ml_score(code, trade_date)), 否则 TypeError→None;
+            # 且返回 dict 的键是 'score' 而非 'ml_score' —— 两处都错时 ML 质量门控恒失效。
+            trade_date = analyzer._get_latest_trade_date()
+            result = analyzer._get_ml_score(code, trade_date)
             if result and isinstance(result, dict):
-                return result.get('ml_score')
+                return result.get('score')
             elif isinstance(result, (int, float)):
                 return float(result)
         except Exception:

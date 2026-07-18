@@ -550,42 +550,44 @@ class PortfolioScorer:
         """组合年化波动率: sqrt(w' Σ w) 协方差矩阵法"""
         if not positions or total_mv <= 0:
             return 0.30
-        n = len(positions)
         weights = []
-        returns_matrix = []  # each row = daily returns for one stock
+        codes = []
+        for p in positions:
+            code = p.get('code', '')
+            if '.' in code:
+                code = code.split('.')[0]
+            codes.append(code)
+            mv = p.get('market_value') or 0
+            weights.append(mv / total_mv if total_mv > 0 else 0)
 
+        returns_matrix = [None] * len(positions)  # aligned with positions/weights
         try:
             with closing(sqlite3.connect(self.stock_db_path, timeout=30.0)) as conn:
                 conn.execute("PRAGMA busy_timeout=30000")
-                cursor = conn.cursor()
-                for p in positions:
-                    code = p.get('code', '')
-                    if '.' in code:
-                        code = code.split('.')[0]
-                    mv = p.get('market_value') or 0
-                    weights.append(mv / total_mv if total_mv > 0 else 0)
-
-                    cursor.execute(
-                        "SELECT id FROM securities WHERE code = ? LIMIT 1", (code,))
-                    row = cursor.fetchone()
-                    if not row:
-                        returns_matrix.append(None)
+                # 批量取 security_id (原为每持仓 1 次 → N+1)
+                uniq = list({c for c in codes if c})
+                id_map = {}
+                if uniq:
+                    ph = ','.join('?' * len(uniq))
+                    for c, sid in conn.execute(
+                            f"SELECT code, id FROM securities WHERE code IN ({ph})", uniq):
+                        id_map[c] = sid
+                for i, code in enumerate(codes):
+                    sec_id = id_map.get(code)
+                    if sec_id is None:
                         continue
-                    sec_id = row[0]
-                    cursor.execute("""
+                    rows = conn.execute("""
                         SELECT close FROM daily_quotes
                         WHERE security_id = ? AND close > 0
                         ORDER BY trade_date DESC LIMIT 21
-                    """, (sec_id,))
-                    rows = cursor.fetchall()
+                    """, (sec_id,)).fetchall()
                     if len(rows) < 6:
-                        returns_matrix.append(None)
                         continue
                     prices = [r[0] for r in reversed(rows)]
-                    rets = [(prices[i] - prices[i-1]) / prices[i-1]
-                            for i in range(1, len(prices))]
-                    returns_matrix.append(rets)
-        except Exception:
+                    returns_matrix[i] = [(prices[j] - prices[j-1]) / prices[j-1]
+                                         for j in range(1, len(prices))]
+        except Exception as e:
+            logger.warning("组合波动率计算失败, 回退默认 0.30: %s", e)
             return 0.30
 
         # Build aligned returns matrix (use min common length)
@@ -597,7 +599,10 @@ class PortfolioScorer:
             return 0.30
 
         w_arr = np.array([w for w, _ in valid])
-        w_arr = w_arr / w_arr.sum()  # renormalize after dropping missing
+        w_sum = w_arr.sum()
+        if w_sum <= 0:  # 全部有效权重为 0 (market_value 缺失) → 归一化会得 NaN, 破坏 JSON
+            return 0.30
+        w_arr = w_arr / w_sum  # renormalize after dropping missing
         ret_arr = np.array([r[-min_len:] for _, r in valid])  # shape: (n_valid, min_len)
 
         cov_matrix = np.cov(ret_arr)
@@ -997,11 +1002,15 @@ class PortfolioScorer:
             held_codes = {p.get('code', '') for p in positions}
 
         # Action mapping: trade action -> recommendation action compatibility
+        # 建议 action 可能是英文键 (stop_loss/take_profit/stop_win) 或中文 —— 两者都要算 sell 侧兼容,
+        # 否则执行了止损的卖出交易永远匹配不上 stop_loss 建议, 低估 recommendation_follow_rate。
+        _sell_side = ('sell', 'reduce', 'stop_loss', 'take_profit', 'stop_win',
+                      '减仓', '清仓', '止盈', '止损')
         action_compat = {
             'buy': ('buy', 'add', '加仓', '建仓'),
             'add': ('buy', 'add', '加仓', '建仓'),
-            'sell': ('sell', 'reduce', '减仓', '清仓', '止盈', '止损'),
-            'reduce': ('sell', 'reduce', '减仓', '清仓', '止盈', '止损'),
+            'sell': _sell_side,
+            'reduce': _sell_side,
         }
 
         for rec in recommendations:

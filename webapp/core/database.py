@@ -924,6 +924,21 @@ class DatabaseManager:
             conn.commit()
             return cursor.rowcount > 0
 
+    def delete_closed_position(self, code: str, exclude_id: int = None) -> int:
+        """删除某代码的历史 closed 持仓行, 供再清仓前腾出 UNIQUE(code,status) 名额。"""
+        code = self._normalize_code(code)
+        with self.get_webapp_db_connection() as conn:
+            cursor = conn.cursor()
+            if exclude_id is not None:
+                cursor.execute(
+                    "DELETE FROM positions WHERE code = ? AND status = 'closed' AND id != ?",
+                    (code, exclude_id))
+            else:
+                cursor.execute(
+                    "DELETE FROM positions WHERE code = ? AND status = 'closed'", (code,))
+            conn.commit()
+            return cursor.rowcount
+
     def update_position_risk(self, position_id: int, **kwargs) -> bool:
         """更新持仓风控列"""
         allowed = {
@@ -1092,6 +1107,8 @@ class DatabaseManager:
 
     def get_all_trades(self, code: str = None, limit: int = 100) -> List[Dict]:
         """获取交易记录"""
+        if code:
+            code = self._normalize_code(code)  # 与 add_trade 存储口径一致
         with self.get_webapp_db_connection() as conn:
             cursor = conn.cursor()
             if code:
@@ -1122,7 +1139,7 @@ class DatabaseManager:
             ''', (
                 data['trade_date'],
                 data.get('trade_time', datetime.now().isoformat()),
-                data['code'],
+                self._normalize_code(data['code']),  # 统一 6 位裸码, 与 positions 口径一致防交易与持仓脱钩
                 data.get('name', ''),
                 data['action'],
                 data['quantity'],
@@ -1476,11 +1493,17 @@ class DatabaseManager:
             return None
 
     def _normalize_code(self, code: str) -> str:
-        """标准化股票代码（移除后缀，因为data_adapter数据库不使用后缀）"""
-        if '.' in code:
-            # 移除后缀 (.SZ, .SH, .BJ)
-            return code.split('.')[0]
-        return code
+        """标准化股票代码。
+
+        A股在 securities 里是 6 位裸码, 但指数带后缀 (000300.SH / 932000.CSI)。
+        因此对指数专属后缀 (.CSI) 保留原样, 否则裸化后 000001.SH 会误撞 A股 000001。
+        (portfolio 只持有 A股, 常规调用都是裸码或 .SZ/.SH 股票码, 此处只做防御性保留。)
+        """
+        if '.' not in code:
+            return code
+        if code.upper().endswith('.CSI'):
+            return code  # 中证系列指数, 裸化后无对应 A股行
+        return code.split('.')[0]
 
     def get_stock_name(self, code: str) -> str:
         """从主数据库获取股票名称"""

@@ -9,6 +9,8 @@ import re
 import pickle
 import sys
 import os
+import uuid
+import threading
 from pathlib import Path
 from flask import Blueprint, jsonify, request, current_app
 from datetime import datetime
@@ -84,6 +86,16 @@ def train_model():
     """启动模型训练任务"""
     data = request.get_json() or {}
     version = data.get('version', 'v3.9')
+    # webapp 训练入口只接了 legacy v3.8 脚本 (train_v380_parameterized.py, 固定输出 v380/)。
+    # 选任何别的版本以前会静默训成 v3.8 模型放进 v380/ —— 直接拒绝, 避免误导性"训练成功"。
+    SUPPORTED_TRAIN_VERSIONS = {'v3.8'}
+    if version not in SUPPORTED_TRAIN_VERSIONS:
+        return jsonify({
+            'success': False,
+            'error': (f'webapp 训练入口当前仅支持 {sorted(SUPPORTED_TRAIN_VERSIONS)} (legacy 脚本)。'
+                      f' NG/其它版本请用 CLI 训练器 (如 python3 ml_models/ng/ng_trainer.py), '
+                      f'否则会被静默训成 v3.8。'),
+        }), 400
     # 前端表单不发送 auto 字段, 但会带上用户填写的 start_date/end_date。
     # 若两者都提供则默认走手动日期范围 (auto=False), 否则回退 --auto --months。
     # 修复前: auto 恒为 True, 用户选择的日期范围被静默忽略。
@@ -173,13 +185,47 @@ def get_training_history_list(version: str):
                     'histories': _list_training_histories(version)})
 
 
+# 北极星缓存后台预热: 单 worker 顺序清空队列, 避免 /ranking 冷缓存时同步跑 N 个回测阻塞请求
+_ns_warm_queue = set()
+_ns_warm_lock = threading.Lock()
+_ns_warm_active = False
+
+
+def _warm_north_star_async(app, versions):
+    """把 versions 排入后台预热队列, 单个 daemon worker 顺序计算并写缓存。"""
+    global _ns_warm_active
+    with _ns_warm_lock:
+        _ns_warm_queue.update(versions)
+        if _ns_warm_active or not _ns_warm_queue:
+            return
+        _ns_warm_active = True
+
+    def _run():
+        global _ns_warm_active
+        with app.app_context():
+            while True:
+                with _ns_warm_lock:
+                    if not _ns_warm_queue:
+                        _ns_warm_active = False
+                        return
+                    v = _ns_warm_queue.pop()
+                try:
+                    _compute_north_star_v2(v)  # 全量计算并写缓存
+                except Exception as e:
+                    logger.warning("north-star 预热失败 %s: %s", v, e)
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
 @model_training_bp.route('/ranking', methods=['GET'])
 @api_error_handler
 def get_models_ranking():
-    """获取所有模型的北极星V2排名"""
+    """获取所有模型的北极星V2排名 (只读缓存, 冷/过期项后台预热, 不阻塞请求)"""
     ranking = []
+    computing = []
+    app = current_app._get_current_object()
     for version in _get_rankable_report_dirs():
-        ns = _compute_north_star_v2(version)
+        ns = _compute_north_star_v2(version, cache_only=True)
         if ns.get('has_data'):
             ranking.append({
                 'version': version,
@@ -193,10 +239,14 @@ def get_models_ranking():
                 'top_n': ns.get('top_n', 10),
                 'layers': ns.get('layers', {}),
             })
+        elif ns.get('computing'):
+            computing.append(version)
+    if computing:
+        _warm_north_star_async(app, computing)
     ranking.sort(key=lambda x: x['total_score'], reverse=True)
     for i, item in enumerate(ranking):
         item['rank'] = i + 1
-    return jsonify({'success': True, 'ranking': ranking})
+    return jsonify({'success': True, 'ranking': ranking, 'computing': computing})
 
 
 @model_training_bp.route('/summary', methods=['GET'])
@@ -1149,8 +1199,12 @@ def _get_rankable_report_dirs() -> Dict[str, Path]:
     return result
 
 
-def _compute_north_star_v2(version: str) -> Dict[str, Any]:
-    """计算North Star V2评分卡，带文件缓存"""
+def _compute_north_star_v2(version: str, cache_only: bool = False) -> Dict[str, Any]:
+    """计算North Star V2评分卡，带文件缓存。
+
+    cache_only=True: 缓存未命中/过期时不做同步回测 (会阻塞请求线程数十秒~分钟),
+    直接返回 {'computing': True}, 交给调用方后台预热。
+    """
     # 从DAILY_SELECTION_DIRS动态查找报告目录
     all_dirs = current_app.config.get('DAILY_SELECTION_DIRS', {})
     report_dir = all_dirs.get(version)
@@ -1184,13 +1238,19 @@ def _compute_north_star_v2(version: str) -> Dict[str, Any]:
         except Exception:
             pass  # 缓存损坏，重新计算
 
+    # cache_only: 缓存冷/过期时不阻塞请求线程做回测, 返回 computing 让调用方后台预热
+    if cache_only:
+        return {'has_data': False, 'computing': True, 'version': version}
+
     # 计算评分
     result = _run_north_star_evaluation(str(report_dir), version)
 
     # 写入缓存 (原子写: 先写临时文件再 os.replace, 防止 threaded Flask 下并发写产生半截 JSON,
     # 导致后续 json.load 读到损坏内容)
     try:
-        tmp_file = cache_file.with_suffix(cache_file.suffix + f'.tmp.{os.getpid()}')
+        # threaded Flask 下所有请求线程共享同一 pid, 仅用 pid 命名的 tmp 在并发同版本写时会撞车;
+        # 加 uuid 保证每个写者独占 tmp, os.replace 仍是原子发布。
+        tmp_file = cache_file.with_suffix(cache_file.suffix + f'.tmp.{os.getpid()}.{uuid.uuid4().hex}')
         with open(tmp_file, 'w', encoding='utf-8') as f:
             json.dump(result, f, ensure_ascii=False, indent=2)
         os.replace(tmp_file, cache_file)

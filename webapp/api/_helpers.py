@@ -39,6 +39,15 @@ def parse_int_arg(name: str, default):
         abort(400, description=f'参数 {name} 必须是整数, 收到: {raw!r}')
 
 
+def parse_float_arg(name: str, default):
+    """从 request.args 解析浮点参数, 非法输入返回 400 (而非 500)。"""
+    raw = request.args.get(name, default)
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        abort(400, description=f'参数 {name} 必须是数字, 收到: {raw!r}')
+
+
 def api_error_handler(view_func):
     """Wrap a Flask view in try/except → JSON error response.
 

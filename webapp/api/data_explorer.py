@@ -142,6 +142,9 @@ def saved_update(qid: int):
         return jsonify({"success": True, "query": q})
     except LookupError as e:
         return _err("not_found", str(e), 404)
+    except ValueError as e:
+        # 改名撞 UNIQUE(name) → update_query 抛 ValueError, 与 saved_create 一致返回 409 而非 500
+        return _err("conflict", str(e), 409)
 
 
 @data_explorer_bp.route("/saved/<int:qid>", methods=["DELETE"])

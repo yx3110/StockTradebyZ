@@ -70,8 +70,13 @@ VALID_CODE_2DIGIT = (
 
 
 def _detect_encoding(content: bytes) -> str:
-    """检测文件编码: 优先GBK(券商默认), 回退UTF-8"""
-    for encoding in ['gbk', 'gb2312', 'utf-8-sig', 'utf-8']:
+    """检测文件编码: 优先严格 UTF-8, 回退 GBK。
+
+    GBK 是双字节编码, 多数 UTF-8 字节序列作为 GBK 会被'成功'解码成乱码而不报错;
+    反之 GBK 文件多半无法通过严格 UTF-8 解码而报错。所以必须先试 UTF-8, 否则
+    UTF-8 券商文件会被静默 mojibake。
+    """
+    for encoding in ['utf-8-sig', 'utf-8', 'gbk', 'gb2312']:
         try:
             content.decode(encoding)
             return encoding
@@ -114,8 +119,14 @@ def _parse_number(value: str) -> Optional[float]:
     value = value.replace('¥', '').replace('￥', '')
     # 移除百分号
     value = value.rstrip('%')
+    # 中文数量单位 (券商/东财常见 "10.5万" / "1.2亿")
+    mult = 1.0
+    if value.endswith('万'):
+        mult, value = 1e4, value[:-1]
+    elif value.endswith('亿'):
+        mult, value = 1e8, value[:-1]
     try:
-        return float(value)
+        return float(value) * mult
     except ValueError:
         return None
 
@@ -143,6 +154,18 @@ def _extract_html_cells(row_html: str) -> List[str]:
     处理: </td>, </th>, 截断的 </t>, 损坏的 </ts="..."> 等各种标签
     策略: 用标签边界做分隔符, 提取所有非空文本段
     """
+    # 良构行优先: 按 <td>..</td> 定位并保留空单元格 (含位置), 否则 split 丢空段会列错位,
+    # 把成本/价格读到错误的列。
+    well = re.findall(r'<t[dh][^>]*>(.*?)</t[^>]*>', row_html, flags=re.IGNORECASE | re.DOTALL)
+    if len(well) >= 2:
+        out = []
+        for c in well:
+            c = re.sub(r'<[^>]+>', '', c)
+            c = c.replace('&amp;', '&').replace('&nbsp;', ' ')
+            out.append(c.strip())
+        return out
+
+    # 容错回退: 截断/损坏标签的行, 用标签边界切分 (此路径无法保证空单元格位置)
     text = row_html
     # 关闭标签作为分隔符: </td>, </th>, 截断的</t>, 损坏的</ts="green">
     text = re.sub(r'</t[^>]*>', '\x00', text, flags=re.IGNORECASE)
@@ -381,8 +404,10 @@ def parse_csv(content: bytes) -> Tuple[List[Dict], List[str]]:
     if _detect_html(text):
         return parse_html_table(text)
 
-    # 先尝试网页粘贴格式（检测特征：多行表头、没有逗号分隔、包含"买  卖"）
-    if ('买' in text and '卖' in text) or ('持仓盈亏' in text and ',' not in text.split('\n')[0]):
+    # 先尝试网页粘贴格式（检测特征：没有逗号分隔 + 含"买/卖"或"持仓盈亏"）。
+    # 必须先确认首行无逗号, 否则一个含有"买/卖"值(如操作列)的合法 CSV 会被误路由到网页粘贴解析而损坏。
+    first_line = text.split('\n')[0]
+    if ',' not in first_line and (('买' in text and '卖' in text) or '持仓盈亏' in text):
         return parse_web_paste(text)
 
     # 标准CSV解析
@@ -697,11 +722,19 @@ def merge_positions(parsed: List[Dict], existing_positions: List[Dict],
                 skipped += 1
                 details.append(f'{code} {name}: 无变化,跳过')
         else:
+            # avg_cost/quantity 解析失败会是 None (键存在但值为 None, .get 默认不生效),
+            # 直接 INSERT 触发 NOT NULL 崩溃并导致部分导入 —— 缺失就跳过并计数
+            ac = item.get('avg_cost')
+            qty = item.get('quantity')
+            if not ac or ac <= 0 or not qty or qty <= 0:
+                skipped += 1
+                details.append(f'{code} {name}: 成本/数量缺失,跳过')
+                continue
             pos_data = {
                 'code': code,
                 'name': name,
-                'quantity': item['quantity'],
-                'avg_cost': item.get('avg_cost', 0),
+                'quantity': qty,
+                'avg_cost': ac,
                 'current_price': current_price,
             }
             db_manager.add_position(pos_data)

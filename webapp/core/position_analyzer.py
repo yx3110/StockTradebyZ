@@ -370,6 +370,13 @@ class PositionAnalyzer:
         raw_preds含: pred_3d, pred_5d, pred_10d, pred_15d (industry-excess return)
         公式: score = 100 / (1 + exp(-SCALE * combined_pred)) * consistency_factor
         """
+        # 优先使用 scorer 已校准的全局百分位 score (与 recommendation 文本同量纲)。
+        # 否则 sigmoid 重算出的绝对分与 recommendation/止损判定量纲不一致,
+        # 会把 recommendation='卖出'(score≈21) 的股票在操作矩阵里显示成'持有'并绕过深亏止损。
+        calibrated = raw_preds.get('score')
+        if calibrated is not None:
+            return float(np.clip(calibrated, 0, 100))
+
         pred_3d = raw_preds.get('pred_3d', 0) or 0
         pred_5d = raw_preds.get('pred_5d', 0) or 0
         pred_10d = raw_preds.get('pred_10d', 0) or 0
@@ -1257,7 +1264,8 @@ class PositionAnalyzer:
             quantity = pos.get('quantity', 0) or 0
             mv = float(current_price) * int(quantity)
             code = pos.get('code', '')
-            position_mvs[code] = mv
+            # 同一 code 多笔持仓需累加, 否则后一笔覆盖前一笔会低估集中度风险
+            position_mvs[code] = position_mvs.get(code, 0) + mv
             total_mv += mv
         if total_mv <= 0:
             total_mv = 1

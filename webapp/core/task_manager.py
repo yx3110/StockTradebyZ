@@ -45,15 +45,20 @@ class TaskInfo:
     completed_at: Optional[datetime] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
 
-    def to_dict(self):
-        """转换为字典"""
+    def to_dict(self, include_result: bool = True):
+        """转换为字典。
+
+        include_result=False 用于列表接口: 任务的 result 可能是整段 subprocess stdout,
+        列表里每条都带上会让 /api/tasks 响应膨胀 —— 列表只给 has_result 标记, 详情接口再取全量。
+        """
         return {
             'id': self.id,
             'type': self.type.value,
             'status': self.status.value,
             'progress': self.progress,
             'message': self.message,
-            'result': self.result,
+            'result': self.result if include_result else None,
+            'has_result': self.result is not None,
             'error': self.error,
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'started_at': self.started_at.isoformat() if self.started_at else None,
@@ -347,7 +352,7 @@ class TaskManager:
                 key=lambda t: t.created_at,
                 reverse=True
             )
-            return [task.to_dict() for task in tasks[:limit]]
+            return [task.to_dict(include_result=False) for task in tasks[:limit]]
 
     def get_tasks_by_type(self, task_type: TaskType, limit: int = 50) -> list:
         """
@@ -366,7 +371,7 @@ class TaskManager:
                 if task.type == task_type
             ]
             tasks = sorted(tasks, key=lambda t: t.created_at, reverse=True)
-            return [task.to_dict() for task in tasks[:limit]]
+            return [task.to_dict(include_result=False) for task in tasks[:limit]]
 
     def cleanup_old_tasks(self, max_age_hours: int = 24):
         """

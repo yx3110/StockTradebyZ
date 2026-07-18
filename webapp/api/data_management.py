@@ -11,7 +11,7 @@ from datetime import datetime
 from typing import Dict, List, Any
 
 from core.task_manager import task_manager, TaskType
-from api._helpers import api_error_handler, task_progress_sse
+from api._helpers import api_error_handler, task_progress_sse, parse_int_arg, parse_float_arg
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +55,7 @@ def get_daily_completeness():
     table = request.args.get('table', 'daily_quotes')
     start_date = request.args.get('start_date', '2024-01-01')
     end_date = request.args.get('end_date', datetime.now().strftime('%Y-%m-%d'))
-    limit = int(request.args.get('limit', 365))
+    limit = parse_int_arg('limit', 365)
     daily_stats = _get_daily_stats(
         current_app.config['STOCK_DB_PATH'], table, start_date, end_date, limit)
     return jsonify({'success': True, 'table': table, 'daily_stats': daily_stats})
@@ -68,7 +68,7 @@ def get_missing_dates():
     table = request.args.get('table', 'v39_feature_cache')
     start_date = request.args.get('start_date', '2024-01-01')
     end_date = request.args.get('end_date', datetime.now().strftime('%Y-%m-%d'))
-    threshold = float(request.args.get('threshold', 80))
+    threshold = parse_float_arg('threshold', 80)
     missing_dates = _get_missing_dates(
         current_app.config['STOCK_DB_PATH'], table, start_date, end_date, threshold)
     return jsonify({
@@ -100,6 +100,11 @@ def start_backfill():
         return jsonify({'success': False, 'error': '请提供start_date和end_date'}), 400
 
     task_type = data.get('task_type', 'v39_features')
+    # 校验 task_type: 未知值会在子进程里 raise ValueError 才失败, 但接口已先返回 success 误导前端
+    valid_types = {s['name'] for s in _BACKFILL_SCRIPTS}
+    if task_type not in valid_types:
+        return jsonify({'success': False,
+                        'error': f'未知的 task_type: {task_type}; 可选: {sorted(valid_types)}'}), 400
     task_id = task_manager.submit_task(
         task_type=TaskType.DATA_UPDATE,
         func=_run_backfill_task,
@@ -129,7 +134,7 @@ def backfill_stream():
 @api_error_handler
 def get_backfill_history():
     """获取 Backfill 任务历史"""
-    limit = int(request.args.get('limit', 20))
+    limit = parse_int_arg('limit', 20)
     return jsonify({
         'success': True,
         'history': _get_backfill_history(current_app.config['STOCK_DB_PATH'], limit),

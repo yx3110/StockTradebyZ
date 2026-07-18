@@ -7,7 +7,7 @@
 """
 from flask import Blueprint, jsonify, request
 
-from api._helpers import get_db_manager, api_error_handler
+from api._helpers import get_db_manager, api_error_handler, parse_int_arg
 
 market_bp = Blueprint('market', __name__)
 
@@ -48,7 +48,7 @@ def _parse_args():
     taxonomy = request.args.get('taxonomy', 'sw_l1')
     if taxonomy not in VALID_TAXONOMIES:
         taxonomy = 'sw_l1'
-    days = min(max(int(request.args.get('days', 40)), 1), 250)
+    days = min(max(parse_int_arg('days', 40), 1), 250)
     return taxonomy, days
 
 
@@ -66,7 +66,7 @@ def _group_by_date(rows, taxonomy):
 def rotation():
     """轮动日历: 每日涨幅 TOP 板块 + 每日20日新高个股数 TOP 板块"""
     taxonomy, days = _parse_args()
-    top = min(int(request.args.get('top', 25)), 50)
+    top = min(parse_int_arg('top', 25), 50)
 
     db = get_db_manager()
     with db.get_stock_db_connection() as conn:
@@ -99,7 +99,7 @@ def rotation():
 def fundflow():
     """资金流日历: 每日主力净流入 / 净流出 TOP 板块 (单位: 亿元)"""
     taxonomy, days = _parse_args()
-    top = min(int(request.args.get('top', 20)), 50)
+    top = min(parse_int_arg('top', 20), 50)
 
     db = get_db_manager()
     with db.get_stock_db_connection() as conn:
@@ -129,7 +129,7 @@ def fundflow():
 @api_error_handler
 def sentiment():
     """市场情绪时序: 涨停/跌停/炸板数, 涨跌家数, 沪深300/中证2000 20日新高数"""
-    days = min(max(int(request.args.get('days', 250)), 1), 750)
+    days = min(max(parse_int_arg('days', 250), 1), 750)
 
     db = get_db_manager()
     with db.get_stock_db_connection() as conn:

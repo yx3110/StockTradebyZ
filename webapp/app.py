@@ -214,6 +214,11 @@ def register_context_processors(app):
 if __name__ == '__main__':
     app = create_app(os.environ.get('FLASK_ENV', 'development'))
     port = int(os.environ.get('PORT', 8000))
+    # debug=True 会开启 Werkzeug 交互式调试器 (绑 0.0.0.0 时等于把 RCE 暴露到局域网),
+    # 因此默认关闭; 需要断点调试时用 FLASK_DEBUG=1 显式开启。host 仍默认 0.0.0.0 以保留跨设备访问,
+    # 可用 HOST 覆盖为 127.0.0.1 收紧。
+    host = os.environ.get('HOST', '0.0.0.0')
+    debug = os.environ.get('FLASK_DEBUG', 'false').lower() in ('1', 'true', 'yes')
     # 禁用auto-reloader以防止SSE连接中断
     # 当项目中任何Python文件变化时，reloader会重启Flask，导致所有SSE连接断开
-    app.run(host='0.0.0.0', port=port, debug=True, threaded=True, use_reloader=False)
+    app.run(host=host, port=port, debug=debug, threaded=True, use_reloader=False)

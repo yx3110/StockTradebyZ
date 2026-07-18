@@ -17,7 +17,7 @@ def _load_json_cached(path_str: str, _mtime_ns: int):
     with open(path_str, 'r', encoding='utf-8') as f:
         return json.load(f)
 
-from api._helpers import api_error_handler, get_db_manager
+from api._helpers import api_error_handler, get_db_manager, parse_int_arg, parse_float_arg
 from core.position_analyzer import PositionAnalyzer
 from core.portfolio_importer import parse_csv, parse_web_paste, parse_html_table, merge_positions, parse_trade_html_table, merge_trades
 from core.portfolio_scorer import PortfolioScorer
@@ -292,6 +292,15 @@ def add_to_position(position_id: int):
     if not data or 'quantity' not in data or 'price' not in data:
         return jsonify({'success': False, 'error': '缺少quantity或price'}), 400
 
+    # 数值校验: 字符串会在均价计算处触发 TypeError 500, 负数/零会污染均价
+    try:
+        add_quantity = int(data['quantity'])
+        add_price = float(data['price'])
+    except (TypeError, ValueError):
+        return jsonify({'success': False, 'error': 'quantity 必须为整数, price 必须为数字'}), 400
+    if add_quantity <= 0 or add_price <= 0:
+        return jsonify({'success': False, 'error': 'quantity 与 price 必须大于 0'}), 400
+
     db = get_db_manager()
     positions = db.get_all_positions()
     position = next((p for p in positions if p['id'] == position_id), None)
@@ -302,8 +311,6 @@ def add_to_position(position_id: int):
     # 计算新的平均成本
     old_quantity = position['quantity']
     old_cost = position['avg_cost']
-    add_quantity = data['quantity']
-    add_price = data['price']
 
     new_quantity = old_quantity + add_quantity
     new_avg_cost = (old_quantity * old_cost + add_quantity * add_price) / new_quantity
@@ -387,6 +394,15 @@ def reduce_position(position_id: int):
     if not data or 'quantity' not in data or 'price' not in data:
         return jsonify({'success': False, 'error': '缺少quantity或price'}), 400
 
+    # 数值校验: 负数会绕过"超过持仓"检查并反向增加持仓且记一笔假卖出
+    try:
+        reduce_quantity = int(data['quantity'])
+        reduce_price = float(data['price'])
+    except (TypeError, ValueError):
+        return jsonify({'success': False, 'error': 'quantity 必须为整数, price 必须为数字'}), 400
+    if reduce_quantity <= 0 or reduce_price <= 0:
+        return jsonify({'success': False, 'error': 'quantity 与 price 必须大于 0'}), 400
+
     db = get_db_manager()
     positions = db.get_all_positions()
     position = next((p for p in positions if p['id'] == position_id), None)
@@ -394,7 +410,6 @@ def reduce_position(position_id: int):
     if not position:
         return jsonify({'success': False, 'error': '持仓不存在'}), 404
 
-    reduce_quantity = data['quantity']
     if reduce_quantity > position['quantity']:
         return jsonify({'success': False, 'error': '减仓数量超过持仓数量'}), 400
 
@@ -407,14 +422,15 @@ def reduce_position(position_id: int):
         'name': position['name'],
         'action': 'reduce' if new_quantity > 0 else 'sell',
         'quantity': reduce_quantity,
-        'price': data['price'],
+        'price': reduce_price,
         'reason': data.get('reason', '减仓'),
         'signal_source': data.get('signal_source', 'manual')
     }
     db.add_trade(trade_data)
 
     if new_quantity == 0:
-        # 清仓 - 更新状态
+        # 清仓 - 先删掉该代码历史 closed 行, 否则 status='closed' 撞 UNIQUE(code,status) 报 500
+        db.delete_closed_position(position['code'], exclude_id=position_id)
         db.update_position(position_id, {'status': 'closed', 'quantity': 0})
         return jsonify({
             'success': True,
@@ -482,7 +498,7 @@ def get_trades():
     """
     db = get_db_manager()
     code = request.args.get('code')
-    limit = int(request.args.get('limit', 100))
+    limit = parse_int_arg('limit', 100)
 
     trades = db.get_all_trades(code=code, limit=limit)
 
@@ -818,7 +834,13 @@ def run_evaluations():
         }
     """
     data = request.get_json() or {}
-    days_after = data.get('days_after', 5)
+    # days_after 用于日期算术与 timedelta, 非整数会崩; 限定合理范围
+    try:
+        days_after = int(data.get('days_after', 5))
+    except (TypeError, ValueError):
+        return jsonify({'success': False, 'error': 'days_after 必须为整数'}), 400
+    if days_after <= 0 or days_after > 60:
+        return jsonify({'success': False, 'error': 'days_after 需在 1~60 之间'}), 400
 
     db = get_db_manager()
     trades = db.get_all_trades(limit=500)
@@ -967,7 +989,7 @@ def get_evaluation_stats():
 def get_snapshots():
     """获取持仓快照历史"""
     db = get_db_manager()
-    days = int(request.args.get('days', 30))
+    days = parse_int_arg('days', 30)
     snapshots = db.get_position_snapshots(days)
 
     return jsonify({
@@ -1009,7 +1031,7 @@ def search_stocks():
         limit: 限制数量 (默认10)
     """
     query = request.args.get('q', '')
-    limit = int(request.args.get('limit', 10))
+    limit = parse_int_arg('limit', 10)
 
     if len(query) < 1:
         return jsonify({'success': True, 'stocks': []})
@@ -1304,8 +1326,8 @@ def get_today_selections():
     Returns:
         {success, selections: [...], report_date, held_codes: [...]}
     """
-    top_n = int(request.args.get('top_n', 15))
-    min_score = float(request.args.get('min_score', 60))
+    top_n = parse_int_arg('top_n', 15)
+    min_score = parse_float_arg('min_score', 60)
     version = request.args.get('version')
 
     # 未指定版本时，从用户设置读取
@@ -1441,8 +1463,12 @@ def calculate_portfolio_score():
         完整评分报告
     """
     data = request.get_json() or {}
-    total_capital = data.get('total_capital', 0)
-    cash_amount = data.get('cash_amount', 0)
+    # JSON 里 total_capital/cash_amount 可能是字符串/null, 直接 <=0 比较会 TypeError→500
+    try:
+        total_capital = float(data.get('total_capital') or 0)
+        cash_amount = float(data.get('cash_amount') or 0)
+    except (TypeError, ValueError):
+        return jsonify({'success': False, 'error': 'total_capital / cash_amount 必须为数字'}), 400
     save_score = data.get('save', True)
 
     db = get_db_manager()
@@ -1546,7 +1572,7 @@ def get_score_history():
     Returns:
         评分历史列表
     """
-    days = int(request.args.get('days', 30))
+    days = parse_int_arg('days', 30)
     db = get_db_manager()
     scores = db.get_portfolio_scores(days)
 
@@ -1600,10 +1626,16 @@ def set_capital_settings():
     """
     data = request.get_json() or {}
     db = get_db_manager()
-    if 'total_capital' in data:
-        db.set_portfolio_setting('total_capital', str(data['total_capital']))
-    if 'cash_amount' in data:
-        db.set_portfolio_setting('cash_amount', str(data['cash_amount']))
+    # 校验后再持久化: 存入非数字会让后续 get_capital_settings / /score 的 float() 永久 500
+    for key in ('total_capital', 'cash_amount'):
+        if key in data:
+            try:
+                val = float(data[key])
+            except (TypeError, ValueError):
+                return jsonify({'success': False, 'error': f'{key} 必须为数字'}), 400
+            if val < 0:
+                return jsonify({'success': False, 'error': f'{key} 不能为负'}), 400
+            db.set_portfolio_setting(key, str(val))
     return jsonify({'success': True, 'message': '资金设置已保存'})
 
 
