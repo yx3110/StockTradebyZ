@@ -218,7 +218,8 @@ python3 tomorrow_stock_selector.py 2025-09-30                             # Stoc
 #    regime 只驱动 L1-L5 风控参数与 L4 熔断); 专家映射唯一事实源 ng_schema.PRODUCTION_MOE_EXPERTS;
 #    est_vol 主源 = 前瞻 vol 头 (风险头 IC=+0.60), 后视 60d 为 fallback。
 #    新口径基线 (2026-07-11-p0fix): ng101 4-12 pkl V5.2=81.3% S / Sharpe 2.550 / MaxDD -17.7%
-#    🆕 7-12 完整财报重训 pkl 已切生产: 对齐窗口 V5.2=83.8% S / Sharpe 3.530 / MaxDD -23.0%, Pre-2020 +19.4%
+#    🆕 7-18 生产 = 3-seed ensemble (seed42/123/456, 完整财报缓存): 对齐 V5.2=84.2% S / Sharpe 3.648 /
+#    MaxDD -14.7% / Calmar 10.1, Pre-2020 +21.2%, WF-OOS 62.3% A — 全维度最优
 python3 tomorrow_stock_selector.py 2025-09-30 --scoring-version ng1.0.62  # MOE v2 (历史配置): bull→ng1.0.7, bear→ng1.0.4
 python3 tomorrow_stock_selector.py 2025-09-30 --scoring-version ng1.0.6   # MOE v1 (bull→ng1.0.1), V5.2=78%
 python3 tomorrow_stock_selector.py 2025-09-30 --scoring-version ng2.0a    # 🆕 灰度: multi-beta vote regime → ng1.0.1 bull/ng1.0.4 bear, WF-OOS V5.2=79.3% A+, MaxDD=-17.6% (vs 生产 -23.7%)
@@ -613,16 +614,16 @@ AI analysis configuration and weights
    - **🆕 2026-04-25 regime classifier v1**: `indicators/regime_classifier.py` 替换硬编码 `compute_regime`, 默认 preset=`v11_loose_smooth3` (位置+水上/上升+3日平滑, 击败旧 V3 strict +5pp 三窗口平均). 详见 `docs/wiki/architecture/regime-classifier-v1.md`
    - **短板**: MaxDD=-22.9% 是 ng1.0.1 的两倍, 单独用风险过大, 需叠加 ng1.0.5 三层风控
 
-3. **🏆 NG v1.0.1 Production** (当前生产, 🆕 7-12 完整财报缓存重训):
-   - 66特征, 行业超额标签, ICIR 自适应权重
-   - 🆕 **2026-07-12 重训切换**: 7-11 财报修复 + 缓存重建 (label 后复权) 后重训, 双 gate 通过
-     (对齐窗口 V5.2 **83.8% S** vs 旧 81.3% / Pre-2020 净年化 **+19.4%** V5.2 55.4% B vs 旧 49.7%);
-     前向 WF-OOS 匹配窗对旧缓存模型 mixed-parity, 唯 10d 口径偏弱需 paper trade 盯 20 日。
-     详见 `reports/system_evaluation/ng101重训评估_20260712.md`
+3. **🏆 NG v1.0.1 Production** (当前生产, 🆕 7-18 3-seed ensemble):
+   - 66特征, 行业超额标签, ICIR 自适应权重, seed42/123/456 三模型平均
+   - 🆕 **2026-07-18 3-seed 切换**: 完整财报缓存重训 (7-12) + 补训 2 seeds, 全 gate 通过
+     (对齐 V5.2 **84.2% S** / **MaxDD -14.7%** / Calmar 10.1; Pre-2020 **+21.2%**; 匹配窗 WF-OOS
+     10d 净年化 9.4%→22.9% — 单 seed 的 10d 前向弱格被 ensemble 修复, 又一次验证 ensemble > 改特征)
+     详见 `reports/system_evaluation/ng101重训评估_20260712.md` (附录二)
    - 历史 (4-12 pkl, 旧口径): WF-OOS V5.2=73.4% A+, Sharpe=2.753, MaxDD=-11.7%; Pre-2020 45.5% B
      ("-19% 年化"已被 7-11 新口径证伪为惩罚伪影, 新口径 Pre-2020 双双正年化)
-   - Scorer: `ml_models/ng/ng_production_scorer.py` (version='ng1.0.1')
-   - 模型: `ml_models/trained_models/ng/ng101_seed42_multi_target_20260712_213343.pkl` (回滚: 4-12 pkl 保留)
+   - Scorer: `ml_models/ng/ng_production_scorer.py` (version='ng1.0.1'); ensemble 判定 = PINNED 清单长度
+   - 模型: `ng101_seed{42,123,456}_multi_target_202607*.pkl` × 3 (回滚: 注册表只留 seed42 或恢复 4-12 pkl)
    - 🆕 **模型固定加载 (2026-07-11)**: 生产模型 pkl 写死在 `ng_schema.PINNED_PRODUCTION_MODELS`
      (ng1.0.1 单模型 + ng1.0.4 三 seed), scorer 不再 mtime-glob 取最新 — **切换生产模型必须改注册表**。
      背景: 4-28 未验收重训 pkl 曾因 mtime 被生产静默加载 2.5 个月

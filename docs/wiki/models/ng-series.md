@@ -68,6 +68,26 @@ Next Generation（NG）系列是从 V4.x 代码中独立重构的新一代模型
 
 **模型**: `ng101_seed42_multi_target_20260712_213343.pkl` (77MB, 含 Check 9 元数据: git `73a36ce4`, seed 42, expanding, purge 15)
 
+### 🆕 2026-07-18 3-Seed Ensemble (当前生产)
+
+seed 123/456 同配置补训 (hp sweep 确认 V4.7.3 参数最优后执行), 三 pkl 平均:
+
+| 指标 (对齐窗口 10d) | 单 seed 42 | **3-seed** | 旧 4-12 基线 |
+|---|---|---|---|
+| V5.2 | 83.8% S | **84.2% S** | 81.3% S |
+| Sharpe / Calmar | 3.530 / 6.47 | **3.648 / 10.09** | 2.550 / 5.85 |
+| **MaxDD** | -23.0% | **-14.7%** | -17.7% |
+| Pre-2020 净年化 | +19.4% | **+21.2%** | +17.2% |
+| 匹配窗 WF-OOS 10d 净年化 | 9.4% | **22.9%** | 27.1% (旧缓存 4-28) |
+| WF-OOS 全窗 V5.2 | 59.1% B | **62.3% A** | — |
+
+- 单 seed 切换的两大遗留问题**全部被 ensemble 修复**: MaxDD 退化 (-23.0→-14.7, 反超基线) 与 10d 前向弱格 (9.4→22.9)
+- 三 seed w1 (2024-05~11) ICIR 全部 0.46-0.48 — 该窗口难度是结构性的, 与 seed 无关
+- scorer ensemble 判定重构: PINNED 清单长度 >1 即 ensemble (唯一权威), version_ge 只作未注册版本 fallback
+- fold-preds 平均工具: `scripts/avg_seed_fold_preds.py`; 评估详情: `reports/system_evaluation/ng101重训评估_20260712.md` 附录二
+
+**模型**: `ng101_seed{42,123,456}_multi_target_202607*.pkl` × 3 (PINNED_PRODUCTION_MODELS)
+
 ---
 
 ## NG 1.0.2 — 下行风险模型 (2026-04-05)

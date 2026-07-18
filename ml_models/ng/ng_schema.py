@@ -79,8 +79,9 @@ def get_moe_experts(base_version: str):
 # 3-seed (42/123/456) 配置。切换生产模型必须显式改这里 (与 PRODUCTION_VERSION 同步)。
 # 值为文件名列表: 单模型版本 1 个, ensemble 版本 N 个 (全部相对 trained_models/ng/)。
 PINNED_PRODUCTION_MODELS = {
-    # 7-12 完整财报缓存重训版 (对齐窗口 V5.2=83.8% S / Pre-2020 净年化 +19.4%, 双 gate 通过;
-    # 评估: reports/system_evaluation/ng101重训评估_20260712.md; 前任 4-12 pkl 文件保留可回滚)
+    # 7-18 3-seed ensemble (G1 对齐 V5.2=84.2% S / G2 Pre-2020 +21.2% / G3 匹配窗 22.9%,
+    # MaxDD -14.7% 全面最优; 评估: reports/system_evaluation/ng101重训评估_20260712.md 附录二;
+    # 回滚 = 只留 seed42 一项 (7-12 单模) 或恢复 4-12 pkl)
     'ng1.0.1': [
         'ng101_seed42_multi_target_20260712_213343.pkl',
         'ng101_seed123_multi_target_20260713_103149.pkl',
