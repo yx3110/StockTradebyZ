@@ -158,6 +158,13 @@ def _inject_wf_summary(result, wf_summary_path, focus_days):
 
     wfer = compute_wfer(wf_data)
     oos_hl = compute_oos_ic_half_life(wf_data)
+    # ng 系列 wf_summary: trainer 已在 aggregate 里预计算 (原始 is/oos sharpe
+    # 数组与 monthly ICs 不落盘), compute_* 拿不到原始数组时回退预计算值
+    agg = wf_data.get('aggregate', {})
+    if wfer is None:
+        wfer = agg.get('wfer')
+    if oos_hl is None:
+        oos_hl = agg.get('oos_ic_half_life_months')
 
     summary = result.get('summary', {})
     if focus_days in summary:

@@ -79,19 +79,29 @@ def _staleness_days(row_date: Optional[str], target_date: Optional[str],
 
 
 def _read_amv_regime(db_path: str, target_date: Optional[str]) -> tuple[Optional[int], str, str]:
-    """读 0AMV regime (ng1.0.6 路径). 返回 (regime_value, row_date, label)."""
+    """读 0AMV regime (ng1.0.6 路径). 返回 (regime_value, row_date, label).
+
+    2026-07-19 起优先读 amv_regime_official (官方活跃市值上跑 V11, 生产 overlay 复测
+    年化 +3.1pp 同 MaxDD + 33 年大周期验证), COALESCE 回退 amv_regime (var1 模拟);
+    旧库无该列时降级回 amv_regime 单列查询。
+    """
     conn = sqlite3.connect(db_path, timeout=30)
     conn.execute('PRAGMA busy_timeout=30000')
     try:
+        col = 'COALESCE(amv_regime_official, amv_regime)'
+        try:
+            conn.execute('SELECT amv_regime_official FROM market_amv LIMIT 1')
+        except sqlite3.OperationalError:
+            col = 'amv_regime'
         if target_date:
             row = conn.execute(
-                'SELECT amv_regime, trade_date FROM market_amv WHERE trade_date <= ? '
-                'ORDER BY trade_date DESC LIMIT 1', (target_date,)
+                f'SELECT {col}, trade_date FROM market_amv WHERE trade_date <= ? '
+                f'ORDER BY trade_date DESC LIMIT 1', (target_date,)
             ).fetchone()
             label = f"{target_date}"
         else:
             row = conn.execute(
-                'SELECT amv_regime, trade_date FROM market_amv ORDER BY trade_date DESC LIMIT 1'
+                f'SELECT {col}, trade_date FROM market_amv ORDER BY trade_date DESC LIMIT 1'
             ).fetchone()
             label = "最新"
     finally:

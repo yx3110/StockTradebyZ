@@ -175,12 +175,15 @@ def compute_regime(var1: np.ndarray, ma60: np.ndarray, macd: np.ndarray,
 
 
 # === 官方0AMV (指南针活跃市值) 锚定外推 ===
-# 模型: Y_t = A * Y_{t-1} * (1 + BETA * r_中证全指) + K * 当日成交额(元)
-# 参数由 scripts/fit_amv_official.py 对官方真值最小二乘拟合 (2018-01~2026-07):
-# 一步MAPE=0.60%, 锚定外推 20天 MAPE~5% / 60天 ~7% (成交额注入项使误差有界不发散)
-AMV_OFF_A = 0.93437      # 留存率 (日衰减 6.56%)
-AMV_OFF_BETA = 1.25      # 活跃筹码对中证全指的beta
-AMV_OFF_K = 5.802e-9     # 成交额(元)→官方指数单位 注入系数
+# 模型: Y_t = A * Y_{t-1} * (1 + BETA * r_drift) + K * 当日成交额(元)
+# r_drift = 沪深300/中证500/中证1000/中证2000 四指数等权日收益 (全市值谱代理)。
+# 2026-07-19 从中证全指切换: tushare 000985.SH 于 06-26 断供, 且四指数组合拟合
+# 反而更优 (一步MAPE 0.558% vs 0.611%)。参数由 scripts/fit_amv_official.py 复现。
+# 锚定外推 51天 MAPE=3.8% (成交额注入项使误差有界不发散)
+AMV_OFF_A = 0.93526      # 留存率 (日衰减 6.47%)
+AMV_OFF_BETA = 1.15      # 活跃筹码对四指数组合的beta
+AMV_OFF_K = 5.7351e-9    # 成交额(元)→官方指数单位 注入系数
+AMV_DRIFT_INDICES = ('000300.SH', '000905.SH', '000852.SH', '932000.CSI')
 
 OFFICIAL_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS market_amv_official (
@@ -228,6 +231,31 @@ def compute_official_regime(conn: sqlite3.Connection) -> pd.DataFrame:
     df['amv_c5'] = df['amv_c13'] = df['amv_c34'] = c
     df['regime'] = RegimeClassifier().fit_predict(df)
     return df[['trade_date', 'regime']]
+
+
+def update_official_regime_column(conn: sqlite3.Connection):
+    """维护 market_amv.amv_regime_official 列 (官方序列 V11 regime, 生产风控读取源)
+
+    2026-07-19 生产切换: scoring_router 风控 regime 优先读此列 (COALESCE 回退 amv_regime)。
+    模型特征 (amv_var1/amv_regime_days 等) 仍基于 var1 序列, 不受影响。
+    """
+    cols = [r[1] for r in conn.execute('PRAGMA table_info(market_amv)')]
+    if 'amv_regime_official' not in cols:
+        conn.execute('ALTER TABLE market_amv ADD COLUMN amv_regime_official INTEGER')
+
+    df = compute_official_regime(conn)
+    if df.empty:
+        logger.warning('market_amv_official 无数据, amv_regime_official 未更新')
+        return
+    conn.executemany(
+        'UPDATE market_amv SET amv_regime_official = ? WHERE trade_date = ?',
+        [(int(r), d) for d, r in zip(df['trade_date'], df['regime'])]
+    )
+    conn.commit()
+    n, latest = conn.execute(
+        'SELECT COUNT(*), MAX(trade_date) FROM market_amv WHERE amv_regime_official IS NOT NULL'
+    ).fetchone()
+    logger.info(f'amv_regime_official 更新: {n} 天有值, 最新 {latest}')
 
 
 def extend_amv_official(conn: sqlite3.Connection):
@@ -366,6 +394,7 @@ def compute_and_save(db_path: str = None):
 
     save_to_db(conn, df)
     extend_amv_official(conn)
+    update_official_regime_column(conn)
     conn.close()
 
     bull_days = (df['amv_regime'] == 1).sum()

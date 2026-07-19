@@ -477,14 +477,15 @@ def batch_get_all_future_returns(report_dates, holding_days_list=None):
     if sell_dates_sorted:
         placeholders_sell = ','.join(['?' for _ in sell_dates_sorted])
         sell_df = pd.read_sql_query(f"""
-            SELECT s.code, dq.trade_date, dq.close, dq.adj_factor
+            SELECT s.code, dq.trade_date, dq.close, dq.adj_factor, dq.price_change_pct
             FROM daily_quotes dq
             JOIN securities s ON dq.security_id = s.id
             WHERE dq.trade_date IN ({placeholders_sell})
               AND dq.close IS NOT NULL AND dq.close > 0
         """, conn, params=sell_dates_sorted)
     else:
-        sell_df = pd.DataFrame(columns=['code', 'trade_date', 'close', 'adj_factor'])
+        sell_df = pd.DataFrame(columns=['code', 'trade_date', 'close', 'adj_factor',
+                                        'price_change_pct'])
 
     conn.close()
 
@@ -507,11 +508,16 @@ def batch_get_all_future_returns(report_dates, holding_days_list=None):
         adj = row.adj_factor if _valid_adj(row.adj_factor) else None
         buy_prices_by_date.setdefault(trade_date, {})[code] = (open_price, adj)
 
-    # sell_prices: {(sell_date, code): (close_price, adj or None)}
+    # sell_prices: {(sell_date, code): (close_price, adj or None, is_limit_down)}
+    # 跌停判定用 price_change_pct (is_limit_up 字段填充率 <0.01% 不可靠, 同买入侧)
     sell_prices = {}
     for row in sell_df.itertuples(index=False):
         adj = row.adj_factor if _valid_adj(row.adj_factor) else None
-        sell_prices[(row.trade_date, row.code)] = (row.close, adj)
+        pct = row.price_change_pct
+        is_ld = (pct is not None
+                 and not (isinstance(pct, float) and np.isnan(pct))
+                 and pct <= -_get_limit_up_threshold(row.code))
+        sell_prices[(row.trade_date, row.code)] = (row.close, adj, is_ld)
 
     # 6. 计算所有收益率
     all_results = {}
@@ -525,7 +531,7 @@ def batch_get_all_future_returns(report_dates, holding_days_list=None):
                 sell = sell_prices.get((sell_date, code))
                 if not sell:
                     continue
-                close, sell_adj = sell
+                close, sell_adj, is_ld = sell
                 if close and open_price > 0:
                     if buy_adj and sell_adj:
                         ret = (close * sell_adj - open_price * buy_adj) / (open_price * buy_adj)
@@ -535,6 +541,9 @@ def batch_get_all_future_returns(report_dates, holding_days_list=None):
                     if code not in date_results:
                         date_results[code] = {}
                     date_results[code][key] = ret
+                    if is_ld:
+                        # 该 checkpoint 日跌停 → 止损无法成交, SL 顺延用
+                        date_results[code][f'_ld_{days}d'] = True
         all_results[buy_date] = date_results
 
     if raw_fallback_count:
@@ -1104,7 +1113,8 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
         print(f"  V4.9.2 Drawdown Brake: DD>4%→×0.7, DD>7%→×0.5, DD>10%→×0.3")
     # NG1.0.5 Risk Overlays
     if stop_loss_pct > 0:
-        print(f"  NG1.0.5 个股止损: 单只跌破-{stop_loss_pct:.0%}即止损 (cap at checkpoints)")
+        print(f"  NG1.0.5 个股止损: 单只跌破-{stop_loss_pct:.0%}触发, "
+              f"出场顺延至首个非跌停/非停牌checkpoint按实际价成交")
     if regime_gate_aggressive:
         print(f"  NG1.0.5 增强Regime门控: 20d<-5%→50%, 20d<-10%→20%, VIX>P90→60%")
     if ema_alpha > 0:
@@ -1188,10 +1198,16 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
                   f"{len(regime_damping_map)}天触发阻尼 (共{n_mkt}天)")
 
     # NG1.0.5: 预计算VIX proxy P90阈值 (用于aggressive regime gate)
-    vix_p90 = None
+    # 2026-07-19 T02-pre: 全窗口 quantile 是 in-sample 阈值 (决策日用到了未来分布),
+    # 改为 expanding 分位 (min 120 天预热, 预热期内门不激活)
+    vix_p90_map = {}
     if regime_gate_aggressive and not market_ewma_vol.empty:
-        vix_p90 = float(market_ewma_vol.quantile(0.90))
-        print(f"  NG1.0.5: VIX proxy P90={vix_p90:.1%} (基于市场EWMA波动率)")
+        _p90_series = market_ewma_vol.expanding(min_periods=120).quantile(0.90)
+        vix_p90_map = {d: float(v) for d, v in _p90_series.items() if not np.isnan(v)}
+        if vix_p90_map:
+            _last_p90 = _p90_series.dropna().iloc[-1]
+            print(f"  NG1.0.5: VIX proxy expanding-P90 (末值={_last_p90:.1%}, "
+                  f"{len(vix_p90_map)}/{len(market_ewma_vol)}天有效, 预热120天)")
 
     # NG1.0.5: 止损统计
     stop_loss_trigger_count = 0
@@ -1593,26 +1609,36 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
                     exposure = min(exposure, 0.20)
                 elif mret20 < -0.05:
                     exposure = min(exposure, 0.50)
-            # VIX proxy: 当前EWMA波动率 > P90 → 仓位上限60%
-            if vix_p90 is not None:
+            # VIX proxy: 当前EWMA波动率 > 截至当日的expanding P90 → 仓位上限60%
+            if vix_p90_map:
                 vol_now = vol_dict.get(date)
-                if vol_now is not None and vol_now > vix_p90:
+                _p90_today = vix_p90_map.get(date)
+                if vol_now is not None and _p90_today is not None and vol_now > _p90_today:
                     exposure = min(exposure, 0.60)
 
         # Clamp exposure after all overlays
         exposure = max(0.05, min(1.0, exposure))
 
-        # NG1.0.5: 预计算每只持仓股的止损调整收益
-        # 检查各checkpoint(1d,3d,...), 一旦某checkpoint收益 < -stop_loss_pct,
-        # 后续所有周期锁定为 -stop_loss_pct (视为已卖出)
-        stop_loss_flags = {}  # code → earliest triggered checkpoint day
+        # NG1.0.5 + 2026-07-19 T02-pre 卖出约束: 预计算每只持仓股的止损出场
+        # 检查各checkpoint(1d,3d,...), 一旦某checkpoint收益 < -stop_loss_pct 触发止损;
+        # 出场顺延到首个"可卖" checkpoint (有行情=非停牌 且 非跌停), 成交价 = 该
+        # checkpoint 实际收盘 (而非理想化的精确 -stop_loss_pct 成交 — 旧实现让
+        # SL 网格结论系统性乐观); 全程跌停/停牌无法出场 → 持有至各周期实际收益
+        stop_loss_flags = {}  # code → (exit_day, exit_ret)
         if stop_loss_pct > 0:
             for c in top_codes:
                 stock_rets = future_returns.get(c, {})
+                triggered = False
                 for d in HOLDING_DAYS:  # already sorted ascending
                     ret = stock_rets.get(f'return_{d}d')
-                    if ret is not None and ret < -stop_loss_pct:
-                        stop_loss_flags[c] = d
+                    if not triggered:
+                        if ret is not None and ret < -stop_loss_pct:
+                            triggered = True
+                        else:
+                            continue
+                    # 已触发: 找首个可卖 checkpoint (行情存在且非跌停)
+                    if ret is not None and not stock_rets.get(f'_ld_{d}d'):
+                        stop_loss_flags[c] = (d, ret)
                         break
             if stop_loss_flags:
                 stop_loss_trigger_count += len(stop_loss_flags)
@@ -1625,11 +1651,12 @@ def run_single_backtest(reports, label, top_n=20, benchmark_code='000905.SH',
             for c in top_codes:
                 if c in future_returns and key in future_returns[c]:
                     ret = future_returns[c][key]
-                    # NG1.0.5: 止损 — 触发checkpoint之后的周期锁定在-stop_loss_pct
+                    # 止损 — 出场checkpoint之后的周期锁定在实际出场收益
+                    # (出场前的周期仍持仓, 用实际收益)
                     if stop_loss_pct > 0 and c in stop_loss_flags:
-                        trigger_day = stop_loss_flags[c]
-                        if days >= trigger_day:
-                            ret = -stop_loss_pct
+                        exit_day, exit_ret = stop_loss_flags[c]
+                        if days >= exit_day:
+                            ret = exit_ret
                     top_returns.append(ret)
                 elif c not in future_returns:
                     if _get_last_trade_date_map().get(c, '') < buy_date:

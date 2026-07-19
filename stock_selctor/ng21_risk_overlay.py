@@ -286,6 +286,15 @@ def build_risk_decision(
 # Selector-side post-filter wrapper
 # ---------------------------------------------------------------------------
 
+def rank_key(pick: Dict) -> float:
+    """picks 排序 / L1 floor 的统一分数提取 (rank_score 优先, composite 兜底).
+
+    入场预排序与 overlay 内部 floor 必须用同一表达式 — 分叉会导致
+    "排序看 A 字段、floor 看 B 字段" 的静默口径漂移 (重放脚本共用此函数)。
+    """
+    return float(pick.get('rank_score') or pick.get('composite') or 0)
+
+
 def apply_overlay_to_picks(
     picks: List[Dict],
     decision: RiskDecision,
@@ -305,7 +314,7 @@ def apply_overlay_to_picks(
     # Resolve effective floor based on score scale to handle both legacy V3
     # 0-100 composite and NG predicted-return rank_score (typically in
     # [-0.05, +0.02]). If max score < 1, switch to percentile floor.
-    raw_scores = [float(s.get('rank_score') or s.get('composite') or 0) for s in picks]
+    raw_scores = [rank_key(s) for s in picks]
     if raw_scores and max(raw_scores) < 1.0:
         sorted_scores = sorted(raw_scores)
         cutoff_idx = int(len(sorted_scores) * L1_PERCENTILE_FLOOR_PCT)
@@ -322,7 +331,7 @@ def apply_overlay_to_picks(
             dropped.append(d)
             continue
 
-        score = float(s.get('rank_score') or s.get('composite') or 0)
+        score = rank_key(s)
         if score < effective_floor:
             d = dict(s); d['_drop_reason'] = floor_label
             dropped.append(d)

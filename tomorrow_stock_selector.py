@@ -4351,8 +4351,15 @@ class TomorrowStockSelector:
         index_data = {}
         for code in index_codes:
             df = db.get_security_data(code, start_date, date_str)
-            if len(df) > 0:
-                index_data[code] = df
+            if len(df) == 0:
+                continue
+            # 断供守卫: 指数末日落后目标日 >10 自然日视为停更, 剔除避免陈旧窗口混入
+            # (2026-06-26 起 tushare 000985.SH 断供, 曾以 0.3 权重污染波动率评分)
+            last_dt = str(df['trade_date'].iloc[-1])[:10]
+            if (pd.Timestamp(date_str) - pd.Timestamp(last_dt)).days > 10:
+                logger.warning(f'指数 {code} 数据停更于 {last_dt}, 已从市场环境评分剔除')
+                continue
+            index_data[code] = df
 
         hs300 = index_data.get('000300.SH', pd.DataFrame())
         sh_index = index_data.get('000001.SH', pd.DataFrame())
