@@ -612,6 +612,12 @@ AI analysis configuration and weights
    - β 归因: β_UMD=+0.005 (ng1.0.1 的 1/76), β_SMB=+1.54 (边界), Alpha t=4.54, R²=2.9% — 动量暴露几乎为零
    - 控制: `backtest/regime_switch_backtest.py` + `indicators/market_amv.py`, 选股 `--scoring-version ng1.0.6`
    - **🆕 2026-04-25 regime classifier v1**: `indicators/regime_classifier.py` 替换硬编码 `compute_regime`, 默认 preset=`v11_loose_smooth3` (位置+水上/上升+3日平滑, 击败旧 V3 strict +5pp 三窗口平均). 详见 `docs/wiki/architecture/regime-classifier-v1.md`
+   - **🆕 2026-07-19 regime 风控输入切官方活跃市值**: scoring_router 优先读 `market_amv.amv_regime_official`
+     (V11 跑在 `market_amv_official` 官方序列上, COALESCE 回退 var1 模拟 regime)。依据: 生产 overlay
+     同构 replay 年化 +3.1pp 同 MaxDD + 33 年大周期每次崩盘都躲过。官方 CSV 建议 1-2 月重导一次
+     (`scripts/import_amv_official.py`), 断更期由递归模型锚定外推 (~5% 误差)。模型特征 (amv_var1 等)
+     仍基于 var1, 不受影响。⚠️ tushare 000985.SH 于 2026-06-26 断供, 外推漂移源已切
+     沪深300/中证500/中证1000/中证2000 四指数等权 (拟合反而更优)
    - **短板**: MaxDD=-22.9% 是 ng1.0.1 的两倍, 单独用风险过大, 需叠加 ng1.0.5 三层风控
 
 3. **🏆 NG v1.0.1 Production** (当前生产, 🆕 7-18 3-seed ensemble):

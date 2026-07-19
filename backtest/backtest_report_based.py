@@ -237,7 +237,7 @@ def _parse_single_report(json_file, rank_field):
                 entry['rank_score'] = -hr  # negate so higher = better
                 entry['head_rank'] = hr
                 entry['in_head_pool'] = s.get('in_head_pool', False)
-            elif rank_field in ('auto', 'composite'):
+            elif rank_field == 'auto' or rank_field.startswith('composite'):
                 entry['rank_score'] = entry.get('pred_10d') or score
             elif rank_field == 'score':
                 entry['rank_score'] = score
@@ -303,9 +303,10 @@ def _load_reports_impl(report_dir, rank_field):
         if stock_list is None:
             continue
 
-        # composite: 多周期加权排名融合
-        if rank_field == 'composite' and stock_list:
-            _apply_composite_ranking(stock_list)
+        # composite: 多周期加权排名融合 (可带 ':w3,w5,w10,w15' 权重后缀)
+        if rank_field.startswith('composite') and stock_list:
+            _apply_composite_ranking(
+                stock_list, _composite_weights_from_rank_field(rank_field))
 
         # 按rank_score排序 (连续预测值, 无同分)
         stock_list.sort(key=lambda x: x['rank_score'], reverse=True)
@@ -323,7 +324,25 @@ COMPOSITE_WEIGHTS = {
 }
 
 
-def _apply_composite_ranking(stock_list):
+def _composite_weights_from_rank_field(rank_field):
+    """'composite' → None (默认权重); 'composite:0.05,0.15,0.35,0.45' →
+    {pred_3d/5d/10d/15d: w} (T03 权重倾斜 A/B 用)。
+
+    权重编码进 rank_field 字符串, 使 EvalCache 的 (dir, rank_field) 键天然区分
+    不同权重的解析结果 — 用模块级变量覆盖会被缓存静默吞掉。
+    """
+    if ':' not in rank_field:
+        return None
+    parts = [float(x) for x in rank_field.split(':', 1)[1].split(',')]
+    if len(parts) != 4:
+        raise ValueError(f'composite 权重需 4 个值 (3d,5d,10d,15d): {rank_field}')
+    total = sum(parts)
+    if not 0.999 < total < 1.001:
+        raise ValueError(f'composite 权重和须为 1, 得到 {total}: {rank_field}')
+    return dict(zip(('pred_3d', 'pred_5d', 'pred_10d', 'pred_15d'), parts))
+
+
+def _apply_composite_ranking(stock_list, weights=None):
     """多周期加权排名融合：对每个pred_Xd计算百分位排名，加权合并。
 
     只有在所有周期都排名靠前的股票才能获得高composite分。
@@ -332,8 +351,9 @@ def _apply_composite_ranking(stock_list):
     n = len(stock_list)
     if n < 2:
         return
+    weights = weights or COMPOSITE_WEIGHTS
 
-    for field, weight in COMPOSITE_WEIGHTS.items():
+    for field, weight in weights.items():
         # 提取该周期的预测值
         values = [(i, s.get(field) or 0) for i, s in enumerate(stock_list)]
         # 按值排序，赋百分位排名 [0, 1]
@@ -345,10 +365,10 @@ def _apply_composite_ranking(stock_list):
     for s in stock_list:
         s['rank_score'] = sum(
             s.get(f'_rank_{field}', 0) * weight
-            for field, weight in COMPOSITE_WEIGHTS.items()
+            for field, weight in weights.items()
         )
         # 清理临时字段
-        for field in COMPOSITE_WEIGHTS:
+        for field in weights:
             s.pop(f'_rank_{field}', None)
 
 

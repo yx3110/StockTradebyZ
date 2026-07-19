@@ -275,16 +275,18 @@ def extend_amv_official(conn: sqlite3.Connection):
         return
     anchor_date, anchor_close = anchor
 
-    df = pd.read_sql(
-        """
-        SELECT ma.trade_date, ma.market_amount, dq.close AS idx_close
-        FROM market_amv ma
-        JOIN securities s ON s.code = '000985.SH'
-        JOIN daily_quotes dq ON dq.security_id = s.id AND dq.trade_date = ma.trade_date
-        WHERE ma.trade_date >= ?
-        ORDER BY ma.trade_date
-        """,
+    ma_df = pd.read_sql(
+        'SELECT trade_date, market_amount FROM market_amv WHERE trade_date >= ? ORDER BY trade_date',
         conn, params=(anchor_date,)
+    )
+    ph = ','.join('?' * len(AMV_DRIFT_INDICES))
+    idx_df = pd.read_sql(
+        f"""
+        SELECT dq.trade_date, s.code, dq.close
+        FROM daily_quotes dq JOIN securities s ON dq.security_id = s.id
+        WHERE s.code IN ({ph}) AND dq.trade_date >= ?
+        """,
+        conn, params=(*AMV_DRIFT_INDICES, anchor_date)
     )
     conn.execute(
         'DELETE FROM market_amv_official WHERE is_simulated = 1 AND trade_date > ?',
@@ -292,14 +294,17 @@ def extend_amv_official(conn: sqlite3.Connection):
     )
 
     rows = []
-    if len(df) >= 2:
-        idx_close = df['idx_close'].to_numpy()
+    if len(ma_df) >= 2 and not idx_df.empty:
+        piv = idx_df.pivot(index='trade_date', columns='code', values='close')
+        df = ma_df.join(piv, on='trade_date')
+        # 四指数等权日收益; 个别缺失取均值, 全缺当日按 0 漂移
+        r_drift = df[list(piv.columns)].pct_change(fill_method=None).mean(axis=1)
+        r_drift = r_drift.fillna(0.0).to_numpy()
         amt = df['market_amount'].to_numpy()
         dates = df['trade_date'].tolist()
         y = anchor_close
         for i in range(1, len(df)):
-            r_idx = idx_close[i] / idx_close[i - 1] - 1
-            y = AMV_OFF_A * y * (1 + AMV_OFF_BETA * r_idx) + AMV_OFF_K * amt[i] * 1000.0
+            y = AMV_OFF_A * y * (1 + AMV_OFF_BETA * r_drift[i]) + AMV_OFF_K * amt[i] * 1000.0
             rows.append((dates[i], y))
         conn.executemany(
             'INSERT OR REPLACE INTO market_amv_official '

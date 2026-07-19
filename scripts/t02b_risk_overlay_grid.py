@@ -171,13 +171,18 @@ def run_one(report_dir: str, name: str, kwargs: dict, focus_days: int,
                      if row.get('calmar_native')
                      else round(ann / abs(mdd), 2) if ann and mdd else None)
 
-    # 纪律标记
-    row['suspect_annualization'] = bool(
+    # 纪律标记: 红旗规则是"稀疏持仓时 Sharpe>4 = 年化膨胀伪影" (memory 明文
+    # 绑定 cash 50%+ 条件; 引擎另有 calendar-time 校正)。满仓高 Sharpe 只记录
+    # sharpe_gt4 信息位, 不剔出排名 — 否则 base 4.27 被误杀后排名只剩最差行
+    row['sharpe_gt4'] = bool(
         row.get('sharpe') is not None and row['sharpe'] > SHARPE_RED_FLAG)
     row['cash_heavy'] = bool(
         row.get('avg_exposure') is not None
         and row['avg_exposure'] < CASH_HEAVY_EXPOSURE)
-    row['rankable'] = not (row['suspect_annualization'] or row['cash_heavy'])
+    row['suspect_annualization'] = row['sharpe_gt4'] and (
+        row['cash_heavy']
+        or (row.get('pct_days_exposure_lt50') or 0) > 0.3)
+    row['rankable'] = not row['suspect_annualization']
     return row
 
 

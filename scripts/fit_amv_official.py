@@ -17,32 +17,41 @@ import pandas as pd
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
 
-from indicators.market_amv import DB_PATH  # noqa: E402
+from indicators.market_amv import AMV_DRIFT_INDICES, DB_PATH  # noqa: E402
 
 
 def main():
     conn = sqlite3.connect(DB_PATH, timeout=30)
     df = pd.read_sql(
         """
-        SELECT o.trade_date, o.close AS official, ma.market_amount, dq.close AS idx_close
+        SELECT o.trade_date, o.close AS official, ma.market_amount
         FROM market_amv_official o
         JOIN market_amv ma ON ma.trade_date = o.trade_date
-        JOIN securities s ON s.code = '000985.SH'
-        JOIN daily_quotes dq ON dq.security_id = s.id AND dq.trade_date = o.trade_date
         WHERE o.is_simulated = 0
         ORDER BY o.trade_date
         """,
         conn,
+    )
+    ph = ','.join('?' * len(AMV_DRIFT_INDICES))
+    idx_df = pd.read_sql(
+        f"""
+        SELECT dq.trade_date, s.code, dq.close
+        FROM daily_quotes dq JOIN securities s ON dq.security_id = s.id
+        WHERE s.code IN ({ph})
+        """,
+        conn, params=AMV_DRIFT_INDICES,
     )
     conn.close()
     if len(df) < 200:
         print(f'重叠样本太少 ({len(df)} 天), 先跑 scripts/import_amv_official.py')
         sys.exit(1)
 
+    piv = idx_df.pivot(index='trade_date', columns='code', values='close')
+    df = df.join(piv, on='trade_date')
     y = df['official'].to_numpy()
     amt = df['market_amount'].to_numpy() * 1000.0  # 千元→元
-    r = df['idx_close'].to_numpy()
-    r = np.concatenate([[0.0], r[1:] / r[:-1] - 1])
+    r = df[list(piv.columns)].pct_change(fill_method=None).mean(axis=1)
+    r = r.fillna(0.0).to_numpy()
 
     best = None
     for beta in np.arange(0.8, 1.8, 0.05):
