@@ -67,10 +67,15 @@ def load_report_picks(report_dir: Path, start: str, end: str) -> dict:
     return out
 
 
-def load_regime_map(db_path: str) -> dict:
+def load_regime_map(db_path: str, source: str = 'v1') -> dict:
+    """source='v1': market_amv.amv_regime; 'official': V11 on 官方活跃市值"""
     conn = sqlite3.connect(db_path, timeout=30)
     conn.execute('PRAGMA busy_timeout=30000')
     try:
+        if source == 'official':
+            from indicators.market_amv import compute_official_regime
+            df = compute_official_regime(conn)
+            return dict(zip(df['trade_date'], df['regime']))
         return dict(conn.execute('SELECT trade_date, amv_regime FROM market_amv'))
     finally:
         conn.close()
@@ -95,6 +100,8 @@ def main():
     ap.add_argument('--start', default='2018-11-02')
     ap.add_argument('--end', default='2026-04-08')
     ap.add_argument('--vt-grid', default='0.15,0.20,0.25,0.30,0.35,0.45')
+    ap.add_argument('--regime-source', choices=['v1', 'official'], default='v1',
+                    help='v1=market_amv.amv_regime; official=官方活跃市值上跑V11')
     args = ap.parse_args()
 
     db = str(get_db_path())
@@ -103,7 +110,8 @@ def main():
     picks_by_date = load_report_picks(report_dir, args.start, args.end)
     dates = sorted(picks_by_date)
     print(f"  {len(dates)} 个报告日")
-    regime_map = load_regime_map(db)
+    regime_map = load_regime_map(db, args.regime_source)
+    print(f'  regime source: {args.regime_source}')
 
     print("[2/4] 未来收益 (复用北极星引擎批量查询, 新口径含复权)...")
     from backtest.backtest_report_based import batch_get_all_future_returns
