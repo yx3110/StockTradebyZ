@@ -24,6 +24,7 @@ def load_regime(db_path=None, version: str = 'v1', table: str = None):
 
     version='v1': use market_amv.amv_regime (legacy V11 0AMV)
     version='v2': use market_regime_signals.regime_v2 (ng2.0a multi-beta vote)
+    version='official': V11 on market_amv_official close (指南针官方活跃市值)
     table: optional v2 table override (e.g. 'market_regime_signals_unanimous').
         Ignored when version='v1'.
     """
@@ -32,6 +33,10 @@ def load_regime(db_path=None, version: str = 'v1', table: str = None):
     conn = sqlite3.connect(db_path, timeout=30)
     conn.execute('PRAGMA busy_timeout=30000')
     try:
+        if version == 'official':
+            from indicators.market_amv import compute_official_regime
+            df = compute_official_regime(conn)
+            return {d: int(r) for d, r in zip(df['trade_date'], df['regime'])}
         if version == 'v1':
             cur = conn.execute(
                 'SELECT trade_date, amv_regime FROM market_amv ORDER BY trade_date'
@@ -236,8 +241,9 @@ if __name__ == '__main__':
     parser.add_argument('--top-n', type=int, default=10)
     parser.add_argument('--focus-days', type=int, default=10)
     parser.add_argument('--rank-field', default='score')
-    parser.add_argument('--regime-version', choices=['v1', 'v2'], default='v1',
-                        help='regime来源: v1=market_amv (V11 0AMV), v2=market_regime_signals (ng2.0a多beta投票)')
+    parser.add_argument('--regime-version', choices=['v1', 'v2', 'official'], default='v1',
+                        help='regime来源: v1=market_amv (V11 0AMV), v2=market_regime_signals (ng2.0a多beta投票), '
+                             'official=market_amv_official官方活跃市值上跑V11')
     parser.add_argument('--regime-table', default=None,
                         help='v2 regime 自定义表 (e.g. market_regime_signals_unanimous). 默认: market_regime_signals')
     parser.add_argument('--out-dir', default=None,

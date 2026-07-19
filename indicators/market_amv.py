@@ -200,6 +200,36 @@ def ensure_official_table(conn: sqlite3.Connection):
         conn.execute('ALTER TABLE market_amv_official ADD COLUMN is_simulated INTEGER DEFAULT 0')
 
 
+def compute_official_regime(conn: sqlite3.Connection) -> pd.DataFrame:
+    """用官方0AMV close (含外推段) 跑生产同款 V11 regime classifier
+
+    以官方序列替代 var1: ma60/MACD 按 compute_amv 相同公式从 close 派生。
+    官方数据 1993 年起, ma60/MACD 预热充分。
+    返回 DataFrame[trade_date(str), regime(int ±1)]。
+    """
+    try:
+        from indicators.regime_classifier import RegimeClassifier
+    except ModuleNotFoundError:
+        from regime_classifier import RegimeClassifier
+
+    df = pd.read_sql(
+        'SELECT trade_date, close FROM market_amv_official ORDER BY trade_date', conn
+    )
+    if df.empty:
+        return pd.DataFrame(columns=['trade_date', 'regime'])
+    c = df['close'].values
+    df['var1'] = c
+    df['amv_ma60'] = ma(c, 60)
+    ema12, ema26 = ema(c, 12), ema(c, 26)
+    dif = ema12 - ema26
+    dea = ema(dif, 9)
+    df['amv_dif'], df['amv_dea'], df['amv_macd'] = dif, dea, (dif - dea) * 2
+    # c5/c13/c34 仅指南针对齐信号用, V11 预设不读, 填 close 占位
+    df['amv_c5'] = df['amv_c13'] = df['amv_c34'] = c
+    df['regime'] = RegimeClassifier().fit_predict(df)
+    return df[['trade_date', 'regime']]
+
+
 def extend_amv_official(conn: sqlite3.Connection):
     """将 market_amv_official 从最后一个真实(官方CSV)值锚定外推到最新交易日
 
